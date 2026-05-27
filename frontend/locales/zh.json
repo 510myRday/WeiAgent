@@ -1,13 +1,19 @@
 {
   "brand": {
     "name": "WeiAgent",
-    "tagline": "Rust API + React Console"
+    "tagline": "AI 智能体控制台"
+  },
+  "nav": {
+    "chat": "聊天",
+    "agents": "智能体",
+    "history": "历史"
   },
   "sidebar": {
     "agents": "智能体",
-    "refresh": "刷新 Agent",
+    "refresh": "刷新",
     "loading": "加载中...",
-    "empty": "创建一个智能体开始使用。"
+    "empty": "暂无智能体",
+    "ariaLabel": "侧边栏"
   },
   "agentConfig": {
     "title": "Agent 配置",
@@ -17,27 +23,55 @@
     "systemPrompt": "系统提示",
     "create": "创建 Agent",
     "save": "保存 Agent",
-    "new": "新建 Agent",
     "delete": "删除当前 Agent",
     "placeholder_name": "研究员",
-    "placeholder_model": "输入模型 ID"
+    "placeholder_model": "输入模型 ID",
+    "discardConfirm": "放弃未保存的修改？",
+    "selectAgent": "选择一个智能体进行配置",
+    "noAgents": "暂无智能体，创建一个开始使用。"
   },
   "chat": {
-    "currentAgent": "当前 Agent",
+    "selectAgent": "选择智能体",
     "noAgent": "未选择智能体",
-    "noAgentHint": "从侧边栏创建或选择一个智能体。",
+    "noAgentHint": "在「智能体」页面创建 Agent，再回到这里对话。",
     "stream": "流式",
     "complete": "完整",
     "loading": "加载对话中...",
     "emptyTitle": "开始对话",
-    "emptyHint": "每条消息按 Agent 独立存储在本地 JSON 文件中。",
+    "emptyHint": "在上方选择一个 Agent，开始对话。",
     "you": "你",
     "sending": "发送中",
     "send": "发送",
-    "placeholder": "向选中的 Agent 发送消息...",
-    "placeholderDisabled": "请先选择一个 Agent"
+    "placeholder": "输入消息...",
+    "placeholderDisabled": "请先选择一个 Agent",
+    "messageLabel": "消息",
+    "ariaLabel": "对话"
+  },
+  "history": {
+    "title": "对话历史",
+    "empty": "暂无对话记录。",
+    "messages": "{count} 条消息",
+    "view": "查看",
+    "back": "返回历史列表"
   },
   "error": {
-    "unknown": "未知错误"
+    "unknown": "未知错误",
+    "dismiss": "关闭错误提示",
+    "validation": "名称、模型和系统提示不能为空。"
+  },
+  "deleteConfirm": {
+    "title": "删除 Agent",
+    "message": "确定要删除「{name}」吗？此操作不可撤销。"
+  },
+  "model": {
+    "loadFailed": "模型列表加载失败，你可以手动输入模型 ID。"
+  },
+  "mobile": {
+    "showSidebar": "打开侧边栏",
+    "hideSidebar": "关闭侧边栏"
+  },
+  "lang": {
+    "switchTo": "切换到英文",
+    "switchToZh": "切换到中文"
   }
 }

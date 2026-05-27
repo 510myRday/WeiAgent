@@ -1,13 +1,19 @@
 {
   "brand": {
     "name": "WeiAgent",
-    "tagline": "Rust API + React Console"
+    "tagline": "AI Agent Console"
+  },
+  "nav": {
+    "chat": "Chat",
+    "agents": "Agents",
+    "history": "History"
   },
   "sidebar": {
     "agents": "Agents",
-    "refresh": "Refresh Agents",
-    "loading": "Loading agents...",
-    "empty": "Create an agent to start."
+    "refresh": "Refresh",
+    "loading": "Loading...",
+    "empty": "No agents",
+    "ariaLabel": "Sidebar"
   },
   "agentConfig": {
     "title": "Agent Config",
@@ -17,27 +23,55 @@
     "systemPrompt": "System prompt",
     "create": "Create Agent",
     "save": "Save Agent",
-    "new": "New Agent",
     "delete": "Delete current Agent",
     "placeholder_name": "Research Agent",
-    "placeholder_model": "Type a model id"
+    "placeholder_model": "Type a model id",
+    "discardConfirm": "Discard unsaved changes?",
+    "selectAgent": "Select an agent to configure",
+    "noAgents": "No agents yet. Create one to get started."
   },
   "chat": {
-    "currentAgent": "Current Agent",
+    "selectAgent": "Select Agent",
     "noAgent": "No Agent Selected",
-    "noAgentHint": "Create or select an agent from the sidebar.",
+    "noAgentHint": "Create an agent in the Agents tab, then come back here to chat.",
     "stream": "Stream",
     "complete": "Complete",
     "loading": "Loading chat...",
     "emptyTitle": "Start a conversation",
-    "emptyHint": "Messages are stored per Agent in local JSON files.",
+    "emptyHint": "Select an agent above and start chatting.",
     "you": "You",
     "sending": "Sending",
     "send": "Send",
-    "placeholder": "Send a message to the selected Agent...",
-    "placeholderDisabled": "Select an Agent first"
+    "placeholder": "Type a message...",
+    "placeholderDisabled": "Select an agent first",
+    "messageLabel": "Message",
+    "ariaLabel": "Conversation"
+  },
+  "history": {
+    "title": "Conversation History",
+    "empty": "No conversations yet.",
+    "messages": "{count} messages",
+    "view": "View",
+    "back": "Back to history"
   },
   "error": {
-    "unknown": "Unknown error"
+    "unknown": "Unknown error",
+    "dismiss": "Dismiss error",
+    "validation": "Name, model and system prompt are required."
+  },
+  "deleteConfirm": {
+    "title": "Delete Agent",
+    "message": "Delete \"{name}\"? This action cannot be undone."
+  },
+  "model": {
+    "loadFailed": "Model list failed to load. You can type a model ID manually."
+  },
+  "mobile": {
+    "showSidebar": "Open sidebar",
+    "hideSidebar": "Close sidebar"
+  },
+  "lang": {
+    "switchTo": "Switch to English",
+    "switchToZh": "Switch to Chinese"
   }
 }

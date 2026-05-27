@@ -10,10 +10,13 @@ export type Agent = {
 export type ChatRole = 'user' | 'assistant';
 
 export type ChatMessage = {
+  id?: string;
   role: ChatRole;
   content: string;
   created_at: string;
 };
+
+export type UiMessage = ChatMessage & { clientId: string };
 
 export type CreateAgentPayload = {
   name: string;

@@ -44,7 +44,6 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const setLocale = useCallback((next: Locale) => {
     setLocaleState(next);
     try { localStorage.setItem(STORAGE_KEY, next); } catch { /* noop */ }
-    document.documentElement.lang = next === 'zh' ? 'zh-CN' : 'en';
   }, []);
 
   useEffect(() => {

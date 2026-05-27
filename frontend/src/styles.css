@@ -30,7 +30,8 @@ button {
 .workspace-shell {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background:
     linear-gradient(180deg, rgba(15, 23, 42, 0.04), rgba(15, 23, 42, 0)),
     #f4f6f8;
@@ -39,12 +40,58 @@ button {
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  min-height: 100vh;
+  height: 100vh;
+  overflow-y: auto;
   padding: 18px;
   background: #111827;
   color: #f8fafc;
   border-right: 1px solid #1f2937;
+}
+
+/* ---- Sidebar Nav ---- */
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 18px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 15px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.nav-item:hover {
+  background: #1e293b;
+  color: #e2e8f0;
+}
+
+.nav-item.active {
+  background: #1e293b;
+  color: #22c55e;
+}
+
+.sidebar-spacer {
+  flex: 1;
+}
+
+.sidebar-footer {
+  padding-top: 12px;
+  border-top: 1px solid #1f2937;
 }
 
 .brand-row {
@@ -92,18 +139,20 @@ button {
   color: #94a3b8;
 }
 
-.panel {
+/* ---- Panel Header (shared) ---- */
+
+.panel-header {
   display: flex;
-  flex-direction: column;
-  min-height: 0;
-  padding: 14px;
-  border: 1px solid #263244;
-  border-radius: 8px;
-  background: #172033;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
 }
 
-.agent-list-panel {
-  flex: 1 1 auto;
+.panel-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
 }
 
 .section-header,
@@ -113,6 +162,36 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+/* ---- Agents Panel ---- */
+
+.agents-panel {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.agents-panel-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px 16px;
+  border-right: 1px solid #e2e8f0;
+  background: #f8fafc;
+  overflow-y: auto;
+}
+
+.agents-panel-main {
+  padding: 22px 28px;
+  overflow-y: auto;
+}
+
+.agent-form-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
 }
 
 .section-header h2 {
@@ -204,6 +283,7 @@ button {
 
 .agent-form input,
 .agent-form textarea,
+.agent-form select,
 .composer textarea {
   width: 100%;
   border: 1px solid #334155;
@@ -214,8 +294,34 @@ button {
   resize: vertical;
 }
 
+.agent-form select {
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+}
+
+.text-button {
+  display: inline-block;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #22c55e;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.text-button:hover {
+  color: #16a34a;
+}
+
 .agent-form input:focus,
 .agent-form textarea:focus,
+.agent-form select:focus,
 .composer textarea:focus {
   border-color: #22c55e;
   outline: 3px solid rgba(34, 197, 94, 0.18);
@@ -268,7 +374,8 @@ button {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-width: 0;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   padding: 22px;
 }
 
@@ -276,6 +383,32 @@ button {
   min-height: 84px;
   padding-bottom: 18px;
   border-bottom: 1px solid #d8dee8;
+}
+
+.chat-header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.agent-select {
+  min-width: 200px;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  font-size: 15px;
+  font-weight: 600;
+  color: #0f172a;
+  cursor: pointer;
+}
+
+.agent-select:focus {
+  border-color: #22c55e;
+  outline: 3px solid rgba(34, 197, 94, 0.18);
 }
 
 .chat-header h2 {
@@ -319,12 +452,33 @@ button {
 }
 
 .error-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
   margin: 14px 0 0;
   padding: 12px 14px;
   border: 1px solid #fecaca;
   border-radius: 8px;
   background: #fef2f2;
   color: #991b1b;
+}
+
+.error-dismiss {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #991b1b;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.error-dismiss:hover {
+  background: #fecaca;
 }
 
 .messages {
@@ -347,6 +501,65 @@ button {
   min-height: 360px;
   color: #475569;
   text-align: center;
+}
+
+/* ---- History Panel ---- */
+
+.history-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  padding: 22px 28px;
+}
+
+.history-panel .panel-header {
+  flex-shrink: 0;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.history-panel .messages {
+  flex: 1;
+  padding: 18px 0;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 16px;
+  overflow-y: auto;
+}
+
+.history-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 56px;
+  padding: 12px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+
+.history-card:hover {
+  border-color: #22c55e;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+}
+
+.history-card strong,
+.history-card small {
+  display: block;
+}
+
+.history-card small {
+  color: #64748b;
+  font-size: 13px;
 }
 
 .empty-chat svg {
@@ -398,6 +611,9 @@ button {
 
 .composer textarea {
   min-height: 86px;
+  max-height: 200px;
+  overflow: auto;
+  resize: none;
   background: #ffffff;
   color: #0f172a;
   border-color: #cbd5e1;
@@ -413,20 +629,7 @@ button {
   color: #64748b;
 }
 
-@media (max-width: 920px) {
-  .workspace-shell {
-    grid-template-columns: 1fr;
-  }
 
-  .sidebar {
-    min-height: auto;
-  }
-
-  .chat-area {
-    min-height: 72vh;
-    padding: 18px;
-  }
-}
 
 @media (max-width: 620px) {
   .chat-header {
@@ -483,4 +686,92 @@ button {
   background: #334155;
   border-color: #475569;
   color: #f1f5f9;
+}
+
+/* ---- Sidebar Toggle ---- */
+
+.sidebar-toggle {
+  display: none;
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 100;
+  width: 44px;
+  height: 44px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #111827;
+  color: #f8fafc;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+/* ---- Model Error ---- */
+
+.model-error {
+  margin: 0;
+  font-size: 12px;
+  color: #fca5a5 !important;
+}
+
+/* ---- Primary / Secondary button disabled ---- */
+
+.primary-button:disabled,
+.secondary-button:disabled,
+.icon-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---- Responsive Sidebar ---- */
+
+@media (max-width: 920px) {
+  .workspace-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar-toggle {
+    display: inline-flex;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 50;
+    width: 320px;
+    height: 100vh;
+    overflow-y: auto;
+    transform: translateX(-100%);
+    transition: transform 220ms ease;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .chat-area {
+    height: 100vh;
+    padding: 18px;
+    padding-top: 60px;
+  }
+
+  .agents-panel {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .agents-panel-sidebar {
+    border-right: none;
+    border-bottom: 1px solid #e2e8f0;
+    max-height: 40vh;
+  }
+
+  .history-panel {
+    height: auto;
+    min-height: 100vh;
+    padding-top: 60px;
+  }
 }

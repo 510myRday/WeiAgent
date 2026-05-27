@@ -11,7 +11,7 @@ export default defineConfig(({ mode }) => {
   return {
     envDir: '..',
     define: {
-      __WEIAGENT_API_BASE_URL__: JSON.stringify(''),
+      __WEIAGENT_API_BASE_URL__: JSON.stringify(env.VITE_WEIAGENT_API_BASE_URL || ''),
     },
     plugins: [react],
     server: {

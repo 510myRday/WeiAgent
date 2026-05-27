@@ -72,10 +72,15 @@ export function readChat(agentId: string): Promise<ChatMessage[]> {
   return request<ChatMessage[]>(`/api/chats/${agentId}`);
 }
 
-export function sendMessage(agentId: string, content: string): Promise<SendMessageResponse> {
+export function sendMessage(
+  agentId: string,
+  content: string,
+  signal?: AbortSignal,
+): Promise<SendMessageResponse> {
   return request<SendMessageResponse>(`/api/chats/${agentId}/messages`, {
     method: 'POST',
     body: JSON.stringify({ content }),
+    signal,
   });
 }
 
@@ -83,11 +88,13 @@ export async function streamMessage(
   agentId: string,
   content: string,
   onEvent: (event: StreamEvent) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/chats/${agentId}/messages/stream`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ content }),
+    signal,
   });
 
   if (!response.ok || !response.body) {
@@ -97,6 +104,7 @@ export async function streamMessage(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  const state = { sawDone: false, sawError: false };
 
   while (true) {
     const { value, done } = await reader.read();
@@ -109,17 +117,25 @@ export async function streamMessage(
     while (boundary >= 0) {
       const rawEvent = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
-      dispatchStreamEvent(rawEvent, onEvent);
+      dispatchStreamEvent(rawEvent, onEvent, state);
       boundary = buffer.indexOf('\n\n');
     }
   }
 
   if (buffer.trim()) {
-    dispatchStreamEvent(buffer, onEvent);
+    dispatchStreamEvent(buffer, onEvent, state);
+  }
+
+  if (!state.sawDone && !state.sawError) {
+    throw new Error('Stream ended before completion');
   }
 }
 
-function dispatchStreamEvent(rawEvent: string, onEvent: (event: StreamEvent) => void) {
+function dispatchStreamEvent(
+  rawEvent: string,
+  onEvent: (event: StreamEvent) => void,
+  state: { sawDone: boolean; sawError: boolean },
+) {
   const lines = rawEvent.split(/\r?\n/);
   const event = lines.find((line) => line.startsWith('event: '))?.slice(7);
   const data = lines
@@ -131,12 +147,24 @@ function dispatchStreamEvent(rawEvent: string, onEvent: (event: StreamEvent) => 
     return;
   }
 
+  if (event === 'done') {
+    state.sawDone = true;
+    onEvent({ event: 'done', data });
+    return;
+  }
+
+  if (event === 'error') {
+    state.sawError = true;
+    onEvent({ event: 'error', data });
+    return;
+  }
+
   if (event === 'user' || event === 'assistant') {
     onEvent({ event, data: JSON.parse(data) as ChatMessage });
     return;
   }
 
-  if (event === 'delta' || event === 'done' || event === 'error') {
-    onEvent({ event, data });
+  if (event === 'delta') {
+    onEvent({ event: 'delta', data });
   }
 }
