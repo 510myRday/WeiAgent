@@ -1,0 +1,43 @@
+{
+  "brand": {
+    "name": "WeiAgent",
+    "tagline": "Rust API + React Console"
+  },
+  "sidebar": {
+    "agents": "智能体",
+    "refresh": "刷新 Agent",
+    "loading": "加载中...",
+    "empty": "创建一个智能体开始使用。"
+  },
+  "agentConfig": {
+    "title": "Agent 配置",
+    "newTitle": "新建 Agent",
+    "name": "名称",
+    "model": "模型",
+    "systemPrompt": "系统提示",
+    "create": "创建 Agent",
+    "save": "保存 Agent",
+    "new": "新建 Agent",
+    "delete": "删除当前 Agent",
+    "placeholder_name": "研究员",
+    "placeholder_model": "输入模型 ID"
+  },
+  "chat": {
+    "currentAgent": "当前 Agent",
+    "noAgent": "未选择智能体",
+    "noAgentHint": "从侧边栏创建或选择一个智能体。",
+    "stream": "流式",
+    "complete": "完整",
+    "loading": "加载对话中...",
+    "emptyTitle": "开始对话",
+    "emptyHint": "每条消息按 Agent 独立存储在本地 JSON 文件中。",
+    "you": "你",
+    "sending": "发送中",
+    "send": "发送",
+    "placeholder": "向选中的 Agent 发送消息...",
+    "placeholderDisabled": "请先选择一个 Agent"
+  },
+  "error": {
+    "unknown": "未知错误"
+  }
+}

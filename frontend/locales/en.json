@@ -1,0 +1,43 @@
+{
+  "brand": {
+    "name": "WeiAgent",
+    "tagline": "Rust API + React Console"
+  },
+  "sidebar": {
+    "agents": "Agents",
+    "refresh": "Refresh Agents",
+    "loading": "Loading agents...",
+    "empty": "Create an agent to start."
+  },
+  "agentConfig": {
+    "title": "Agent Config",
+    "newTitle": "New Agent",
+    "name": "Name",
+    "model": "Model",
+    "systemPrompt": "System prompt",
+    "create": "Create Agent",
+    "save": "Save Agent",
+    "new": "New Agent",
+    "delete": "Delete current Agent",
+    "placeholder_name": "Research Agent",
+    "placeholder_model": "Type a model id"
+  },
+  "chat": {
+    "currentAgent": "Current Agent",
+    "noAgent": "No Agent Selected",
+    "noAgentHint": "Create or select an agent from the sidebar.",
+    "stream": "Stream",
+    "complete": "Complete",
+    "loading": "Loading chat...",
+    "emptyTitle": "Start a conversation",
+    "emptyHint": "Messages are stored per Agent in local JSON files.",
+    "you": "You",
+    "sending": "Sending",
+    "send": "Send",
+    "placeholder": "Send a message to the selected Agent...",
+    "placeholderDisabled": "Select an Agent first"
+  },
+  "error": {
+    "unknown": "Unknown error"
+  }
+}

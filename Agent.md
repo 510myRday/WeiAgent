@@ -20,22 +20,24 @@ WeiAgent 是一个使用 Rust 编写的 Agent 项目。
 
 - 生成多个 Agent
 - 使用 OpenAI 兼容格式接入大模型
-- 暴露一个服务
-- 通过浏览器访问这个服务
-- 服务首页返回一个单文件 HTML 页面
-- HTML 页面中间是一个简单对话框
-- 页面左侧有一个侧边栏
-- 左侧侧边栏用于体现多 Agent 逻辑
+- Rust 后端暴露 API 服务
+- React + Vite + TypeScript 前端单独运行
+- 前端中间是一个简单对话框
+- 前端左侧有一个侧边栏
+- 左侧侧边栏用于创建、选择、编辑、删除 Agent
+- Agent 配置和聊天记录使用 JSON 文件保存
+- 同时支持普通完整回复和 SSE 流式回复
 
 ## 初始架构想法
 
 第一版可以先按以下模块拆分：
 
-- Web 服务层：负责启动 HTTP 服务，并返回单文件 HTML 页面
-- 页面层：一个独立 HTML 文件，提供基础对话界面和左侧 Agent 侧边栏
-- LLM 适配层：使用 OpenAI 兼容 API 格式发送请求和接收响应
-- Agent 管理层：负责创建、保存和选择多个 Agent
+- Rust API 服务层：使用 `axum` 启动 HTTP 服务，并提供 Agent 与聊天接口
+- React 页面层：使用 `Vite + React + TypeScript`，提供基础对话界面和左侧 Agent 侧边栏
+- LLM 适配层：使用 OpenAI 兼容 Chat Completions API 发送请求和接收响应
+- Agent 管理层：负责创建、保存、更新、删除和选择多个 Agent
 - Agent 执行层：负责单个 Agent 的一次对话执行流程
+- JSON 存储层：负责保存 Agent 配置和每个 Agent 的聊天记录
 
 ## 暂不实现
 
@@ -48,10 +50,32 @@ WeiAgent 是一个使用 Rust 编写的 Agent 项目。
 - 权限系统
 - 用户登录系统
 
-## 待讨论问题
+## 第一版已确定决策
 
-- 多 Agent 是只做手动切换，还是允许一个主 Agent 调度其他 Agent？
-- Agent 的配置包含哪些字段，例如名称、系统提示词、模型、温度等？
-- OpenAI 兼容接口的配置放在哪里，例如环境变量、配置文件或页面输入？
-- HTML 页面是否只做静态文件，还是需要少量接口配合状态管理？
-- 第一版 Web 框架选择 `axum`、`actix-web` 还是更轻量的方案？
+- 多 Agent 第一版只做手动切换，不做主 Agent 调度
+- Agent 字段包含 `id`、`name`、`system_prompt`、`model`、`created_at`、`updated_at`
+- Rust Web 框架使用 `axum`
+- 前端使用 `React + Vite + TypeScript`
+- 前后端分离，前端通过 API 调用后端
+- API Key 只放在后端环境变量里，前端不接触密钥
+- 聊天记录保存到 JSON 文件，但不作为长期记忆系统使用
+
+## 环境变量
+
+- `OPENAI_API_KEY`：OpenAI 兼容接口密钥
+- `OPENAI_BASE_URL`：OpenAI 兼容接口 Base URL，默认 `https://api.openai.com/v1`
+- `WEIAGENT_HOST`：后端监听地址，默认 `127.0.0.1`
+- `WEIAGENT_PORT`：后端监听端口，默认 `8080`
+
+JSON 数据目录固定使用项目根目录下的 `data`。模型配置绑定在 Agent 上，保存到 JSON 配置文件中；前端通过后端 `GET /api/models` 从 OpenAI 兼容接口获取可选模型，获取失败时仍可手填。
+
+## 第一版 API
+
+- `GET /api/agents`：获取 Agent 列表
+- `GET /api/models`：从 OpenAI 兼容接口获取可选模型列表
+- `POST /api/agents`：创建 Agent
+- `PUT /api/agents/{agent_id}`：更新 Agent
+- `DELETE /api/agents/{agent_id}`：删除 Agent
+- `GET /api/chats/{agent_id}`：读取某个 Agent 的聊天记录
+- `POST /api/chats/{agent_id}/messages`：非流式发送消息
+- `POST /api/chats/{agent_id}/messages/stream`：SSE 流式发送消息
