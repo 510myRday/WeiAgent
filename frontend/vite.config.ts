@@ -1,26 +1,31 @@
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { readFileSync } from 'node:fs';
 
-export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, '..', '');
-  const host = env.WEIAGENT_HOST === '0.0.0.0' || env.WEIAGENT_HOST === '::'
-    ? '127.0.0.1'
-    : (env.WEIAGENT_HOST || '127.0.0.1');
-  const port = env.WEIAGENT_PORT || '8080';
+export default defineConfig(({ command }) => ({
+  plugins: [react],
+  server:
+    command === 'serve'
+      ? {
+          host: '127.0.0.1',
+          port: 5173,
+          strictPort: true,
+          proxy: {
+            '/api': {
+              target: readApiOrigin(),
+              changeOrigin: true,
+            },
+          },
+        }
+      : undefined,
+}));
 
-  return {
-    envDir: '..',
-    define: {
-      __WEIAGENT_API_BASE_URL__: JSON.stringify(env.VITE_WEIAGENT_API_BASE_URL || ''),
-    },
-    plugins: [react],
-    server: {
-      proxy: {
-        '/api': {
-          target: 'http://' + host + ':' + port,
-          changeOrigin: true,
-        },
-      },
-    },
-  };
-});
+type AppSettings = {
+  host: string;
+  port: number;
+};
+
+function readApiOrigin(): string {
+  const settings = JSON.parse(readFileSync('../data/settings.json', 'utf-8')) as AppSettings;
+  return `http://${settings.host}:${settings.port}`;
+}

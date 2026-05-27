@@ -6,7 +6,8 @@
   "nav": {
     "chat": "Chat",
     "agents": "Agents",
-    "history": "History"
+    "history": "History",
+    "settings": "Settings"
   },
   "sidebar": {
     "agents": "Agents",
@@ -19,12 +20,14 @@
     "title": "Agent Config",
     "newTitle": "New Agent",
     "name": "Name",
+    "provider": "Provider",
     "model": "Model",
     "systemPrompt": "System prompt",
     "create": "Create Agent",
     "save": "Save Agent",
     "delete": "Delete current Agent",
     "placeholder_name": "Research Agent",
+    "placeholder_provider": "Select provider",
     "placeholder_model": "Type a model id",
     "discardConfirm": "Discard unsaved changes?",
     "selectAgent": "Select an agent to configure",
@@ -54,10 +57,41 @@
     "view": "View",
     "back": "Back to history"
   },
+  "conversation": {
+    "select": "Select conversation",
+    "create": "New conversation",
+    "newTitle": "New conversation",
+    "empty": "No conversations yet.",
+    "deleteConfirm": "Delete this conversation?"
+  },
+  "settings": {
+    "title": "Backend Settings",
+    "host": "Host",
+    "port": "Port",
+    "logLevel": "Log level",
+    "restartHint": "Restart the backend after changing host or port.",
+    "save": "Save settings"
+  },
+  "provider": {
+    "title": "Model Providers",
+    "newTitle": "New Provider",
+    "empty": "No model providers yet.",
+    "name": "Name",
+    "baseUrl": "Base URL",
+    "apiKey": "API Key",
+    "models": "Models (one per line)",
+    "fetchModels": "Fetch Models",
+    "fetchingModels": "Fetching...",
+    "modelsCount": "models",
+    "create": "Create provider",
+    "save": "Save provider",
+    "deleteConfirm": "Delete \"{name}\"?"
+  },
   "error": {
     "unknown": "Unknown error",
     "dismiss": "Dismiss error",
-    "validation": "Name, model and system prompt are required."
+    "validation": "Name, provider, model and system prompt are required.",
+    "providerValidation": "Provider name, Base URL, API key and models are required."
   },
   "deleteConfirm": {
     "title": "Delete Agent",

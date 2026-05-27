@@ -6,7 +6,8 @@
   "nav": {
     "chat": "聊天",
     "agents": "智能体",
-    "history": "历史"
+    "history": "历史",
+    "settings": "设置"
   },
   "sidebar": {
     "agents": "智能体",
@@ -19,12 +20,14 @@
     "title": "Agent 配置",
     "newTitle": "新建 Agent",
     "name": "名称",
+    "provider": "提供商",
     "model": "模型",
     "systemPrompt": "系统提示",
     "create": "创建 Agent",
     "save": "保存 Agent",
     "delete": "删除当前 Agent",
     "placeholder_name": "研究员",
+    "placeholder_provider": "选择模型提供商",
     "placeholder_model": "输入模型 ID",
     "discardConfirm": "放弃未保存的修改？",
     "selectAgent": "选择一个智能体进行配置",
@@ -54,10 +57,41 @@
     "view": "查看",
     "back": "返回历史列表"
   },
+  "conversation": {
+    "select": "选择会话",
+    "create": "新建会话",
+    "newTitle": "新会话",
+    "empty": "暂无会话。",
+    "deleteConfirm": "确定删除这个会话吗？"
+  },
+  "settings": {
+    "title": "后端设置",
+    "host": "监听地址",
+    "port": "端口",
+    "logLevel": "日志级别",
+    "restartHint": "修改监听地址或端口后，需要重启后端生效。",
+    "save": "保存设置"
+  },
+  "provider": {
+    "title": "模型提供商",
+    "newTitle": "新建提供商",
+    "empty": "暂无模型提供商。",
+    "name": "名称",
+    "baseUrl": "Base URL",
+    "apiKey": "API Key",
+    "models": "模型列表（每行一个）",
+    "fetchModels": "获取模型",
+    "fetchingModels": "获取中...",
+    "modelsCount": "个模型",
+    "create": "创建提供商",
+    "save": "保存提供商",
+    "deleteConfirm": "确定删除「{name}」吗？"
+  },
   "error": {
     "unknown": "未知错误",
     "dismiss": "关闭错误提示",
-    "validation": "名称、模型和系统提示不能为空。"
+    "validation": "名称、提供商、模型和系统提示不能为空。",
+    "providerValidation": "提供商名称、Base URL、API Key 和模型列表不能为空。"
   },
   "deleteConfirm": {
     "title": "删除 Agent",

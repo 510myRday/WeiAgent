@@ -11,7 +11,7 @@ pub enum AppError {
     NotFound,
     #[error("invalid request: {0}")]
     BadRequest(String),
-    #[error("OPENAI_API_KEY is not configured")]
+    #[error("model provider API key is not configured")]
     MissingApiKey,
     #[error("storage error: {0}")]
     Storage(#[from] std::io::Error),

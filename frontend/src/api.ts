@@ -1,17 +1,19 @@
 import type {
   Agent,
+  AppSettings,
   ChatMessage,
+  Conversation,
   CreateAgentPayload,
-  ModelListResponse,
+  CreateConversationPayload,
+  ModelProvider,
+  ModelProviderPayload,
   SendMessageResponse,
   StreamEvent,
   UpdateAgentPayload,
 } from './types';
 
-const API_BASE_URL = __WEIAGENT_API_BASE_URL__;
-
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(path, {
     ...options,
     headers: {
       'content-type': 'application/json',
@@ -39,13 +41,50 @@ async function readError(response: Response): Promise<string> {
   }
 }
 
-export function listAgents(): Promise<Agent[]> {
-  return request<Agent[]>('/api/agents');
+export function readSettings(): Promise<AppSettings> {
+  return request<AppSettings>('/api/settings');
 }
 
-export async function listModels(): Promise<string[]> {
-  const response = await request<ModelListResponse>('/api/models');
-  return response.models;
+export function updateSettings(payload: AppSettings): Promise<AppSettings> {
+  return request<AppSettings>('/api/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listModelProviders(): Promise<ModelProvider[]> {
+  return request<ModelProvider[]>('/api/model-providers');
+}
+
+export function createModelProvider(payload: ModelProviderPayload): Promise<ModelProvider> {
+  return request<ModelProvider>('/api/model-providers', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateModelProvider(
+  providerId: string,
+  payload: Partial<ModelProviderPayload>,
+): Promise<ModelProvider> {
+  return request<ModelProvider>(`/api/model-providers/${providerId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteModelProvider(providerId: string): Promise<void> {
+  return request<void>(`/api/model-providers/${providerId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function fetchModels(providerId: string): Promise<string[]> {
+  return request<string[]>(`/api/model-providers/${providerId}/models`);
+}
+
+export function listAgents(): Promise<Agent[]> {
+  return request<Agent[]>('/api/agents');
 }
 
 export function createAgent(payload: CreateAgentPayload): Promise<Agent> {
@@ -68,16 +107,36 @@ export function deleteAgent(agentId: string): Promise<void> {
   });
 }
 
-export function readChat(agentId: string): Promise<ChatMessage[]> {
-  return request<ChatMessage[]>(`/api/chats/${agentId}`);
+export function listConversations(agentId: string): Promise<Conversation[]> {
+  return request<Conversation[]>(`/api/agents/${agentId}/conversations`);
+}
+
+export function createConversation(
+  agentId: string,
+  payload: CreateConversationPayload,
+): Promise<Conversation> {
+  return request<Conversation>(`/api/agents/${agentId}/conversations`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteConversation(conversationId: string): Promise<void> {
+  return request<void>(`/api/conversations/${conversationId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function readConversationMessages(conversationId: string): Promise<ChatMessage[]> {
+  return request<ChatMessage[]>(`/api/conversations/${conversationId}/messages`);
 }
 
 export function sendMessage(
-  agentId: string,
+  conversationId: string,
   content: string,
   signal?: AbortSignal,
 ): Promise<SendMessageResponse> {
-  return request<SendMessageResponse>(`/api/chats/${agentId}/messages`, {
+  return request<SendMessageResponse>(`/api/conversations/${conversationId}/messages`, {
     method: 'POST',
     body: JSON.stringify({ content }),
     signal,
@@ -85,12 +144,12 @@ export function sendMessage(
 }
 
 export async function streamMessage(
-  agentId: string,
+  conversationId: string,
   content: string,
   onEvent: (event: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/chats/${agentId}/messages/stream`, {
+  const response = await fetch(`/api/conversations/${conversationId}/messages/stream`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ content }),

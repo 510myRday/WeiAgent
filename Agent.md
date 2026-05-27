@@ -53,29 +53,39 @@ WeiAgent 是一个使用 Rust 编写的 Agent 项目。
 ## 第一版已确定决策
 
 - 多 Agent 第一版只做手动切换，不做主 Agent 调度
-- Agent 字段包含 `id`、`name`、`system_prompt`、`model`、`created_at`、`updated_at`
+- Agent 字段包含 `id`、`name`、`system_prompt`、`model_provider_id`、`model_id`、`created_at`、`updated_at`
 - Rust Web 框架使用 `axum`
 - 前端使用 `React + Vite + TypeScript`
 - 前后端分离，前端通过 API 调用后端
 - API Key 只放在后端环境变量里，前端不接触密钥
 - 聊天记录保存到 JSON 文件，但不作为长期记忆系统使用
+- `cargo run dev` 会启动 Rust API 和 Vite 开发服务器；Vite 固定监听 `127.0.0.1:5173` 并提供前端热更新，API 代理目标从 `data/settings.json` 读取；正式二进制运行时使用编译进 exe 的前端资源
 
-## 环境变量
+## JSON 配置
 
-- `OPENAI_API_KEY`：OpenAI 兼容接口密钥
-- `OPENAI_BASE_URL`：OpenAI 兼容接口 Base URL，默认 `https://api.openai.com/v1`
-- `WEIAGENT_HOST`：后端监听地址，默认 `127.0.0.1`
-- `WEIAGENT_PORT`：后端监听端口，默认 `8080`
+项目不再从 `.env` 或系统环境变量读取运行配置。`cargo run dev` 使用项目根目录下的 `data`；直接运行打包后的二进制文件时，使用二进制文件同目录下的 `data`，不存在则自动初始化。
 
-JSON 数据目录固定使用项目根目录下的 `data`。模型配置绑定在 Agent 上，保存到 JSON 配置文件中；前端通过后端 `GET /api/models` 从 OpenAI 兼容接口获取可选模型，获取失败时仍可手填。
+- `data/settings.json`：保存应用监听地址、端口和日志级别；不存在时初始化为 `127.0.0.1:8080`、`info`
+- `data/model_providers.json`：保存 OpenAI 兼容模型提供商、Base URL、API Key 和模型列表；API Key 本地明文保存，但接口不会完整返回给前端
+- `data/agents.json`：保存 Agent 配置，Agent 通过 `model_provider_id` 和 `model_id` 绑定模型
+- `data/conversations.json` 与 `data/conversations/{conversation_id}.json`：保存多会话元数据和消息
+
+旧版 `model` 字段和 `data/chats/{agent_id}.json` 会在启动时迁移到 Provider 与 Conversation 结构。
 
 ## 第一版 API
 
+- `GET /api/settings` / `PUT /api/settings`：读取和保存后端设置
+- `GET /api/model-providers`：获取模型提供商列表
+- `POST /api/model-providers`：创建模型提供商
+- `PUT /api/model-providers/{provider_id}`：更新模型提供商
+- `DELETE /api/model-providers/{provider_id}`：删除模型提供商
 - `GET /api/agents`：获取 Agent 列表
-- `GET /api/models`：从 OpenAI 兼容接口获取可选模型列表
 - `POST /api/agents`：创建 Agent
 - `PUT /api/agents/{agent_id}`：更新 Agent
 - `DELETE /api/agents/{agent_id}`：删除 Agent
-- `GET /api/chats/{agent_id}`：读取某个 Agent 的聊天记录
-- `POST /api/chats/{agent_id}/messages`：非流式发送消息
-- `POST /api/chats/{agent_id}/messages/stream`：SSE 流式发送消息
+- `GET /api/agents/{agent_id}/conversations`：读取某个 Agent 的会话列表
+- `POST /api/agents/{agent_id}/conversations`：创建会话
+- `GET /api/conversations/{conversation_id}/messages`：读取会话消息
+- `POST /api/conversations/{conversation_id}/messages`：非流式发送消息
+- `POST /api/conversations/{conversation_id}/messages/stream`：SSE 流式发送消息
+- `DELETE /api/conversations/{conversation_id}`：删除会话

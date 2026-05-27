@@ -7,14 +7,35 @@ fn main() {
     println!("cargo:rerun-if-changed=frontend/index.html");
     println!("cargo:rerun-if-changed=frontend/package.json");
 
-    let status = Command::new("cmd.exe")
-        .args(["/d", "/c", "cd frontend && npm install --silent && npx vite build"])
+    let install_status = Command::new(npm_command())
+        .args(["install", "--silent"])
+        .current_dir("frontend")
         .status()
-        .expect("failed to run Vite build; make sure Node.js is installed");
+        .expect("failed to run npm install; make sure Node.js is installed");
 
-    if !status.success() {
-        panic!("Vite build failed with exit code {:?}", status.code());
+    if !install_status.success() {
+        panic!(
+            "npm install failed with exit code {:?}",
+            install_status.code()
+        );
+    }
+
+    let build_status = Command::new(npm_command())
+        .args(["run", "build"])
+        .current_dir("frontend")
+        .status()
+        .expect("failed to run frontend build; make sure Node.js is installed");
+
+    if !build_status.success() {
+        panic!(
+            "frontend build failed with exit code {:?}",
+            build_status.code()
+        );
     }
 
     println!("cargo:rerun-if-changed=frontend/dist");
+}
+
+fn npm_command() -> &'static str {
+    if cfg!(windows) { "npm.cmd" } else { "npm" }
 }

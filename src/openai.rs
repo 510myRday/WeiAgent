@@ -5,94 +5,71 @@ use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::AppConfig,
     error::{AppError, AppResult},
-    models::{Agent, ChatMessage},
+    models::{Agent, ChatMessage, ModelProvider},
 };
 
 pub type ChatStream = Pin<Box<dyn Stream<Item = AppResult<String>> + Send>>;
 
 #[async_trait]
 pub trait ChatClient: Send + Sync {
-    async fn list_models(&self) -> AppResult<Vec<String>>;
-    async fn complete(&self, agent: &Agent, messages: &[ChatMessage]) -> AppResult<String>;
-    async fn stream(&self, agent: &Agent, messages: &[ChatMessage]) -> AppResult<ChatStream>;
+    async fn complete(
+        &self,
+        agent: &Agent,
+        provider: &ModelProvider,
+        messages: &[ChatMessage],
+    ) -> AppResult<String>;
+    async fn stream(
+        &self,
+        agent: &Agent,
+        provider: &ModelProvider,
+        messages: &[ChatMessage],
+    ) -> AppResult<ChatStream>;
 }
 
 pub type DynChatClient = Arc<dyn ChatClient>;
 
 #[derive(Clone)]
 pub struct OpenAiChatClient {
-    config: AppConfig,
     http: reqwest::Client,
 }
 
 impl OpenAiChatClient {
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new() -> Self {
         Self {
-            config,
             http: reqwest::Client::new(),
         }
     }
 
-    fn api_key(&self) -> AppResult<&str> {
-        self.config
-            .openai_api_key
-            .as_deref()
-            .ok_or(AppError::MissingApiKey)
+    fn api_key<'a>(&self, provider: &'a ModelProvider) -> AppResult<&'a str> {
+        let api_key = provider.api_key.trim();
+        if api_key.is_empty() {
+            return Err(AppError::MissingApiKey);
+        }
+        Ok(api_key)
     }
 
-    fn chat_url(&self) -> String {
+    fn chat_url(&self, provider: &ModelProvider) -> String {
         format!(
             "{}/chat/completions",
-            self.config.openai_base_url.trim_end_matches('/')
+            provider.base_url.trim_end_matches('/')
         )
-    }
-
-    fn models_url(&self) -> String {
-        format!("{}/models", self.config.openai_base_url.trim_end_matches('/'))
     }
 }
 
 #[async_trait]
 impl ChatClient for OpenAiChatClient {
-    async fn list_models(&self) -> AppResult<Vec<String>> {
-        let response = self
-            .http
-            .get(self.models_url())
-            .bearer_auth(self.api_key()?)
-            .send()
-            .await
-            .map_err(|error| AppError::Llm(error.to_string()))?;
-
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|error| AppError::Llm(error.to_string()))?;
-        if !status.is_success() {
-            return Err(AppError::Llm(format!("upstream returned {status}: {body}")));
-        }
-
-        let response: ModelList =
-            serde_json::from_str(&body).map_err(|error| AppError::Llm(error.to_string()))?;
-        let mut models = response
-            .data
-            .into_iter()
-            .map(|model| model.id)
-            .filter(|id| !id.trim().is_empty())
-            .collect::<Vec<_>>();
-        models.sort();
-        models.dedup();
-        Ok(models)
-    }
-
-    async fn complete(&self, agent: &Agent, messages: &[ChatMessage]) -> AppResult<String> {
+    async fn complete(
+        &self,
+        agent: &Agent,
+        provider: &ModelProvider,
+        messages: &[ChatMessage],
+    ) -> AppResult<String> {
         let request = build_chat_request(agent, messages, false);
         let response = self
             .http
-            .post(self.chat_url())
-            .bearer_auth(self.api_key()?)
+            .post(self.chat_url(provider))
+            .bearer_auth(self.api_key(provider)?)
             .json(&request)
             .send()
             .await
@@ -119,12 +96,17 @@ impl ChatClient for OpenAiChatClient {
             .ok_or_else(|| AppError::Llm("empty model response".to_string()))
     }
 
-    async fn stream(&self, agent: &Agent, messages: &[ChatMessage]) -> AppResult<ChatStream> {
+    async fn stream(
+        &self,
+        agent: &Agent,
+        provider: &ModelProvider,
+        messages: &[ChatMessage],
+    ) -> AppResult<ChatStream> {
         let request = build_chat_request(agent, messages, true);
         let response = self
             .http
-            .post(self.chat_url())
-            .bearer_auth(self.api_key()?)
+            .post(self.chat_url(provider))
+            .bearer_auth(self.api_key(provider)?)
             .json(&request)
             .send()
             .await
@@ -163,6 +145,45 @@ impl ChatClient for OpenAiChatClient {
 
         Ok(Box::pin(stream))
     }
+
+}
+
+impl OpenAiChatClient {
+    pub async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {
+        let url = format!(
+            "{}/models",
+            provider.base_url.trim_end_matches('/')
+        );
+        let response = self
+            .http
+            .get(&url)
+            .bearer_auth(self.api_key(provider)?)
+            .send()
+            .await
+            .map_err(|error| AppError::Llm(error.to_string()))?;
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|error| AppError::Llm(error.to_string()))?;
+        if !status.is_success() {
+            return Err(AppError::Llm(format!("upstream returned {status}: {body}")));
+        }
+
+        let parsed: ModelsListResponse =
+            serde_json::from_str(&body).map_err(|error| AppError::Llm(error.to_string()))?;
+
+        let mut models: Vec<String> = parsed
+            .data
+            .into_iter()
+            .map(|m| m.id)
+            .filter(|id| !id.is_empty())
+            .collect();
+        models.sort();
+        models.dedup();
+        Ok(models)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -195,20 +216,10 @@ pub fn build_chat_request(
     }));
 
     ChatCompletionRequest {
-        model: agent.model.clone(),
+        model: agent.model_id.clone(),
         messages: request_messages,
         stream,
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelList {
-    data: Vec<ModelItem>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelItem {
-    id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -239,6 +250,16 @@ struct StreamChoice {
 #[derive(Debug, Deserialize)]
 struct StreamDelta {
     content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsListResponse {
+    data: Vec<ModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelEntry {
+    id: String,
 }
 
 #[cfg(test)]
@@ -281,15 +302,21 @@ mod tests {
     #[test]
     fn builds_openai_chat_completion_request() {
         let now = Utc::now();
+        let provider_id = Uuid::new_v4();
+        let conversation_id = Uuid::new_v4();
         let agent = Agent {
             id: Uuid::new_v4(),
             name: "Coder".to_string(),
             system_prompt: "You write Rust.".to_string(),
-            model: "gpt-4o-mini".to_string(),
+            model_provider_id: provider_id,
+            model_id: "gpt-4o-mini".to_string(),
             created_at: now,
             updated_at: now,
         };
         let messages = vec![ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: agent.id,
+            conversation_id,
             role: ChatRole::User,
             content: "hello".to_string(),
             created_at: now,

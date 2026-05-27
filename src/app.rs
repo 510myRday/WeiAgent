@@ -16,10 +16,11 @@ use uuid::Uuid;
 use crate::{
     error::{AppError, AppResult},
     models::{
-        ChatMessage, ChatRole, CreateAgentRequest, ModelListResponse, SendMessageRequest,
-        SendMessageResponse, UpdateAgentRequest,
+        AppSettings, ChatMessage, ChatRole, CreateAgentRequest, CreateConversationRequest,
+        CreateModelProviderRequest, ModelProviderResponse, SendMessageRequest, SendMessageResponse,
+        UpdateAgentRequest, UpdateModelProviderRequest,
     },
-    openai::DynChatClient,
+    openai::{DynChatClient, OpenAiChatClient},
     storage::JsonStore,
 };
 
@@ -34,10 +35,7 @@ pub struct AppState {
 }
 
 pub fn build_router(state: AppState) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers(Any);
+    let cors = cors_layer();
 
     async fn serve_frontend(uri: axum::http::Uri) -> axum::response::Response {
         let path = uri.path().trim_start_matches('/');
@@ -52,76 +50,127 @@ pub fn build_router(state: AppState) -> Router {
                     .body(axum::body::Body::from(file.data))
                     .unwrap()
             }
-            None => {
-                // SPA fallback: serve index.html for unknown paths
-                match FrontendAssets::get("index.html") {
-                    Some(file) => axum::response::Response::builder()
-                        .status(StatusCode::OK)
-                        .header("content-type", "text/html")
-                        .body(axum::body::Body::from(file.data))
-                        .unwrap(),
-                    None => axum::response::Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .body(axum::body::Body::from("Not Found"))
-                        .unwrap(),
-                }
-            }
+            None => match FrontendAssets::get("index.html") {
+                Some(file) => axum::response::Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html")
+                    .body(axum::body::Body::from(file.data))
+                    .unwrap(),
+                None => axum::response::Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(axum::body::Body::from("Not Found"))
+                    .unwrap(),
+            },
         }
     }
 
-    Router::new()
-        .route("/api/models", get(list_models))
-        .route("/api/agents", get(list_agents).post(create_agent))
-        .route(
-            "/api/agents/{agent_id}",
-            put(update_agent).delete(delete_agent),
-        )
-        .route("/api/chats/{agent_id}", get(read_chat))
-        .route(
-            "/api/chats/{agent_id}/messages",
-            post(send_message_complete),
-        )
-        .route(
-            "/api/chats/{agent_id}/messages/stream",
-            post(send_message_stream),
-        )
-        .fallback(
-            |uri: axum::http::Uri| async move { serve_frontend(uri).await },
-        )
+    api_router()
+        .fallback(|uri: axum::http::Uri| async move { serve_frontend(uri).await })
         .layer(cors)
         .with_state(state)
 }
 
 pub fn build_router_dev(state: AppState) -> Router {
-    let cors = CorsLayer::new()
+    api_router().layer(cors_layer()).with_state(state)
+}
+
+fn cors_layer() -> CorsLayer {
+    CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers(Any);
+        .allow_headers(Any)
+}
 
+fn api_router() -> Router<AppState> {
     Router::new()
-        .route("/api/models", get(list_models))
+        .route("/api/settings", get(read_settings).put(update_settings))
+        .route(
+            "/api/model-providers",
+            get(list_model_providers).post(create_model_provider),
+        )
+        .route(
+            "/api/model-providers/{provider_id}",
+            put(update_model_provider).delete(delete_model_provider),
+        )
+        .route(
+            "/api/model-providers/{provider_id}/models",
+            get(list_provider_models),
+        )
         .route("/api/agents", get(list_agents).post(create_agent))
         .route(
             "/api/agents/{agent_id}",
             put(update_agent).delete(delete_agent),
         )
-        .route("/api/chats/{agent_id}", get(read_chat))
         .route(
-            "/api/chats/{agent_id}/messages",
-            post(send_message_complete),
+            "/api/agents/{agent_id}/conversations",
+            get(list_conversations).post(create_conversation),
         )
         .route(
-            "/api/chats/{agent_id}/messages/stream",
+            "/api/conversations/{conversation_id}",
+            axum::routing::delete(delete_conversation),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/messages",
+            get(read_conversation_messages).post(send_message_complete),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/messages/stream",
             post(send_message_stream),
         )
-        .layer(cors)
-        .with_state(state)
 }
 
-async fn list_models(State(state): State<AppState>) -> AppResult<Json<ModelListResponse>> {
-    Ok(Json(ModelListResponse {
-        models: state.llm.list_models().await?,
-    }))
+async fn read_settings(State(state): State<AppState>) -> AppResult<Json<AppSettings>> {
+    Ok(Json(state.store.read_settings().await?))
+}
+
+async fn update_settings(
+    State(state): State<AppState>,
+    Json(request): Json<AppSettings>,
+) -> AppResult<Json<AppSettings>> {
+    Ok(Json(state.store.write_settings(request).await?))
+}
+
+async fn list_model_providers(
+    State(state): State<AppState>,
+) -> AppResult<Json<Vec<ModelProviderResponse>>> {
+    Ok(Json(state.store.list_model_providers().await?))
+}
+
+async fn create_model_provider(
+    State(state): State<AppState>,
+    Json(request): Json<CreateModelProviderRequest>,
+) -> AppResult<Json<ModelProviderResponse>> {
+    Ok(Json(state.store.create_model_provider(request).await?))
+}
+
+async fn update_model_provider(
+    State(state): State<AppState>,
+    Path(provider_id): Path<Uuid>,
+    Json(request): Json<UpdateModelProviderRequest>,
+) -> AppResult<Json<ModelProviderResponse>> {
+    Ok(Json(
+        state
+            .store
+            .update_model_provider(provider_id, request)
+            .await?,
+    ))
+}
+
+async fn delete_model_provider(
+    State(state): State<AppState>,
+    Path(provider_id): Path<Uuid>,
+) -> AppResult<()> {
+    state.store.delete_model_provider(provider_id).await
+}
+
+async fn list_provider_models(
+    State(state): State<AppState>,
+    Path(provider_id): Path<Uuid>,
+) -> AppResult<Json<Vec<String>>> {
+    let provider = state.store.get_model_provider(provider_id).await?;
+    let client = OpenAiChatClient::new();
+    let models = client.list_models(&provider).await?;
+    Ok(Json(models))
 }
 
 async fn list_agents(State(state): State<AppState>) -> AppResult<Json<Vec<crate::models::Agent>>> {
@@ -147,17 +196,45 @@ async fn delete_agent(State(state): State<AppState>, Path(agent_id): Path<Uuid>)
     state.store.delete_agent(agent_id).await
 }
 
-async fn read_chat(
+async fn list_conversations(
     State(state): State<AppState>,
     Path(agent_id): Path<Uuid>,
+) -> AppResult<Json<Vec<crate::models::Conversation>>> {
+    Ok(Json(state.store.list_conversations(agent_id).await?))
+}
+
+async fn create_conversation(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+    Json(request): Json<CreateConversationRequest>,
+) -> AppResult<Json<crate::models::Conversation>> {
+    Ok(Json(
+        state.store.create_conversation(agent_id, request).await?,
+    ))
+}
+
+async fn delete_conversation(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+) -> AppResult<()> {
+    state.store.delete_conversation(conversation_id).await
+}
+
+async fn read_conversation_messages(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
 ) -> AppResult<Json<Vec<ChatMessage>>> {
-    state.store.get_agent(agent_id).await?;
-    Ok(Json(state.store.read_chat(agent_id).await?))
+    Ok(Json(
+        state
+            .store
+            .read_conversation_messages(conversation_id)
+            .await?,
+    ))
 }
 
 async fn send_message_complete(
     State(state): State<AppState>,
-    Path(agent_id): Path<Uuid>,
+    Path(conversation_id): Path<Uuid>,
     Json(request): Json<SendMessageRequest>,
 ) -> AppResult<Json<SendMessageResponse>> {
     if request.content.trim().is_empty() {
@@ -166,9 +243,20 @@ async fn send_message_complete(
         ));
     }
 
-    let agent = state.store.get_agent(agent_id).await?;
-    let history = state.store.read_chat(agent_id).await?;
+    let conversation = state.store.get_conversation(conversation_id).await?;
+    let agent = state.store.get_agent(conversation.agent_id).await?;
+    let provider = state
+        .store
+        .get_model_provider(agent.model_provider_id)
+        .await?;
+    let history = state
+        .store
+        .read_conversation_messages(conversation_id)
+        .await?;
     let user_message = ChatMessage {
+        id: Uuid::new_v4(),
+        agent_id: agent.id,
+        conversation_id,
         role: ChatRole::User,
         content: request.content.trim().to_string(),
         created_at: Utc::now(),
@@ -176,15 +264,24 @@ async fn send_message_complete(
     let mut messages_for_llm = history;
     messages_for_llm.push(user_message.clone());
 
-    let assistant_content = state.llm.complete(&agent, &messages_for_llm).await?;
+    let assistant_content = state
+        .llm
+        .complete(&agent, &provider, &messages_for_llm)
+        .await?;
     let assistant_message = ChatMessage {
+        id: Uuid::new_v4(),
+        agent_id: agent.id,
+        conversation_id,
         role: ChatRole::Assistant,
         content: assistant_content,
         created_at: Utc::now(),
     };
     state
         .store
-        .append_chat_messages(agent_id, &[user_message.clone(), assistant_message.clone()])
+        .append_conversation_messages(
+            conversation_id,
+            &[user_message.clone(), assistant_message.clone()],
+        )
         .await?;
 
     Ok(Json(SendMessageResponse {
@@ -195,7 +292,7 @@ async fn send_message_complete(
 
 async fn send_message_stream(
     State(state): State<AppState>,
-    Path(agent_id): Path<Uuid>,
+    Path(conversation_id): Path<Uuid>,
     Json(request): Json<SendMessageRequest>,
 ) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     if request.content.trim().is_empty() {
@@ -204,16 +301,30 @@ async fn send_message_stream(
         ));
     }
 
-    let agent = state.store.get_agent(agent_id).await?;
-    let history = state.store.read_chat(agent_id).await?;
+    let conversation = state.store.get_conversation(conversation_id).await?;
+    let agent = state.store.get_agent(conversation.agent_id).await?;
+    let provider = state
+        .store
+        .get_model_provider(agent.model_provider_id)
+        .await?;
+    let history = state
+        .store
+        .read_conversation_messages(conversation_id)
+        .await?;
     let user_message = ChatMessage {
+        id: Uuid::new_v4(),
+        agent_id: agent.id,
+        conversation_id,
         role: ChatRole::User,
         content: request.content.trim().to_string(),
         created_at: Utc::now(),
     };
     let mut messages_for_llm = history;
     messages_for_llm.push(user_message.clone());
-    let llm_stream = state.llm.stream(&agent, &messages_for_llm).await?;
+    let llm_stream = state
+        .llm
+        .stream(&agent, &provider, &messages_for_llm)
+        .await?;
 
     let store = state.store.clone();
     let stream = async_stream::stream! {
@@ -238,13 +349,16 @@ async fn send_message_stream(
         }
 
         let assistant_message = ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: user_message.agent_id,
+            conversation_id,
             role: ChatRole::Assistant,
             content: assistant_content,
             created_at: Utc::now(),
         };
 
         match store
-            .append_chat_messages(agent_id, &[user_message, assistant_message.clone()])
+            .append_conversation_messages(conversation_id, &[user_message, assistant_message.clone()])
             .await
         {
             Ok(()) => {
@@ -277,7 +391,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        models::Agent,
+        models::{Agent, ModelProvider},
         openai::{ChatClient, ChatStream},
     };
 
@@ -285,15 +399,21 @@ mod tests {
 
     #[async_trait]
     impl ChatClient for MockChatClient {
-        async fn list_models(&self) -> AppResult<Vec<String>> {
-            Ok(vec!["test-model".to_string(), "other-model".to_string()])
+        async fn complete(
+            &self,
+            agent: &Agent,
+            provider: &ModelProvider,
+            _messages: &[ChatMessage],
+        ) -> AppResult<String> {
+            Ok(format!("{} via {}", agent.model_id, provider.name))
         }
 
-        async fn complete(&self, _agent: &Agent, _messages: &[ChatMessage]) -> AppResult<String> {
-            Ok("mock complete".to_string())
-        }
-
-        async fn stream(&self, _agent: &Agent, _messages: &[ChatMessage]) -> AppResult<ChatStream> {
+        async fn stream(
+            &self,
+            _agent: &Agent,
+            _provider: &ModelProvider,
+            _messages: &[ChatMessage],
+        ) -> AppResult<ChatStream> {
             Ok(Box::pin(stream::iter(vec![
                 Ok("mock ".to_string()),
                 Ok("stream".to_string()),
@@ -301,32 +421,46 @@ mod tests {
         }
     }
 
-    async fn test_app() -> (Router, Uuid) {
+    async fn test_app() -> (Router, Uuid, Uuid, Uuid) {
         let temp_dir = tempfile::tempdir().unwrap().keep();
         let store = Arc::new(JsonStore::new(temp_dir).await.unwrap());
+        let provider = store
+            .create_model_provider(CreateModelProviderRequest {
+                name: "Test Provider".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["test-model".to_string(), "other-model".to_string()],
+            })
+            .await
+            .unwrap();
         let agent = store
             .create_agent(CreateAgentRequest {
                 name: "Test Agent".to_string(),
                 system_prompt: "Reply briefly.".to_string(),
-                model: "test-model".to_string(),
+                model_provider_id: provider.id,
+                model_id: "test-model".to_string(),
             })
+            .await
+            .unwrap();
+        let conversation = store
+            .create_conversation(agent.id, CreateConversationRequest { title: None })
             .await
             .unwrap();
         let app = build_router(AppState {
             store,
             llm: Arc::new(MockChatClient),
         });
-        (app, agent.id)
+        (app, agent.id, provider.id, conversation.id)
     }
 
     #[tokio::test]
     async fn sends_non_streaming_message_and_persists_chat() {
-        let (app, agent_id) = test_app().await;
+        let (app, _, _, conversation_id) = test_app().await;
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/chats/{agent_id}/messages"))
+                    .uri(format!("/api/conversations/{conversation_id}/messages"))
                     .header("content-type", "application/json")
                     .body(Body::from(json!({ "content": "hello" }).to_string()))
                     .unwrap(),
@@ -337,17 +471,24 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["assistant"]["content"], "mock complete");
+        assert_eq!(
+            value["assistant"]["content"],
+            "test-model via Test Provider"
+        );
+        assert_eq!(
+            value["assistant"]["conversation_id"],
+            conversation_id.to_string()
+        );
     }
 
     #[tokio::test]
-    async fn lists_available_models() {
-        let (app, _) = test_app().await;
+    async fn lists_model_providers_without_secret() {
+        let (app, _, provider_id, _) = test_app().await;
         let response = app
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/models")
+                    .uri("/api/model-providers")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -357,17 +498,21 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["models"][0], "test-model");
+        assert_eq!(value[0]["id"], provider_id.to_string());
+        assert_eq!(value[0]["has_api_key"], true);
+        assert!(value[0]["api_key"].is_null());
     }
 
     #[tokio::test]
     async fn streams_message_chunks_as_sse() {
-        let (app, agent_id) = test_app().await;
+        let (app, _, _, conversation_id) = test_app().await;
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/chats/{agent_id}/messages/stream"))
+                    .uri(format!(
+                        "/api/conversations/{conversation_id}/messages/stream"
+                    ))
                     .header("content-type", "application/json")
                     .body(Body::from(json!({ "content": "hello" }).to_string()))
                     .unwrap(),
