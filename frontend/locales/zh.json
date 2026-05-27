@@ -1,6 +1,6 @@
 {
   "brand": {
-    "name": "WeiAgent",
+    "name": "Wei Agent",
     "tagline": "AI 智能体控制台"
   },
   "nav": {
@@ -66,6 +66,7 @@
   },
   "settings": {
     "title": "后端设置",
+    "description": "服务监听、端口和日志等运行参数。",
     "host": "监听地址",
     "port": "端口",
     "logLevel": "日志级别",
@@ -85,6 +86,9 @@
     "modelsCount": "个模型",
     "create": "创建提供商",
     "save": "保存提供商",
+    "delete": "删除提供商",
+    "description": "配置 OpenAI 兼容接口、密钥和可用模型。",
+    "selectHint": "选择左侧提供商，或新建一个模型提供商。",
     "deleteConfirm": "确定删除「{name}」吗？"
   },
   "error": {

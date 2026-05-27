@@ -517,7 +517,6 @@ impl JsonStore {
     }
 }
 
-
 async fn ensure_json_array(path: &Path) -> AppResult<()> {
     if fs::metadata(path).await.is_err() {
         fs::write(path, "[]").await?;
@@ -580,6 +579,7 @@ fn validate_provider_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::ChatRole;
 
     #[tokio::test]
     async fn initializes_settings_and_providers_files() {

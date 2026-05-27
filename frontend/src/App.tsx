@@ -5,10 +5,12 @@ import {
   Clock,
   Download,
   Globe,
+  KeyRound,
   MessageSquare,
   Plus,
   Save,
   Send,
+  Server,
   Settings,
   SlidersHorizontal,
   Trash2,
@@ -66,6 +68,7 @@ const defaultProviderForm = {
 };
 
 type NavKey = 'chat' | 'agents' | 'history' | 'settings';
+type SettingsSection = 'runtime' | 'providers';
 
 export function App() {
   const { t, locale, setLocale } = useI18n();
@@ -89,6 +92,7 @@ export function App() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [agentFormDirty, setAgentFormDirty] = useState(false);
   const [activeNav, setActiveNav] = useState<NavKey>('chat');
+  const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSection>('runtime');
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 920);
   const [historyConversations, setHistoryConversations] = useState<Record<string, Conversation[]>>({});
   const [historyConversationId, setHistoryConversationId] = useState('');
@@ -255,8 +259,17 @@ export function App() {
 
   async function handleCreateConversation() {
     if (!activeAgent) return;
+    // If the current conversation is empty, reuse it instead of creating another
+    if (activeConversationId && messages.length === 0) return;
+    // If another empty conversation already exists, switch to it
+    const newTitle = t('conversation.newTitle');
+    const existing = conversations.find((c) => c.title === newTitle && c.id !== activeConversationId);
+    if (existing) {
+      setActiveConversationId(existing.id);
+      return;
+    }
     try {
-      const created = await createConversation(activeAgent.id, { title: t('conversation.newTitle') });
+      const created = await createConversation(activeAgent.id, { title: newTitle });
       setConversations((current) => [created, ...current]);
       setActiveConversationId(created.id);
     } catch (cause) {
@@ -392,7 +405,7 @@ export function App() {
       if (isStreamMode) {
         await streamMessage(conversationId, content, (evt) => {
           if (requestId !== sendRequestIdRef.current) return;
-          handleStreamEvent(evt);
+          handleStreamEvent(evt, conversationId);
         }, controller.signal);
       } else {
         const response = await sendMessage(conversationId, content, controller.signal);
@@ -417,7 +430,7 @@ export function App() {
     }
   }
 
-  function handleStreamEvent(event: StreamEvent) {
+  function handleStreamEvent(event: StreamEvent, conversationId: string) {
     if (event.event === 'error') {
       setError(event.data);
       setIsSending(false);
@@ -444,7 +457,7 @@ export function App() {
           {
             id: genClientId(),
             agent_id: activeAgentId,
-            conversation_id: activeConversationId,
+            conversation_id: conversationId,
             role: 'assistant',
             content: event.data,
             created_at: new Date().toISOString(),
@@ -532,9 +545,9 @@ export function App() {
 
         <nav className="sidebar-nav">
           <NavButton active={activeNav === 'chat'} onClick={() => switchNav('chat')} icon={<MessageSquare size={18} />} label={t('nav.chat')} />
-          <NavButton active={activeNav === 'agents'} onClick={() => switchNav('agents')} icon={<Settings size={18} />} label={t('nav.agents')} />
+          <NavButton active={activeNav === 'agents'} onClick={() => switchNav('agents')} icon={<Bot size={18} />} label={t('nav.agents')} />
           <NavButton active={activeNav === 'history'} onClick={() => switchNav('history')} icon={<Clock size={18} />} label={t('nav.history')} />
-          <NavButton active={activeNav === 'settings'} onClick={() => switchNav('settings')} icon={<SlidersHorizontal size={18} />} label={t('nav.settings')} />
+          <NavButton active={activeNav === 'settings'} onClick={() => switchNav('settings')} icon={<Settings size={18} />} label={t('nav.settings')} />
         </nav>
 
         <div className="sidebar-spacer" />
@@ -609,11 +622,11 @@ export function App() {
       )}
 
       {activeNav === 'agents' && (
-        <section className="agents-panel">
-          <div className="agents-panel-sidebar">
+        <section className="config-panel agents-panel">
+          <div className="config-sidebar agents-panel-sidebar">
             <div className="panel-header">
               <h2>{t('nav.agents')}</h2>
-              <button className="icon-button" type="button" onClick={() => { setActiveAgentId(''); setAgentFormDirty(false); }}>
+              <button className="icon-button light" type="button" onClick={() => { setActiveAgentId(''); setAgentFormDirty(false); }} title={t('agentConfig.create')} aria-label={t('agentConfig.create')}>
                 <Plus size={17} />
               </button>
             </div>
@@ -631,34 +644,45 @@ export function App() {
               ))}
             </div>
           </div>
-          <div className="agents-panel-main">
-            <div className="panel-header">
-              <h2>{activeAgent ? activeAgent.name : t('agentConfig.newTitle')}</h2>
-              {activeAgent ? <button className="icon-button danger" type="button" onClick={handleDeleteAgent}><Trash2 size={17} /></button> : null}
+          <div className="config-main agents-panel-main">
+            <div className="config-page-header">
+              <div>
+                <p className="eyebrow">{t('agentConfig.title')}</p>
+                <h2>{activeAgent ? activeAgent.name : t('agentConfig.newTitle')}</h2>
+                <p>{activeAgent ? agentModelLabel(activeAgent, providers) : t('agentConfig.selectAgent')}</p>
+              </div>
+              {activeAgent ? <button className="icon-button danger light" type="button" onClick={handleDeleteAgent} title={t('agentConfig.delete')} aria-label={t('agentConfig.delete')}><Trash2 size={17} /></button> : null}
             </div>
-            <form className="agent-form" onSubmit={handleAgentSubmit}>
-              <label htmlFor="agent-name">{t('agentConfig.name')}</label>
-              <input id="agent-name" value={agentForm.name} onChange={(e) => { setAgentForm({ ...agentForm, name: e.target.value }); setAgentFormDirty(true); }} placeholder={t('agentConfig.placeholder_name')} disabled={isSubmittingAgent} />
-
-              <label htmlFor="agent-provider">{t('agentConfig.provider')}</label>
-              <select id="agent-provider" value={agentForm.model_provider_id} onChange={(e) => {
-                const provider = providers.find((p) => p.id === e.target.value);
-                setAgentForm({ ...agentForm, model_provider_id: e.target.value, model_id: provider?.models[0] ?? '' });
-                setAgentFormDirty(true);
-              }} disabled={isSubmittingAgent}>
-                <option value="">{t('agentConfig.placeholder_provider')}</option>
-                {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-              </select>
-
-              <label htmlFor="agent-model">{t('agentConfig.model')}</label>
-              <select id="agent-model" value={agentForm.model_id} onChange={(e) => { setAgentForm({ ...agentForm, model_id: e.target.value }); setAgentFormDirty(true); }} disabled={isSubmittingAgent || !selectedAgentProvider}>
-                <option value="">{t('agentConfig.placeholder_model')}</option>
-                {selectedAgentProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}
-              </select>
-
-              <label htmlFor="agent-system-prompt">{t('agentConfig.systemPrompt')}</label>
-              <textarea id="agent-system-prompt" value={agentForm.system_prompt} onChange={(e) => { setAgentForm({ ...agentForm, system_prompt: e.target.value }); setAgentFormDirty(true); }} rows={6} disabled={isSubmittingAgent} />
-              <div className="agent-form-actions">
+            <form className="agent-form form-card" onSubmit={handleAgentSubmit}>
+              <div className="form-grid two-column">
+                <div className="field">
+                  <label htmlFor="agent-name">{t('agentConfig.name')}</label>
+                  <input id="agent-name" value={agentForm.name} onChange={(e) => { setAgentForm({ ...agentForm, name: e.target.value }); setAgentFormDirty(true); }} placeholder={t('agentConfig.placeholder_name')} disabled={isSubmittingAgent} />
+                </div>
+                <div className="field">
+                  <label htmlFor="agent-provider">{t('agentConfig.provider')}</label>
+                  <select id="agent-provider" value={agentForm.model_provider_id} onChange={(e) => {
+                    const provider = providers.find((p) => p.id === e.target.value);
+                    setAgentForm({ ...agentForm, model_provider_id: e.target.value, model_id: provider?.models[0] ?? '' });
+                    setAgentFormDirty(true);
+                  }} disabled={isSubmittingAgent}>
+                    <option value="">{t('agentConfig.placeholder_provider')}</option>
+                    {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                  </select>
+                </div>
+                <div className="field">
+                  <label htmlFor="agent-model">{t('agentConfig.model')}</label>
+                  <select id="agent-model" value={agentForm.model_id} onChange={(e) => { setAgentForm({ ...agentForm, model_id: e.target.value }); setAgentFormDirty(true); }} disabled={isSubmittingAgent || !selectedAgentProvider}>
+                    <option value="">{t('agentConfig.placeholder_model')}</option>
+                    {selectedAgentProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="field">
+                <label htmlFor="agent-system-prompt">{t('agentConfig.systemPrompt')}</label>
+                <textarea id="agent-system-prompt" value={agentForm.system_prompt} onChange={(e) => { setAgentForm({ ...agentForm, system_prompt: e.target.value }); setAgentFormDirty(true); }} rows={10} disabled={isSubmittingAgent} />
+              </div>
+              <div className="agent-form-actions form-actions-sticky">
                 <button className="primary-button" type="submit" disabled={isSubmittingAgent}>
                   <Save size={17} />
                   {activeAgent ? t('agentConfig.save') : t('agentConfig.create')}
@@ -722,91 +746,147 @@ export function App() {
       )}
 
       {activeNav === 'settings' && (
-        <section className="settings-panel agents-panel">
-          <div className="agents-panel-sidebar">
+        <section className="settings-panel config-panel">
+          <div className="config-sidebar settings-nav">
             <div className="panel-header">
-              <h2>{t('provider.title')}</h2>
-              <button className="icon-button" type="button" onClick={() => setActiveProviderId('')}><Plus size={17} /></button>
+              <h2>{t('nav.settings')}</h2>
             </div>
-            <div className="agent-list">
-              {providers.length === 0 ? <p className="muted">{t('provider.empty')}</p> : null}
-              {providers.map((provider) => (
-                <button className={provider.id === activeProviderId ? 'agent-item active' : 'agent-item'} key={provider.id} type="button" onClick={() => setActiveProviderId(provider.id)}>
-                  <SlidersHorizontal size={17} />
-                  <span>
-                    <strong>{provider.name}</strong>
-                    <small>{provider.models.length} {t('provider.modelsCount')}</small>
-                  </span>
-                </button>
-              ))}
+            <div className="settings-section-list">
+              <button className={activeSettingsSection === 'runtime' ? 'settings-section-item active' : 'settings-section-item'} type="button" onClick={() => setActiveSettingsSection('runtime')}>
+                <Server size={18} />
+                <span>
+                  <strong>{t('settings.title')}</strong>
+                  <small>{t('settings.description')}</small>
+                </span>
+              </button>
+              <button className={activeSettingsSection === 'providers' ? 'settings-section-item active' : 'settings-section-item'} type="button" onClick={() => setActiveSettingsSection('providers')}>
+                <KeyRound size={18} />
+                <span>
+                  <strong>{t('provider.title')}</strong>
+                  <small>{t('provider.description')}</small>
+                </span>
+              </button>
             </div>
           </div>
-          <div className="agents-panel-main settings-main">
-            <div className="settings-grid">
-              <form className="agent-form" onSubmit={handleSettingsSubmit}>
-                <div className="panel-header"><h2>{t('settings.title')}</h2></div>
-                <label htmlFor="settings-host">{t('settings.host')}</label>
-                <input id="settings-host" value={settingsForm.host} onChange={(e) => setSettingsForm({ ...settingsForm, host: e.target.value })} />
-                <label htmlFor="settings-port">{t('settings.port')}</label>
-                <input id="settings-port" type="number" min={1} max={65535} value={settingsForm.port} onChange={(e) => setSettingsForm({ ...settingsForm, port: Number(e.target.value) })} />
-                <label htmlFor="settings-log">{t('settings.logLevel')}</label>
-                <select id="settings-log" value={settingsForm.log_level} onChange={(e) => setSettingsForm({ ...settingsForm, log_level: e.target.value })}>
-                  {['trace', 'debug', 'info', 'warn', 'error'].map((level) => <option key={level} value={level}>{level}</option>)}
-                </select>
-                <p className="muted model-error">{t('settings.restartHint')}</p>
-                <div className="agent-form-actions">
+          <div className="config-main settings-main">
+            <div className="config-page-header">
+              <div>
+                <p className="eyebrow">{t('nav.settings')}</p>
+                <h2>{activeSettingsSection === 'runtime' ? t('settings.title') : t('provider.title')}</h2>
+                <p>{activeSettingsSection === 'runtime' ? t('settings.description') : t('provider.description')}</p>
+              </div>
+              {activeSettingsSection === 'providers' ? (
+                <button className="secondary-button light" type="button" onClick={() => setActiveProviderId('')}>
+                  <Plus size={17} />
+                  {t('provider.create')}
+                </button>
+              ) : null}
+            </div>
+
+            {activeSettingsSection === 'runtime' ? (
+              <form className="agent-form form-card narrow-form" onSubmit={handleSettingsSubmit}>
+                <div className="form-grid two-column">
+                  <div className="field">
+                    <label htmlFor="settings-host">{t('settings.host')}</label>
+                    <input id="settings-host" value={settingsForm.host} onChange={(e) => setSettingsForm({ ...settingsForm, host: e.target.value })} />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="settings-port">{t('settings.port')}</label>
+                    <input id="settings-port" type="number" min={1} max={65535} value={settingsForm.port} onChange={(e) => setSettingsForm({ ...settingsForm, port: Number(e.target.value) })} />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="settings-log">{t('settings.logLevel')}</label>
+                    <select id="settings-log" value={settingsForm.log_level} onChange={(e) => setSettingsForm({ ...settingsForm, log_level: e.target.value })}>
+                      {['trace', 'debug', 'info', 'warn', 'error'].map((level) => <option key={level} value={level}>{level}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <p className="hint-text">{t('settings.restartHint')}</p>
+                <div className="agent-form-actions form-actions-sticky">
                   <button className="primary-button" type="submit"><Save size={17} />{t('settings.save')}</button>
                 </div>
               </form>
-
-              <form className="agent-form" onSubmit={handleProviderSubmit}>
-                <div className="panel-header">
-                  <h2>{activeProvider ? activeProvider.name : t('provider.newTitle')}</h2>
-                  {activeProvider ? <button className="icon-button danger" type="button" onClick={handleDeleteProvider}><Trash2 size={17} /></button> : null}
-                </div>
-                <label htmlFor="provider-name">{t('provider.name')}</label>
-                <input id="provider-name" value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} disabled={isSubmittingProvider} />
-                <label htmlFor="provider-base-url">{t('provider.baseUrl')}</label>
-                <input id="provider-base-url" value={providerForm.base_url} onChange={(e) => setProviderForm({ ...providerForm, base_url: e.target.value })} disabled={isSubmittingProvider} />
-                <label htmlFor="provider-api-key">{t('provider.apiKey')}</label>
-                <input id="provider-api-key" type="password" value={providerForm.api_key} onChange={(e) => setProviderForm({ ...providerForm, api_key: e.target.value })} placeholder={activeProvider?.has_api_key ? activeProvider.masked_api_key : ''} disabled={isSubmittingProvider} />
-                <label htmlFor="provider-models">
-                  <span>{t('provider.models')}</span>
-                  {activeProvider ? (
-                    <button
-                      className="inline-button"
-                      type="button"
-                      disabled={fetchingModels}
-                      onClick={async () => {
-                        setFetchingModels(true);
-                        setError('');
-                        try {
-                          const models = await fetchModels(activeProvider.id);
-                          setProviderForm((current) => ({
-                            ...current,
-                            modelsText: models.join('\n'),
-                          }));
-                        } catch (cause) {
-                          setError(toErrorMessage(cause));
-                        } finally {
-                          setFetchingModels(false);
-                        }
-                      }}
-                    >
-                      <Download size={14} />
-                      {fetchingModels ? t('provider.fetchingModels') : t('provider.fetchModels')}
+            ) : (
+              <div className="provider-layout">
+                <aside className="provider-list-panel">
+                  <div className="panel-header compact">
+                    <h3>{t('provider.title')}</h3>
+                  </div>
+                  <div className="agent-list">
+                    {providers.length === 0 ? <p className="muted">{t('provider.empty')}</p> : null}
+                    {providers.map((provider) => (
+                      <button className={provider.id === activeProviderId ? 'agent-item active' : 'agent-item'} key={provider.id} type="button" onClick={() => setActiveProviderId(provider.id)}>
+                        <SlidersHorizontal size={17} />
+                        <span>
+                          <strong>{provider.name}</strong>
+                          <small>{provider.models.length} {t('provider.modelsCount')}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </aside>
+                <form className="agent-form form-card" onSubmit={handleProviderSubmit}>
+                  <div className="panel-header">
+                    <div>
+                      <h2>{activeProvider ? activeProvider.name : t('provider.newTitle')}</h2>
+                      <p className="muted">{activeProvider ? activeProvider.base_url : t('provider.selectHint')}</p>
+                    </div>
+                    {activeProvider ? <button className="icon-button danger light" type="button" onClick={handleDeleteProvider} title={t('provider.delete')} aria-label={t('provider.delete')}><Trash2 size={17} /></button> : null}
+                  </div>
+                  <div className="form-grid two-column">
+                    <div className="field">
+                      <label htmlFor="provider-name">{t('provider.name')}</label>
+                      <input id="provider-name" value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} disabled={isSubmittingProvider} />
+                    </div>
+                    <div className="field">
+                      <label htmlFor="provider-base-url">{t('provider.baseUrl')}</label>
+                      <input id="provider-base-url" value={providerForm.base_url} onChange={(e) => setProviderForm({ ...providerForm, base_url: e.target.value })} disabled={isSubmittingProvider} />
+                    </div>
+                    <div className="field">
+                      <label htmlFor="provider-api-key">{t('provider.apiKey')}</label>
+                      <input id="provider-api-key" type="password" value={providerForm.api_key} onChange={(e) => setProviderForm({ ...providerForm, api_key: e.target.value })} placeholder={activeProvider?.has_api_key ? activeProvider.masked_api_key : ''} disabled={isSubmittingProvider} />
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label htmlFor="provider-models" className="label-row">
+                      <span>{t('provider.models')}</span>
+                      {activeProvider ? (
+                        <button
+                          className="inline-button"
+                          type="button"
+                          disabled={fetchingModels}
+                          onClick={async () => {
+                            setFetchingModels(true);
+                            setError('');
+                            try {
+                              const models = await fetchModels(activeProvider.id);
+                              setProviderForm((current) => ({
+                                ...current,
+                                modelsText: models.join('\n'),
+                              }));
+                            } catch (cause) {
+                              setError(toErrorMessage(cause));
+                            } finally {
+                              setFetchingModels(false);
+                            }
+                          }}
+                        >
+                          <Download size={14} />
+                          {fetchingModels ? t('provider.fetchingModels') : t('provider.fetchModels')}
+                        </button>
+                      ) : null}
+                    </label>
+                    <textarea id="provider-models" value={providerForm.modelsText} onChange={(e) => setProviderForm({ ...providerForm, modelsText: e.target.value })} rows={10} disabled={isSubmittingProvider || fetchingModels} />
+                  </div>
+                  <div className="agent-form-actions form-actions-sticky">
+                    <button className="primary-button" type="submit" disabled={isSubmittingProvider}>
+                      <Save size={17} />
+                      {activeProvider ? t('provider.save') : t('provider.create')}
                     </button>
-                  ) : null}
-                </label>
-                <textarea id="provider-models" value={providerForm.modelsText} onChange={(e) => setProviderForm({ ...providerForm, modelsText: e.target.value })} rows={7} disabled={isSubmittingProvider || fetchingModels} />
-                <div className="agent-form-actions">
-                  <button className="primary-button" type="submit" disabled={isSubmittingProvider}>
-                    <Save size={17} />
-                    {activeProvider ? t('provider.save') : t('provider.create')}
-                  </button>
-                </div>
-              </form>
-            </div>
+                  </div>
+                </form>
+              </div>
+            )}
           </div>
         </section>
       )}

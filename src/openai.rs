@@ -145,15 +145,11 @@ impl ChatClient for OpenAiChatClient {
 
         Ok(Box::pin(stream))
     }
-
 }
 
 impl OpenAiChatClient {
     pub async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {
-        let url = format!(
-            "{}/models",
-            provider.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
         let response = self
             .http
             .get(&url)

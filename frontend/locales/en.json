@@ -1,6 +1,6 @@
 {
   "brand": {
-    "name": "WeiAgent",
+    "name": "Wei Agent",
     "tagline": "AI Agent Console"
   },
   "nav": {
@@ -66,6 +66,7 @@
   },
   "settings": {
     "title": "Backend Settings",
+    "description": "Runtime host, port, and logging configuration.",
     "host": "Host",
     "port": "Port",
     "logLevel": "Log level",
@@ -85,6 +86,9 @@
     "modelsCount": "models",
     "create": "Create provider",
     "save": "Save provider",
+    "delete": "Delete provider",
+    "description": "Configure OpenAI-compatible endpoints, keys, and models.",
+    "selectHint": "Select a provider on the left, or create a new one.",
     "deleteConfirm": "Delete \"{name}\"?"
   },
   "error": {

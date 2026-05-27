@@ -25,16 +25,19 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(await readError(response));
   }
 
-  if (response.status === 204) {
+  const text = await response.text();
+  if (!text.trim()) {
     return undefined as T;
   }
 
-  return (await response.json()) as T;
+  return JSON.parse(text) as T;
 }
 
 async function readError(response: Response): Promise<string> {
   try {
-    const body = await response.json();
+    const text = await response.text();
+    if (!text.trim()) return response.statusText;
+    const body = JSON.parse(text);
     return body.error ?? response.statusText;
   } catch {
     return response.statusText;
@@ -172,12 +175,12 @@ export async function streamMessage(
     }
 
     buffer += decoder.decode(value, { stream: true });
-    let boundary = buffer.indexOf('\n\n');
-    while (boundary >= 0) {
-      const rawEvent = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
+    let boundary = findEventBoundary(buffer);
+    while (boundary) {
+      const rawEvent = buffer.slice(0, boundary.index);
+      buffer = buffer.slice(boundary.index + boundary.length);
       dispatchStreamEvent(rawEvent, onEvent, state);
-      boundary = buffer.indexOf('\n\n');
+      boundary = findEventBoundary(buffer);
     }
   }
 
@@ -219,11 +222,26 @@ function dispatchStreamEvent(
   }
 
   if (event === 'user' || event === 'assistant') {
-    onEvent({ event, data: JSON.parse(data) as ChatMessage });
+    try {
+      onEvent({ event, data: JSON.parse(data) as ChatMessage });
+    } catch {
+      state.sawError = true;
+      onEvent({ event: 'error', data: 'Failed to parse stream event' });
+    }
     return;
   }
 
   if (event === 'delta') {
     onEvent({ event: 'delta', data });
   }
+}
+
+function findEventBoundary(buffer: string): { index: number; length: number } | null {
+  const lf = buffer.indexOf('\n\n');
+  const crlf = buffer.indexOf('\r\n\r\n');
+
+  if (lf < 0 && crlf < 0) return null;
+  if (lf < 0) return { index: crlf, length: 4 };
+  if (crlf < 0) return { index: lf, length: 2 };
+  return crlf < lf ? { index: crlf, length: 4 } : { index: lf, length: 2 };
 }
