@@ -77,3 +77,5 @@ export type StreamEvent =
   | { event: 'delta'; data: string }
   | { event: 'done'; data: string }
   | { event: 'error'; data: string };
+
+export type NavKey = 'chat' | 'agents' | 'history' | 'settings';

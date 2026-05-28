@@ -12,9 +12,17 @@ import type {
   UpdateAgentPayload,
 } from './types';
 
+const DEFAULT_TIMEOUT_MS = 30000;
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const timeoutSignal = AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
+  const combinedSignal = options?.signal
+    ? AbortSignal.any([options.signal, timeoutSignal])
+    : timeoutSignal;
+
   const response = await fetch(path, {
     ...options,
+    signal: combinedSignal,
     headers: {
       'content-type': 'application/json',
       ...options?.headers,
