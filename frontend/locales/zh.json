@@ -27,7 +27,6 @@
     "provider": "提供商",
     "model": "模型",
     "avatar": "头像",
-    "systemPrompt": "系统提示",
     "workspace": "Agent 工作空间",
     "workspaceHint": "personality、memory、instructions 会在聊天时合并进系统提示。",
     "workspaceCreateHint": "创建后会自动初始化 personality.md、memory.md、instructions.md、tools.json 和 settings.json。",
@@ -104,6 +103,7 @@
     "name": "名称",
     "baseUrl": "Base URL",
     "apiKey": "API Key",
+    "extraBody": "额外请求体 (JSON)",
     "models": "模型列表（每行一个）",
     "fetchModels": "获取模型",
     "fetchingModels": "获取中...",
@@ -118,7 +118,7 @@
   "error": {
     "unknown": "未知错误",
     "dismiss": "关闭错误提示",
-    "validation": "名称、提供商、模型和系统提示不能为空。",
+    "validation": "名称、提供商和模型不能为空。",
     "providerValidation": "提供商名称、Base URL、API Key 和模型列表不能为空。"
     ,"avatarDuplicate": "不能和其他 Agent 使用完全相同的头像图标和颜色。"
   },

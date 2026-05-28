@@ -13,6 +13,7 @@ export type ModelProvider = {
   has_api_key: boolean;
   masked_api_key: string;
   models: string[];
+  extra_body: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 };
@@ -22,12 +23,12 @@ export type ModelProviderPayload = {
   base_url: string;
   api_key: string;
   models: string[];
+  extra_body?: Record<string, unknown>;
 };
 
 export type Agent = {
   id: string;
   name: string;
-  system_prompt: string;
   model_provider_id: string;
   model_id: string;
   avatar_icon: AvatarIcon;
@@ -88,7 +89,6 @@ export type UiMessage = ChatMessage & { clientId: string };
 
 export type CreateAgentPayload = {
   name: string;
-  system_prompt: string;
   model_provider_id: string;
   model_id: string;
   avatar_icon: AvatarIcon;

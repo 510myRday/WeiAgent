@@ -18,12 +18,14 @@ pub trait ChatClient: Send + Sync {
         agent: &Agent,
         provider: &ModelProvider,
         messages: &[ChatMessage],
+        system_prompt: &str,
     ) -> AppResult<String>;
     async fn stream(
         &self,
         agent: &Agent,
         provider: &ModelProvider,
         messages: &[ChatMessage],
+        system_prompt: &str,
     ) -> AppResult<ChatStream>;
 }
 
@@ -64,8 +66,9 @@ impl ChatClient for OpenAiChatClient {
         agent: &Agent,
         provider: &ModelProvider,
         messages: &[ChatMessage],
+        system_prompt: &str,
     ) -> AppResult<String> {
-        let request = build_chat_request(agent, messages, false);
+        let request = build_chat_request(agent, messages, false, system_prompt, &provider.extra_body);
         let response = self
             .http
             .post(self.chat_url(provider))
@@ -101,8 +104,9 @@ impl ChatClient for OpenAiChatClient {
         agent: &Agent,
         provider: &ModelProvider,
         messages: &[ChatMessage],
+        system_prompt: &str,
     ) -> AppResult<ChatStream> {
-        let request = build_chat_request(agent, messages, true);
+        let request = build_chat_request(agent, messages, true, system_prompt, &provider.extra_body);
         let response = self
             .http
             .post(self.chat_url(provider))
@@ -188,6 +192,8 @@ pub struct ChatCompletionRequest {
     pub messages: Vec<OpenAiMessage>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stream: bool,
+    #[serde(flatten)]
+    pub extra_body: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -200,11 +206,13 @@ pub fn build_chat_request(
     agent: &Agent,
     messages: &[ChatMessage],
     stream: bool,
+    system_prompt: &str,
+    extra_body: &serde_json::Value,
 ) -> ChatCompletionRequest {
     let mut request_messages = Vec::with_capacity(messages.len() + 1);
     request_messages.push(OpenAiMessage {
         role: "system".to_string(),
-        content: agent.system_prompt.clone(),
+        content: system_prompt.to_string(),
     });
     request_messages.extend(messages.iter().map(|message| OpenAiMessage {
         role: message.role.as_openai_role().to_string(),
@@ -215,6 +223,7 @@ pub fn build_chat_request(
         model: agent.model_id.clone(),
         messages: request_messages,
         stream,
+        extra_body: extra_body.clone(),
     }
 }
 
@@ -303,7 +312,6 @@ mod tests {
         let agent = Agent {
             id: Uuid::new_v4(),
             name: "Coder".to_string(),
-            system_prompt: "You write Rust.".to_string(),
             model_provider_id: provider_id,
             model_id: "gpt-4o-mini".to_string(),
             avatar_icon: "bot".to_string(),
@@ -320,7 +328,7 @@ mod tests {
             created_at: now,
         }];
 
-        let request = build_chat_request(&agent, &messages, true);
+        let request = build_chat_request(&agent, &messages, true, "You write Rust.", &serde_json::Value::Null);
 
         assert_eq!(request.model, "gpt-4o-mini");
         assert!(request.stream);

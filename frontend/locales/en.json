@@ -27,7 +27,6 @@
     "provider": "Provider",
     "model": "Model",
     "avatar": "Avatar",
-    "systemPrompt": "System prompt",
     "workspace": "Agent Workspace",
     "workspaceHint": "personality, memory, and instructions are merged into the system prompt at chat time.",
     "workspaceCreateHint": "After creation, the agent initializes personality.md, memory.md, instructions.md, tools.json, and settings.json.",
@@ -104,6 +103,7 @@
     "name": "Name",
     "baseUrl": "Base URL",
     "apiKey": "API Key",
+    "extraBody": "Extra Body (JSON)",
     "models": "Models (one per line)",
     "fetchModels": "Fetch Models",
     "fetchingModels": "Fetching...",
@@ -118,7 +118,7 @@
   "error": {
     "unknown": "Unknown error",
     "dismiss": "Dismiss error",
-    "validation": "Name, provider, model and system prompt are required.",
+    "validation": "Name, provider and model are required.",
     "providerValidation": "Provider name, Base URL, API key and models are required."
     ,"avatarDuplicate": "Another Agent already uses the same avatar icon and color."
   },

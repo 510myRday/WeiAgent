@@ -269,8 +269,7 @@ async fn send_message_complete(
     }
 
     let conversation = state.store.get_conversation(conversation_id).await?;
-    let mut agent = state.store.get_agent(conversation.agent_id).await?;
-    agent.system_prompt = state.store.build_agent_system_prompt(&agent).await?;
+    let agent = state.store.get_agent(conversation.agent_id).await?;
     let provider = state
         .store
         .get_model_provider(agent.model_provider_id)
@@ -290,9 +289,10 @@ async fn send_message_complete(
     let mut messages_for_llm = history;
     messages_for_llm.push(user_message.clone());
 
+    let system_prompt = state.store.build_agent_system_prompt(&agent).await?;
     let assistant_content = state
         .llm
-        .complete(&agent, &provider, &messages_for_llm)
+        .complete(&agent, &provider, &messages_for_llm, &system_prompt)
         .await?;
     let assistant_message = ChatMessage {
         id: Uuid::new_v4(),
@@ -328,8 +328,7 @@ async fn send_message_stream(
     }
 
     let conversation = state.store.get_conversation(conversation_id).await?;
-    let mut agent = state.store.get_agent(conversation.agent_id).await?;
-    agent.system_prompt = state.store.build_agent_system_prompt(&agent).await?;
+    let agent = state.store.get_agent(conversation.agent_id).await?;
     let provider = state
         .store
         .get_model_provider(agent.model_provider_id)
@@ -348,9 +347,10 @@ async fn send_message_stream(
     };
     let mut messages_for_llm = history;
     messages_for_llm.push(user_message.clone());
+    let system_prompt = state.store.build_agent_system_prompt(&agent).await?;
     let llm_stream = state
         .llm
-        .stream(&agent, &provider, &messages_for_llm)
+        .stream(&agent, &provider, &messages_for_llm, &system_prompt)
         .await?;
 
     let store = state.store.clone();
@@ -431,6 +431,7 @@ mod tests {
             agent: &Agent,
             provider: &ModelProvider,
             _messages: &[ChatMessage],
+            _system_prompt: &str,
         ) -> AppResult<String> {
             Ok(format!("{} via {}", agent.model_id, provider.name))
         }
@@ -440,6 +441,7 @@ mod tests {
             _agent: &Agent,
             _provider: &ModelProvider,
             _messages: &[ChatMessage],
+            _system_prompt: &str,
         ) -> AppResult<ChatStream> {
             Ok(Box::pin(stream::iter(vec![
                 Ok("mock ".to_string()),
@@ -463,7 +465,6 @@ mod tests {
         let agent = store
             .create_agent(CreateAgentRequest {
                 name: "Test Agent".to_string(),
-                system_prompt: "Reply briefly.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "test-model".to_string(),
                 avatar_icon: Some("bot".to_string()),

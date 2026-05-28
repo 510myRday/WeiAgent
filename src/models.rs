@@ -55,6 +55,8 @@ pub struct ModelProvider {
     pub base_url: String,
     pub api_key: String,
     pub models: Vec<String>,
+    #[serde(default)]
+    pub extra_body: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -67,6 +69,7 @@ pub struct ModelProviderResponse {
     pub has_api_key: bool,
     pub masked_api_key: String,
     pub models: Vec<String>,
+    pub extra_body: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -80,6 +83,7 @@ impl From<&ModelProvider> for ModelProviderResponse {
             has_api_key: !provider.api_key.trim().is_empty(),
             masked_api_key: mask_api_key(&provider.api_key),
             models: provider.models.clone(),
+            extra_body: provider.extra_body.clone(),
             created_at: provider.created_at,
             updated_at: provider.updated_at,
         }
@@ -108,6 +112,8 @@ pub struct CreateModelProviderRequest {
     pub base_url: String,
     pub api_key: String,
     pub models: Vec<String>,
+    #[serde(default)]
+    pub extra_body: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,13 +122,13 @@ pub struct UpdateModelProviderRequest {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub models: Option<Vec<String>>,
+    pub extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Agent {
     pub id: Uuid,
     pub name: String,
-    pub system_prompt: String,
     pub model_provider_id: Uuid,
     pub model_id: String,
     #[serde(default = "default_avatar_icon")]
@@ -163,7 +169,6 @@ impl Default for AgentWorkspaceSettings {
 pub struct AgentResponse {
     pub id: Uuid,
     pub name: String,
-    pub system_prompt: String,
     pub model_provider_id: Uuid,
     pub model_id: String,
     pub avatar_icon: String,
@@ -182,7 +187,6 @@ impl AgentResponse {
         Self {
             id: agent.id,
             name: agent.name.clone(),
-            system_prompt: agent.system_prompt.clone(),
             model_provider_id: agent.model_provider_id,
             model_id: agent.model_id.clone(),
             avatar_icon: agent.avatar_icon.clone(),
@@ -201,7 +205,6 @@ impl AgentResponse {
 #[derive(Debug, Deserialize)]
 pub struct CreateAgentRequest {
     pub name: String,
-    pub system_prompt: String,
     pub model_provider_id: Uuid,
     pub model_id: String,
     pub avatar_icon: Option<String>,
@@ -211,7 +214,6 @@ pub struct CreateAgentRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateAgentRequest {
     pub name: Option<String>,
-    pub system_prompt: Option<String>,
     pub model_provider_id: Option<Uuid>,
     pub model_id: Option<String>,
     pub avatar_icon: Option<String>,

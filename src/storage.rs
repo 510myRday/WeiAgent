@@ -27,7 +27,6 @@ pub struct JsonStore {
 }
 
 const BUILTIN_CEO_KEY: &str = "wei-ceo";
-const DEFAULT_MODEL_ID: &str = "gpt-4o-mini";
 const DEFAULT_AGENT_ICON: &str = "bot";
 const DEFAULT_AGENT_COLOR: &str = "#22c55e";
 const BUILTIN_CEO_ICON: &str = "crown";
@@ -105,6 +104,7 @@ impl JsonStore {
             base_url,
             api_key,
             models,
+            extra_body: request.extra_body,
             created_at: now,
             updated_at: now,
         };
@@ -151,6 +151,9 @@ impl JsonStore {
                 }
             }
             provider.models = models;
+        }
+        if let Some(extra_body) = request.extra_body {
+            provider.extra_body = extra_body;
         }
 
         provider.updated_at = Utc::now();
@@ -200,7 +203,7 @@ impl JsonStore {
     }
 
     pub async fn create_agent(&self, request: CreateAgentRequest) -> AppResult<AgentResponse> {
-        validate_agent_text(&request.name, &request.system_prompt, &request.model_id)?;
+        validate_agent_text(&request.name, &request.model_id)?;
         let avatar_icon = normalize_avatar_icon(request.avatar_icon.as_deref())?;
         let avatar_color = normalize_avatar_color(request.avatar_color.as_deref())?;
 
@@ -214,7 +217,6 @@ impl JsonStore {
         let agent = Agent {
             id: Uuid::new_v4(),
             name: request.name.trim().to_string(),
-            system_prompt: request.system_prompt.trim().to_string(),
             model_provider_id: request.model_provider_id,
             model_id: request.model_id.trim().to_string(),
             avatar_icon,
@@ -260,9 +262,6 @@ impl JsonStore {
 
         if let Some(name) = request.name {
             agent.name = validate_non_empty("agent name", &name)?;
-        }
-        if let Some(system_prompt) = request.system_prompt {
-            agent.system_prompt = validate_non_empty("system prompt", &system_prompt)?;
         }
 
         let next_provider_id = request.model_provider_id.unwrap_or(agent.model_provider_id);
@@ -347,7 +346,6 @@ impl JsonStore {
     pub async fn build_agent_system_prompt(&self, agent: &Agent) -> AppResult<String> {
         let workspace = self.read_agent_workspace(agent.id).await?;
         Ok(join_prompt_sections([
-            ("System prompt", agent.system_prompt.as_str()),
             ("Personality", workspace.personality.as_str()),
             ("Memory", workspace.memory.as_str()),
             ("Instructions", workspace.instructions.as_str()),
@@ -466,8 +464,6 @@ impl JsonStore {
 
     async fn ensure_builtin_agents(&self) -> AppResult<()> {
         let _guard = self.lock.lock().await;
-        let mut providers = self.read_providers_unlocked().await?;
-        let provider_id = ensure_default_provider(&mut providers);
         let mut agents = self.read_agents_unlocked().await?;
         let now = Utc::now();
 
@@ -487,9 +483,8 @@ impl JsonStore {
             let agent = Agent {
                 id: Uuid::new_v4(),
                 name: "Wei 首席专家".to_string(),
-                system_prompt: "你是 Wei 首席专家，用户之下的 CEO 型总控 Agent。".to_string(),
-                model_provider_id: provider_id,
-                model_id: DEFAULT_MODEL_ID.to_string(),
+                model_provider_id: Uuid::nil(),
+                model_id: String::new(),
                 avatar_icon: BUILTIN_CEO_ICON.to_string(),
                 avatar_color: BUILTIN_CEO_COLOR.to_string(),
                 created_at: now,
@@ -500,7 +495,6 @@ impl JsonStore {
             agents.push(agent);
         }
 
-        self.write_providers_unlocked(&providers).await?;
         self.write_agents_unlocked(&agents).await
     }
 
@@ -672,40 +666,11 @@ impl JsonStore {
             return Ok(());
         }
 
-        let mut providers = self.read_providers_unlocked().await?;
-        let now = Utc::now();
+        let providers = self.read_providers_unlocked().await?;
         let provider_id = providers
-            .iter()
-            .find(|provider| provider.name == "Default Provider")
-            .map(|provider| provider.id)
-            .unwrap_or_else(Uuid::new_v4);
-
-        if let Some(provider) = providers
-            .iter_mut()
-            .find(|provider| provider.id == provider_id)
-        {
-            for model in legacy_models.iter() {
-                if !provider.models.contains(model) {
-                    provider.models.push(model.clone());
-                }
-            }
-            provider.models.sort();
-            provider.models.dedup();
-            provider.updated_at = now;
-        } else {
-            let mut models = legacy_models.clone();
-            models.sort();
-            models.dedup();
-            providers.push(ModelProvider {
-                id: provider_id,
-                name: "Default Provider".to_string(),
-                base_url: "https://api.openai.com/v1".to_string(),
-                api_key: String::new(),
-                models,
-                created_at: now,
-                updated_at: now,
-            });
-        }
+            .first()
+            .map(|p| p.id)
+            .unwrap_or_else(Uuid::nil);
 
         for agent in raw_agents.iter_mut() {
             if agent.get("model_provider_id").is_some() {
@@ -728,7 +693,6 @@ impl JsonStore {
             .into_iter()
             .map(serde_json::from_value::<Agent>)
             .collect::<Result<Vec<_>, _>>()?;
-        self.write_providers_unlocked(&providers).await?;
         self.write_agents_unlocked(&agents).await
     }
 
@@ -751,38 +715,6 @@ async fn ensure_text_file(path: &Path, content: String) -> AppResult<()> {
         fs::write(path, content).await?;
     }
     Ok(())
-}
-
-fn ensure_default_provider(providers: &mut Vec<ModelProvider>) -> Uuid {
-    let now = Utc::now();
-    if let Some(provider) = providers
-        .iter_mut()
-        .find(|provider| provider.name == "Default Provider")
-    {
-        if !provider
-            .models
-            .iter()
-            .any(|model| model == DEFAULT_MODEL_ID)
-        {
-            provider.models.push(DEFAULT_MODEL_ID.to_string());
-            provider.models.sort();
-            provider.models.dedup();
-            provider.updated_at = now;
-        }
-        return provider.id;
-    }
-
-    let provider_id = Uuid::new_v4();
-    providers.push(ModelProvider {
-        id: provider_id,
-        name: "Default Provider".to_string(),
-        base_url: "https://api.openai.com/v1".to_string(),
-        api_key: String::new(),
-        models: vec![DEFAULT_MODEL_ID.to_string()],
-        created_at: now,
-        updated_at: now,
-    });
-    provider_id
 }
 
 fn builtin_ceo_settings() -> AgentWorkspaceSettings {
@@ -855,9 +787,8 @@ fn normalize_models(models: Vec<String>) -> AppResult<Vec<String>> {
     Ok(models)
 }
 
-fn validate_agent_text(name: &str, system_prompt: &str, model_id: &str) -> AppResult<()> {
+fn validate_agent_text(name: &str, model_id: &str) -> AppResult<()> {
     validate_non_empty("agent name", name)?;
-    validate_non_empty("system prompt", system_prompt)?;
     validate_non_empty("model_id", model_id)?;
     Ok(())
 }
@@ -991,7 +922,6 @@ mod tests {
         let agent = store
             .create_agent(CreateAgentRequest {
                 name: "Planner".to_string(),
-                system_prompt: "Plan work clearly.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "gpt-4o-mini".to_string(),
                 avatar_icon: Some("sparkles".to_string()),
@@ -1065,7 +995,6 @@ mod tests {
         let agent = store
             .create_agent(CreateAgentRequest {
                 name: "Operator".to_string(),
-                system_prompt: "Base rules.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "local-model".to_string(),
                 avatar_icon: Some("brain".to_string()),
@@ -1088,7 +1017,6 @@ mod tests {
 
         let stored = store.get_agent(agent.id).await.unwrap();
         let prompt = store.build_agent_system_prompt(&stored).await.unwrap();
-        assert!(prompt.contains("Base rules."));
         assert!(prompt.contains("Calm and direct."));
         assert!(prompt.contains("User prefers concise plans."));
         assert!(prompt.contains("Ask only important questions."));
@@ -1111,7 +1039,6 @@ mod tests {
         store
             .create_agent(CreateAgentRequest {
                 name: "One".to_string(),
-                system_prompt: "One.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "avatar-model".to_string(),
                 avatar_icon: Some("compass".to_string()),
@@ -1122,7 +1049,6 @@ mod tests {
         let duplicate = store
             .create_agent(CreateAgentRequest {
                 name: "Two".to_string(),
-                system_prompt: "Two.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "avatar-model".to_string(),
                 avatar_icon: Some("compass".to_string()),

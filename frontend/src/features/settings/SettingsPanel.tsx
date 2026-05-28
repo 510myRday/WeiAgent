@@ -27,6 +27,7 @@ const defaultProviderForm = {
   base_url: 'https://api.openai.com/v1',
   api_key: '',
   modelsText: '',
+  extraBodyText: '',
 };
 
 function parseModels(value: string): string[] {
@@ -64,6 +65,9 @@ export function SettingsPanel({
       base_url: activeProvider.base_url,
       api_key: '',
       modelsText: activeProvider.models.join('\n'),
+      extraBodyText: activeProvider.extra_body && Object.keys(activeProvider.extra_body).length > 0
+        ? JSON.stringify(activeProvider.extra_body, null, 2)
+        : '',
     });
   }, [activeProvider]);
 
@@ -79,11 +83,21 @@ export function SettingsPanel({
 
   async function handleProviderSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    let extraBody: Record<string, unknown> | undefined;
+    if (providerForm.extraBodyText.trim()) {
+      try {
+        extraBody = JSON.parse(providerForm.extraBodyText);
+      } catch {
+        setError('Extra body is not valid JSON');
+        return;
+      }
+    }
     const payload = {
       name: providerForm.name.trim(),
       base_url: providerForm.base_url.trim(),
       api_key: providerForm.api_key.trim(),
       models: parseModels(providerForm.modelsText),
+      extra_body: extraBody,
     };
     if (!payload.name || !payload.base_url || (!activeProvider && !payload.api_key) || payload.models.length === 0) {
       setError(t('error.providerValidation'));
@@ -243,6 +257,16 @@ export function SettingsPanel({
                     />
                   </FormField>
                 </div>
+                <FormField label={t('provider.extraBody')} htmlFor="provider-extra-body">
+                  <textarea
+                    id="provider-extra-body"
+                    value={providerForm.extraBodyText}
+                    onChange={(e) => setProviderForm({ ...providerForm, extraBodyText: e.target.value })}
+                    rows={4}
+                    placeholder='{"enable_thinking": true, "reasoning_effort": "high"}'
+                    disabled={isSubmittingProvider}
+                  />
+                </FormField>
                 <FormField
                   label={t('provider.models')}
                   htmlFor="provider-models"

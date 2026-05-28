@@ -23,7 +23,6 @@ interface AgentsPanelProps {
 
 const defaultAgentForm: CreateAgentPayload = {
   name: '',
-  system_prompt: 'You are a helpful AI assistant.',
   model_provider_id: '',
   model_id: '',
   avatar_icon: 'bot',
@@ -74,7 +73,6 @@ export function AgentsPanel({
     }
     setAgentForm({
       name: activeAgent.name,
-      system_prompt: activeAgent.system_prompt,
       model_provider_id: activeAgent.model_provider_id,
       model_id: activeAgent.model_id,
       avatar_icon: activeAgent.avatar_icon,
@@ -124,13 +122,12 @@ export function AgentsPanel({
     e.preventDefault();
     const payload = {
       name: agentForm.name.trim(),
-      system_prompt: agentForm.system_prompt.trim(),
       model_provider_id: agentForm.model_provider_id,
       model_id: agentForm.model_id.trim(),
       avatar_icon: agentForm.avatar_icon,
       avatar_color: agentForm.avatar_color,
     };
-    if (!payload.name || !payload.system_prompt || !payload.model_provider_id || !payload.model_id) {
+    if (!payload.name || !payload.model_provider_id || !payload.model_id) {
       setError(t('error.validation'));
       return;
     }
@@ -281,15 +278,6 @@ export function AgentsPanel({
                 </select>
               </FormField>
             </div>
-            <FormField label={t('agentConfig.systemPrompt')} htmlFor="agent-system-prompt">
-              <textarea
-                id="agent-system-prompt"
-                value={agentForm.system_prompt}
-                onChange={(e) => { setAgentForm({ ...agentForm, system_prompt: e.target.value }); setAgentFormDirty(true); }}
-                rows={10}
-                disabled={isSubmittingAgent}
-              />
-            </FormField>
             {activeAgent?.model_note ? <p className="hint-text">{activeAgent.model_note}</p> : null}
             {activeAgent ? (
               <div className="workspace-editor">
