@@ -6,7 +6,7 @@
   "nav": {
     "chat": "Chat",
     "agents": "Agents",
-    "history": "History",
+    "groups": "Groups",
     "settings": "Settings"
   },
   "sidebar": {
@@ -15,6 +15,9 @@
     "loading": "Loading...",
     "empty": "No agents",
     "ariaLabel": "Sidebar"
+  },
+  "common": {
+    "back": "Back"
   },
   "agentConfig": {
     "title": "Agent Config",
@@ -62,7 +65,17 @@
     "create": "New conversation",
     "newTitle": "New conversation",
     "empty": "No conversations yet.",
+    "search": "Search conversations",
+    "delete": "Delete conversation",
     "deleteConfirm": "Delete this conversation?"
+  },
+  "groups": {
+    "title": "Groups",
+    "description": "Reserved for multi-agent collaboration",
+    "entryTitle": "Agent group chat",
+    "entryHint": "Later, multiple agents can share one conversation context",
+    "emptyTitle": "Group chat reserved",
+    "emptyHint": "This phase keeps the product entry without adding backend models."
   },
   "settings": {
     "title": "Backend Settings",

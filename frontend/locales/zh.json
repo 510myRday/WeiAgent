@@ -6,7 +6,7 @@
   "nav": {
     "chat": "聊天",
     "agents": "智能体",
-    "history": "历史",
+    "groups": "群聊",
     "settings": "设置"
   },
   "sidebar": {
@@ -15,6 +15,9 @@
     "loading": "加载中...",
     "empty": "暂无智能体",
     "ariaLabel": "侧边栏"
+  },
+  "common": {
+    "back": "返回"
   },
   "agentConfig": {
     "title": "Agent 配置",
@@ -62,7 +65,17 @@
     "create": "新建会话",
     "newTitle": "新会话",
     "empty": "暂无会话。",
+    "search": "搜索会话",
+    "delete": "删除会话",
     "deleteConfirm": "确定删除这个会话吗？"
+  },
+  "groups": {
+    "title": "群聊",
+    "description": "预留给多 Agent 协作",
+    "entryTitle": "Agent 群聊",
+    "entryHint": "后续可把多个 Agent 放进同一个上下文",
+    "emptyTitle": "群聊功能预留",
+    "emptyHint": "本阶段不新增后端模型，先保留入口和产品位置。"
   },
   "settings": {
     "title": "后端设置",

@@ -1,21 +1,27 @@
 import { useState, useEffect } from 'react';
-import type { NavKey } from './types';
+import { Bot, MessageCircle } from 'lucide-react';
+import type { MobileView, NavKey } from './types';
 import { useSettings, useProviders, useAgents } from './hooks';
 import { Sidebar } from './components/Sidebar';
 import { ChatPanel } from './components/ChatPanel';
 import { AgentsPanel } from './components/AgentsPanel';
-import { HistoryPanel } from './components/HistoryPanel';
 import { SettingsPanel } from './components/SettingsPanel';
+import { useI18n } from './i18n';
 
 export function App() {
   const [activeNav, setActiveNav] = useState<NavKey>('chat');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [mobileView, setMobileView] = useState<MobileView>('list');
   const [error, setError] = useState('');
 
   useEffect(() => {
     const mq = window.matchMedia('(min-width: 921px)');
-    setSidebarOpen(mq.matches);
-    const handler = (e: MediaQueryListEvent) => setSidebarOpen(e.matches);
+    const syncMobileView = (matches: boolean) => {
+      if (matches) {
+        setMobileView('list');
+      }
+    };
+    syncMobileView(mq.matches);
+    const handler = (e: MediaQueryListEvent) => syncMobileView(e.matches);
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
   }, []);
@@ -59,13 +65,26 @@ export function App() {
     }
   }
 
+  function handleNavChange(nav: NavKey) {
+    setActiveNav(nav);
+    setError('');
+    setMobileView('list');
+  }
+
+  function openMainPane() {
+    setMobileView('main');
+  }
+
+  function openListPane() {
+    setMobileView('list');
+  }
+
   return (
-    <main className="workspace-shell">
+    <main className={`workspace-shell mobile-${mobileView}`}>
       <Sidebar
         activeNav={activeNav}
-        sidebarOpen={sidebarOpen}
-        onNavChange={setActiveNav}
-        onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        onNavChange={handleNavChange}
+        onMobileHome={() => setMobileView('rail')}
       />
       {error ? (
         <div className="error-banner global-error">
@@ -79,6 +98,9 @@ export function App() {
           activeAgentId={activeAgentId}
           onAgentChange={setActiveAgentId}
           onError={setError}
+          onOpenMain={openMainPane}
+          onBackToList={openListPane}
+          onBackToRail={() => setMobileView('rail')}
         />
       )}
       {activeNav === 'agents' && (
@@ -91,9 +113,16 @@ export function App() {
           onAgentAdd={addAgent}
           onAgentEdit={editAgent}
           onAgentRemove={removeAgent}
+          onOpenMain={openMainPane}
+          onBackToRail={() => setMobileView('rail')}
         />
       )}
-      {activeNav === 'history' && <HistoryPanel agents={agents} />}
+      {activeNav === 'groups' && (
+        <GroupsPlaceholder
+          onOpenMain={openMainPane}
+          onBackToRail={() => setMobileView('rail')}
+        />
+      )}
       {activeNav === 'settings' && (
         <SettingsPanel
           settingsForm={settingsForm}
@@ -105,8 +134,48 @@ export function App() {
           onProviderAdd={addProvider}
           onProviderEdit={editProvider}
           onProviderRemove={removeProvider}
+          onOpenMain={openMainPane}
+          onBackToRail={() => setMobileView('rail')}
         />
       )}
     </main>
+  );
+}
+
+function GroupsPlaceholder({
+  onOpenMain,
+  onBackToRail,
+}: {
+  onOpenMain: () => void;
+  onBackToRail: () => void;
+}) {
+  const { t } = useI18n();
+
+  return (
+    <>
+      <section className="context-pane groups-list-pane">
+        <header className="pane-header mobile-pane-header">
+          <button className="back-button" type="button" onClick={onBackToRail}>{t('common.back')}</button>
+          <div>
+            <h2>{t('groups.title')}</h2>
+            <p>{t('groups.description')}</p>
+          </div>
+        </header>
+        <button className="list-row active" type="button" onClick={onOpenMain}>
+          <span className="row-avatar muted-avatar"><Bot size={18} /></span>
+          <span className="row-main">
+            <strong>{t('groups.entryTitle')}</strong>
+            <small>{t('groups.entryHint')}</small>
+          </span>
+        </button>
+      </section>
+      <section className="main-pane placeholder-pane">
+        <div className="empty-chat">
+          <MessageCircle size={34} />
+          <h3>{t('groups.emptyTitle')}</h3>
+          <p>{t('groups.emptyHint')}</p>
+        </div>
+      </section>
+    </>
   );
 }

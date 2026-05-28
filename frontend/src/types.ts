@@ -78,4 +78,6 @@ export type StreamEvent =
   | { event: 'done'; data: string }
   | { event: 'error'; data: string };
 
-export type NavKey = 'chat' | 'agents' | 'history' | 'settings';
+export type NavKey = 'chat' | 'agents' | 'groups' | 'settings';
+
+export type MobileView = 'rail' | 'list' | 'main';

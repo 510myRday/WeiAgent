@@ -14,6 +14,8 @@ interface SettingsPanelProps {
   onProviderAdd: (payload: { name: string; base_url: string; api_key: string; models: string[] }) => Promise<ModelProvider>;
   onProviderEdit: (id: string, payload: Partial<{ name: string; base_url: string; api_key: string; models: string[] }>) => Promise<ModelProvider>;
   onProviderRemove: (id: string) => Promise<void>;
+  onOpenMain: () => void;
+  onBackToRail: () => void;
 }
 
 type SettingsSection = 'runtime' | 'providers';
@@ -39,6 +41,8 @@ export function SettingsPanel({
   onProviderAdd,
   onProviderEdit,
   onProviderRemove,
+  onOpenMain,
+  onBackToRail,
 }: SettingsPanelProps) {
   const { t } = useI18n();
   const [activeSection, setActiveSection] = useState<SettingsSection>('runtime');
@@ -126,15 +130,16 @@ export function SettingsPanel({
 
   return (
     <section className="settings-panel config-panel">
-      <div className="config-sidebar settings-nav">
-        <div className="panel-header">
+      <div className="config-sidebar context-pane settings-nav">
+        <div className="panel-header mobile-pane-header">
+          <button className="back-button" type="button" onClick={onBackToRail}>{t('common.back')}</button>
           <h2>{t('nav.settings')}</h2>
         </div>
         <div className="settings-section-list">
           <button
             className={activeSection === 'runtime' ? 'settings-section-item active' : 'settings-section-item'}
             type="button"
-            onClick={() => setActiveSection('runtime')}
+            onClick={() => { setActiveSection('runtime'); onOpenMain(); }}
           >
             <Server size={18} />
             <span>
@@ -145,7 +150,7 @@ export function SettingsPanel({
           <button
             className={activeSection === 'providers' ? 'settings-section-item active' : 'settings-section-item'}
             type="button"
-            onClick={() => setActiveSection('providers')}
+            onClick={() => { setActiveSection('providers'); onOpenMain(); }}
           >
             <KeyRound size={18} />
             <span>
@@ -156,7 +161,7 @@ export function SettingsPanel({
         </div>
       </div>
 
-      <div className="config-main settings-main">
+      <div className="config-main main-pane settings-main">
         <div className="config-page-header">
           <div>
             <p className="eyebrow">{t('nav.settings')}</p>
@@ -164,7 +169,7 @@ export function SettingsPanel({
             <p>{activeSection === 'runtime' ? t('settings.description') : t('provider.description')}</p>
           </div>
           {activeSection === 'providers' ? (
-            <button className="secondary-button light" type="button" onClick={() => onProviderChange('')}>
+            <button className="secondary-button light" type="button" onClick={() => { onProviderChange(''); onOpenMain(); }}>
               <Plus size={17} />
               {t('provider.create')}
             </button>
@@ -214,7 +219,7 @@ export function SettingsPanel({
                     className={provider.id === activeProviderId ? 'agent-item active' : 'agent-item'}
                     key={provider.id}
                     type="button"
-                    onClick={() => onProviderChange(provider.id)}
+                    onClick={() => { onProviderChange(provider.id); onOpenMain(); }}
                   >
                     <SlidersHorizontal size={17} />
                     <span>
@@ -283,4 +288,3 @@ export function SettingsPanel({
     </section>
   );
 }
-

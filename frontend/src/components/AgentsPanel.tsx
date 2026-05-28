@@ -12,6 +12,8 @@ interface AgentsPanelProps {
   onAgentAdd: (payload: CreateAgentPayload) => Promise<Agent>;
   onAgentEdit: (id: string, payload: Partial<CreateAgentPayload>) => Promise<Agent>;
   onAgentRemove: (id: string) => Promise<void>;
+  onOpenMain: () => void;
+  onBackToRail: () => void;
 }
 
 const defaultAgentForm: CreateAgentPayload = {
@@ -30,6 +32,8 @@ export function AgentsPanel({
   onAgentAdd,
   onAgentEdit,
   onAgentRemove,
+  onOpenMain,
+  onBackToRail,
 }: AgentsPanelProps) {
   const { t } = useI18n();
   const [agentForm, setAgentForm] = useState<CreateAgentPayload>(defaultAgentForm);
@@ -66,6 +70,7 @@ export function AgentsPanel({
     if (agentFormDirty && !window.confirm(t('agentConfig.discardConfirm'))) return;
     setError('');
     onAgentChange(id);
+    onOpenMain();
   }
 
   function agentModelLabel(agent: Agent) {
@@ -114,13 +119,14 @@ export function AgentsPanel({
 
   return (
     <section className="config-panel agents-panel">
-      <div className="config-sidebar agents-panel-sidebar">
-        <div className="panel-header">
+      <div className="config-sidebar context-pane agents-panel-sidebar">
+        <div className="panel-header mobile-pane-header">
+          <button className="back-button" type="button" onClick={onBackToRail}>{t('common.back')}</button>
           <h2>{t('nav.agents')}</h2>
           <button
             className="icon-button light"
             type="button"
-            onClick={() => { onAgentChange(''); setAgentFormDirty(false); }}
+            onClick={() => { onAgentChange(''); setAgentFormDirty(false); onOpenMain(); }}
             title={t('agentConfig.create')}
             aria-label={t('agentConfig.create')}
           >
@@ -147,7 +153,7 @@ export function AgentsPanel({
         </div>
       </div>
 
-      <div className="config-main agents-panel-main">
+      <div className="config-main main-pane agents-panel-main">
         <div className="config-page-header">
           <div>
             <p className="eyebrow">{t('agentConfig.title')}</p>
