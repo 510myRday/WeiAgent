@@ -25,7 +25,15 @@
     "name": "名称",
     "provider": "提供商",
     "model": "模型",
+    "avatar": "头像",
     "systemPrompt": "系统提示",
+    "workspace": "Agent 工作空间",
+    "workspaceHint": "personality、memory、instructions 会在聊天时合并进系统提示。",
+    "workspaceCreateHint": "创建后会自动初始化 personality.md、memory.md、instructions.md、tools.json 和 settings.json。",
+    "personality": "个性 / 人设",
+    "memory": "记忆",
+    "instructions": "指令",
+    "builtin": "内置 Agent",
     "create": "创建 Agent",
     "save": "保存 Agent",
     "delete": "删除当前 Agent",
@@ -34,7 +42,8 @@
     "placeholder_model": "输入模型 ID",
     "discardConfirm": "放弃未保存的修改？",
     "selectAgent": "选择一个智能体进行配置",
-    "noAgents": "暂无智能体，创建一个开始使用。"
+    "noAgents": "暂无智能体，创建一个开始使用。",
+    "avatarChange": "选择头像样式"
   },
   "chat": {
     "selectAgent": "选择智能体",
@@ -109,6 +118,7 @@
     "dismiss": "关闭错误提示",
     "validation": "名称、提供商、模型和系统提示不能为空。",
     "providerValidation": "提供商名称、Base URL、API Key 和模型列表不能为空。"
+    ,"avatarDuplicate": "不能和其他 Agent 使用完全相同的头像图标和颜色。"
   },
   "deleteConfirm": {
     "title": "删除 Agent",

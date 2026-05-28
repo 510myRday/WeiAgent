@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentWorkspace,
   AppSettings,
   ChatMessage,
   Conversation,
@@ -9,6 +10,7 @@ import type {
   ModelProviderPayload,
   SendMessageResponse,
   StreamEvent,
+  UpdateAgentWorkspacePayload,
   UpdateAgentPayload,
 } from './types';
 
@@ -115,6 +117,20 @@ export function updateAgent(agentId: string, payload: UpdateAgentPayload): Promi
 export function deleteAgent(agentId: string): Promise<void> {
   return request<void>(`/api/agents/${agentId}`, {
     method: 'DELETE',
+  });
+}
+
+export function readAgentWorkspace(agentId: string): Promise<AgentWorkspace> {
+  return request<AgentWorkspace>(`/api/agents/${agentId}/workspace`);
+}
+
+export function updateAgentWorkspace(
+  agentId: string,
+  payload: UpdateAgentWorkspacePayload,
+): Promise<AgentWorkspace> {
+  return request<AgentWorkspace>(`/api/agents/${agentId}/workspace`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
   });
 }
 

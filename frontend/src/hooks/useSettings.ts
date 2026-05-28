@@ -6,6 +6,8 @@ const defaultSettings: AppSettings = {
   host: '',
   port: 0,
   log_level: 'info',
+  avatar_icon: 'bot',
+  avatar_color: '#22c55e',
 };
 
 export function useSettings() {
@@ -25,4 +27,3 @@ export function useSettings() {
 
   return { settingsForm, setSettingsForm, refreshSettings, saveSettings };
 }
-

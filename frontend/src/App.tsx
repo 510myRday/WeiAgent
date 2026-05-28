@@ -83,7 +83,9 @@ export function App() {
     <main className={`workspace-shell mobile-${mobileView}`}>
       <Sidebar
         activeNav={activeNav}
+        settings={settingsForm}
         onNavChange={handleNavChange}
+        onSettingsSave={saveSettings}
         onMobileHome={() => setMobileView('rail')}
       />
       {error ? (

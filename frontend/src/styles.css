@@ -64,15 +64,18 @@ button {
 .rail-avatar,
 .row-avatar,
 .brand-mark {
-  display: grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 42px;
   height: 42px;
   flex: 0 0 auto;
-  border: 1px solid #c8f0db;
-  border-radius: 10px;
+  border: 1.5px solid #c8f0db;
+  border-radius: 50%;
   background: #e9f9f0;
   color: #087443;
+  padding: 0;
+  overflow: hidden;
 }
 
 /* Smaller circular avatar to keep divider aligned with pane headers */
@@ -102,9 +105,24 @@ button {
 
 .circular-avatar {
   border-radius: 50% !important;
-  border-width: 2px !important;
+  border: none !important;
+  background: transparent !important;
+  padding: 0 !important;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.circular-avatar-inner {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 50% !important;
+  border-width: 1.5px !important;
+  border-style: solid !important;
+  padding: 0 !important;
+  line-height: 1 !important;
 }
 
 .circular-avatar:hover,
@@ -135,11 +153,11 @@ button {
   border-radius: 12px;
   padding: 12px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-  min-width: 150px;
+  width: 168px;
 }
 
 .avatar-picker-title {
-  margin: 0 0 8px;
+  margin: 0 0 10px;
   font-size: 12px;
   font-weight: 600;
   color: #64748b;
@@ -147,30 +165,119 @@ button {
   white-space: nowrap;
 }
 
+.avatar-picker .avatar-color-grid {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #f1f5f9;
+  justify-content: center;
+}
+
 .avatar-picker-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, 38px);
   gap: 8px;
+  justify-content: center;
+}
+
+.avatar-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.avatar-editor-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #374151;
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.avatar-editor-grid,
+.avatar-color-grid,
+.avatar-picker-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.avatar-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 38px);
+  gap: 8px;
+}
+
+.avatar-picker-grid {
+  justify-content: center;
+}
+
+.avatar-color-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 28px);
+  gap: 8px;
+  justify-content: center;
 }
 
 .avatar-option {
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
   border: 2px solid transparent;
   cursor: pointer;
+  padding: 0;
   transition: transform 0.12s ease, border-color 0.12s ease;
 }
 
 .avatar-option:hover {
-  transform: scale(1.12);
+  transform: scale(1.1);
 }
 
 .avatar-option.active {
   border-color: currentColor;
-  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.08);
+}
+
+.avatar-icon-only,
+.avatar-icon-inline {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border: none !important;
+  background: transparent !important;
+  border-radius: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  line-height: 1 !important;
+}
+
+.avatar-icon-inline {
+  width: 22px;
+  height: 22px;
+}
+
+.color-swatch {
+  width: 28px;
+  height: 28px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #cbd5e1;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.color-swatch:hover {
+  transform: scale(1.12);
+}
+
+.color-swatch.active,
+.color-swatch:focus-visible {
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.22);
+  outline: none;
 }
 
 .sidebar-nav,
@@ -292,6 +399,27 @@ button {
   color: #6b7280;
 }
 
+.builtin-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.workspace-editor {
+  display: grid;
+  gap: 14px;
+  padding-top: 4px;
+}
+
 .pane-header p,
 .config-page-header p,
 .chat-header span {
@@ -361,7 +489,7 @@ button {
 }
 
 .agent-item {
-  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-columns: 42px minmax(0, 1fr);
 }
 
 .settings-section-item {
@@ -949,4 +1077,47 @@ button {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Agent avatar picker trigger & popover */
+.agent-avatar-picker-wrapper {
+  position: relative;
+}
+
+.agent-avatar-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px 6px 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.agent-avatar-trigger:hover,
+.agent-avatar-trigger:focus-visible {
+  border-color: #c8f0db;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  outline: none;
+}
+
+.agent-avatar-trigger-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.agent-avatar-popover {
+  top: 48px;
+  left: 0;
+  margin-left: 0;
+}
+
+/* Agent list sidebar avatar - same size as chat panel */
+.row-avatar.agent-list-avatar {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
 }

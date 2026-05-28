@@ -2,6 +2,8 @@ export type AppSettings = {
   host: string;
   port: number;
   log_level: string;
+  avatar_icon: AvatarIcon;
+  avatar_color: string;
 };
 
 export type ModelProvider = {
@@ -28,8 +30,39 @@ export type Agent = {
   system_prompt: string;
   model_provider_id: string;
   model_id: string;
+  avatar_icon: AvatarIcon;
+  avatar_color: string;
+  is_builtin: boolean;
+  builtin_key?: string | null;
+  display_label?: string | null;
+  model_note?: string | null;
+  can_delete: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type AvatarIcon =
+  | 'bot'
+  | 'sparkles'
+  | 'zap'
+  | 'heart'
+  | 'star'
+  | 'smile'
+  | 'crown'
+  | 'brain'
+  | 'compass';
+
+export type AgentWorkspace = {
+  personality: string;
+  memory: string;
+  instructions: string;
+  settings: {
+    is_builtin: boolean;
+    builtin_key?: string | null;
+    display_label?: string | null;
+    model_note?: string | null;
+    can_delete: boolean;
+  };
 };
 
 export type Conversation = {
@@ -58,9 +91,13 @@ export type CreateAgentPayload = {
   system_prompt: string;
   model_provider_id: string;
   model_id: string;
+  avatar_icon: AvatarIcon;
+  avatar_color: string;
 };
 
 export type UpdateAgentPayload = Partial<CreateAgentPayload>;
+
+export type UpdateAgentWorkspacePayload = Pick<AgentWorkspace, 'personality' | 'memory' | 'instructions'>;
 
 export type CreateConversationPayload = {
   title?: string;

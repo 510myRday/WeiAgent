@@ -16,9 +16,10 @@ use uuid::Uuid;
 use crate::{
     error::{AppError, AppResult},
     models::{
-        AppSettings, ChatMessage, ChatRole, CreateAgentRequest, CreateConversationRequest,
-        CreateModelProviderRequest, ModelProviderResponse, SendMessageRequest, SendMessageResponse,
-        UpdateAgentRequest, UpdateModelProviderRequest,
+        AgentResponse, AgentWorkspace, AppSettings, ChatMessage, ChatRole, CreateAgentRequest,
+        CreateConversationRequest, CreateModelProviderRequest, ModelProviderResponse,
+        SendMessageRequest, SendMessageResponse, UpdateAgentRequest, UpdateAgentWorkspaceRequest,
+        UpdateModelProviderRequest,
     },
     openai::{DynChatClient, OpenAiChatClient},
     storage::JsonStore,
@@ -102,6 +103,10 @@ fn api_router() -> Router<AppState> {
             put(update_agent).delete(delete_agent),
         )
         .route(
+            "/api/agents/{agent_id}/workspace",
+            get(read_agent_workspace).put(update_agent_workspace),
+        )
+        .route(
             "/api/agents/{agent_id}/conversations",
             get(list_conversations).post(create_conversation),
         )
@@ -173,14 +178,14 @@ async fn list_provider_models(
     Ok(Json(models))
 }
 
-async fn list_agents(State(state): State<AppState>) -> AppResult<Json<Vec<crate::models::Agent>>> {
+async fn list_agents(State(state): State<AppState>) -> AppResult<Json<Vec<AgentResponse>>> {
     Ok(Json(state.store.list_agents().await?))
 }
 
 async fn create_agent(
     State(state): State<AppState>,
     Json(request): Json<CreateAgentRequest>,
-) -> AppResult<Json<crate::models::Agent>> {
+) -> AppResult<Json<AgentResponse>> {
     Ok(Json(state.store.create_agent(request).await?))
 }
 
@@ -188,12 +193,32 @@ async fn update_agent(
     State(state): State<AppState>,
     Path(agent_id): Path<Uuid>,
     Json(request): Json<UpdateAgentRequest>,
-) -> AppResult<Json<crate::models::Agent>> {
+) -> AppResult<Json<AgentResponse>> {
     Ok(Json(state.store.update_agent(agent_id, request).await?))
 }
 
 async fn delete_agent(State(state): State<AppState>, Path(agent_id): Path<Uuid>) -> AppResult<()> {
     state.store.delete_agent(agent_id).await
+}
+
+async fn read_agent_workspace(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+) -> AppResult<Json<AgentWorkspace>> {
+    Ok(Json(state.store.read_agent_workspace(agent_id).await?))
+}
+
+async fn update_agent_workspace(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+    Json(request): Json<UpdateAgentWorkspaceRequest>,
+) -> AppResult<Json<AgentWorkspace>> {
+    Ok(Json(
+        state
+            .store
+            .update_agent_workspace(agent_id, request)
+            .await?,
+    ))
 }
 
 async fn list_conversations(
@@ -244,7 +269,8 @@ async fn send_message_complete(
     }
 
     let conversation = state.store.get_conversation(conversation_id).await?;
-    let agent = state.store.get_agent(conversation.agent_id).await?;
+    let mut agent = state.store.get_agent(conversation.agent_id).await?;
+    agent.system_prompt = state.store.build_agent_system_prompt(&agent).await?;
     let provider = state
         .store
         .get_model_provider(agent.model_provider_id)
@@ -302,7 +328,8 @@ async fn send_message_stream(
     }
 
     let conversation = state.store.get_conversation(conversation_id).await?;
-    let agent = state.store.get_agent(conversation.agent_id).await?;
+    let mut agent = state.store.get_agent(conversation.agent_id).await?;
+    agent.system_prompt = state.store.build_agent_system_prompt(&agent).await?;
     let provider = state
         .store
         .get_model_provider(agent.model_provider_id)
@@ -439,6 +466,8 @@ mod tests {
                 system_prompt: "Reply briefly.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "test-model".to_string(),
+                avatar_icon: Some("bot".to_string()),
+                avatar_color: Some("#22c55e".to_string()),
             })
             .await
             .unwrap();
@@ -498,9 +527,14 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value[0]["id"], provider_id.to_string());
-        assert_eq!(value[0]["has_api_key"], true);
-        assert!(value[0]["api_key"].is_null());
+        let provider = value
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|provider| provider["id"] == provider_id.to_string())
+            .unwrap();
+        assert_eq!(provider["has_api_key"], true);
+        assert!(provider["api_key"].is_null());
     }
 
     #[tokio::test]

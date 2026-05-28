@@ -25,7 +25,15 @@
     "name": "Name",
     "provider": "Provider",
     "model": "Model",
+    "avatar": "Avatar",
     "systemPrompt": "System prompt",
+    "workspace": "Agent Workspace",
+    "workspaceHint": "personality, memory, and instructions are merged into the system prompt at chat time.",
+    "workspaceCreateHint": "After creation, the agent initializes personality.md, memory.md, instructions.md, tools.json, and settings.json.",
+    "personality": "Personality",
+    "memory": "Memory",
+    "instructions": "Instructions",
+    "builtin": "Built-in Agent",
     "create": "Create Agent",
     "save": "Save Agent",
     "delete": "Delete current Agent",
@@ -34,7 +42,8 @@
     "placeholder_model": "Type a model id",
     "discardConfirm": "Discard unsaved changes?",
     "selectAgent": "Select an agent to configure",
-    "noAgents": "No agents yet. Create one to get started."
+    "noAgents": "No agents yet. Create one to get started.",
+    "avatarChange": "Choose Avatar Style"
   },
   "chat": {
     "selectAgent": "Select Agent",
@@ -109,6 +118,7 @@
     "dismiss": "Dismiss error",
     "validation": "Name, provider, model and system prompt are required.",
     "providerValidation": "Provider name, Base URL, API key and models are required."
+    ,"avatarDuplicate": "Another Agent already uses the same avatar icon and color."
   },
   "deleteConfirm": {
     "title": "Delete Agent",

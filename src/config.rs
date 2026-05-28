@@ -64,6 +64,20 @@ pub fn validate_settings(settings: &AppSettings) -> AppResult<()> {
     if settings.port == 0 {
         return Err(AppError::BadRequest("port cannot be 0".to_string()));
     }
+    if settings.avatar_icon.trim().is_empty() {
+        return Err(AppError::BadRequest(
+            "avatar_icon cannot be empty".to_string(),
+        ));
+    }
+    let color = settings.avatar_color.trim();
+    if color.len() != 7
+        || !color.starts_with('#')
+        || !color.chars().skip(1).all(|ch| ch.is_ascii_hexdigit())
+    {
+        return Err(AppError::BadRequest(
+            "avatar_color must be a hex color like #22c55e".to_string(),
+        ));
+    }
     let level = settings.log_level.trim().to_ascii_lowercase();
     match level.as_str() {
         "trace" | "debug" | "info" | "warn" | "error" => Ok(()),

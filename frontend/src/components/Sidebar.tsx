@@ -1,37 +1,23 @@
 import { useState } from 'react';
-import { Bot, MessageSquare, Settings, Globe, Users, Menu, Sparkles, Zap, Heart, Star, Smile } from 'lucide-react';
-import type { NavKey } from '../types';
+import { Bot, MessageSquare, Settings, Globe, Users, Menu } from 'lucide-react';
+import type { AppSettings, AvatarIcon, NavKey } from '../types';
 import { useI18n } from '../i18n';
-import { AVATAR_PRESETS, getSavedAvatarId, saveAvatarId, getPresetById } from '../avatarPresets';
-import type { AvatarPreset } from '../avatarPresets';
+import { AvatarPicker, AvatarBadge } from './AvatarPicker';
 
 interface SidebarProps {
   activeNav: NavKey;
+  settings: AppSettings;
   onNavChange: (nav: NavKey) => void;
+  onSettingsSave: (settings: AppSettings) => Promise<AppSettings>;
   onMobileHome: () => void;
 }
 
-const ICON_MAP: Record<AvatarPreset['icon'], React.ComponentType<{ size?: number; color?: string }>> = {
-  bot: Bot,
-  sparkles: Sparkles,
-  zap: Zap,
-  heart: Heart,
-  star: Star,
-  smile: Smile,
-};
-
-export function Sidebar({ activeNav, onNavChange, onMobileHome }: SidebarProps) {
+export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave, onMobileHome }: SidebarProps) {
   const { t, locale, setLocale } = useI18n();
-  const [avatarId, setAvatarId] = useState(getSavedAvatarId);
   const [showPicker, setShowPicker] = useState(false);
 
-  const preset = getPresetById(avatarId);
-  const IconComp = ICON_MAP[preset.icon];
-
-  function handlePick(id: string) {
-    setAvatarId(id);
-    saveAvatarId(id);
-    setShowPicker(false);
+  function handleAvatarChange(next: { icon: AvatarIcon; color: string }) {
+    void onSettingsSave({ ...settings, avatar_icon: next.icon, avatar_color: next.color });
   }
 
   return (
@@ -50,12 +36,11 @@ export function Sidebar({ activeNav, onNavChange, onMobileHome }: SidebarProps) 
           <button
             className="rail-avatar circular-avatar"
             type="button"
-            title={t('brand.name') + ' - ' + preset.label}
+            title={t('brand.name')}
             aria-label={t('brand.name')}
-            style={{ background: preset.bg, borderColor: preset.color }}
             onClick={() => setShowPicker(v => !v)}
           >
-            <IconComp size={22} color={preset.color} />
+            <AvatarBadge icon={settings.avatar_icon} color={settings.avatar_color} size={22} className="circular-avatar-inner" />
           </button>
 
           {showPicker && (
@@ -63,24 +48,12 @@ export function Sidebar({ activeNav, onNavChange, onMobileHome }: SidebarProps) 
               <div className="avatar-picker-backdrop" onClick={() => setShowPicker(false)} />
               <div className="avatar-picker">
                 <p className="avatar-picker-title">{locale === 'zh' ? '选择头像样式' : 'Choose Avatar'}</p>
-                <div className="avatar-picker-grid">
-                  {AVATAR_PRESETS.map(p => {
-                    const PIcon = ICON_MAP[p.icon];
-                    const isActive = p.id === avatarId;
-                    return (
-                      <button
-                        key={p.id}
-                        type="button"
-                        className={'avatar-option' + (isActive ? ' active' : '')}
-                        style={{ background: p.bg, borderColor: isActive ? p.color : 'transparent' }}
-                        onClick={() => handlePick(p.id)}
-                        title={p.label}
-                      >
-                        <PIcon size={20} color={p.color} />
-                      </button>
-                    );
-                  })}
-                </div>
+                <AvatarPicker
+                  icon={settings.avatar_icon}
+                  color={settings.avatar_color}
+                  title={locale === 'zh' ? '用户头像' : 'User avatar'}
+                  onChange={handleAvatarChange}
+                />
               </div>
             </>
           )}

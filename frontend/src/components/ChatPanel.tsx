@@ -3,6 +3,7 @@ import { ArrowLeft, Bot, Check, MessageSquare, Plus, Search, Send, Trash2 } from
 import type { Agent, Conversation } from '../types';
 import { useI18n } from '../i18n';
 import { useConversations } from '../hooks';
+import { AvatarBadge } from './AvatarPicker';
 
 interface ChatPanelProps {
   agents: Agent[];
@@ -166,10 +167,10 @@ export function ChatPanel({
                   type="button"
                   onClick={() => handleAgentSelect(agent.id)}
                 >
-                  <span className="row-avatar"><Bot size={18} /></span>
+                  <AvatarBadge icon={agent.avatar_icon} color={agent.avatar_color} />
                   <span className="row-main">
                     <strong>{agent.name}</strong>
-                    <small>{agent.model_id}</small>
+                    <small>{agent.is_builtin ? agent.display_label ?? agent.model_id : agent.model_id}</small>
                   </span>
                 </button>
               ))}

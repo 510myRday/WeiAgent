@@ -89,3 +89,72 @@ WeiAgent 是一个使用 Rust 编写的 Agent 项目。
 - `POST /api/conversations/{conversation_id}/messages`：非流式发送消息
 - `POST /api/conversations/{conversation_id}/messages/stream`：SSE 流式发送消息
 - `DELETE /api/conversations/{conversation_id}`：删除会话
+
+## 第二阶段状态
+
+项目已进入第二阶段。第二阶段的核心目标是把 Agent 从“只有 JSON 配置的空壳”推进为“有内置核心 Agent、有独立工作空间、有可持续扩展配置”的结构。
+
+第二阶段第一步已经确定并开始实现：内置第一个核心 Agent，并建立 Agent 工作空间规范。
+
+## 第二阶段第一步：内置 CEO Agent
+
+第一个内置 Agent 定位为用户之下的 CEO / 总控 Agent，是用户最常对话的核心入口。
+
+- 默认名称：`Wei 首席专家`
+- 内置 key：`wei-ceo`
+- 行为风格：统筹 + 追问
+- 角色定位：帮助用户澄清目标、拆解任务、判断优先级、识别风险，并在未来建议创建或调用其他 Agent
+- 模型建议：建议配置能力强、上下文长、推理稳定的模型；当前只做文案提醒，不强制限制模型选择
+
+内置 Agent 在后端启动时自动补齐。内置身份不写入 `data/agents.json`，而是写入该 Agent 工作空间里的 `settings.json`。内置 Agent 可以修改名称、模型、头像和 Markdown 文档，但不能删除。
+
+如果启动时没有任何模型提供商，后端会初始化一个本地默认 OpenAI 兼容 Provider，用于让内置 Agent 能够落库。用户后续需要在设置里补充 API Key、模型列表和实际可用模型。
+
+## Agent 工作空间
+
+每个 Agent 都有独立工作空间：
+
+- `data/agents/{agent_id}/personality.md`：个性、人设、沟通风格
+- `data/agents/{agent_id}/memory.md`：长期记忆、用户偏好、项目背景和重要决策
+- `data/agents/{agent_id}/instructions.md`：核心工作规则、输出要求和默认流程
+- `data/agents/{agent_id}/tools.json`：未来工具调用配置占位，本阶段不参与提示词
+- `data/agents/{agent_id}/settings.json`：Agent 扩展设置；内置身份、内置 key、模型建议、是否可删除等放这里
+
+运行时会把 `system_prompt`、`personality.md`、`memory.md`、`instructions.md` 合并进系统提示词。`tools.json` 不进入提示词，后续工具阶段会接入模型工具调用接口。
+
+## 第二阶段 Agent API 补充
+
+- `GET /api/agents/{agent_id}/workspace`：读取 Agent 工作空间文档和扩展设置
+- `PUT /api/agents/{agent_id}/workspace`：保存 `personality.md`、`memory.md`、`instructions.md`
+
+Agent 创建和更新接口新增头像字段：
+
+- `avatar_icon`
+- `avatar_color`
+
+Agent 响应会额外返回后端计算出的内置展示信息：
+
+- `is_builtin`
+- `builtin_key`
+- `display_label`
+- `model_note`
+- `can_delete`
+
+## 第二阶段头像规则
+
+用户头像和 Agent 头像复用同一套头像组件和图标预设。
+
+- 头像图标扩展为 9 个
+- 支持预设色板选择颜色
+- Agent 头像保存到 `data/agents.json`
+- 用户头像保存到 `data/settings.json`
+- Agent 不允许出现“图标相同且颜色相同”的重复头像组合
+
+## 后续方向
+
+第二阶段后续可以继续推进：
+
+- 工具系统：把 `tools.json` 接入模型工具调用接口
+- 记忆系统：让 `memory.md` 从手动编辑升级为可控沉淀
+- 多 Agent 协作：由 `Wei 首席专家` 建议、调度或组织其他 Agent
+- Agent 模板：继续增加更多内置 Agent 或可导入模板
