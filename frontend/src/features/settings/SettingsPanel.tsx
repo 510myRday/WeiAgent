@@ -1,7 +1,7 @@
 import { useState, useEffect, FormEvent } from 'react';
 import { Download, KeyRound, Plus, Save, Server, SlidersHorizontal, Trash2 } from 'lucide-react';
 
-import type { AppSettings, ModelProvider } from '../../types';
+import type { AppSettings, ModelProvider, ModelProviderPayload } from '../../types';
 import { fetchModels } from '../../api';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
@@ -14,8 +14,8 @@ interface SettingsPanelProps {
   providers: ModelProvider[];
   activeProviderId: string;
   onProviderChange: (id: string) => void;
-  onProviderAdd: (payload: { name: string; base_url: string; api_key: string; models: string[] }) => Promise<ModelProvider>;
-  onProviderEdit: (id: string, payload: Partial<{ name: string; base_url: string; api_key: string; models: string[] }>) => Promise<ModelProvider>;
+  onProviderAdd: (payload: ModelProviderPayload) => Promise<ModelProvider>;
+  onProviderEdit: (id: string, payload: Partial<ModelProviderPayload>) => Promise<ModelProvider>;
   onProviderRemove: (id: string) => Promise<void>;
   onOpenMain: () => void;
 }
@@ -93,6 +93,7 @@ export function SettingsPanel({
       }
     }
     const payload = {
+      provider_type: activeProvider?.provider_type ?? 'openai_compatible',
       name: providerForm.name.trim(),
       base_url: providerForm.base_url.trim(),
       api_key: providerForm.api_key.trim(),

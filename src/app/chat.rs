@@ -1,0 +1,59 @@
+use chrono::Utc;
+use uuid::Uuid;
+
+use crate::{
+    app::AppState,
+    domain::{Agent, ChatMessage, ChatRole, ModelProvider},
+    error::{AppError, AppResult},
+};
+
+pub struct PreparedChat {
+    pub agent: Agent,
+    pub provider: ModelProvider,
+    pub user_message: ChatMessage,
+    pub messages_for_llm: Vec<ChatMessage>,
+    pub system_prompt: String,
+}
+
+pub async fn prepare_chat(
+    state: &AppState,
+    conversation_id: Uuid,
+    content: &str,
+) -> AppResult<PreparedChat> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Err(AppError::BadRequest(
+            "message content cannot be empty".to_string(),
+        ));
+    }
+
+    let conversation = state.store.get_conversation(conversation_id).await?;
+    let agent = state.store.get_agent(conversation.agent_id).await?;
+    let provider = state
+        .store
+        .get_model_provider(agent.model_provider_id)
+        .await?;
+    let history = state
+        .store
+        .read_conversation_messages(conversation_id)
+        .await?;
+    let user_message = ChatMessage {
+        id: Uuid::new_v4(),
+        agent_id: agent.id,
+        conversation_id,
+        role: ChatRole::User,
+        content: content.to_string(),
+        created_at: Utc::now(),
+    };
+    let mut messages_for_llm = history;
+    messages_for_llm.push(user_message.clone());
+    let system_prompt = state.store.build_agent_system_prompt(&agent).await?;
+
+    Ok(PreparedChat {
+        agent,
+        provider,
+        user_message,
+        messages_for_llm,
+        system_prompt,
+    })
+}

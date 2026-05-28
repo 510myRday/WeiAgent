@@ -3,8 +3,8 @@ use std::{net::SocketAddr, path::PathBuf};
 use tokio::fs;
 
 use crate::{
+    domain::AppSettings,
     error::{AppError, AppResult},
-    models::AppSettings,
 };
 
 #[derive(Debug, Clone)]

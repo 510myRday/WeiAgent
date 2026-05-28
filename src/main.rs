@@ -1,8 +1,8 @@
 mod app;
 mod config;
+mod domain;
 mod error;
-mod models;
-mod openai;
+mod llm;
 mod storage;
 
 use std::{process::Stdio, sync::Arc};
@@ -10,7 +10,7 @@ use std::{process::Stdio, sync::Arc};
 use app::{AppState, build_router, build_router_dev};
 use config::{AppConfig, log_level_filter};
 use error::AppResult;
-use openai::OpenAiChatClient;
+use llm::registry::DefaultLlmRegistry;
 use storage::JsonStore;
 use tokio::{
     net::TcpListener,
@@ -28,8 +28,11 @@ async fn main() -> AppResult<()> {
 
     let addr = config.socket_addr()?;
     let store = Arc::new(JsonStore::new(&config.data_dir).await?);
-    let llm = Arc::new(OpenAiChatClient::new());
-    let state = AppState { store, llm };
+    let llm_registry = Arc::new(DefaultLlmRegistry::default());
+    let state = AppState {
+        store,
+        llm_registry,
+    };
     let _vite_child = if is_dev {
         Some(start_vite_dev_server().await?)
     } else {

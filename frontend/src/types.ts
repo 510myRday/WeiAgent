@@ -8,6 +8,7 @@ export type AppSettings = {
 
 export type ModelProvider = {
   id: string;
+  provider_type: ProviderType;
   name: string;
   base_url: string;
   has_api_key: boolean;
@@ -18,7 +19,10 @@ export type ModelProvider = {
   updated_at: string;
 };
 
+export type ProviderType = 'openai_compatible';
+
 export type ModelProviderPayload = {
+  provider_type: ProviderType;
   name: string;
   base_url: string;
   api_key: string;

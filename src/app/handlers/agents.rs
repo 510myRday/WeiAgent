@@ -1,0 +1,60 @@
+use axum::{
+    Json,
+    extract::{Path, State},
+};
+use uuid::Uuid;
+
+use crate::{
+    app::AppState,
+    domain::{
+        AgentResponse, AgentWorkspace, CreateAgentRequest, UpdateAgentRequest,
+        UpdateAgentWorkspaceRequest,
+    },
+    error::AppResult,
+};
+
+pub async fn list_agents(State(state): State<AppState>) -> AppResult<Json<Vec<AgentResponse>>> {
+    Ok(Json(state.store.list_agents().await?))
+}
+
+pub async fn create_agent(
+    State(state): State<AppState>,
+    Json(request): Json<CreateAgentRequest>,
+) -> AppResult<Json<AgentResponse>> {
+    Ok(Json(state.store.create_agent(request).await?))
+}
+
+pub async fn update_agent(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+    Json(request): Json<UpdateAgentRequest>,
+) -> AppResult<Json<AgentResponse>> {
+    Ok(Json(state.store.update_agent(agent_id, request).await?))
+}
+
+pub async fn delete_agent(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+) -> AppResult<()> {
+    state.store.delete_agent(agent_id).await
+}
+
+pub async fn read_agent_workspace(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+) -> AppResult<Json<AgentWorkspace>> {
+    Ok(Json(state.store.read_agent_workspace(agent_id).await?))
+}
+
+pub async fn update_agent_workspace(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+    Json(request): Json<UpdateAgentWorkspaceRequest>,
+) -> AppResult<Json<AgentWorkspace>> {
+    Ok(Json(
+        state
+            .store
+            .update_agent_workspace(agent_id, request)
+            .await?,
+    ))
+}
