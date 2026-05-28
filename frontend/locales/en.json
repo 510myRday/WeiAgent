@@ -14,7 +14,8 @@
     "refresh": "Refresh",
     "loading": "Loading...",
     "empty": "No agents",
-    "ariaLabel": "Sidebar"
+    "ariaLabel": "Sidebar",
+    "avatarPreview": "User avatar"
   },
   "common": {
     "back": "Back"
@@ -43,7 +44,8 @@
     "discardConfirm": "Discard unsaved changes?",
     "selectAgent": "Select an agent to configure",
     "noAgents": "No agents yet. Create one to get started.",
-    "avatarChange": "Choose Avatar Style"
+    "avatarChange": "Choose Avatar Style",
+    "avatarPreview": "Agent avatar"
   },
   "chat": {
     "selectAgent": "Select Agent",
@@ -127,10 +129,7 @@
   "model": {
     "loadFailed": "Model list failed to load. You can type a model ID manually."
   },
-  "mobile": {
-    "showSidebar": "Open sidebar",
-    "hideSidebar": "Close sidebar"
-  },
+  "mobile": {},
   "lang": {
     "switchTo": "Switch to English",
     "switchToZh": "Switch to Chinese"

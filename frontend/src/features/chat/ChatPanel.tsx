@@ -1,9 +1,11 @@
 import { useRef, useEffect, useCallback, useState, FormEvent } from 'react';
-import { ArrowLeft, Bot, Check, MessageSquare, Plus, Search, Send, Trash2 } from 'lucide-react';
-import type { Agent, Conversation } from '../types';
-import { useI18n } from '../i18n';
-import { useConversations } from '../hooks';
-import { AvatarBadge } from './AvatarPicker';
+import { ArrowLeft, Bot, Check, MessageSquare, Plus, Send, Trash2 } from 'lucide-react';
+
+import type { Agent, Conversation } from '../../types';
+import { useI18n } from '../../i18n';
+import { useConversations } from '../../hooks';
+import { AvatarBadge } from '../../components/AvatarPicker';
+import { Button, EmptyState, IconButton, ListItem, PaneHeader, SearchInput } from '../../components/ui';
 
 interface ChatPanelProps {
   agents: Agent[];
@@ -12,7 +14,6 @@ interface ChatPanelProps {
   onError: (message: string) => void;
   onOpenMain: () => void;
   onBackToList: () => void;
-  onBackToRail: () => void;
 }
 
 export function ChatPanel({
@@ -22,7 +23,6 @@ export function ChatPanel({
   onError,
   onOpenMain,
   onBackToList,
-  onBackToRail,
 }: ChatPanelProps) {
   const { t, locale } = useI18n();
   const {
@@ -48,8 +48,8 @@ export function ChatPanel({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
-  const activeAgent = agents.find((a) => a.id === activeAgentId);
-  const activeConversation = conversations.find((c) => c.id === activeConversationId);
+  const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId);
   const filteredConversations = conversations.filter((conversation) =>
     conversation.title.toLowerCase().includes(conversationFilter.trim().toLowerCase()),
   );
@@ -151,59 +151,44 @@ export function ChatPanel({
       <section className="context-pane chat-list-pane" aria-label={t('chat.selectAgent')}>
         {!activeAgent ? (
           <>
-            <header className="pane-header mobile-pane-header">
-              <button className="back-button" type="button" onClick={onBackToRail}>{t('common.back')}</button>
-              <div>
-                <h2>{t('nav.chat')}</h2>
-                <p>{t('chat.selectAgent')}</p>
-              </div>
-            </header>
+            <PaneHeader
+              className="mobile-pane-header"
+              title={t('nav.chat')}
+              description={t('chat.selectAgent')}
+              leading={<Button className="back-button" type="button" onClick={onOpenMain}>{t('common.back')}</Button>}
+            />
             <div className="list-stack">
               {agents.length === 0 ? <p className="muted centered">{t('agentConfig.noAgents')}</p> : null}
               {agents.map((agent) => (
-                <button
-                  className="list-row"
+                <ListItem
                   key={agent.id}
                   type="button"
+                  title={agent.name}
+                  subtitle={agent.is_builtin ? agent.display_label ?? agent.model_id : agent.model_id}
+                  leading={<AvatarBadge icon={agent.avatar_icon} color={agent.avatar_color} />}
                   onClick={() => handleAgentSelect(agent.id)}
-                >
-                  <AvatarBadge icon={agent.avatar_icon} color={agent.avatar_color} />
-                  <span className="row-main">
-                    <strong>{agent.name}</strong>
-                    <small>{agent.is_builtin ? agent.display_label ?? agent.model_id : agent.model_id}</small>
-                  </span>
-                </button>
+                />
               ))}
             </div>
           </>
         ) : (
           <>
-            <header className="pane-header conversation-pane-header">
-              <button
-                className="icon-button light"
-                type="button"
-                onClick={() => onAgentChange('')}
-                title={t('chat.selectAgent')}
-                aria-label={t('chat.selectAgent')}
-              >
-                <ArrowLeft size={17} />
-              </button>
-              <div>
-                <h2>{activeAgent.name}</h2>
-                <p>{activeAgent.model_id}</p>
-              </div>
-              <button className="icon-button light" type="button" onClick={handleNewConversation} title={t('conversation.create')} aria-label={t('conversation.create')}>
-                <Plus size={17} />
-              </button>
-            </header>
-            <label className="search-box">
-              <Search size={16} />
-              <input
-                value={conversationFilter}
-                onChange={(e) => setConversationFilter(e.target.value)}
-                placeholder={t('conversation.search')}
-              />
-            </label>
+            <PaneHeader
+              className="conversation-pane-header"
+              title={activeAgent.name}
+              description={activeAgent.model_id}
+              leading={(
+                <IconButton variant="ghost" type="button" onClick={() => onAgentChange('')} label={t('chat.selectAgent')}>
+                  <ArrowLeft size={17} />
+                </IconButton>
+              )}
+              actions={(
+                <IconButton variant="ghost" type="button" onClick={handleNewConversation} label={t('conversation.create')}>
+                  <Plus size={17} />
+                </IconButton>
+              )}
+            />
+            <SearchInput value={conversationFilter} onChange={setConversationFilter} placeholder={t('conversation.search')} />
             <div className="list-stack conversation-list">
               {conversations.length === 0 ? <p className="muted centered">{t('conversation.empty')}</p> : null}
               {filteredConversations.map((conversation) => (
@@ -223,29 +208,28 @@ export function ChatPanel({
       </section>
 
       <section className="main-pane chat-area" aria-label={t('chat.ariaLabel')}>
-        <header className="chat-header">
-          <button className="back-button main-back-button" type="button" onClick={onBackToList}>
-            {t('common.back')}
-          </button>
-          <div className="chat-title-block">
-            <h2>{activeConversation?.title ?? activeAgent?.name ?? t('chat.noAgent')}</h2>
-            <span>{activeAgent ? activeAgent.model_id : t('chat.noAgentHint')}</span>
-          </div>
-          <label className="mode-toggle">
-            <input type="checkbox" checked={isStreamMode} onChange={(e) => setIsStreamMode(e.target.checked)} />
-            <span>{isStreamMode ? t('chat.stream') : t('chat.complete')}</span>
-            <Check size={16} />
-          </label>
-        </header>
+        <PaneHeader
+          className="chat-header"
+          title={activeConversation?.title ?? activeAgent?.name ?? t('chat.noAgent')}
+          description={activeAgent ? activeAgent.model_id : t('chat.noAgentHint')}
+          leading={<Button className="back-button main-back-button" type="button" onClick={onBackToList}>{t('common.back')}</Button>}
+          actions={(
+            <label className="mode-toggle">
+              <input type="checkbox" checked={isStreamMode} onChange={(e) => setIsStreamMode(e.target.checked)} />
+              <span>{isStreamMode ? t('chat.stream') : t('chat.complete')}</span>
+              <Check size={16} />
+            </label>
+          )}
+        />
 
         <div className="messages" aria-live="polite" ref={messagesContainerRef}>
           {isLoadingChat ? <p className="muted centered">{t('chat.loading')}</p> : null}
           {!isLoadingChat && messages.length === 0 ? (
-            <div className="empty-chat">
-              {activeAgent ? <MessageSquare size={34} /> : <Bot size={34} />}
-              <h3>{activeAgent ? t('chat.emptyTitle') : t('chat.noAgent')}</h3>
-              <p>{activeAgent ? t('chat.emptyHint') : t('chat.noAgentHint')}</p>
-            </div>
+            <EmptyState
+              icon={activeAgent ? <MessageSquare size={34} /> : <Bot size={34} />}
+              title={activeAgent ? t('chat.emptyTitle') : t('chat.noAgent')}
+              description={activeAgent ? t('chat.emptyHint') : t('chat.noAgentHint')}
+            />
           ) : null}
           {messages.map((msg) => (
             <article className={'message ' + msg.role} key={msg.clientId}>
@@ -269,10 +253,9 @@ export function ChatPanel({
             disabled={!activeAgent || isSending}
             rows={3}
           />
-          <button className="send-button" type="submit" disabled={!activeAgent || !draft.trim() || isSending}>
-            <Send size={18} />
+          <Button className="send-button" variant="primary" type="submit" disabled={!activeAgent || !draft.trim() || isSending} icon={<Send size={18} />}>
             {isSending ? t('chat.sending') : t('chat.send')}
-          </button>
+          </Button>
         </form>
       </section>
     </>
@@ -295,18 +278,19 @@ function ConversationRow({
   onDelete: () => void;
 }) {
   return (
-    <div className={'list-row conversation-row' + (active ? ' active' : '')}>
-      <button className="row-content" type="button" onClick={onSelect}>
-        <span className="row-avatar muted-avatar"><MessageSquare size={17} /></span>
-        <span className="row-main">
-          <strong>{conversation.title}</strong>
-          <small>{formatDate(conversation.updated_at)}</small>
-        </span>
-      </button>
+    <div className={['conversation-row', active ? 'is-active' : ''].filter(Boolean).join(' ')}>
+      <ListItem
+        className="conversation-row-main"
+        type="button"
+        title={conversation.title}
+        subtitle={formatDate(conversation.updated_at)}
+        leading={<span className="avatar-badge avatar-muted"><MessageSquare size={17} /></span>}
+        onClick={onSelect}
+      />
       <span className="row-actions">
-        <button className="icon-button danger light" type="button" onClick={onDelete} title={deleteLabel} aria-label={deleteLabel}>
+        <IconButton variant="danger" type="button" onClick={onDelete} label={deleteLabel}>
           <Trash2 size={15} />
-        </button>
+        </IconButton>
       </span>
     </div>
   );

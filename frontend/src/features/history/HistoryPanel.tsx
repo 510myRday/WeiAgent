@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { MessageSquare, Trash2, X } from 'lucide-react';
-import type { Agent, Conversation, UiMessage } from '../types';
-import { useI18n } from '../i18n';
-import { listConversations, readConversationMessages, deleteConversation } from '../api';
+
+import type { Agent, Conversation, UiMessage } from '../../types';
+import { useI18n } from '../../i18n';
+import { listConversations, readConversationMessages, deleteConversation } from '../../api';
+import { Button, IconButton, ListItem, PaneHeader } from '../../components/ui';
 
 function genClientId(): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -36,9 +38,7 @@ export function HistoryPanel({ agents }: HistoryPanelProps) {
     setHistoryConversationId(id);
     try {
       const raw = await readConversationMessages(id);
-      setHistoryMessages(
-        raw.map((msg) => ({ ...msg, clientId: msg.id ?? genClientId() })),
-      );
+      setHistoryMessages(raw.map((msg) => ({ ...msg, clientId: msg.id ?? genClientId() })));
     } catch {
       setHistoryMessages([]);
     }
@@ -53,11 +53,13 @@ export function HistoryPanel({ agents }: HistoryPanelProps) {
         setHistoryMessages([]);
       }
       await refreshHistory();
-    } catch { /* ignore */ }
+    } catch {
+      // History is secondary UI; keep the current view if deletion fails.
+    }
   }
 
   function agentName(agentId: string) {
-    return agents.find((a) => a.id === agentId)?.name ?? 'Assistant';
+    return agents.find((agent) => agent.id === agentId)?.name ?? 'Assistant';
   }
 
   function formatDate(value: string) {
@@ -79,16 +81,19 @@ export function HistoryPanel({ agents }: HistoryPanelProps) {
   if (historyConversationId) {
     return (
       <section className="history-panel">
-        <div className="panel-header">
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={() => { setHistoryConversationId(''); setHistoryMessages([]); }}
-          >
-            <X size={16} />
-            {t('history.back')}
-          </button>
-        </div>
+        <PaneHeader
+          title={t('history.title')}
+          leading={(
+            <Button
+              variant="secondary"
+              type="button"
+              onClick={() => { setHistoryConversationId(''); setHistoryMessages([]); }}
+              icon={<X size={16} />}
+            >
+              {t('history.back')}
+            </Button>
+          )}
+        />
         <div className="messages">
           {historyMessages.length === 0 ? <p className="muted centered">{t('history.empty')}</p> : null}
           {historyMessages.map((msg) => (
@@ -107,31 +112,29 @@ export function HistoryPanel({ agents }: HistoryPanelProps) {
 
   return (
     <section className="history-panel">
-      <div className="panel-header"><h2>{t('history.title')}</h2></div>
+      <PaneHeader title={t('history.title')} />
       <div className="history-list history-groups">
         {agents.length === 0 ? <p className="muted centered">{t('history.empty')}</p> : null}
         {agents.map((agent) => (
           <section className="history-agent-group" key={agent.id}>
             <h3>{agent.name}</h3>
             {(historyConversations[agent.id] ?? []).length === 0 ? <p className="muted">{t('conversation.empty')}</p> : null}
-            {(historyConversations[agent.id] ?? []).map((conv) => (
-              <button
-                key={conv.id}
-                className="history-card"
+            {(historyConversations[agent.id] ?? []).map((conversation) => (
+              <ListItem
+                key={conversation.id}
                 type="button"
-                onClick={() => openHistoryConversation(conv.id)}
-              >
-                <MessageSquare size={20} />
-                <div>
-                  <strong>{conv.title}</strong>
-                  <small>{formatDate(conv.updated_at)}</small>
-                </div>
-                <span className="history-card-actions" onClick={(e) => e.stopPropagation()}>
-                  <button className="icon-button danger" type="button" onClick={() => handleDeleteConversation(conv.id)}>
-                    <Trash2 size={15} />
-                  </button>
-                </span>
-              </button>
+                title={conversation.title}
+                subtitle={formatDate(conversation.updated_at)}
+                leading={<MessageSquare size={20} />}
+                trailing={(
+                  <span onClick={(event) => event.stopPropagation()}>
+                    <IconButton variant="danger" type="button" onClick={() => handleDeleteConversation(conversation.id)} label={t('conversation.delete')}>
+                      <Trash2 size={15} />
+                    </IconButton>
+                  </span>
+                )}
+                onClick={() => openHistoryConversation(conversation.id)}
+              />
             ))}
           </section>
         ))}
@@ -139,4 +142,3 @@ export function HistoryPanel({ agents }: HistoryPanelProps) {
     </section>
   );
 }
-

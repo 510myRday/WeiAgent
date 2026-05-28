@@ -14,7 +14,8 @@
     "refresh": "刷新",
     "loading": "加载中...",
     "empty": "暂无智能体",
-    "ariaLabel": "侧边栏"
+    "ariaLabel": "侧边栏",
+    "avatarPreview": "用户头像"
   },
   "common": {
     "back": "返回"
@@ -43,7 +44,8 @@
     "discardConfirm": "放弃未保存的修改？",
     "selectAgent": "选择一个智能体进行配置",
     "noAgents": "暂无智能体，创建一个开始使用。",
-    "avatarChange": "选择头像样式"
+    "avatarChange": "选择头像样式",
+    "avatarPreview": "智能体头像"
   },
   "chat": {
     "selectAgent": "选择智能体",
@@ -127,10 +129,7 @@
   "model": {
     "loadFailed": "模型列表加载失败，你可以手动输入模型 ID。"
   },
-  "mobile": {
-    "showSidebar": "打开侧边栏",
-    "hideSidebar": "关闭侧边栏"
-  },
+  "mobile": {},
   "lang": {
     "switchTo": "切换到英文",
     "switchToZh": "切换到中文"

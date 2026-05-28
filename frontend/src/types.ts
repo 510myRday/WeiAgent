@@ -117,4 +117,4 @@ export type StreamEvent =
 
 export type NavKey = 'chat' | 'agents' | 'groups' | 'settings';
 
-export type MobileView = 'rail' | 'list' | 'main';
+export type MobileView = 'list' | 'main';

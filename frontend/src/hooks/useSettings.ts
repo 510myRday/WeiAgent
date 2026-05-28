@@ -1,13 +1,14 @@
 import { useState, useCallback } from 'react';
 import type { AppSettings } from '../types';
 import { readSettings, updateSettings } from '../api';
+import { defaultAvatarColor } from '../avatarPresets';
 
 const defaultSettings: AppSettings = {
   host: '',
   port: 0,
   log_level: 'info',
   avatar_icon: 'bot',
-  avatar_color: '#22c55e',
+  avatar_color: defaultAvatarColor('bot'),
 };
 
 export function useSettings() {

@@ -1,0 +1,111 @@
+@media (max-width: 920px) {
+  body {
+    overflow: hidden;
+  }
+
+  .workspace-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .app-rail,
+  .context-pane,
+  .main-pane {
+    grid-column: 1;
+    grid-row: 1;
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .app-rail {
+    align-items: stretch;
+    padding: var(--space-4);
+    border-right: none;
+  }
+
+  .app-rail .sidebar-nav,
+  .app-rail .sidebar-footer {
+    align-items: stretch;
+  }
+
+  .app-rail .icon-button-rail,
+  .app-rail .rail-button,
+  .app-rail .nav-item {
+    width: 100%;
+    height: 52px;
+  }
+
+  .mobile-list .app-rail,
+  .mobile-list .main-pane,
+  .mobile-main .app-rail,
+  .mobile-main .context-pane {
+    display: none;
+  }
+
+  .context-pane {
+    border-right: none;
+  }
+
+  .mobile-pane-header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .back-button,
+  .main-back-button {
+    display: inline-flex;
+    min-width: var(--control-height);
+  }
+
+  .mode-toggle {
+    max-width: 112px;
+  }
+
+  .messages {
+    padding: var(--space-4) var(--space-3);
+  }
+
+  .message {
+    width: 96%;
+  }
+
+  .composer {
+    grid-template-columns: 1fr;
+  }
+
+  .send-button {
+    min-height: 46px;
+  }
+
+  .config-main,
+  .agents-panel-main,
+  .settings-main {
+    padding: var(--space-4);
+  }
+
+  .form-grid.two-column,
+  .provider-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .config-page-header,
+  .panel-header {
+    align-items: stretch;
+  }
+}
+
+@media (min-width: 921px) {
+  .back-button,
+  .main-back-button {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
