@@ -49,6 +49,7 @@ export function ChatPanel({
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  const displayAgentName = (agent: Agent) => agent.is_builtin ? t('agentConfig.builtinMasterName') : agent.name;
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId);
   const filteredConversations = conversations.filter((conversation) =>
     conversation.title.toLowerCase().includes(conversationFilter.trim().toLowerCase()),
@@ -163,8 +164,8 @@ export function ChatPanel({
                 <ListItem
                   key={agent.id}
                   type="button"
-                  title={agent.name}
-                  subtitle={agent.is_builtin ? agent.display_label ?? agent.model_id : agent.model_id}
+                  title={displayAgentName(agent)}
+                  subtitle={agent.model_id}
                   leading={<AvatarBadge icon={agent.avatar_icon} color={agent.avatar_color} />}
                   onClick={() => handleAgentSelect(agent.id)}
                 />
@@ -175,7 +176,7 @@ export function ChatPanel({
           <>
             <PaneHeader
               className="conversation-pane-header"
-              title={activeAgent.name}
+              title={displayAgentName(activeAgent)}
               description={activeAgent.model_id}
               leading={(
                 <IconButton variant="ghost" type="button" onClick={() => onAgentChange('')} label={t('chat.selectAgent')}>
@@ -208,20 +209,6 @@ export function ChatPanel({
       </section>
 
       <section className="main-pane chat-area" aria-label={t('chat.ariaLabel')}>
-        <PaneHeader
-          className="chat-header"
-          title={activeConversation?.title ?? activeAgent?.name ?? t('chat.noAgent')}
-          description={activeAgent ? activeAgent.model_id : t('chat.noAgentHint')}
-          leading={<Button className="back-button main-back-button" type="button" onClick={onBackToList}>{t('common.back')}</Button>}
-          actions={(
-            <label className="mode-toggle">
-              <input type="checkbox" checked={isStreamMode} onChange={(e) => setIsStreamMode(e.target.checked)} />
-              <span>{isStreamMode ? t('chat.stream') : t('chat.complete')}</span>
-              <Check size={16} />
-            </label>
-          )}
-        />
-
         <div className="messages" aria-live="polite" ref={messagesContainerRef}>
           {isLoadingChat ? <p className="muted centered">{t('chat.loading')}</p> : null}
           {!isLoadingChat && messages.length === 0 ? (
@@ -234,7 +221,7 @@ export function ChatPanel({
           {messages.map((msg) => (
             <article className={'message ' + msg.role} key={msg.clientId}>
               <div className="message-meta">
-                <strong>{msg.role === 'user' ? t('chat.you') : activeAgent?.name ?? 'Assistant'}</strong>
+                <strong>{msg.role === 'user' ? t('chat.you') : activeAgent ? displayAgentName(activeAgent) : 'Assistant'}</strong>
                 <time dateTime={msg.created_at}>{formatTime(msg.created_at)}</time>
               </div>
               <p>{msg.content}</p>
@@ -244,18 +231,25 @@ export function ChatPanel({
         </div>
 
         <form className="composer" onSubmit={handleSend}>
-          <label htmlFor="chat-input">{t('chat.messageLabel')}</label>
-          <textarea
-            id="chat-input"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder={activeAgent ? t('chat.placeholder') : t('chat.placeholderDisabled')}
-            disabled={!activeAgent || isSending}
-            rows={3}
-          />
-          <Button className="send-button" variant="primary" type="submit" disabled={!activeAgent || !draft.trim() || isSending} icon={<Send size={18} />}>
-            {isSending ? t('chat.sending') : t('chat.send')}
-          </Button>
+          <div className="composer-toolbar">
+            <label className="mode-toggle">
+              <input type="checkbox" checked={isStreamMode} onChange={(e) => setIsStreamMode(e.target.checked)} />
+              <span>{isStreamMode ? t('chat.stream') : t('chat.complete')}</span>
+            </label>
+            <Button className="back-button" type="button" onClick={onBackToList}>{t('common.back')}</Button>
+          </div>
+          <div className="composer-input-row">
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder={activeAgent ? t('chat.placeholder') : t('chat.placeholderDisabled')}
+              disabled={!activeAgent || isSending}
+              rows={3}
+            />
+            <Button className="send-button" variant="primary" type="submit" disabled={!activeAgent || !draft.trim() || isSending} icon={<Send size={18} />}>
+              {isSending ? t('chat.sending') : t('chat.send')}
+            </Button>
+          </div>
         </form>
       </section>
     </>

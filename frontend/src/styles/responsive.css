@@ -69,12 +69,13 @@
     width: 96%;
   }
 
-  .composer {
-    grid-template-columns: 1fr;
+  .composer-input-row {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .send-button {
-    min-height: 46px;
+    min-height: 42px;
   }
 
   .config-main,

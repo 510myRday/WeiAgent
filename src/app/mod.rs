@@ -192,6 +192,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetches_models_from_provider_draft() {
+        let (app, _, _, _) = test_app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/model-providers/models")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "provider_type": "openai_compatible",
+                            "base_url": "https://example.test/v1",
+                            "api_key": "draft-key"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value, json!(["mock-model-a", "mock-model-b"]));
+    }
+
+    #[tokio::test]
     async fn streams_message_chunks_as_sse() {
         let (app, _, _, conversation_id) = test_app().await;
         let response = app

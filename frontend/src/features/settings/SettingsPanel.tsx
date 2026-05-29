@@ -2,7 +2,7 @@ import { useState, useEffect, FormEvent } from 'react';
 import { Download, KeyRound, Plus, Save, Server, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { AppSettings, ModelProvider, ModelProviderPayload } from '../../types';
-import { fetchModels } from '../../api';
+import { fetchModels, fetchModelsForProvider } from '../../api';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
 import { AlertBanner, Button, FormField, IconButton, ListItem, PaneHeader } from '../../components/ui';
@@ -13,6 +13,7 @@ interface SettingsPanelProps {
   onSettingsSave: (payload: AppSettings) => Promise<AppSettings>;
   providers: ModelProvider[];
   activeProviderId: string;
+  initialSection: SettingsSection;
   onProviderChange: (id: string) => void;
   onProviderAdd: (payload: ModelProviderPayload) => Promise<ModelProvider>;
   onProviderEdit: (id: string, payload: Partial<ModelProviderPayload>) => Promise<ModelProvider>;
@@ -24,7 +25,7 @@ type SettingsSection = 'runtime' | 'providers';
 
 const defaultProviderForm = {
   name: '',
-  base_url: 'https://api.openai.com/v1',
+  base_url: '',
   api_key: '',
   modelsText: '',
   extraBodyText: '',
@@ -40,6 +41,7 @@ export function SettingsPanel({
   onSettingsSave,
   providers,
   activeProviderId,
+  initialSection,
   onProviderChange,
   onProviderAdd,
   onProviderEdit,
@@ -54,6 +56,10 @@ export function SettingsPanel({
   const [error, setError] = useState('');
 
   const activeProvider = providers.find((provider) => provider.id === activeProviderId);
+
+  useEffect(() => {
+    setActiveSection(initialSection);
+  }, [initialSection]);
 
   useEffect(() => {
     if (!activeProvider) {
@@ -131,11 +137,32 @@ export function SettingsPanel({
   }
 
   async function handleFetchModels() {
-    if (!activeProvider) return;
+    let extraBody: Record<string, unknown> | undefined;
+    if (providerForm.extraBodyText.trim()) {
+      try {
+        extraBody = JSON.parse(providerForm.extraBodyText);
+      } catch {
+        setError('Extra body is not valid JSON');
+        return;
+      }
+    }
+    const baseUrl = providerForm.base_url.trim();
+    const apiKey = providerForm.api_key.trim();
+    if (!baseUrl || (!activeProvider?.has_api_key && !apiKey)) {
+      setError(t('provider.fetchModelsMissingConfig'));
+      return;
+    }
     setFetchingModels(true);
     setError('');
     try {
-      const models = await fetchModels(activeProvider.id);
+      const models = activeProvider && !apiKey && baseUrl === activeProvider.base_url && !extraBody
+        ? await fetchModels(activeProvider.id)
+        : await fetchModelsForProvider({
+          provider_type: activeProvider?.provider_type ?? 'openai_compatible',
+          base_url: baseUrl,
+          api_key: apiKey,
+          extra_body: extraBody,
+        });
       setProviderForm((current) => ({ ...current, modelsText: models.join('\n') }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Error');
@@ -193,13 +220,13 @@ export function SettingsPanel({
           {activeSection === 'runtime' ? (
             <form className="form-card entity-form narrow-form" onSubmit={handleSettingsSubmit}>
               <div className="form-grid two-column">
-                <FormField label={t('settings.host')} htmlFor="settings-host">
+                <FormField label={t('settings.host')} htmlFor="settings-host" required>
                   <input id="settings-host" value={settingsForm.host} onChange={(e) => onSettingsFormChange({ ...settingsForm, host: e.target.value })} />
                 </FormField>
-                <FormField label={t('settings.port')} htmlFor="settings-port">
+                <FormField label={t('settings.port')} htmlFor="settings-port" required>
                   <input id="settings-port" type="number" min={1} max={65535} value={settingsForm.port} onChange={(e) => onSettingsFormChange({ ...settingsForm, port: Number(e.target.value) })} />
                 </FormField>
-                <FormField label={t('settings.logLevel')} htmlFor="settings-log">
+                <FormField label={t('settings.logLevel')} htmlFor="settings-log" required>
                   <select id="settings-log" value={settingsForm.log_level} onChange={(e) => onSettingsFormChange({ ...settingsForm, log_level: e.target.value })}>
                     {['trace', 'debug', 'info', 'warn', 'error'].map((level) => <option key={level} value={level}>{level}</option>)}
                   </select>
@@ -219,6 +246,7 @@ export function SettingsPanel({
                   {providers.map((provider) => (
                     <ListItem
                       key={provider.id}
+                      className="provider-list-item"
                       type="button"
                       active={provider.id === activeProviderId}
                       title={provider.name}
@@ -241,13 +269,13 @@ export function SettingsPanel({
                   compact
                 />
                 <div className="form-grid two-column">
-                  <FormField label={t('provider.name')} htmlFor="provider-name">
+                  <FormField label={t('provider.name')} htmlFor="provider-name" required>
                     <input id="provider-name" value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} disabled={isSubmittingProvider} />
                   </FormField>
-                  <FormField label={t('provider.baseUrl')} htmlFor="provider-base-url">
+                  <FormField label={t('provider.baseUrl')} htmlFor="provider-base-url" required>
                     <input id="provider-base-url" value={providerForm.base_url} onChange={(e) => setProviderForm({ ...providerForm, base_url: e.target.value })} disabled={isSubmittingProvider} />
                   </FormField>
-                  <FormField label={t('provider.apiKey')} htmlFor="provider-api-key">
+                  <FormField label={t('provider.apiKey')} htmlFor="provider-api-key" required={!activeProvider}>
                     <input
                       id="provider-api-key"
                       type="password"
@@ -271,11 +299,19 @@ export function SettingsPanel({
                 <FormField
                   label={t('provider.models')}
                   htmlFor="provider-models"
-                  action={activeProvider ? (
-                    <Button className="inline-action" variant="ghost" type="button" disabled={fetchingModels} onClick={handleFetchModels} icon={<Download size={14} />}>
+                  required
+                  action={(
+                    <Button
+                      className="inline-action"
+                      variant="ghost"
+                      type="button"
+                      disabled={fetchingModels}
+                      onClick={handleFetchModels}
+                      icon={<Download size={14} />}
+                    >
                       {fetchingModels ? t('provider.fetchingModels') : t('provider.fetchModels')}
                     </Button>
-                  ) : null}
+                  )}
                 >
                   <textarea id="provider-models" value={providerForm.modelsText} onChange={(e) => setProviderForm({ ...providerForm, modelsText: e.target.value })} rows={10} disabled={isSubmittingProvider || fetchingModels} />
                 </FormField>

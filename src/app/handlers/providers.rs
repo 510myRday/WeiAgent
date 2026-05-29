@@ -6,7 +6,10 @@ use uuid::Uuid;
 
 use crate::{
     app::AppState,
-    domain::{CreateModelProviderRequest, ModelProviderResponse, UpdateModelProviderRequest},
+    domain::{
+        CreateModelProviderRequest, FetchProviderModelsRequest, ModelProvider, ModelProviderResponse,
+        UpdateModelProviderRequest,
+    },
     error::AppResult,
 };
 
@@ -21,6 +24,25 @@ pub async fn create_model_provider(
     Json(request): Json<CreateModelProviderRequest>,
 ) -> AppResult<Json<ModelProviderResponse>> {
     Ok(Json(state.store.create_model_provider(request).await?))
+}
+
+pub async fn fetch_provider_models(
+    State(state): State<AppState>,
+    Json(request): Json<FetchProviderModelsRequest>,
+) -> AppResult<Json<Vec<String>>> {
+    let provider = ModelProvider {
+        id: Uuid::nil(),
+        provider_type: request.provider_type,
+        name: String::new(),
+        base_url: request.base_url,
+        api_key: request.api_key,
+        models: Vec::new(),
+        extra_body: request.extra_body,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    let client = state.llm_registry.client_for(&provider)?;
+    Ok(Json(client.list_models(&provider).await?))
 }
 
 pub async fn update_model_provider(

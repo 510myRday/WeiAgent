@@ -9,6 +9,7 @@ const defaultSettings: AppSettings = {
   log_level: 'info',
   avatar_icon: 'bot',
   avatar_color: defaultAvatarColor('bot'),
+  language: 'zh',
 };
 
 export function useSettings() {

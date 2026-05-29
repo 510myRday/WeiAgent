@@ -84,8 +84,14 @@
 .pane-actions {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--space-2);
   flex: 0 0 auto;
+  max-width: min(720px, 58vw);
+}
+
+.config-page-header .pane-actions {
+  align-items: flex-start;
 }
 
 .button,
@@ -147,6 +153,10 @@
   padding: 0 10px;
   border-color: transparent;
   background: transparent;
+}
+
+.inline-action {
+  border-color: var(--color-border-strong);
 }
 
 .button-danger {
@@ -323,6 +333,21 @@
 .history-card strong {
   font-size: 14px;
   font-weight: 720;
+}
+
+.agent-list-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+
+.agent-list-title > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .list-item-body small,
@@ -564,14 +589,14 @@
 .mode-toggle {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  min-height: 40px;
-  padding: 0 10px;
+  gap: var(--space-1);
+  min-height: 26px;
+  padding: 1px 8px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--surface-pane);
   color: var(--color-text-soft);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 720;
   white-space: nowrap;
 }
@@ -627,31 +652,42 @@
 }
 
 .composer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 108px;
-  gap: 10px;
-  align-items: end;
-  padding: 14px 16px;
   border-top: 1px solid var(--border-subtle);
   background: var(--surface-pane);
+  padding: 12px 20px 16px;
 }
 
-.composer label {
-  grid-column: 1 / -1;
-  color: var(--color-text-soft);
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0 10px;
+}
+
+.composer-toolbar .back-button {
+  min-height: 24px;
+  padding: 1px 6px;
   font-size: 12px;
-  font-weight: 720;
 }
 
-.composer textarea {
-  min-height: 82px;
-  max-height: 200px;
+.composer-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.composer-input-row textarea {
+  flex: 1;
+  min-height: 44px;
+  max-height: 140px;
   overflow: auto;
   resize: none;
 }
 
 .send-button {
-  min-height: 82px;
+  min-height: 44px;
+  min-width: 68px;
+  flex-shrink: 0;
 }
 
 .empty-state,
@@ -697,6 +733,54 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.workspace-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.field-with-action {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.field-with-action > select,
+.field-with-action > input {
+  min-width: 0;
+  flex: 1;
+}
+
+.field-with-action .icon-button {
+  width: var(--control-height);
+  border-color: var(--border-strong);
+  background: var(--surface-pane);
+}
+
+.workspace-tab {
+  flex: 1;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 13px;
+  font-weight: 720;
+  transition: background var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard);
+}
+
+.workspace-tab:hover,
+.workspace-tab:focus-visible,
+.workspace-tab.active {
+  border-color: var(--color-primary-border);
+  background: var(--surface-pane);
+  color: var(--color-primary-strong);
+}
+
 .form-field,
 .field {
   display: flex;
@@ -715,6 +799,11 @@
   color: var(--color-text-soft);
   font-size: 13px;
   font-weight: 720;
+}
+
+.required-marker {
+  margin-left: 4px;
+  color: var(--color-danger);
 }
 
 .form-field textarea,
@@ -771,7 +860,9 @@
 }
 
 .status-badge,
-.builtin-badge {
+.builtin-badge,
+.mini-status-badge,
+.model-note-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -784,6 +875,23 @@
   font-size: 13px;
   font-weight: 720;
   white-space: nowrap;
+}
+
+.mini-status-badge {
+  min-height: 20px;
+  padding: 0 6px;
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+
+.model-note-badge {
+  min-height: 34px;
+  max-width: min(620px, 52vw);
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .history-panel {

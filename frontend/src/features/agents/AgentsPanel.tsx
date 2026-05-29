@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
-import { Plus, Save, ShieldCheck, Trash2 } from 'lucide-react';
+import { Plus, Save, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { Agent, AgentWorkspace, ModelProvider, CreateAgentPayload } from '../../types';
 import { readAgentWorkspace, updateAgentWorkspace } from '../../api';
@@ -18,6 +18,7 @@ interface AgentsPanelProps {
   onAgentAdd: (payload: CreateAgentPayload) => Promise<Agent>;
   onAgentEdit: (id: string, payload: Partial<CreateAgentPayload>) => Promise<Agent>;
   onAgentRemove: (id: string) => Promise<void>;
+  onOpenProviderSettings: () => void;
   onOpenMain: () => void;
 }
 
@@ -35,6 +36,10 @@ const defaultWorkspaceForm: Pick<AgentWorkspace, 'personality' | 'memory' | 'ins
   instructions: '',
 };
 
+type WorkspaceField = keyof typeof defaultWorkspaceForm;
+
+const workspaceTabs: WorkspaceField[] = ['personality', 'memory', 'instructions'];
+
 export function AgentsPanel({
   agents,
   providers,
@@ -44,11 +49,13 @@ export function AgentsPanel({
   onAgentAdd,
   onAgentEdit,
   onAgentRemove,
+  onOpenProviderSettings,
   onOpenMain,
 }: AgentsPanelProps) {
   const { t } = useI18n();
   const [agentForm, setAgentForm] = useState<CreateAgentPayload>(defaultAgentForm);
   const [workspaceForm, setWorkspaceForm] = useState(defaultWorkspaceForm);
+  const [activeWorkspaceField, setActiveWorkspaceField] = useState<WorkspaceField>('personality');
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(false);
   const [agentFormDirty, setAgentFormDirty] = useState(false);
   const [isSubmittingAgent, setIsSubmittingAgent] = useState(false);
@@ -58,6 +65,8 @@ export function AgentsPanel({
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const selectedAgentProvider = providers.find((provider) => provider.id === agentForm.model_provider_id);
+  const activeWorkspaceLabel = t(`agentConfig.${activeWorkspaceField}`);
+  const displayAgentName = (agent: Agent) => agent.is_builtin ? t('agentConfig.builtinMasterName') : agent.name;
 
   useEffect(() => {
     if (!activeAgent) {
@@ -72,14 +81,14 @@ export function AgentsPanel({
       return;
     }
     setAgentForm({
-      name: activeAgent.name,
+      name: displayAgentName(activeAgent),
       model_provider_id: activeAgent.model_provider_id,
       model_id: activeAgent.model_id,
       avatar_icon: activeAgent.avatar_icon,
       avatar_color: activeAgent.avatar_color,
     });
     setAgentFormDirty(false);
-  }, [activeAgent, providers]);
+  }, [activeAgent, providers, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,13 +130,13 @@ export function AgentsPanel({
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const payload = {
-      name: agentForm.name.trim(),
+      name: activeAgent?.is_builtin ? activeAgent.name : agentForm.name.trim(),
       model_provider_id: agentForm.model_provider_id,
       model_id: agentForm.model_id.trim(),
       avatar_icon: agentForm.avatar_icon,
       avatar_color: agentForm.avatar_color,
     };
-    if (!payload.name || !payload.model_provider_id || !payload.model_id) {
+    if ((!payload.name && !activeAgent?.is_builtin) || !payload.model_provider_id || !payload.model_id) {
       setError(t('error.validation'));
       return;
     }
@@ -157,8 +166,8 @@ export function AgentsPanel({
   }
 
   async function handleDelete() {
-    if (!activeAgent || !activeAgent.can_delete) return;
-    if (!window.confirm(t('deleteConfirm.message').replace('{name}', activeAgent.name))) return;
+    if (!activeAgent || activeAgent.is_builtin) return;
+    if (!window.confirm(t('deleteConfirm.message').replace('{name}', displayAgentName(activeAgent)))) return;
     try {
       await onAgentRemove(activeAgent.id);
       setAgentFormDirty(false);
@@ -195,8 +204,13 @@ export function AgentsPanel({
                 key={agent.id}
                 type="button"
                 active={agent.id === activeAgentId}
-                title={agent.name}
-                subtitle={agent.is_builtin ? agent.display_label ?? agentModelLabel(agent) : agentModelLabel(agent)}
+                title={(
+                  <span className="agent-list-title">
+                    <span>{displayAgentName(agent)}</span>
+                    {agent.is_builtin ? <span className="mini-status-badge"><ShieldCheck size={12} />{t('agentConfig.builtinBadge')}</span> : null}
+                  </span>
+                )}
+                subtitle={agentModelLabel(agent)}
                 leading={<AvatarBadge icon={agent.avatar_icon} color={agent.avatar_color} />}
                 onClick={() => switchAgent(agent.id)}
               />
@@ -209,14 +223,17 @@ export function AgentsPanel({
           <PaneHeader
             className="config-page-header"
             eyebrow={t('agentConfig.title')}
-            title={activeAgent ? activeAgent.name : t('agentConfig.newTitle')}
+            title={activeAgent ? displayAgentName(activeAgent) : t('agentConfig.newTitle')}
             description={activeAgent ? agentModelLabel(activeAgent) : t('agentConfig.selectAgent')}
-            actions={activeAgent?.is_builtin ? (
-              <span className="status-badge"><ShieldCheck size={15} />{activeAgent.display_label ?? t('agentConfig.builtin')}</span>
-            ) : activeAgent ? (
-              <IconButton variant="danger" type="button" onClick={handleDelete} label={t('agentConfig.delete')}>
-                <Trash2 size={17} />
-              </IconButton>
+            actions={activeAgent ? (
+              <>
+                {activeAgent.is_builtin ? <span className="model-note-badge">{t('agentConfig.coreAgentModelHint')}</span> : null}
+                {!activeAgent.is_builtin ? (
+                  <IconButton variant="danger" type="button" onClick={handleDelete} label={t('agentConfig.delete')}>
+                    <Trash2 size={17} />
+                  </IconButton>
+                ) : null}
+              </>
             ) : null}
           />
 
@@ -224,13 +241,13 @@ export function AgentsPanel({
 
           <form className="form-card entity-form" onSubmit={handleSubmit}>
             <div className="form-grid two-column">
-              <FormField label={t('agentConfig.name')} htmlFor="agent-name">
+              <FormField label={t('agentConfig.name')} htmlFor="agent-name" required>
                 <input
                   id="agent-name"
                   value={agentForm.name}
                   onChange={(e) => { setAgentForm({ ...agentForm, name: e.target.value }); setAgentFormDirty(true); }}
                   placeholder={t('agentConfig.placeholder_name')}
-                  disabled={isSubmittingAgent}
+                  disabled={isSubmittingAgent || activeAgent?.is_builtin}
                 />
               </FormField>
               <FormField label={t('agentConfig.avatar')}>
@@ -251,22 +268,27 @@ export function AgentsPanel({
                   )}
                 />
               </FormField>
-              <FormField label={t('agentConfig.provider')} htmlFor="agent-provider">
-                <select
-                  id="agent-provider"
-                  value={agentForm.model_provider_id}
-                  onChange={(e) => {
-                    const provider = providers.find((p) => p.id === e.target.value);
-                    setAgentForm({ ...agentForm, model_provider_id: e.target.value, model_id: provider?.models[0] ?? '' });
-                    setAgentFormDirty(true);
-                  }}
-                  disabled={isSubmittingAgent}
-                >
-                  <option value="">{t('agentConfig.placeholder_provider')}</option>
-                  {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-                </select>
+              <FormField label={t('agentConfig.provider')} htmlFor="agent-provider" required>
+                <div className="field-with-action">
+                  <select
+                    id="agent-provider"
+                    value={agentForm.model_provider_id}
+                    onChange={(e) => {
+                      const provider = providers.find((p) => p.id === e.target.value);
+                      setAgentForm({ ...agentForm, model_provider_id: e.target.value, model_id: provider?.models[0] ?? '' });
+                      setAgentFormDirty(true);
+                    }}
+                    disabled={isSubmittingAgent}
+                  >
+                    <option value="">{t('agentConfig.placeholder_provider')}</option>
+                    {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                  </select>
+                  <IconButton variant="ghost" type="button" onClick={onOpenProviderSettings} label={t('agentConfig.openProviderSettings')}>
+                    <SlidersHorizontal size={17} />
+                  </IconButton>
+                </div>
               </FormField>
-              <FormField label={t('agentConfig.model')} htmlFor="agent-model">
+              <FormField label={t('agentConfig.model')} htmlFor="agent-model" required>
                 <select
                   id="agent-model"
                   value={agentForm.model_id}
@@ -278,36 +300,31 @@ export function AgentsPanel({
                 </select>
               </FormField>
             </div>
-            {activeAgent?.model_note ? <p className="hint-text">{activeAgent.model_note}</p> : null}
             {activeAgent ? (
               <div className="workspace-editor">
                 <PaneHeader compact title={t('agentConfig.workspace')} description={isLoadingWorkspace ? t('chat.loading') : t('agentConfig.workspaceHint')} />
-                <div className="form-grid two-column">
-                  <FormField label={t('agentConfig.personality')} htmlFor="agent-personality">
-                    <textarea
-                      id="agent-personality"
-                      value={workspaceForm.personality}
-                      onChange={(e) => { setWorkspaceForm({ ...workspaceForm, personality: e.target.value }); setAgentFormDirty(true); }}
-                      rows={8}
-                      disabled={isSubmittingAgent || isLoadingWorkspace}
-                    />
-                  </FormField>
-                  <FormField label={t('agentConfig.memory')} htmlFor="agent-memory">
-                    <textarea
-                      id="agent-memory"
-                      value={workspaceForm.memory}
-                      onChange={(e) => { setWorkspaceForm({ ...workspaceForm, memory: e.target.value }); setAgentFormDirty(true); }}
-                      rows={8}
-                      disabled={isSubmittingAgent || isLoadingWorkspace}
-                    />
-                  </FormField>
+                <div className="workspace-tabs" role="tablist" aria-label={t('agentConfig.workspace')}>
+                  {workspaceTabs.map((field) => (
+                    <button
+                      key={field}
+                      type="button"
+                      className={`workspace-tab${activeWorkspaceField === field ? ' active' : ''}`}
+                      role="tab"
+                      aria-selected={activeWorkspaceField === field}
+                      aria-controls="agent-workspace-field"
+                      onClick={() => setActiveWorkspaceField(field)}
+                    >
+                      {t(`agentConfig.${field}`)}
+                    </button>
+                  ))}
                 </div>
-                <FormField label={t('agentConfig.instructions')} htmlFor="agent-instructions">
+                <FormField label={activeWorkspaceLabel} htmlFor="agent-workspace-field">
                   <textarea
-                    id="agent-instructions"
-                    value={workspaceForm.instructions}
-                    onChange={(e) => { setWorkspaceForm({ ...workspaceForm, instructions: e.target.value }); setAgentFormDirty(true); }}
-                    rows={9}
+                    id="agent-workspace-field"
+                    role="tabpanel"
+                    value={workspaceForm[activeWorkspaceField]}
+                    onChange={(e) => { setWorkspaceForm({ ...workspaceForm, [activeWorkspaceField]: e.target.value }); setAgentFormDirty(true); }}
+                    rows={12}
                     disabled={isSubmittingAgent || isLoadingWorkspace}
                   />
                 </FormField>

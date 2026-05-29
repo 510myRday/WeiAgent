@@ -40,6 +40,10 @@ fn api_router() -> Router<AppState> {
             get(providers::list_model_providers).post(providers::create_model_provider),
         )
         .route(
+            "/api/model-providers/models",
+            post(providers::fetch_provider_models),
+        )
+        .route(
             "/api/model-providers/{provider_id}",
             put(providers::update_model_provider).delete(providers::delete_model_provider),
         )

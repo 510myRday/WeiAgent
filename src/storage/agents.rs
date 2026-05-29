@@ -3,9 +3,7 @@ use tokio::fs;
 use uuid::Uuid;
 
 use crate::{
-    domain::{
-        Agent, AgentResponse, AgentWorkspaceSettings, CreateAgentRequest, UpdateAgentRequest,
-    },
+    domain::{Agent, AgentResponse, CreateAgentRequest, UpdateAgentRequest},
     error::{AppError, AppResult},
     storage::{
         json_store::JsonStore,
@@ -47,18 +45,16 @@ impl JsonStore {
             name: request.name.trim().to_string(),
             model_provider_id: request.model_provider_id,
             model_id: request.model_id.trim().to_string(),
+            is_builtin: false,
             avatar_icon,
             avatar_color,
             created_at: now,
             updated_at: now,
         };
         agents.push(agent.clone());
-        self.ensure_agent_workspace_unlocked(&agent, None).await?;
+        self.ensure_agent_workspace_unlocked(&agent).await?;
         self.write_agents_unlocked(&agents).await?;
-        Ok(AgentResponse::from_agent(
-            &agent,
-            AgentWorkspaceSettings::default(),
-        ))
+        Ok(AgentResponse::from_agent(&agent))
     }
 
     pub async fn update_agent(
@@ -88,7 +84,7 @@ impl JsonStore {
         validate_unique_avatar(&agents, Some(id), &next_avatar_icon, &next_avatar_color)?;
         let agent = agents.get_mut(agent_index).ok_or(AppError::NotFound)?;
 
-        if let Some(name) = request.name {
+        if let Some(name) = request.name.filter(|_| !agent.is_builtin) {
             agent.name = crate::storage::validation::validate_non_empty("agent name", &name)?;
         }
 
@@ -108,19 +104,21 @@ impl JsonStore {
 
         let updated = agent.clone();
         self.write_agents_unlocked(&agents).await?;
-        let settings = self.read_workspace_settings_unlocked(updated.id).await?;
-        Ok(AgentResponse::from_agent(&updated, settings))
+        Ok(AgentResponse::from_agent(&updated))
     }
 
     pub async fn delete_agent(&self, id: Uuid) -> AppResult<()> {
         let _guard = self.lock.lock().await;
-        let settings = self.read_workspace_settings_unlocked(id).await?;
-        if settings.is_builtin || !settings.can_delete {
+        let agents = self.read_agents_unlocked().await?;
+        if agents
+            .iter()
+            .any(|agent| agent.id == id && agent.is_builtin)
+        {
             return Err(AppError::BadRequest(
                 "built-in agents cannot be deleted".to_string(),
             ));
         }
-        let mut agents = self.read_agents_unlocked().await?;
+        let mut agents = agents;
         let before = agents.len();
         agents.retain(|agent| agent.id != id);
         if agents.len() == before {
@@ -152,8 +150,7 @@ impl JsonStore {
     pub(super) async fn agent_responses(&self, agents: &[Agent]) -> AppResult<Vec<AgentResponse>> {
         let mut responses = Vec::with_capacity(agents.len());
         for agent in agents {
-            let settings = self.read_workspace_settings_unlocked(agent.id).await?;
-            responses.push(AgentResponse::from_agent(agent, settings));
+            responses.push(AgentResponse::from_agent(agent));
         }
         Ok(responses)
     }

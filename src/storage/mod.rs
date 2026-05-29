@@ -8,7 +8,6 @@ mod workspaces;
 
 pub use json_store::JsonStore;
 
-pub(super) const BUILTIN_CEO_KEY: &str = "wei-ceo";
 pub(super) const DEFAULT_AGENT_ICON: &str = "bot";
 pub(super) const DEFAULT_AGENT_COLOR: &str = "#22c55e";
 pub(super) const BUILTIN_CEO_ICON: &str = "crown";
@@ -17,7 +16,6 @@ pub(super) const WORKSPACE_PERSONALITY: &str = "personality.md";
 pub(super) const WORKSPACE_MEMORY: &str = "memory.md";
 pub(super) const WORKSPACE_INSTRUCTIONS: &str = "instructions.md";
 pub(super) const WORKSPACE_TOOLS: &str = "tools.json";
-pub(super) const WORKSPACE_SETTINGS: &str = "settings.json";
 
 #[cfg(test)]
 mod tests {
@@ -139,14 +137,10 @@ mod tests {
         let store = JsonStore::new(temp_dir.path()).await.unwrap();
 
         let agents = store.list_agents().await.unwrap();
-        let builtin = agents
-            .iter()
-            .find(|agent| agent.builtin_key.as_deref() == Some(BUILTIN_CEO_KEY))
-            .unwrap();
+        let builtin = agents.iter().find(|agent| agent.is_builtin).unwrap();
 
-        assert_eq!(builtin.name, "Wei 首席专家");
+        assert_eq!(builtin.name, "Master");
         assert!(builtin.is_builtin);
-        assert!(!builtin.can_delete);
         assert!(
             temp_dir
                 .path()

@@ -8,13 +8,16 @@ const messages: Record<Locale, typeof zh> = { zh, en };
 
 const STORAGE_KEY = 'weiagent-locale';
 
+export function isLocale(value: unknown): value is Locale {
+  return value === 'zh' || value === 'en';
+}
+
 function detectLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored === 'zh' || stored === 'en') return stored;
   } catch { /* localStorage 不可用 */ }
-  const navLang = navigator.language.toLowerCase();
-  return navLang.startsWith('zh') ? 'zh' : 'en';
+  return 'zh';
 }
 
 /** 按 "a.b.c" 路径从嵌套对象中取值 */
@@ -33,6 +36,7 @@ function getByPath(obj: Record<string, unknown>, path: string): string {
 type I18nContextValue = {
   locale: Locale;
   setLocale: (locale: Locale) => void;
+  setLocaleStateOnly: (locale: Locale) => void;
   t: (path: string) => string;
 };
 
@@ -46,6 +50,11 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     try { localStorage.setItem(STORAGE_KEY, next); } catch { /* noop */ }
   }, []);
 
+  const setLocaleStateOnly = useCallback((next: Locale) => {
+    setLocaleState(next);
+    try { localStorage.setItem(STORAGE_KEY, next); } catch { /* noop */ }
+  }, []);
+
   useEffect(() => {
     document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
   }, [locale]);
@@ -55,7 +64,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     [locale],
   );
 
-  const value = useMemo(() => ({ locale, setLocale, t }), [locale, setLocale, t]);
+  const value = useMemo(() => ({ locale, setLocale, setLocaleStateOnly, t }), [locale, setLocale, setLocaleStateOnly, t]);
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

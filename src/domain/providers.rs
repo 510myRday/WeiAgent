@@ -81,6 +81,15 @@ pub struct CreateModelProviderRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct FetchProviderModelsRequest {
+    pub provider_type: ProviderType,
+    pub base_url: String,
+    pub api_key: String,
+    #[serde(default)]
+    pub extra_body: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct UpdateModelProviderRequest {
     pub provider_type: Option<ProviderType>,
     pub name: Option<String>,

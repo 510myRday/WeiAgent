@@ -1,6 +1,6 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
-type ListItemProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+type ListItemProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'title'> & {
   title: ReactNode;
   subtitle?: ReactNode;
   leading?: ReactNode;

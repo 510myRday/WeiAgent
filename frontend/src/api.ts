@@ -6,6 +6,7 @@ import type {
   Conversation,
   CreateAgentPayload,
   CreateConversationPayload,
+  FetchProviderModelsPayload,
   ModelProvider,
   ModelProviderPayload,
   SendMessageResponse,
@@ -94,6 +95,13 @@ export function deleteModelProvider(providerId: string): Promise<void> {
 
 export function fetchModels(providerId: string): Promise<string[]> {
   return request<string[]>(`/api/model-providers/${providerId}/models`);
+}
+
+export function fetchModelsForProvider(payload: FetchProviderModelsPayload): Promise<string[]> {
+  return request<string[]>('/api/model-providers/models', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export function listAgents(): Promise<Agent[]> {

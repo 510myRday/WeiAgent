@@ -75,7 +75,7 @@
 
 .chat-area {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   height: 100%;
   min-height: 0;
 }
@@ -99,3 +99,21 @@
   overflow: hidden;
 }
 
+.provider-list-panel > .pane-header-compact {
+  padding: 14px 16px 12px;
+}
+
+.provider-list-panel .list-stack.flush {
+  padding: var(--space-2);
+}
+
+.provider-list-item {
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: var(--space-2);
+  min-height: 54px;
+  padding: 9px 12px;
+}
+
+.provider-list-item .list-item-leading {
+  color: var(--color-muted);
+}

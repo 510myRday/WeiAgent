@@ -188,6 +188,7 @@ mod tests {
             name: "Coder".to_string(),
             model_provider_id: provider_id,
             model_id: "gpt-4o-mini".to_string(),
+            is_builtin: false,
             avatar_icon: "bot".to_string(),
             avatar_color: "#22c55e".to_string(),
             created_at: now,

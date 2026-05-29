@@ -12,6 +12,8 @@ pub struct AppSettings {
     pub avatar_icon: String,
     #[serde(default = "default_avatar_color")]
     pub avatar_color: String,
+    #[serde(default = "default_language")]
+    pub language: String,
 }
 
 impl Default for AppSettings {
@@ -22,6 +24,7 @@ impl Default for AppSettings {
             log_level: default_log_level(),
             avatar_icon: default_avatar_icon(),
             avatar_color: default_avatar_color(),
+            language: default_language(),
         }
     }
 }
@@ -31,7 +34,7 @@ fn default_host() -> String {
 }
 
 fn default_port() -> u16 {
-    8080
+    18283
 }
 
 fn default_log_level() -> String {
@@ -44,4 +47,8 @@ fn default_avatar_icon() -> String {
 
 fn default_avatar_color() -> String {
     "#22c55e".to_string()
+}
+
+fn default_language() -> String {
+    "zh".to_string()
 }

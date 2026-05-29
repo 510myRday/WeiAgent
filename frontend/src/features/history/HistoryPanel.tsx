@@ -59,7 +59,9 @@ export function HistoryPanel({ agents }: HistoryPanelProps) {
   }
 
   function agentName(agentId: string) {
-    return agents.find((agent) => agent.id === agentId)?.name ?? 'Assistant';
+    const agent = agents.find((item) => item.id === agentId);
+    if (!agent) return 'Assistant';
+    return agent.is_builtin ? t('agentConfig.builtinMasterName') : agent.name;
   }
 
   function formatDate(value: string) {
@@ -117,7 +119,7 @@ export function HistoryPanel({ agents }: HistoryPanelProps) {
         {agents.length === 0 ? <p className="muted centered">{t('history.empty')}</p> : null}
         {agents.map((agent) => (
           <section className="history-agent-group" key={agent.id}>
-            <h3>{agent.name}</h3>
+            <h3>{agent.is_builtin ? t('agentConfig.builtinMasterName') : agent.name}</h3>
             {(historyConversations[agent.id] ?? []).length === 0 ? <p className="muted">{t('conversation.empty')}</p> : null}
             {(historyConversations[agent.id] ?? []).map((conversation) => (
               <ListItem

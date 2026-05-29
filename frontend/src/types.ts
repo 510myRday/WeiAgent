@@ -4,6 +4,7 @@ export type AppSettings = {
   log_level: string;
   avatar_icon: AvatarIcon;
   avatar_color: string;
+  language: 'zh' | 'en';
 };
 
 export type ModelProvider = {
@@ -30,6 +31,13 @@ export type ModelProviderPayload = {
   extra_body?: Record<string, unknown>;
 };
 
+export type FetchProviderModelsPayload = {
+  provider_type: ProviderType;
+  base_url: string;
+  api_key: string;
+  extra_body?: Record<string, unknown>;
+};
+
 export type Agent = {
   id: string;
   name: string;
@@ -38,10 +46,6 @@ export type Agent = {
   avatar_icon: AvatarIcon;
   avatar_color: string;
   is_builtin: boolean;
-  builtin_key?: string | null;
-  display_label?: string | null;
-  model_note?: string | null;
-  can_delete: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -61,13 +65,6 @@ export type AgentWorkspace = {
   personality: string;
   memory: string;
   instructions: string;
-  settings: {
-    is_builtin: boolean;
-    builtin_key?: string | null;
-    display_label?: string | null;
-    model_note?: string | null;
-    can_delete: boolean;
-  };
 };
 
 export type Conversation = {

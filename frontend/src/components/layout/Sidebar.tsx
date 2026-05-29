@@ -20,6 +20,12 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
     void onSettingsSave({ ...settings, avatar_icon: next.icon, avatar_color: next.color });
   }
 
+  function handleLocaleToggle() {
+    const nextLocale = locale === 'zh' ? 'en' : 'zh';
+    setLocale(nextLocale);
+    void onSettingsSave({ ...settings, language: nextLocale });
+  }
+
   return (
     <aside className="sidebar app-rail" aria-label={t('sidebar.ariaLabel')}>
       <div className="rail-header">
@@ -51,7 +57,7 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
           className="lang-switch"
           variant="rail"
           type="button"
-          onClick={() => setLocale(locale === 'zh' ? 'en' : 'zh')}
+          onClick={handleLocaleToggle}
           label={locale === 'zh' ? t('lang.switchTo') : t('lang.switchToZh')}
         >
           <Globe size={17} />

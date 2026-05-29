@@ -44,10 +44,16 @@ export function AvatarBadge({
 }) {
   const preset = getPresetByIcon(icon);
   const Icon = ICON_MAP[preset.icon];
+  const iconOnly = className.split(' ').some((name) => name === 'avatar-icon-only' || name === 'avatar-icon-inline');
+
   return (
     <span
       className={className}
-      style={{ background: avatarBackground(color), borderColor: color, color }}
+      style={{
+        background: iconOnly ? 'transparent' : avatarBackground(color),
+        borderColor: iconOnly ? 'transparent' : color,
+        color,
+      }}
     >
       <Icon size={size} color={color} />
     </span>

@@ -46,6 +46,7 @@ pub async fn load_or_init_settings(path: &std::path::Path) -> AppResult<AppSetti
     let mut settings: AppSettings = serde_json::from_str(&content)?;
     validate_settings(&settings)?;
     settings.log_level = settings.log_level.trim().to_ascii_lowercase();
+    settings.language = settings.language.trim().to_string();
     write_settings(path, &settings).await?;
     Ok(settings)
 }
@@ -80,9 +81,15 @@ pub fn validate_settings(settings: &AppSettings) -> AppResult<()> {
     }
     let level = settings.log_level.trim().to_ascii_lowercase();
     match level.as_str() {
-        "trace" | "debug" | "info" | "warn" | "error" => Ok(()),
+        "trace" | "debug" | "info" | "warn" | "error" => {}
         _ => Err(AppError::BadRequest(
             "log_level must be trace, debug, info, warn, or error".to_string(),
+        ))?,
+    }
+    match settings.language.trim() {
+        "zh" | "en" => Ok(()),
+        _ => Err(AppError::BadRequest(
+            "language must be zh or en".to_string(),
         )),
     }
 }
