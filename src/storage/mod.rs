@@ -24,7 +24,7 @@ mod tests {
 
     use super::*;
     use crate::domain::{
-        ChatMessage, ChatRole, CreateAgentRequest, CreateConversationRequest,
+        ChatMessage, ChatMessageStatus, ChatRole, CreateAgentRequest, CreateConversationRequest,
         CreateModelProviderRequest, ProviderType, UpdateAgentWorkspaceRequest,
         UpdateModelProviderRequest,
     };
@@ -115,6 +115,7 @@ mod tests {
             conversation_id: conversation.id,
             role: ChatRole::User,
             content: "hello".to_string(),
+            status: ChatMessageStatus::Done,
             created_at: Utc::now(),
         };
         store

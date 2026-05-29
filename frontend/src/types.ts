@@ -5,6 +5,8 @@ export type AppSettings = {
   avatar_icon: AvatarIcon;
   avatar_color: string;
   language: 'zh' | 'en';
+  request_timeout_seconds: number;
+  request_retry_attempts: number;
 };
 
 export type ModelProvider = {
@@ -83,6 +85,7 @@ export type ChatMessage = {
   conversation_id: string;
   role: ChatRole;
   content: string;
+  status?: 'done' | 'streaming' | 'failed';
   created_at: string;
 };
 

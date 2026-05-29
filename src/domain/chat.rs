@@ -9,6 +9,8 @@ pub struct ChatMessage {
     pub conversation_id: Uuid,
     pub role: ChatRole,
     pub content: String,
+    #[serde(default)]
+    pub status: ChatMessageStatus,
     pub created_at: DateTime<Utc>,
 }
 
@@ -17,6 +19,15 @@ pub struct ChatMessage {
 pub enum ChatRole {
     User,
     Assistant,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatMessageStatus {
+    #[default]
+    Done,
+    Streaming,
+    Failed,
 }
 
 impl ChatRole {

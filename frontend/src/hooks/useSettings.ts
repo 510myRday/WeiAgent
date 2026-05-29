@@ -10,6 +10,8 @@ const defaultSettings: AppSettings = {
   avatar_icon: 'bot',
   avatar_color: defaultAvatarColor('bot'),
   language: 'zh',
+  request_timeout_seconds: 60,
+  request_retry_attempts: 3,
 };
 
 export function useSettings() {

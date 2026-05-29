@@ -7,8 +7,8 @@ use uuid::Uuid;
 use crate::{
     app::AppState,
     domain::{
-        CreateModelProviderRequest, FetchProviderModelsRequest, ModelProvider, ModelProviderResponse,
-        UpdateModelProviderRequest,
+        CreateModelProviderRequest, FetchProviderModelsRequest, ModelProvider,
+        ModelProviderResponse, UpdateModelProviderRequest,
     },
     error::AppResult,
 };

@@ -120,6 +120,7 @@ export function App() {
           onError={setError}
           onOpenMain={openMainPane}
           onBackToList={openListPane}
+          settings={settingsForm}
         />
       )}
       {activeNav === 'agents' && (

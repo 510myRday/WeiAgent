@@ -14,6 +14,10 @@ pub struct AppSettings {
     pub avatar_color: String,
     #[serde(default = "default_language")]
     pub language: String,
+    #[serde(default = "default_request_timeout_seconds")]
+    pub request_timeout_seconds: u64,
+    #[serde(default = "default_request_retry_attempts")]
+    pub request_retry_attempts: u32,
 }
 
 impl Default for AppSettings {
@@ -25,6 +29,8 @@ impl Default for AppSettings {
             avatar_icon: default_avatar_icon(),
             avatar_color: default_avatar_color(),
             language: default_language(),
+            request_timeout_seconds: default_request_timeout_seconds(),
+            request_retry_attempts: default_request_retry_attempts(),
         }
     }
 }
@@ -51,4 +57,12 @@ fn default_avatar_color() -> String {
 
 fn default_language() -> String {
     "zh".to_string()
+}
+
+fn default_request_timeout_seconds() -> u64 {
+    60
+}
+
+fn default_request_retry_attempts() -> u32 {
+    3
 }

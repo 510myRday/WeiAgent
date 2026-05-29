@@ -1,11 +1,12 @@
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use std::{future::Future, time::Duration};
 
 use crate::{
     domain::{Agent, ChatMessage, ModelProvider},
     error::{AppError, AppResult},
     llm::{
-        client::{ChatClient, ChatStream},
+        client::{ChatClient, ChatStream, RequestOptions},
         sse::parse_sse_line,
         types::{ChatCompletionResponse, ModelsListResponse, build_chat_request},
     },
@@ -41,6 +42,35 @@ impl OpenAiCompatibleChatClient {
     fn models_url(&self, provider: &ModelProvider) -> String {
         format!("{}/models", provider.base_url.trim_end_matches('/'))
     }
+
+    async fn retry_request<T, Fut, F>(
+        &self,
+        options: RequestOptions,
+        mut request: F,
+    ) -> AppResult<T>
+    where
+        F: FnMut() -> Fut + Send,
+        Fut: Future<Output = Result<T, reqwest::Error>> + Send,
+    {
+        let attempts = options.retry_attempts.max(1);
+        let mut last_error = None;
+        for attempt in 1..=attempts {
+            match tokio::time::timeout(options.timeout, request()).await {
+                Ok(Ok(value)) => return Ok(value),
+                Ok(Err(error)) => last_error = Some(AppError::Llm(error.to_string())),
+                Err(_) => {
+                    last_error = Some(AppError::Llm(format!(
+                        "request timed out after {}s",
+                        options.timeout.as_secs()
+                    )));
+                }
+            }
+            if attempt < attempts {
+                tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
+            }
+        }
+        Err(last_error.unwrap_or_else(|| AppError::Llm("request failed".to_string())))
+    }
 }
 
 #[async_trait]
@@ -51,17 +81,21 @@ impl ChatClient for OpenAiCompatibleChatClient {
         provider: &ModelProvider,
         messages: &[ChatMessage],
         system_prompt: &str,
+        options: RequestOptions,
     ) -> AppResult<String> {
         let request =
             build_chat_request(agent, messages, false, system_prompt, &provider.extra_body);
+        let api_key = self.api_key(provider)?.to_string();
+        let chat_url = self.chat_url(provider);
         let response = self
-            .http
-            .post(self.chat_url(provider))
-            .bearer_auth(self.api_key(provider)?)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|error| AppError::Llm(error.to_string()))?;
+            .retry_request(options, || {
+                self.http
+                    .post(chat_url.clone())
+                    .bearer_auth(api_key.clone())
+                    .json(&request)
+                    .send()
+            })
+            .await?;
 
         let status = response.status();
         let body = response
@@ -90,15 +124,20 @@ impl ChatClient for OpenAiCompatibleChatClient {
         provider: &ModelProvider,
         messages: &[ChatMessage],
         system_prompt: &str,
+        options: RequestOptions,
     ) -> AppResult<ChatStream> {
         let request =
             build_chat_request(agent, messages, true, system_prompt, &provider.extra_body);
+        let api_key = self.api_key(provider)?.to_string();
+        let chat_url = self.chat_url(provider);
         let response = self
-            .http
-            .post(self.chat_url(provider))
-            .bearer_auth(self.api_key(provider)?)
-            .json(&request)
-            .send()
+            .retry_request(options, || {
+                self.http
+                    .post(chat_url.clone())
+                    .bearer_auth(api_key.clone())
+                    .json(&request)
+                    .send()
+            })
             .await
             .map_err(|error| AppError::Llm(error.to_string()))?;
 
@@ -174,7 +213,7 @@ mod tests {
     use chrono::Utc;
     use uuid::Uuid;
 
-    use crate::domain::{Agent, ChatMessage, ChatRole};
+    use crate::domain::{Agent, ChatMessage, ChatMessageStatus, ChatRole};
 
     use super::*;
 
@@ -200,6 +239,7 @@ mod tests {
             conversation_id,
             role: ChatRole::User,
             content: "hello".to_string(),
+            status: ChatMessageStatus::Done,
             created_at: now,
         }];
 

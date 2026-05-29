@@ -231,6 +231,26 @@ export function SettingsPanel({
                     {['trace', 'debug', 'info', 'warn', 'error'].map((level) => <option key={level} value={level}>{level}</option>)}
                   </select>
                 </FormField>
+                <FormField label={t('settings.requestTimeout')} htmlFor="settings-timeout" required>
+                  <input
+                    id="settings-timeout"
+                    type="number"
+                    min={1}
+                    max={600}
+                    value={settingsForm.request_timeout_seconds}
+                    onChange={(e) => onSettingsFormChange({ ...settingsForm, request_timeout_seconds: Number(e.target.value) })}
+                  />
+                </FormField>
+                <FormField label={t('settings.requestRetries')} htmlFor="settings-retries" required>
+                  <input
+                    id="settings-retries"
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={settingsForm.request_retry_attempts}
+                    onChange={(e) => onSettingsFormChange({ ...settingsForm, request_retry_attempts: Number(e.target.value) })}
+                  />
+                </FormField>
               </div>
               <p className="hint-text">{t('settings.restartHint')}</p>
               <div className="form-actions">

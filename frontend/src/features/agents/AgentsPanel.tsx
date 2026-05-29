@@ -71,12 +71,7 @@ export function AgentsPanel({
   useEffect(() => {
     if (!activeAgent) {
       if (agentFormDirtyRef.current) return;
-      const provider = providers[0];
-      setAgentForm({
-        ...defaultAgentForm,
-        model_provider_id: provider?.id ?? '',
-        model_id: provider?.models[0] ?? '',
-      });
+      setAgentForm(defaultAgentForm);
       setWorkspaceForm(defaultWorkspaceForm);
       return;
     }
@@ -88,7 +83,7 @@ export function AgentsPanel({
       avatar_color: activeAgent.avatar_color,
     });
     setAgentFormDirty(false);
-  }, [activeAgent, providers, t]);
+  }, [activeAgent, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -225,16 +220,17 @@ export function AgentsPanel({
             eyebrow={t('agentConfig.title')}
             title={activeAgent ? displayAgentName(activeAgent) : t('agentConfig.newTitle')}
             description={activeAgent ? agentModelLabel(activeAgent) : t('agentConfig.selectAgent')}
-            actions={activeAgent ? (
+            actions={(
               <>
-                {activeAgent.is_builtin ? <span className="model-note-badge">{t('agentConfig.coreAgentModelHint')}</span> : null}
-                {!activeAgent.is_builtin ? (
+                {activeAgent?.is_builtin ? <span className="model-note-badge">{t('agentConfig.coreAgentModelHint')}</span> : null}
+                {!activeAgent ? <span className="model-note-badge">{t('agentConfig.workspaceCreateHint')}</span> : null}
+                {activeAgent && !activeAgent.is_builtin ? (
                   <IconButton variant="danger" type="button" onClick={handleDelete} label={t('agentConfig.delete')}>
                     <Trash2 size={17} />
                   </IconButton>
                 ) : null}
               </>
-            ) : null}
+            )}
           />
 
           {error ? <AlertBanner message={error} onDismiss={() => setError('')} dismissLabel={t('error.dismiss')} /> : null}
@@ -329,9 +325,7 @@ export function AgentsPanel({
                   />
                 </FormField>
               </div>
-            ) : (
-              <p className="hint-text">{t('agentConfig.workspaceCreateHint')}</p>
-            )}
+            ) : null}
             <div className="form-actions">
               <Button variant="primary" type="submit" disabled={isSubmittingAgent} icon={<Save size={17} />}>
                 {activeAgent ? t('agentConfig.save') : t('agentConfig.create')}

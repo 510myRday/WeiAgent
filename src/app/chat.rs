@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::{
     app::AppState,
-    domain::{Agent, ChatMessage, ChatRole, ModelProvider},
+    domain::{Agent, ChatMessage, ChatMessageStatus, ChatRole, ModelProvider},
     error::{AppError, AppResult},
 };
 
@@ -43,6 +43,7 @@ pub async fn prepare_chat(
         conversation_id,
         role: ChatRole::User,
         content: content.to_string(),
+        status: ChatMessageStatus::Done,
         created_at: Utc::now(),
     };
     let mut messages_for_llm = history;

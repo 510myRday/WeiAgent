@@ -40,7 +40,7 @@
     "create": "Create Agent",
     "save": "Save Agent",
     "delete": "Delete current Agent",
-    "placeholder_name": "Research Agent",
+    "placeholder_name": "",
     "placeholder_provider": "Select provider",
     "placeholder_model": "Type a model id",
     "openProviderSettings": "Open model provider settings",
@@ -65,6 +65,10 @@
     "placeholder": "Type a message...",
     "placeholderDisabled": "Select an agent first",
     "messageLabel": "Message",
+    "failed": "Response interrupted; current content was saved",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyCode": "Copy code",
     "ariaLabel": "Conversation"
   },
   "history": {
@@ -97,6 +101,8 @@
     "host": "Host",
     "port": "Port",
     "logLevel": "Log level",
+    "requestTimeout": "Request timeout (seconds)",
+    "requestRetries": "Timeout retry attempts",
     "restartHint": "Restart the backend after changing host or port.",
     "save": "Save settings"
   },

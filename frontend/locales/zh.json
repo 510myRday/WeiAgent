@@ -40,7 +40,7 @@
     "create": "创建 Agent",
     "save": "保存 Agent",
     "delete": "删除当前 Agent",
-    "placeholder_name": "研究员",
+    "placeholder_name": "",
     "placeholder_provider": "选择模型提供商",
     "placeholder_model": "输入模型 ID",
     "openProviderSettings": "打开模型提供商设置",
@@ -65,6 +65,10 @@
     "placeholder": "输入消息...",
     "placeholderDisabled": "请先选择一个 Agent",
     "messageLabel": "消息",
+    "failed": "回复中断，已保存当前内容",
+    "copy": "复制",
+    "copied": "已复制",
+    "copyCode": "复制代码",
     "ariaLabel": "对话"
   },
   "history": {
@@ -97,6 +101,8 @@
     "host": "监听地址",
     "port": "端口",
     "logLevel": "日志级别",
+    "requestTimeout": "请求超时（秒）",
+    "requestRetries": "超时重试次数",
     "restartHint": "修改监听地址或端口后，需要重启后端生效。",
     "save": "保存设置"
   },

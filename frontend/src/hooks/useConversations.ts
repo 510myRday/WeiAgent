@@ -27,9 +27,10 @@ function toUiMessage(msg: { id: string; agent_id: string; conversation_id: strin
 type UseConversationsOptions = {
   newConversationTitle: string;
   onError?: (msg: string) => void;
+  timeoutSeconds: number;
 };
 
-export function useConversations({ newConversationTitle, onError }: UseConversationsOptions) {
+export function useConversations({ newConversationTitle, onError, timeoutSeconds }: UseConversationsOptions) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState('');
   const [messages, setMessages] = useState<UiMessage[]>([]);
@@ -183,9 +184,9 @@ export function useConversations({ newConversationTitle, onError }: UseConversat
           await streamMessage(conversationId, content, (evt) => {
             if (requestId !== sendRequestIdRef.current) return;
             handleStreamEvent(evt);
-          }, controller.signal);
+          }, timeoutSeconds, controller.signal);
         } else {
-          const response = await sendMessage(conversationId, content, controller.signal);
+          const response = await sendMessage(conversationId, content, timeoutSeconds, controller.signal);
           if (requestId !== sendRequestIdRef.current) return;
           setMessages((current) => [
             ...current,
@@ -209,7 +210,7 @@ export function useConversations({ newConversationTitle, onError }: UseConversat
         }
       }
     },
-    [activeConversationId, handleStreamEvent, loadConversationsForAgent, newConversationTitle],
+    [activeConversationId, handleStreamEvent, loadConversationsForAgent, newConversationTitle, timeoutSeconds],
   );
 
   const createNewConversation = useCallback(

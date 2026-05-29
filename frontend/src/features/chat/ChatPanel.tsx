@@ -1,7 +1,11 @@
-import { useRef, useEffect, useCallback, useState, FormEvent } from 'react';
-import { ArrowLeft, Bot, Check, MessageSquare, Plus, Send, Trash2 } from 'lucide-react';
+import { useRef, useEffect, useCallback, useState, isValidElement, FormEvent } from 'react';
+import type { ReactNode } from 'react';
+import { ArrowLeft, Bot, Check, Clipboard, MessageSquare, Plus, Send, Trash2 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import rehypeHighlight from 'rehype-highlight';
+import remarkGfm from 'remark-gfm';
 
-import type { Agent, Conversation } from '../../types';
+import type { Agent, AppSettings, Conversation, UiMessage } from '../../types';
 import { useI18n } from '../../i18n';
 import { useConversations } from '../../hooks';
 import { AvatarBadge } from '../../components/AvatarPicker';
@@ -14,6 +18,7 @@ interface ChatPanelProps {
   onError: (message: string) => void;
   onOpenMain: () => void;
   onBackToList: () => void;
+  settings: AppSettings;
 }
 
 export function ChatPanel({
@@ -23,6 +28,7 @@ export function ChatPanel({
   onError,
   onOpenMain,
   onBackToList,
+  settings,
 }: ChatPanelProps) {
   const { t, locale } = useI18n();
   const {
@@ -39,7 +45,11 @@ export function ChatPanel({
     send,
     createNewConversation,
     removeConversation,
-  } = useConversations({ newConversationTitle: t('conversation.newTitle'), onError });
+  } = useConversations({
+    newConversationTitle: t('conversation.newTitle'),
+    onError,
+    timeoutSeconds: settings.request_timeout_seconds,
+  });
 
   const [draft, setDraft] = useState('');
   const [isStreamMode, setIsStreamMode] = useState(true);
@@ -224,7 +234,8 @@ export function ChatPanel({
                 <strong>{msg.role === 'user' ? t('chat.you') : activeAgent ? displayAgentName(activeAgent) : 'Assistant'}</strong>
                 <time dateTime={msg.created_at}>{formatTime(msg.created_at)}</time>
               </div>
-              <p>{msg.content}</p>
+              <MessageContent message={msg} />
+              {msg.status === 'failed' ? <span className="message-status error">{t('chat.failed')}</span> : null}
             </article>
           ))}
           <div ref={messagesEndRef} />
@@ -253,6 +264,109 @@ export function ChatPanel({
         </form>
       </section>
     </>
+  );
+}
+
+function MessageContent({ message }: { message: UiMessage }) {
+  if (message.status === 'streaming') {
+    return <p className="message-plain">{message.content}</p>;
+  }
+
+  return (
+    <div className="message-markdown">
+      <MarkdownContent content={message.content} />
+    </div>
+  );
+}
+
+function CodeBlock({ children }: { children?: ReactNode }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const text = extractText(children);
+  const language = extractLanguage(children);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="code-block-wrap">
+      <span className="code-language-label">{language}</span>
+      <button className="code-copy-button" type="button" onClick={handleCopy} disabled={!text} aria-label={t('chat.copyCode')}>
+        {copied ? <Check size={14} /> : <Clipboard size={14} />}
+        <span>{copied ? t('chat.copied') : t('chat.copy')}</span>
+      </button>
+      <pre>{children}</pre>
+    </div>
+  );
+}
+
+function extractLanguage(node: ReactNode): string {
+  const className = findCodeClassName(node);
+  const raw = className?.match(/language-([\w-]+)/)?.[1] ?? 'text';
+  return formatLanguage(raw);
+}
+
+function findCodeClassName(node: ReactNode): string | undefined {
+  if (Array.isArray(node)) {
+    return node.map(findCodeClassName).find(Boolean);
+  }
+  if (!isValidElement<{ className?: string; children?: ReactNode }>(node)) {
+    return undefined;
+  }
+  return node.props.className ?? findCodeClassName(node.props.children);
+}
+
+function formatLanguage(language: string): string {
+  const normalized = language.toLowerCase();
+  const labels: Record<string, string> = {
+    js: 'JS',
+    javascript: 'JS',
+    jsx: 'JSX',
+    ts: 'TS',
+    typescript: 'TS',
+    tsx: 'TSX',
+    html: 'HTML',
+    css: 'CSS',
+    json: 'JSON',
+    md: 'MD',
+    markdown: 'MD',
+    py: 'Python',
+    python: 'Python',
+    rs: 'Rust',
+    rust: 'Rust',
+    sh: 'Shell',
+    bash: 'Shell',
+    powershell: 'PowerShell',
+    ps1: 'PowerShell',
+    text: 'Text',
+    txt: 'Text',
+  };
+  return labels[normalized] ?? normalized.toUpperCase();
+}
+
+function extractText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  if (isValidElement<{ children?: ReactNode }>(node)) return extractText(node.props.children);
+  return '';
+}
+
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeHighlight]}
+      components={{ pre: CodeBlock }}
+    >
+      {content}
+    </ReactMarkdown>
   );
 }
 

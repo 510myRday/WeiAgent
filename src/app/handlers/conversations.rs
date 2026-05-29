@@ -12,11 +12,19 @@ use uuid::Uuid;
 use crate::{
     app::{AppState, chat::prepare_chat},
     domain::{
-        ChatMessage, ChatRole, Conversation, CreateConversationRequest, SendMessageRequest,
-        SendMessageResponse,
+        ChatMessage, ChatMessageStatus, ChatRole, Conversation, CreateConversationRequest,
+        SendMessageRequest, SendMessageResponse,
     },
     error::AppResult,
+    llm::client::RequestOptions,
 };
+
+fn request_options(settings: &crate::domain::AppSettings) -> RequestOptions {
+    RequestOptions {
+        timeout: std::time::Duration::from_secs(settings.request_timeout_seconds.max(1)),
+        retry_attempts: settings.request_retry_attempts.max(1),
+    }
+}
 
 pub async fn list_conversations(
     State(state): State<AppState>,
@@ -60,6 +68,7 @@ pub async fn send_message_complete(
     Json(request): Json<SendMessageRequest>,
 ) -> AppResult<Json<SendMessageResponse>> {
     let prepared = prepare_chat(&state, conversation_id, &request.content).await?;
+    let settings = state.store.read_settings().await?;
     let client = state.llm_registry.client_for(&prepared.provider)?;
     let assistant_content = client
         .complete(
@@ -67,6 +76,7 @@ pub async fn send_message_complete(
             &prepared.provider,
             &prepared.messages_for_llm,
             &prepared.system_prompt,
+            request_options(&settings),
         )
         .await?;
     let assistant_message = ChatMessage {
@@ -75,6 +85,7 @@ pub async fn send_message_complete(
         conversation_id,
         role: ChatRole::Assistant,
         content: assistant_content,
+        status: ChatMessageStatus::Done,
         created_at: Utc::now(),
     };
     state
@@ -97,6 +108,7 @@ pub async fn send_message_stream(
     Json(request): Json<SendMessageRequest>,
 ) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let prepared = prepare_chat(&state, conversation_id, &request.content).await?;
+    let settings = state.store.read_settings().await?;
     let client = state.llm_registry.client_for(&prepared.provider)?;
     let llm_stream = client
         .stream(
@@ -104,6 +116,7 @@ pub async fn send_message_stream(
             &prepared.provider,
             &prepared.messages_for_llm,
             &prepared.system_prompt,
+            request_options(&settings),
         )
         .await?;
 
@@ -112,35 +125,79 @@ pub async fn send_message_stream(
     let stream = async_stream::stream! {
         let mut assistant_content = String::new();
         let mut llm_stream = llm_stream;
+        let assistant_message_id = Uuid::new_v4();
+        let mut assistant_message = ChatMessage {
+            id: assistant_message_id,
+            agent_id: user_message.agent_id,
+            conversation_id,
+            role: ChatRole::Assistant,
+            content: String::new(),
+            status: ChatMessageStatus::Streaming,
+            created_at: Utc::now(),
+        };
+
+        if let Err(error) = store
+            .append_conversation_messages(conversation_id, &[user_message.clone(), assistant_message.clone()])
+            .await
+        {
+            yield Ok(Event::default().event("error").data(error.to_string()));
+            return;
+        }
 
         yield Ok(Event::default().event("user").json_data(&user_message).unwrap_or_else(|_| {
             Event::default().event("error").data("failed to serialize user message")
+        }));
+        yield Ok(Event::default().event("assistant").json_data(&assistant_message).unwrap_or_else(|_| {
+            Event::default().event("error").data("failed to serialize assistant message")
         }));
 
         while let Some(chunk) = llm_stream.next().await {
             match chunk {
                 Ok(content) => {
                     assistant_content.push_str(&content);
+                    if let Err(error) = store
+                        .update_conversation_message(
+                            conversation_id,
+                            assistant_message_id,
+                            assistant_content.clone(),
+                            ChatMessageStatus::Streaming,
+                        )
+                        .await
+                    {
+                        yield Ok(Event::default().event("error").data(error.to_string()));
+                        return;
+                    }
                     yield Ok(Event::default().event("delta").data(content));
                 }
                 Err(error) => {
+                    let failed_content = if assistant_content.is_empty() {
+                        format!("[stream failed: {error}]")
+                    } else {
+                        assistant_content.clone()
+                    };
+                    let _ = store
+                        .update_conversation_message(
+                            conversation_id,
+                            assistant_message_id,
+                            failed_content,
+                            ChatMessageStatus::Failed,
+                        )
+                        .await;
                     yield Ok(Event::default().event("error").data(error.to_string()));
                     return;
                 }
             }
         }
 
-        let assistant_message = ChatMessage {
-            id: Uuid::new_v4(),
-            agent_id: user_message.agent_id,
-            conversation_id,
-            role: ChatRole::Assistant,
-            content: assistant_content,
-            created_at: Utc::now(),
-        };
-
+        assistant_message.content = assistant_content;
+        assistant_message.status = ChatMessageStatus::Done;
         match store
-            .append_conversation_messages(conversation_id, &[user_message, assistant_message.clone()])
+            .update_conversation_message(
+                conversation_id,
+                assistant_message_id,
+                assistant_message.content.clone(),
+                ChatMessageStatus::Done,
+            )
             .await
         {
             Ok(()) => {

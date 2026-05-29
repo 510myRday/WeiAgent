@@ -46,6 +46,7 @@ mod tests {
             provider: &ModelProvider,
             _messages: &[ChatMessage],
             _system_prompt: &str,
+            _options: crate::llm::client::RequestOptions,
         ) -> AppResult<String> {
             Ok(format!("{} via {}", agent.model_id, provider.name))
         }
@@ -56,6 +57,7 @@ mod tests {
             _provider: &ModelProvider,
             _messages: &[ChatMessage],
             _system_prompt: &str,
+            _options: crate::llm::client::RequestOptions,
         ) -> AppResult<ChatStream> {
             Ok(Box::pin(stream::iter(vec![
                 Ok("mock ".to_string()),

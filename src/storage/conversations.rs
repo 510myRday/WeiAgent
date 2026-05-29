@@ -3,7 +3,7 @@ use tokio::fs;
 use uuid::Uuid;
 
 use crate::{
-    domain::{ChatMessage, Conversation, CreateConversationRequest},
+    domain::{ChatMessage, ChatMessageStatus, Conversation, CreateConversationRequest},
     error::{AppError, AppResult},
     storage::{files::write_json, json_store::JsonStore},
 };
@@ -101,6 +101,34 @@ impl JsonStore {
             .read_conversation_messages_unchecked(conversation_id)
             .await?;
         existing.extend_from_slice(messages);
+        write_json(&self.conversation_file(conversation_id), &existing).await?;
+        conversation.updated_at = Utc::now();
+        self.write_conversations_unlocked(&conversations).await
+    }
+
+    pub async fn update_conversation_message(
+        &self,
+        conversation_id: Uuid,
+        message_id: Uuid,
+        content: String,
+        status: ChatMessageStatus,
+    ) -> AppResult<()> {
+        let _guard = self.lock.lock().await;
+        let mut conversations = self.read_conversations_unlocked().await?;
+        let conversation = conversations
+            .iter_mut()
+            .find(|conversation| conversation.id == conversation_id)
+            .ok_or(AppError::NotFound)?;
+
+        let mut existing = self
+            .read_conversation_messages_unchecked(conversation_id)
+            .await?;
+        let message = existing
+            .iter_mut()
+            .find(|message| message.id == message_id)
+            .ok_or(AppError::NotFound)?;
+        message.content = content;
+        message.status = status;
         write_json(&self.conversation_file(conversation_id), &existing).await?;
         conversation.updated_at = Utc::now();
         self.write_conversations_unlocked(&conversations).await

@@ -169,12 +169,15 @@ export function readConversationMessages(conversationId: string): Promise<ChatMe
 export function sendMessage(
   conversationId: string,
   content: string,
+  timeoutSeconds: number,
   signal?: AbortSignal,
 ): Promise<SendMessageResponse> {
+  const timeoutSignal = AbortSignal.timeout(Math.max(1, timeoutSeconds) * 1000);
+  const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   return request<SendMessageResponse>(`/api/conversations/${conversationId}/messages`, {
     method: 'POST',
     body: JSON.stringify({ content }),
-    signal,
+    signal: combinedSignal,
   });
 }
 
@@ -182,13 +185,16 @@ export async function streamMessage(
   conversationId: string,
   content: string,
   onEvent: (event: StreamEvent) => void,
+  timeoutSeconds: number,
   signal?: AbortSignal,
 ): Promise<void> {
+  const timeoutSignal = AbortSignal.timeout(Math.max(1, timeoutSeconds) * 1000);
+  const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   const response = await fetch(`/api/conversations/${conversationId}/messages/stream`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ content }),
-    signal,
+    signal: combinedSignal,
   });
 
   if (!response.ok || !response.body) {
