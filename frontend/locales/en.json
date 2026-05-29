@@ -62,6 +62,7 @@
     "you": "You",
     "sending": "Sending",
     "send": "Send",
+    "stop": "Stop",
     "placeholder": "Type a message...",
     "placeholderDisabled": "Select an agent first",
     "messageLabel": "Message",
@@ -69,7 +70,8 @@
     "copy": "Copy",
     "copied": "Copied",
     "copyCode": "Copy code",
-    "ariaLabel": "Conversation"
+    "ariaLabel": "Conversation",
+    "scrollToBottom": "Scroll to latest message"
   },
   "history": {
     "title": "Conversation History",

@@ -1,5 +1,6 @@
 @import './tokens.css';
 @import 'highlight.js/styles/github.css';
+@import 'katex/dist/katex.min.css';
 @import './base.css';
 @import './layout.css';
 @import './components.css';

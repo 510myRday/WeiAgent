@@ -43,6 +43,7 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
   const pendingDeltaRef = useRef('');
   const rafIdRef = useRef(0);
   const activeStreamRef = useRef({ agentId: '', conversationId: '' });
+  const suppressNextLoadConversationIdRef = useRef('');
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
@@ -61,6 +62,10 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
   }, []);
 
   const loadMessages = useCallback(async (conversationId: string) => {
+    if (suppressNextLoadConversationIdRef.current === conversationId) {
+      suppressNextLoadConversationIdRef.current = '';
+      return;
+    }
     const requestId = ++loadChatIdRef.current;
     setIsLoadingChat(true);
     setMessages([]);
@@ -75,13 +80,6 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
     } finally {
       if (requestId === loadChatIdRef.current) setIsLoadingChat(false);
     }
-  }, []);
-
-  const cancelActiveSend = useCallback(() => {
-    sendRequestIdRef.current += 1;
-    sendAbortControllerRef.current?.abort();
-    sendAbortControllerRef.current = null;
-    setIsSending(false);
   }, []);
 
   const clearChat = useCallback(() => {
@@ -122,10 +120,38 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
     });
   }, []);
 
+  const cancelActiveSend = useCallback(() => {
+    sendRequestIdRef.current += 1;
+    pendingDeltaRef.current = '';
+    if (rafIdRef.current) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = 0;
+    }
+    sendAbortControllerRef.current?.abort();
+    sendAbortControllerRef.current = null;
+    setMessages((current) => {
+      const last = current[current.length - 1];
+      if (last?.role === 'assistant' && last.status === 'streaming') {
+        if (!last.content) return current.slice(0, -1);
+        return [...current.slice(0, -1), { ...last, status: 'failed' }];
+      }
+      return current;
+    });
+    setIsSending(false);
+  }, []);
+
   const handleStreamEvent = useCallback(
     (evt: { event: string; data: unknown }) => {
       if (evt.event === 'error') {
+        pendingDeltaRef.current = '';
         setIsSending(false);
+        setMessages((current) => {
+          const last = current[current.length - 1];
+          if (last?.role === 'assistant' && last.status === 'streaming' && !last.content) {
+            return current.slice(0, -1);
+          }
+          return current;
+        });
         onErrorRef.current?.(typeof evt.data === 'string' ? evt.data : 'Stream error');
         return;
       }
@@ -135,7 +161,15 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         return;
       }
       if (evt.event === 'user') {
-        setMessages((current) => [...current, toUiMessage(evt.data as Parameters<typeof toUiMessage>[0])]);
+        const msg = toUiMessage(evt.data as Parameters<typeof toUiMessage>[0]);
+        setMessages((current) => {
+          if (current.some((item) => item.id && item.id === msg.id)) return current;
+          const optimisticIndex = current.findIndex((item) => item.role === 'user' && !item.id && item.content === msg.content);
+          if (optimisticIndex >= 0) {
+            return current.map((item, index) => index === optimisticIndex ? { ...msg, clientId: item.clientId } : item);
+          }
+          return [...current, msg];
+        });
         return;
       }
       if (evt.event === 'delta') {
@@ -146,7 +180,6 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         return;
       }
       if (evt.event === 'assistant') {
-        if (pendingDeltaRef.current) flushPendingDelta();
         const msg = toUiMessage(evt.data as Parameters<typeof toUiMessage>[0]);
         setMessages((current) => {
           const last = current[current.length - 1];
@@ -164,9 +197,35 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
     async (content: string, agentId: string, isStreamMode: boolean) => {
       const requestId = ++sendRequestIdRef.current;
       const controller = new AbortController();
+      const optimisticUserClientId = genClientId();
+      const optimisticAssistantClientId = genClientId();
       sendAbortControllerRef.current?.abort();
       sendAbortControllerRef.current = controller;
+      pendingDeltaRef.current = '';
       setIsSending(true);
+      setMessages((current) => [
+        ...current,
+        {
+          id: '',
+          agent_id: agentId,
+          conversation_id: activeConversationId,
+          role: 'user' as const,
+          content,
+          status: 'done' as const,
+          created_at: new Date().toISOString(),
+          clientId: optimisticUserClientId,
+        },
+        {
+          id: '',
+          agent_id: agentId,
+          conversation_id: activeConversationId,
+          role: 'assistant' as const,
+          content: '',
+          status: 'streaming' as const,
+          created_at: new Date().toISOString(),
+          clientId: optimisticAssistantClientId,
+        },
+      ]);
 
       try {
         let conversationId = activeConversationId;
@@ -175,8 +234,14 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
             title: content.slice(0, 40) || newConversationTitle,
           });
           setConversations((current) => [created, ...current]);
+          suppressNextLoadConversationIdRef.current = created.id;
           setActiveConversationId(created.id);
           conversationId = created.id;
+          setMessages((current) => current.map((msg) => (
+            msg.clientId === optimisticUserClientId || msg.clientId === optimisticAssistantClientId
+              ? { ...msg, conversation_id: conversationId }
+              : msg
+          )));
         }
 
         if (isStreamMode) {
@@ -188,18 +253,30 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         } else {
           const response = await sendMessage(conversationId, content, timeoutSeconds, controller.signal);
           if (requestId !== sendRequestIdRef.current) return;
-          setMessages((current) => [
-            ...current,
-            toUiMessage(response.user),
-            toUiMessage(response.assistant),
-          ]);
+          setMessages((current) => current.map((msg) => {
+            if (msg.clientId === optimisticUserClientId) {
+              return { ...toUiMessage(response.user), clientId: optimisticUserClientId };
+            }
+            if (msg.clientId === optimisticAssistantClientId) {
+              return { ...toUiMessage(response.assistant), clientId: optimisticAssistantClientId };
+            }
+            return msg;
+          }));
           setIsSending(false);
         }
         void loadConversationsForAgent(agentId);
       } catch (cause) {
         if (requestId === sendRequestIdRef.current) {
+          if (pendingDeltaRef.current) flushPendingDelta();
           setIsSending(false);
           if (!isAbortError(cause)) {
+            setMessages((current) => {
+              const last = current[current.length - 1];
+              if (last?.clientId === optimisticAssistantClientId) {
+                return [...current.slice(0, -1), { ...last, status: 'failed' }];
+              }
+              return current;
+            });
             onErrorRef.current?.(cause instanceof Error ? cause.message : 'Send failed');
           }
         }

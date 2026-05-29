@@ -1,9 +1,29 @@
 import { useRef, useEffect, useCallback, useState, isValidElement, FormEvent } from 'react';
 import type { ReactNode } from 'react';
-import { ArrowLeft, Bot, Check, Clipboard, MessageSquare, Plus, Send, Trash2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  Bot,
+  Box,
+  Check,
+  ChevronDown,
+  Circle,
+  Clipboard,
+  Folder,
+  Mic,
+  MessageSquare,
+  Square,
+  Plus,
+  Scissors,
+  Send,
+  Smile,
+  Trash2,
+  Volume2,
+} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
+import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 
 import type { Agent, AppSettings, Conversation, UiMessage } from '../../types';
 import { useI18n } from '../../i18n';
@@ -54,6 +74,7 @@ export function ChatPanel({
   const [draft, setDraft] = useState('');
   const [isStreamMode, setIsStreamMode] = useState(true);
   const [conversationFilter, setConversationFilter] = useState('');
+  const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -84,18 +105,31 @@ export function ChatPanel({
     return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   }, []);
 
+  const updateScrollButtonVisibility = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el) {
+      setIsAwayFromBottom(false);
+      return;
+    }
+    const canScroll = el.scrollHeight > el.clientHeight + 8;
+    setIsAwayFromBottom(canScroll && !isMessagesNearBottom());
+  }, [isMessagesNearBottom]);
+
   const scrollToBottom = useCallback(
     (force = false) => {
       if (!force && !isMessagesNearBottom()) return;
       const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       messagesEndRef.current?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth' });
+      setIsAwayFromBottom(false);
     },
     [isMessagesNearBottom],
   );
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, scrollToBottom]);
+    const frameId = window.requestAnimationFrame(updateScrollButtonVisibility);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [messages, scrollToBottom, updateScrollButtonVisibility]);
 
   function handleAgentSelect(agentId: string) {
     onError('');
@@ -110,8 +144,12 @@ export function ChatPanel({
 
   function handleSend(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (isSending) {
+      cancelActiveSend();
+      return;
+    }
     const content = draft.trim();
-    if (!activeAgent || !content || isSending) return;
+    if (!activeAgent || !content) return;
     setDraft('');
     onError('');
     void send(content, activeAgent.id, isStreamMode);
@@ -155,6 +193,31 @@ export function ChatPanel({
       hour: '2-digit',
       minute: '2-digit',
     }).format(new Date(value));
+  }
+
+  function formatTimelineTime(value: string) {
+    const date = new Date(value);
+    const now = new Date();
+    const isSameYear = date.getFullYear() === now.getFullYear();
+    const isSameDay = date.toDateString() === now.toDateString();
+
+    if (isSameDay) return formatTime(value);
+
+    return new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
+      month: 'long',
+      day: 'numeric',
+      ...(isSameYear ? {} : { year: 'numeric' as const }),
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date);
+  }
+
+  function shouldShowTimeSeparator(message: UiMessage, previous?: UiMessage) {
+    if (!previous) return true;
+    const currentTime = new Date(message.created_at).getTime();
+    const previousTime = new Date(previous.created_at).getTime();
+    if (!Number.isFinite(currentTime) || !Number.isFinite(previousTime)) return false;
+    return currentTime - previousTime >= 5 * 60 * 1000;
   }
 
   return (
@@ -219,7 +282,7 @@ export function ChatPanel({
       </section>
 
       <section className="main-pane chat-area" aria-label={t('chat.ariaLabel')}>
-        <div className="messages" aria-live="polite" ref={messagesContainerRef}>
+        <div className="messages" aria-live="polite" ref={messagesContainerRef} onScroll={updateScrollButtonVisibility}>
           {isLoadingChat ? <p className="muted centered">{t('chat.loading')}</p> : null}
           {!isLoadingChat && messages.length === 0 ? (
             <EmptyState
@@ -228,38 +291,63 @@ export function ChatPanel({
               description={activeAgent ? t('chat.emptyHint') : t('chat.noAgentHint')}
             />
           ) : null}
-          {messages.map((msg) => (
-            <article className={'message ' + msg.role} key={msg.clientId}>
-              <div className="message-meta">
-                <strong>{msg.role === 'user' ? t('chat.you') : activeAgent ? displayAgentName(activeAgent) : 'Assistant'}</strong>
-                <time dateTime={msg.created_at}>{formatTime(msg.created_at)}</time>
-              </div>
-              <MessageContent message={msg} />
-              {msg.status === 'failed' ? <span className="message-status error">{t('chat.failed')}</span> : null}
-            </article>
+          {messages.map((msg, index) => (
+            <MessageRow
+              key={msg.clientId}
+              message={msg}
+              showTimeSeparator={shouldShowTimeSeparator(msg, messages[index - 1])}
+              timeSeparatorLabel={formatTimelineTime(msg.created_at)}
+              participantName={msg.role === 'user' ? t('chat.you') : activeAgent ? displayAgentName(activeAgent) : 'Assistant'}
+              agent={activeAgent}
+              settings={settings}
+              failedLabel={t('chat.failed')}
+            />
           ))}
           <div ref={messagesEndRef} />
         </div>
 
+        {isAwayFromBottom ? (
+          <button
+            className="scroll-to-bottom-button"
+            type="button"
+            onClick={() => scrollToBottom(true)}
+            aria-label={t('chat.scrollToBottom')}
+            title={t('chat.scrollToBottom')}
+          >
+            <ChevronDown size={22} strokeWidth={2.4} />
+          </button>
+        ) : null}
+
         <form className="composer" onSubmit={handleSend}>
-          <div className="composer-toolbar">
-            <label className="mode-toggle">
-              <input type="checkbox" checked={isStreamMode} onChange={(e) => setIsStreamMode(e.target.checked)} />
-              <span>{isStreamMode ? t('chat.stream') : t('chat.complete')}</span>
-            </label>
-            <Button className="back-button" type="button" onClick={onBackToList}>{t('common.back')}</Button>
-          </div>
-          <div className="composer-input-row">
+          <div className="composer-box">
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder={activeAgent ? t('chat.placeholder') : t('chat.placeholderDisabled')}
-              disabled={!activeAgent || isSending}
-              rows={3}
+              disabled={!activeAgent}
+              rows={4}
             />
-            <Button className="send-button" variant="primary" type="submit" disabled={!activeAgent || !draft.trim() || isSending} icon={<Send size={18} />}>
-              {isSending ? t('chat.sending') : t('chat.send')}
-            </Button>
+            <div className="composer-toolbar">
+              <div className="composer-tools" aria-label="composer tools">
+                <button type="button" className="composer-tool" aria-label="Emoji"><Smile size={18} /></button>
+                <button type="button" className="composer-tool" aria-label="Files"><Box size={18} /></button>
+                <button type="button" className="composer-tool" aria-label="Folder"><Folder size={18} /></button>
+                <button type="button" className="composer-tool composer-tool-with-caret" aria-label="Capture"><Scissors size={18} /><ChevronDown size={13} /></button>
+                <button type="button" className="composer-tool" aria-label="Record"><Circle size={18} /></button>
+                <button type="button" className="composer-tool" aria-label="Voice"><Mic size={18} /></button>
+              </div>
+              <div className="composer-actions">
+                <label className="mode-toggle">
+                  <input type="checkbox" checked={isStreamMode} onChange={(e) => setIsStreamMode(e.target.checked)} />
+                  <span>{isStreamMode ? t('chat.stream') : t('chat.complete')}</span>
+                </label>
+                <button type="button" className="composer-tool" aria-label="Sound"><Volume2 size={18} /></button>
+                <Button className="back-button" type="button" onClick={onBackToList}>{t('common.back')}</Button>
+                <Button className="send-button" variant="primary" type="submit" disabled={!activeAgent || (!draft.trim() && !isSending)} icon={isSending ? <Square size={16} /> : <Send size={17} />}>
+                  {isSending ? t('chat.stop') : t('chat.send')}
+                </Button>
+              </div>
+            </div>
           </div>
         </form>
       </section>
@@ -267,7 +355,72 @@ export function ChatPanel({
   );
 }
 
+function MessageRow({
+  message,
+  showTimeSeparator,
+  timeSeparatorLabel,
+  participantName,
+  agent,
+  settings,
+  failedLabel,
+}: {
+  message: UiMessage;
+  showTimeSeparator: boolean;
+  timeSeparatorLabel: string;
+  participantName: string;
+  agent?: Agent;
+  settings: AppSettings;
+  failedLabel: string;
+}) {
+  const isUser = message.role === 'user';
+
+  return (
+    <>
+      {showTimeSeparator ? (
+        <div className="message-time-separator">
+          <time dateTime={message.created_at}>{timeSeparatorLabel}</time>
+        </div>
+      ) : null}
+      <article className={'message-row ' + message.role}>
+        {!isUser ? <MessageAvatar agent={agent} settings={settings} isUser={false} /> : null}
+        <div className="message-body">
+          <div className="message-meta">
+            <strong>{participantName}</strong>
+          </div>
+          <div className="message-bubble">
+            <MessageContent message={message} />
+            {message.status === 'failed' ? <span className="message-status error">{failedLabel}</span> : null}
+          </div>
+        </div>
+        {isUser ? <MessageAvatar agent={agent} settings={settings} isUser /> : null}
+      </article>
+    </>
+  );
+}
+
+function MessageAvatar({ agent, settings, isUser }: { agent?: Agent; settings: AppSettings; isUser: boolean }) {
+  if (isUser) {
+    return <AvatarBadge icon={settings.avatar_icon} color={settings.avatar_color} size={23} className="chat-avatar" />;
+  }
+
+  if (agent) {
+    return <AvatarBadge icon={agent.avatar_icon} color={agent.avatar_color} size={23} className="chat-avatar" />;
+  }
+
+  return <span className="chat-avatar avatar-muted"><Bot size={23} /></span>;
+}
+
 function MessageContent({ message }: { message: UiMessage }) {
+  if (message.status === 'streaming' && !message.content) {
+    return (
+      <div className="typing-indicator" role="status" aria-label="Preparing response">
+        <span />
+        <span />
+        <span />
+      </div>
+    );
+  }
+
   if (message.status === 'streaming') {
     return <p className="message-plain">{message.content}</p>;
   }
@@ -361,13 +514,19 @@ function extractText(node: ReactNode): string {
 function MarkdownContent({ content }: { content: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeHighlight]}
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex, rehypeHighlight]}
       components={{ pre: CodeBlock }}
     >
-      {content}
+      {normalizeMathMarkdown(content)}
     </ReactMarkdown>
   );
+}
+
+function normalizeMathMarkdown(content: string): string {
+  return content.replace(/\\\[([\s\S]*?)\\\]/g, (_match, formula: string) => {
+    return `$$\n${formula.trim()}\n$$`;
+  }).replace(/\\\(([\s\S]*?)\\\)/g, (_match, formula: string) => `$${formula.trim()}$`);
 }
 
 function ConversationRow({

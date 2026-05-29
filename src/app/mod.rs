@@ -241,9 +241,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
-        assert!(text.contains("event: delta"));
-        assert!(text.contains("data: mock "));
-        assert!(text.contains("data: stream"));
+        assert!(text.contains("event: assistant"));
+        assert!(text.contains("mock stream"));
         assert!(text.contains("event: done"));
     }
 }
