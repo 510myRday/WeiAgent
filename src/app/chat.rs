@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::{
     app::AppState,
-    domain::{Agent, ChatMessage, ChatMessageStatus, ChatRole, ModelProvider},
+    domain::{Agent, AgentToolsConfig, ChatMessage, ChatMessageStatus, ChatRole, ModelProvider},
     error::{AppError, AppResult},
 };
 
@@ -13,6 +13,7 @@ pub struct PreparedChat {
     pub user_message: ChatMessage,
     pub messages_for_llm: Vec<ChatMessage>,
     pub system_prompt: String,
+    pub tools_config: AgentToolsConfig,
 }
 
 pub async fn prepare_chat(
@@ -45,10 +46,13 @@ pub async fn prepare_chat(
         content: content.to_string(),
         status: ChatMessageStatus::Done,
         created_at: Utc::now(),
+        tool_calls: None,
+        tool_call_id: None,
     };
     let mut messages_for_llm = history;
     messages_for_llm.push(user_message.clone());
     let system_prompt = state.store.build_agent_system_prompt(&agent).await?;
+    let tools_config = state.store.read_agent_tools_config(agent.id).await?;
 
     Ok(PreparedChat {
         agent,
@@ -56,5 +60,6 @@ pub async fn prepare_chat(
         user_message,
         messages_for_llm,
         system_prompt,
+        tools_config,
     })
 }

@@ -79,7 +79,16 @@ export type Conversation = {
   updated_at: string;
 };
 
-export type ChatRole = 'user' | 'assistant';
+export type ChatRole = 'user' | 'assistant' | 'tool';
+
+export type ChatToolCall = {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
 
 export type ChatMessage = {
   id: string;
@@ -89,6 +98,8 @@ export type ChatMessage = {
   content: string;
   status?: 'done' | 'streaming' | 'failed';
   created_at: string;
+  tool_calls?: ChatToolCall[];
+  tool_call_id?: string;
 };
 
 export type UiMessage = ChatMessage & { clientId: string };
@@ -114,12 +125,38 @@ export type SendMessageResponse = {
   assistant: ChatMessage;
 };
 
+export type ToolCallStatus = 'running' | 'pending_approval' | 'completed' | 'blocked' | 'rejected' | 'error';
+
+export type ToolResultData = {
+  stdout?: string;
+  stderr?: string;
+  exit_code?: number;
+  duration_ms?: number;
+  process_id?: string;
+  message?: string;
+  reason?: string;
+};
+
+export type ToolCallMessage = {
+  type: 'tool_call';
+  call_id: string;
+  name: string;
+  arguments: Record<string, any>;
+  status: ToolCallStatus;
+  result?: ToolResultData;
+};
+
+export type UiMessageItem = UiMessage | ToolCallMessage;
+
 export type StreamEvent =
   | { event: 'user'; data: ChatMessage }
   | { event: 'assistant'; data: ChatMessage }
   | { event: 'delta'; data: string }
   | { event: 'done'; data: string }
-  | { event: 'error'; data: string };
+  | { event: 'error'; data: string }
+  | { event: 'tool_call'; data: { call_id: string; name: string; arguments: Record<string, any> } }
+  | { event: 'tool_result'; data: { call_id: string; result: ToolResultData & { status: ToolCallStatus } } }
+  | { event: 'approval_required'; data: { call_id: string; command: string; approval_id: string } };
 
 export type NavKey = 'chat' | 'agents' | 'groups' | 'settings';
 

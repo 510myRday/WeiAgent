@@ -3,6 +3,7 @@ pub mod chat;
 pub mod conversations;
 pub mod providers;
 pub mod settings;
+pub mod tools;
 
 pub use agents::{
     Agent, AgentResponse, AgentWorkspace, CreateAgentRequest, UpdateAgentRequest,
@@ -15,3 +16,7 @@ pub use providers::{
     ProviderType, UpdateModelProviderRequest,
 };
 pub use settings::AppSettings;
+pub use tools::{
+    AgentToolsConfig, ApprovalDecision, ApprovalRequest, ApprovalResponse, CommandDecision,
+    PendingApproval, TerminalToolConfig, ToolResult,
+};

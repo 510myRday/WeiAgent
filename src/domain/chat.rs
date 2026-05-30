@@ -12,6 +12,11 @@ pub struct ChatMessage {
     #[serde(default)]
     pub status: ChatMessageStatus,
     pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<serde_json::Value>,
+    /// Present when role = Tool, links to the tool_call_id from assistant's tool_calls
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -19,6 +24,7 @@ pub struct ChatMessage {
 pub enum ChatRole {
     User,
     Assistant,
+    Tool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -35,6 +41,7 @@ impl ChatRole {
         match self {
             ChatRole::User => "user",
             ChatRole::Assistant => "assistant",
+            ChatRole::Tool => "tool",
         }
     }
 }
@@ -42,6 +49,12 @@ impl ChatRole {
 #[derive(Debug, Deserialize)]
 pub struct SendMessageRequest {
     pub content: String,
+    #[serde(default = "default_stream_response")]
+    pub stream: bool,
+}
+
+fn default_stream_response() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize)]

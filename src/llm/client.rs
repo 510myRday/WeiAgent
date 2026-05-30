@@ -6,9 +6,10 @@ use futures_util::Stream;
 use crate::{
     domain::{Agent, ChatMessage, ModelProvider},
     error::AppResult,
+    llm::types::{ChatCompletionOutput, StreamEvent, ToolDefinition},
 };
 
-pub type ChatStream = Pin<Box<dyn Stream<Item = AppResult<String>> + Send>>;
+pub type ChatStream = Pin<Box<dyn Stream<Item = AppResult<StreamEvent>> + Send>>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RequestOptions {
@@ -25,7 +26,8 @@ pub trait ChatClient: Send + Sync {
         messages: &[ChatMessage],
         system_prompt: &str,
         options: RequestOptions,
-    ) -> AppResult<String>;
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> AppResult<ChatCompletionOutput>;
 
     async fn stream(
         &self,
@@ -34,6 +36,7 @@ pub trait ChatClient: Send + Sync {
         messages: &[ChatMessage],
         system_prompt: &str,
         options: RequestOptions,
+        tools: Option<Vec<ToolDefinition>>,
     ) -> AppResult<ChatStream>;
 
     async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>>;

@@ -119,6 +119,8 @@ mod tests {
             content: "hello".to_string(),
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
         };
         store
             .append_conversation_messages(conversation.id, std::slice::from_ref(&message))
@@ -169,6 +171,8 @@ mod tests {
             content: "  这是第一条用户消息\n用于生成标题  ".to_string(),
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
         };
 
         store

@@ -178,6 +178,44 @@ export function deleteLlmLog(logId: string): Promise<void> {
   });
 }
 
+
+export type AgentToolsConfig = {
+  terminal: {
+    enabled: boolean;
+    blocked_patterns: string[];
+    approval_required_patterns: string[];
+    default_timeout_ms: number;
+    allowed_cwd_roots: string[];
+  };
+};
+
+export function readAgentToolsConfig(agentId: string): Promise<AgentToolsConfig> {
+  return request<AgentToolsConfig>(`/api/agents/${agentId}/tools-config`);
+}
+
+export function updateAgentToolsConfig(
+  agentId: string,
+  config: AgentToolsConfig,
+): Promise<AgentToolsConfig> {
+  return request<AgentToolsConfig>(`/api/agents/${agentId}/tools-config`, {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  });
+}
+
+
+export type ApprovalDecision = 'approve' | 'reject' | 'always_approve';
+
+export function approveToolCall(
+  approvalId: string,
+  decision: ApprovalDecision,
+): Promise<{ status: string; message?: string }> {
+  return request<{ status: string; message?: string }>('/api/tools/approve', {
+    method: 'POST',
+    body: JSON.stringify({ approval_id: approvalId, decision }),
+  });
+}
+
 export function readConversationMessages(conversationId: string): Promise<ChatMessage[]> {
   return request<ChatMessage[]>(`/api/conversations/${conversationId}/messages`);
 }
@@ -202,14 +240,15 @@ export async function streamMessage(
   content: string,
   onEvent: (event: StreamEvent) => void,
   timeoutSeconds: number,
+  streamOutput: boolean,
   signal?: AbortSignal,
 ): Promise<void> {
-  const timeoutSignal = AbortSignal.timeout(Math.max(1, timeoutSeconds) * 1000);
+  const timeoutSignal = AbortSignal.timeout(Math.max(1, timeoutSeconds, 900) * 1000);
   const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   const response = await fetch(`/api/conversations/${conversationId}/messages/stream`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, stream: streamOutput }),
     signal: combinedSignal,
   });
 
@@ -287,6 +326,16 @@ function dispatchStreamEvent(
 
   if (event === 'delta') {
     onEvent({ event: 'delta', data });
+    return;
+  }
+
+  if (event === 'tool_call' || event === 'tool_result' || event === 'approval_required') {
+    try {
+      onEvent({ event, data: JSON.parse(data) } as StreamEvent);
+    } catch {
+      state.sawError = true;
+      onEvent({ event: 'error', data: 'Failed to parse stream event' });
+    }
   }
 }
 

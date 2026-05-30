@@ -25,7 +25,9 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
-import type { Agent, AppSettings, Conversation, UiMessage } from '../../types';
+import type { Agent, AppSettings, Conversation, UiMessage, UiMessageItem, ToolCallMessage } from '../../types';
+import { ToolCallCard } from '../../components/ToolCallCard';
+import { approveToolCall } from '../../api';
 import { useI18n } from '../../i18n';
 import { useConversations } from '../../hooks';
 import { AvatarBadge } from '../../components/AvatarPicker';
@@ -310,18 +312,52 @@ export function ChatPanel({
               description={activeAgent ? t('chat.emptyHint') : t('chat.noAgentHint')}
             />
           ) : null}
-          {messages.map((msg, index) => (
-            <MessageRow
-              key={msg.clientId}
-              message={msg}
-              showTimeSeparator={shouldShowTimeSeparator(msg, messages[index - 1])}
-              timeSeparatorLabel={formatTimelineTime(msg.created_at)}
-              participantName={msg.role === 'user' ? t('chat.you') : activeAgent ? displayAgentName(activeAgent) : 'Assistant'}
-              agent={activeAgent}
-              settings={settings}
-              failedLabel={t('chat.failed')}
-            />
-          ))}
+          {messages.map((item, index) => {
+            if ('type' in item && item.type === 'tool_call') {
+              const toolMsg = item as ToolCallMessage;
+              return (
+                <div key={toolMsg.call_id} className="message-row assistant">
+                  {!false && <MessageAvatar agent={activeAgent} settings={settings} isUser={false} />}
+                  <div className="message-body">
+                    <div className="message-meta"><strong>{activeAgent ? displayAgentName(activeAgent) : 'Assistant'}</strong></div>
+                    <div className="message-bubble">
+                      <ToolCallCard
+                        callId={toolMsg.call_id}
+                        name={toolMsg.name}
+                        arguments={toolMsg.arguments}
+                        status={toolMsg.status}
+                        result={toolMsg.result}
+                        onApprove={async (decision) => {
+                          const approvalId = toolMsg.arguments.approval_id;
+                          if (!approvalId) return;
+                          try {
+                            await approveToolCall(approvalId, decision);
+                          } catch (e) {
+                            onError(e instanceof Error ? e.message : 'Approval failed');
+                          }
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            const msg = item as UiMessage;
+            const prev = messages[index - 1];
+            const prevUi = prev && 'role' in prev ? prev as UiMessage : undefined;
+            return (
+              <MessageRow
+                key={msg.clientId}
+                message={msg}
+                showTimeSeparator={shouldShowTimeSeparator(msg, prevUi)}
+                timeSeparatorLabel={formatTimelineTime(msg.created_at)}
+                participantName={msg.role === 'user' ? t('chat.you') : activeAgent ? displayAgentName(activeAgent) : 'Assistant'}
+                agent={activeAgent}
+                settings={settings}
+                failedLabel={t('chat.failed')}
+              />
+            );
+          })}
           <div ref={messagesEndRef} />
         </div>
 

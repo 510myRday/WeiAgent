@@ -8,7 +8,10 @@ use crate::{
     llm::{
         client::{ChatClient, ChatStream, RequestOptions},
         sse::parse_sse_line,
-        types::{ChatCompletionResponse, ModelsListResponse, build_chat_request},
+        types::{
+            ChatCompletionOutput, ChatCompletionResponse, ModelsListResponse, ToolDefinition,
+            build_chat_request,
+        },
     },
     storage::LlmLogger,
 };
@@ -128,9 +131,16 @@ impl ChatClient for OpenAiCompatibleChatClient {
         messages: &[ChatMessage],
         system_prompt: &str,
         options: RequestOptions,
-    ) -> AppResult<String> {
-        let request =
-            build_chat_request(agent, messages, false, system_prompt, &provider.extra_body);
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> AppResult<ChatCompletionOutput> {
+        let request = build_chat_request(
+            agent,
+            messages,
+            false,
+            system_prompt,
+            &provider.extra_body,
+            tools,
+        );
         let request_json =
             serde_json::to_string_pretty(&request).unwrap_or_else(|_| format!("{request:?}"));
         let api_key = self.api_key(provider)?.to_string();
@@ -219,26 +229,37 @@ impl ChatClient for OpenAiCompatibleChatClient {
                 AppError::Llm(error.to_string())
             })?;
 
-        let content = response_parsed
-            .choices
-            .into_iter()
-            .next()
-            .map(|choice| choice.message.content)
-            .filter(|content| !content.is_empty())
-            .ok_or_else(|| {
-                Self::spawn_log(
-                    &self.llm_logger,
-                    log_enabled,
-                    &agent.name,
-                    &agent.model_id,
-                    &provider.name,
-                    &request_json,
-                    Some(&body),
-                    Some(status.as_u16()),
-                    Some("empty model response"),
-                );
-                AppError::Llm("empty model response".to_string())
-            })?;
+        let choice = response_parsed.choices.into_iter().next().ok_or_else(|| {
+            Self::spawn_log(
+                &self.llm_logger,
+                log_enabled,
+                &agent.name,
+                &agent.model_id,
+                &provider.name,
+                &request_json,
+                Some(&body),
+                Some(status.as_u16()),
+                Some("empty model response"),
+            );
+            AppError::Llm("empty model response".to_string())
+        })?;
+
+        let content = choice.message.content;
+        let tool_calls = choice.message.tool_calls.unwrap_or_default();
+        if content.is_empty() && tool_calls.is_empty() {
+            Self::spawn_log(
+                &self.llm_logger,
+                log_enabled,
+                &agent.name,
+                &agent.model_id,
+                &provider.name,
+                &request_json,
+                Some(&body),
+                Some(status.as_u16()),
+                Some("empty model response"),
+            );
+            return Err(AppError::Llm("empty model response".to_string()));
+        }
 
         Self::spawn_log(
             &self.llm_logger,
@@ -252,7 +273,10 @@ impl ChatClient for OpenAiCompatibleChatClient {
             None,
         );
 
-        Ok(content)
+        Ok(ChatCompletionOutput {
+            content,
+            tool_calls,
+        })
     }
 
     async fn stream(
@@ -262,9 +286,16 @@ impl ChatClient for OpenAiCompatibleChatClient {
         messages: &[ChatMessage],
         system_prompt: &str,
         options: RequestOptions,
+        tools: Option<Vec<ToolDefinition>>,
     ) -> AppResult<ChatStream> {
-        let request =
-            build_chat_request(agent, messages, true, system_prompt, &provider.extra_body);
+        let request = build_chat_request(
+            agent,
+            messages,
+            true,
+            system_prompt,
+            &provider.extra_body,
+            tools,
+        );
         let request_json =
             serde_json::to_string_pretty(&request).unwrap_or_else(|_| format!("{request:?}"));
         let api_key = self.api_key(provider)?.to_string();
@@ -405,8 +436,8 @@ impl ChatClient for OpenAiCompatibleChatClient {
                             guard.raw_lines.push(line.clone());
                             for item in parse_sse_line(&line) {
                                 match item {
-                                    Ok(content) => {
-                                        yield Ok(content);
+                                    Ok(event) => {
+                                        yield Ok(event);
                                     }
                                     Err(error) => {
                                         let error_text = error.to_string();
@@ -532,6 +563,8 @@ mod tests {
             content: "hello".to_string(),
             status: ChatMessageStatus::Done,
             created_at: now,
+            tool_calls: None,
+            tool_call_id: None,
         }];
 
         let request = build_chat_request(
@@ -540,6 +573,7 @@ mod tests {
             true,
             "You write Rust.",
             &serde_json::Value::Null,
+            None,
         );
 
         assert_eq!(request.model, "gpt-4o-mini");

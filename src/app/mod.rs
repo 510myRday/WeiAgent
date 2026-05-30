@@ -32,8 +32,10 @@ mod tests {
         llm::{
             client::{ChatClient, ChatStream, DynChatClient},
             registry::LlmRegistry,
+            types::{ChatCompletionOutput, StreamEvent, ToolDefinition},
         },
         storage::{JsonStore, LlmLogger},
+        tools::{approval::ApprovalManager, process_manager::ProcessManager},
     };
 
     struct MockChatClient;
@@ -47,8 +49,12 @@ mod tests {
             _messages: &[ChatMessage],
             _system_prompt: &str,
             _options: crate::llm::client::RequestOptions,
-        ) -> AppResult<String> {
-            Ok(format!("{} via {}", agent.model_id, provider.name))
+            _tools: Option<Vec<ToolDefinition>>,
+        ) -> AppResult<ChatCompletionOutput> {
+            Ok(ChatCompletionOutput {
+                content: format!("{} via {}", agent.model_id, provider.name),
+                tool_calls: Vec::new(),
+            })
         }
 
         async fn stream(
@@ -58,10 +64,12 @@ mod tests {
             _messages: &[ChatMessage],
             _system_prompt: &str,
             _options: crate::llm::client::RequestOptions,
+            _tools: Option<Vec<ToolDefinition>>,
         ) -> AppResult<ChatStream> {
             Ok(Box::pin(stream::iter(vec![
-                Ok("mock ".to_string()),
-                Ok("stream".to_string()),
+                Ok(StreamEvent::TextDelta("mock ".to_string())),
+                Ok(StreamEvent::TextDelta("stream".to_string())),
+                Ok(StreamEvent::Finished),
             ])))
         }
 
@@ -114,6 +122,8 @@ mod tests {
                 client: Arc::new(MockChatClient),
             }),
             llm_logger: Arc::new(LlmLogger::new(tempfile::tempdir().unwrap().path(), false)),
+            process_manager: Arc::new(ProcessManager::new()),
+            approval_manager: Arc::new(ApprovalManager::new()),
         });
         (app, agent.id, provider.id, conversation.id)
     }

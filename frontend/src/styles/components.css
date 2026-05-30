@@ -94,6 +94,91 @@
   align-items: flex-start;
 }
 
+/* Tool Call Cards */
+.tool-card {
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+}
+.tool-card__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: var(--space-2);
+}
+.tool-card__command {
+  background: var(--surface-code);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: var(--space-2) 0;
+}
+.tool-card__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.btn-approve, .btn-always, .btn-reject {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-default);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+.btn-approve:hover { background: #dcfce7; border-color: #22c55e; }
+.btn-always:hover { background: #dbeafe; border-color: #3b82f6; }
+.btn-reject:hover { background: #fee2e2; border-color: #ef4444; }
+.tool-card__output, .tool-card__error {
+  background: var(--surface-code);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  margin-top: var(--space-2);
+}
+.tool-card__error { color: #ef4444; }
+.tool-card__reason {
+  margin: var(--space-2) 0 0;
+  font-size: 13px;
+  color: var(--color-muted);
+}
+.tool-card--running {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-primary);
+}
+.animate-spin { animation: spin 1s linear infinite; }
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.terminal-tool-settings { padding: var(--space-4); }
+.pattern-list-section { margin-top: var(--space-4); }
+.pattern-list-section > label { display: block; font-weight: 600; margin-bottom: var(--space-2); color: var(--color-text); }
+.pattern-input-row { display: flex; gap: var(--space-2); margin-bottom: var(--space-2); }
+.pattern-input-row input { flex: 1; padding: var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-default); color: var(--color-text); }
+.pattern-list { list-style: none; padding: 0; margin: 0; }
+.pattern-list li { display: flex; align-items: center; justify-content: space-between; padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--border-subtle); font-size: 13px; }
+.pattern-list li code { font-family: var(--font-mono); color: var(--color-primary); }
+.pattern-list li button { background: none; border: none; cursor: pointer; color: var(--color-muted); padding: var(--space-1); }
+.pattern-list li button:hover { color: #ef4444; }
+
+
+
 .button,
 .primary-button,
 .secondary-button,

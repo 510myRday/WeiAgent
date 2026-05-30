@@ -8,6 +8,7 @@ import { defaultAvatarColor } from '../../avatarPresets';
 import { AvatarBadge } from '../../components/AvatarPicker';
 import { PanelShell } from '../../components/layout';
 import { AlertBanner, AvatarPopover, Button, FormField, IconButton, ListItem, PaneHeader } from '../../components/ui';
+import { TerminalToolSettings } from '../settings/TerminalToolSettings';
 
 interface AgentsPanelProps {
   agents: Agent[];
@@ -36,9 +37,9 @@ const defaultWorkspaceForm: Pick<AgentWorkspace, 'personality' | 'memory' | 'ins
   instructions: '',
 };
 
-type WorkspaceField = keyof typeof defaultWorkspaceForm;
+type WorkspaceField = keyof typeof defaultWorkspaceForm | 'tools';
 
-const workspaceTabs: WorkspaceField[] = ['personality', 'memory', 'instructions'];
+const workspaceTabs: WorkspaceField[] = ['personality', 'memory', 'instructions', 'tools'];
 
 export function AgentsPanel({
   agents,
@@ -314,16 +315,20 @@ export function AgentsPanel({
                     </button>
                   ))}
                 </div>
-                <FormField label={activeWorkspaceLabel} htmlFor="agent-workspace-field">
-                  <textarea
-                    id="agent-workspace-field"
-                    role="tabpanel"
-                    value={workspaceForm[activeWorkspaceField]}
-                    onChange={(e) => { setWorkspaceForm({ ...workspaceForm, [activeWorkspaceField]: e.target.value }); setAgentFormDirty(true); }}
-                    rows={12}
-                    disabled={isSubmittingAgent || isLoadingWorkspace}
-                  />
-                </FormField>
+                {activeWorkspaceField === 'tools' && activeAgent ? (
+                  <TerminalToolSettings agentId={activeAgent.id} onError={setError} />
+                ) : (
+                  <FormField label={activeWorkspaceLabel} htmlFor="agent-workspace-field">
+                    <textarea
+                      id="agent-workspace-field"
+                      role="tabpanel"
+                      value={activeWorkspaceField !== 'tools' ? workspaceForm[activeWorkspaceField] : ''}
+                      onChange={(e) => { setWorkspaceForm({ ...workspaceForm, [activeWorkspaceField]: e.target.value }); setAgentFormDirty(true); }}
+                      rows={12}
+                      disabled={isSubmittingAgent || isLoadingWorkspace}
+                    />
+                  </FormField>
+                )}
               </div>
             ) : null}
             <div className="form-actions">

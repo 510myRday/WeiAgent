@@ -1,11 +1,10 @@
 import { useState, useCallback, useRef } from 'react';
-import type { Conversation, UiMessage } from '../types';
+import type { ChatMessage, Conversation, ToolCallMessage, ToolCallStatus, UiMessage, UiMessageItem } from '../types';
 import {
   listConversations,
   createConversation,
   deleteConversation,
   readConversationMessages,
-  sendMessage,
   streamMessage,
 } from '../api';
 
@@ -20,8 +19,85 @@ function isAbortError(cause: unknown): boolean {
   return cause instanceof DOMException && cause.name === 'AbortError';
 }
 
-function toUiMessage(msg: { id: string; agent_id: string; conversation_id: string; role: 'user' | 'assistant'; content: string; created_at: string }): UiMessage {
+function toUiMessage(msg: ChatMessage & { role: 'user' | 'assistant' }): UiMessage {
   return { ...msg, clientId: msg.id ?? genClientId() };
+}
+
+function parseJsonObject(value: string): Record<string, any> {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function statusFromToolResult(result: any): ToolCallStatus {
+  const status = result?.status;
+  if (
+    status === 'completed'
+    || status === 'running'
+    || status === 'blocked'
+    || status === 'rejected'
+    || status === 'error'
+    || status === 'pending_approval'
+  ) {
+    return status;
+  }
+  return 'completed';
+}
+
+function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
+  const items: UiMessageItem[] = [];
+  const toolIndexes = new Map<string, number>();
+
+  for (const msg of raw) {
+    if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      if (msg.content.trim()) {
+        items.push(toUiMessage({ ...msg, role: 'assistant', tool_calls: undefined }));
+      }
+      for (const call of msg.tool_calls) {
+        const item: ToolCallMessage = {
+          type: 'tool_call',
+          call_id: call.id,
+          name: call.function.name,
+          arguments: parseJsonObject(call.function.arguments),
+          status: 'running',
+        };
+        toolIndexes.set(call.id, items.length);
+        items.push(item);
+      }
+      continue;
+    }
+
+    if (msg.role === 'tool') {
+      const result = parseJsonObject(msg.content);
+      const callId = msg.tool_call_id ?? msg.id;
+      const index = toolIndexes.get(callId);
+      if (index !== undefined) {
+        const current = items[index];
+        if ('type' in current && current.type === 'tool_call') {
+          items[index] = { ...current, status: statusFromToolResult(result), result };
+        }
+      } else {
+        items.push({
+          type: 'tool_call',
+          call_id: callId,
+          name: 'tool',
+          arguments: {},
+          status: statusFromToolResult(result),
+          result,
+        });
+      }
+      continue;
+    }
+
+    if (msg.role === 'user' || msg.role === 'assistant') {
+      items.push(toUiMessage(msg as ChatMessage & { role: 'user' | 'assistant' }));
+    }
+  }
+
+  return items;
 }
 
 function isEmptyConversation(conversation: Conversation): boolean {
@@ -37,7 +113,7 @@ type UseConversationsOptions = {
 export function useConversations({ newConversationTitle, onError, timeoutSeconds }: UseConversationsOptions) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState('');
-  const [messages, setMessages] = useState<UiMessage[]>([]);
+  const [messages, setMessages] = useState<UiMessageItem[]>([]);
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [isSending, setIsSending] = useState(false);
 
@@ -74,7 +150,7 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
     try {
       const raw = await readConversationMessages(conversationId);
       if (requestId !== loadChatIdRef.current) return;
-      setMessages(raw.map(toUiMessage));
+      setMessages(toUiMessageItems(raw));
     } catch (cause) {
       if (requestId === loadChatIdRef.current) {
         onErrorRef.current?.(cause instanceof Error ? cause.message : 'Failed to load messages');
@@ -95,15 +171,16 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
   const appendDelta = useCallback((delta: string) => {
     setMessages((current) => {
       const last = current[current.length - 1];
-      if (last?.role === 'assistant') {
+      if (last && 'role' in last && last.role === 'assistant') {
         return [...current.slice(0, -1), { ...last, content: last.content + delta }];
       }
+      const prevUi = last && 'role' in last ? last : undefined;
       return [
         ...current,
         {
           id: '',
-          agent_id: last?.agent_id ?? activeStreamRef.current.agentId,
-          conversation_id: last?.conversation_id ?? activeStreamRef.current.conversationId,
+          agent_id: prevUi?.agent_id ?? activeStreamRef.current.agentId,
+          conversation_id: prevUi?.conversation_id ?? activeStreamRef.current.conversationId,
           role: 'assistant' as const,
           content: delta,
           created_at: new Date().toISOString(),
@@ -119,7 +196,7 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
     sendAbortControllerRef.current = null;
     setMessages((current) => {
       const last = current[current.length - 1];
-      if (last?.role === 'assistant' && last.status === 'streaming') {
+      if (last && 'role' in last && last.role === 'assistant' && last.status === 'streaming') {
         if (!last.content) return current.slice(0, -1);
         return [...current.slice(0, -1), { ...last, status: 'failed' }];
       }
@@ -134,7 +211,7 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         setIsSending(false);
         setMessages((current) => {
           const last = current[current.length - 1];
-          if (last?.role === 'assistant' && last.status === 'streaming' && !last.content) {
+          if (last && 'role' in last && last.role === 'assistant' && last.status === 'streaming' && !last.content) {
             return current.slice(0, -1);
           }
           return current;
@@ -149,10 +226,10 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
       if (evt.event === 'user') {
         const msg = toUiMessage(evt.data as Parameters<typeof toUiMessage>[0]);
         setMessages((current) => {
-          if (current.some((item) => item.id && item.id === msg.id)) return current;
-          const optimisticIndex = current.findIndex((item) => item.role === 'user' && !item.id && item.content === msg.content);
+          if (current.some((item) => 'role' in item && item.id && item.id === msg.id)) return current;
+          const optimisticIndex = current.findIndex((item) => 'role' in item && item.role === 'user' && !item.id && item.content === msg.content);
           if (optimisticIndex >= 0) {
-            return current.map((item, index) => index === optimisticIndex ? { ...msg, clientId: item.clientId } : item);
+            return current.map((item, index) => index === optimisticIndex && 'clientId' in item ? { ...msg, clientId: item.clientId } : item);
           }
           return [...current, msg];
         });
@@ -166,11 +243,50 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         const msg = toUiMessage(evt.data as Parameters<typeof toUiMessage>[0]);
         setMessages((current) => {
           const last = current[current.length - 1];
-          if (last?.role === 'assistant') {
+          if (last && 'role' in last && last.role === 'assistant') {
             return [...current.slice(0, -1), { ...last, id: msg.id || last.id, content: msg.content || last.content, status: msg.status ?? last.status }];
           }
           return [...current, msg];
         });
+        return;
+      }
+      if (evt.event === 'tool_call') {
+        const d = evt.data as { call_id: string; name: string; arguments: Record<string, any> };
+        const toolMsg: ToolCallMessage = {
+          type: 'tool_call',
+          call_id: d.call_id,
+          name: d.name,
+          arguments: d.arguments,
+          status: 'running',
+        };
+        setMessages((current) => {
+          const withoutEmptyAssistant = current.filter((item, index) => {
+            const isLast = index === current.length - 1;
+            return !(isLast && 'role' in item && item.role === 'assistant' && item.status === 'streaming' && !item.content);
+          });
+          return [...withoutEmptyAssistant, toolMsg];
+        });
+        return;
+      }
+      if (evt.event === 'tool_result') {
+        const d = evt.data as { call_id: string; result: any };
+        setMessages((current) => current.map((item) => {
+          if ('type' in item && item.type === 'tool_call' && item.call_id === d.call_id) {
+            return { ...item, status: d.result.status, result: d.result };
+          }
+          return item;
+        }));
+        return;
+      }
+      if (evt.event === 'approval_required') {
+        const d = evt.data as { call_id: string; command: string; approval_id: string };
+        setMessages((current) => current.map((item) => {
+          if ('type' in item && item.type === 'tool_call' && item.call_id === d.call_id) {
+            return { ...item, status: 'pending_approval', arguments: { ...item.arguments, command: d.command, approval_id: d.approval_id } };
+          }
+          return item;
+        }));
+        return;
       }
     },
     [appendDelta],
@@ -220,32 +336,17 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
           setActiveConversationId(created.id);
           conversationId = created.id;
           setMessages((current) => current.map((msg) => (
-            msg.clientId === optimisticUserClientId || msg.clientId === optimisticAssistantClientId
+            'clientId' in msg && (msg.clientId === optimisticUserClientId || msg.clientId === optimisticAssistantClientId)
               ? { ...msg, conversation_id: conversationId }
               : msg
           )));
         }
 
-        if (isStreamMode) {
-          activeStreamRef.current = { agentId, conversationId };
-          await streamMessage(conversationId, content, (evt) => {
-            if (requestId !== sendRequestIdRef.current) return;
-            handleStreamEvent(evt);
-          }, timeoutSeconds, controller.signal);
-        } else {
-          const response = await sendMessage(conversationId, content, timeoutSeconds, controller.signal);
+        activeStreamRef.current = { agentId, conversationId };
+        await streamMessage(conversationId, content, (evt) => {
           if (requestId !== sendRequestIdRef.current) return;
-          setMessages((current) => current.map((msg) => {
-            if (msg.clientId === optimisticUserClientId) {
-              return { ...toUiMessage(response.user), clientId: optimisticUserClientId };
-            }
-            if (msg.clientId === optimisticAssistantClientId) {
-              return { ...toUiMessage(response.assistant), clientId: optimisticAssistantClientId };
-            }
-            return msg;
-          }));
-          setIsSending(false);
-        }
+          handleStreamEvent(evt);
+        }, timeoutSeconds, isStreamMode, controller.signal);
         void loadConversationsForAgent(agentId);
       } catch (cause) {
         if (requestId === sendRequestIdRef.current) {
@@ -253,8 +354,8 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
           if (!isAbortError(cause)) {
             setMessages((current) => {
               const last = current[current.length - 1];
-              if (last?.clientId === optimisticAssistantClientId) {
-                return [...current.slice(0, -1), { ...last, status: 'failed' }];
+              if (last && 'clientId' in last && last.clientId === optimisticAssistantClientId) {
+                return [...current.slice(0, -1), { ...last, status: 'failed' as const }];
               }
               return current;
             });

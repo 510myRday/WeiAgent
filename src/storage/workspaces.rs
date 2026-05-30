@@ -91,6 +91,39 @@ impl JsonStore {
         })
     }
 
+    pub async fn read_agent_tools_config(
+        &self,
+        id: Uuid,
+    ) -> AppResult<crate::domain::AgentToolsConfig> {
+        self.get_agent(id).await?;
+        let _guard = self.lock.lock().await;
+        let path = self.agent_workspace_dir(id).join(WORKSPACE_TOOLS);
+        if fs::metadata(&path).await.is_err() {
+            return Ok(crate::domain::AgentToolsConfig::default());
+        }
+        let content = fs::read_to_string(path).await?;
+        let trimmed = content.trim();
+        if trimmed.is_empty() || trimmed == "[]" {
+            return Ok(crate::domain::AgentToolsConfig::default());
+        }
+        serde_json::from_str(trimmed)
+            .map_err(|e| crate::error::AppError::BadRequest(format!("invalid tools.json: {e}")))
+    }
+
+    pub async fn update_agent_tools_config(
+        &self,
+        id: Uuid,
+        config: crate::domain::AgentToolsConfig,
+    ) -> AppResult<crate::domain::AgentToolsConfig> {
+        self.get_agent(id).await?;
+        let _guard = self.lock.lock().await;
+        let content = serde_json::to_string_pretty(&config)
+            .map_err(|e| crate::error::AppError::BadRequest(e.to_string()))?;
+        self.write_workspace_text_unlocked(id, WORKSPACE_TOOLS, &content)
+            .await?;
+        Ok(config)
+    }
+
     pub(super) async fn ensure_agent_workspace_unlocked(&self, agent: &Agent) -> AppResult<()> {
         let workspace = self.agent_workspace_dir(agent.id);
         fs::create_dir_all(&workspace).await?;
@@ -105,7 +138,10 @@ impl JsonStore {
             default_instructions(agent),
         )
         .await?;
-        ensure_text_file(&workspace.join(WORKSPACE_TOOLS), "[]\n".to_string()).await?;
+        let default_tools =
+            serde_json::to_string_pretty(&crate::domain::AgentToolsConfig::default())
+                .unwrap_or_else(|_| "{}".to_string());
+        ensure_text_file(&workspace.join(WORKSPACE_TOOLS), default_tools).await?;
         Ok(())
     }
 

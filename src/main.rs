@@ -4,6 +4,7 @@ mod domain;
 mod error;
 mod llm;
 mod storage;
+mod tools;
 
 use std::{io::ErrorKind, process::Stdio, sync::Arc};
 
@@ -33,10 +34,14 @@ async fn main() -> AppResult<()> {
         config.settings.llm_log_enabled,
     ));
     let llm_registry = Arc::new(DefaultLlmRegistry::new(llm_logger.clone()));
+    let process_manager = Arc::new(tools::process_manager::ProcessManager::new());
+    let approval_manager = Arc::new(tools::approval::ApprovalManager::new());
     let state = AppState {
         store,
         llm_registry,
         llm_logger,
+        process_manager,
+        approval_manager,
     };
     let app = if is_dev {
         build_router_dev(state)

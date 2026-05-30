@@ -290,7 +290,91 @@ Agent 响应会额外返回后端保存的内置身份信息：
 
 第二阶段后续可以继续推进：
 
-- 工具系统：把 `tools.json` 接入模型工具调用接口
 - 记忆系统：让 `memory.md` 从手动编辑升级为可控沉淀
 - 多 Agent 协作：由内置核心 Agent 建议、调度或组织其他 Agent
 - Agent 模板：继续增加更多内置 Agent 或可导入模板
+## 第三阶段：终端工具系统
+
+第三阶段为 Agent 添加终端命令执行能力，采用黑名单安全策略，审批交互嵌入聊天气泡。
+
+### 安全策略
+
+- **黑名单模式**：命令不在黑名单和审批名单中的默认放行
+- **拒绝名单**（`blocked_patterns`）：匹配后直接拦截，如 `rm -rf /`、`curl|sh`、`sudo`、`chmod 777`、命令注入等
+- **审批名单**（`approval_required_patterns`）：匹配后在聊天气泡内显示审批卡片，用户点击允许/始终允许/拒绝
+- 所有正则模式可在前端 Agent 编辑页的 Tools tab 中实时修改
+
+### 工具配置
+
+每个 Agent 的 `data/agents/{agent_id}/tools.json` 存储终端工具配置：
+
+```json
+{
+  "terminal": {
+    "enabled": true,
+    "blocked_patterns": ["rm\\s+-rf\\s+/", "curl.*\\|\\s*sh", "sudo\\s+"],
+    "approval_required_patterns": ["rm\\s+", "git\\s+push", "docker\\s+rm"],
+    "default_timeout_ms": 30000,
+    "allowed_cwd_roots": []
+  }
+}
+```
+
+### 后端新增模块
+
+- `src/domain/tools.rs`：`TerminalToolConfig`、`AgentToolsConfig`、`CommandDecision`、`ToolResult` 类型定义
+- `src/tools/terminal.rs`：`CommandChecker` 正则匹配引擎，含单元测试
+- `src/tools/process_manager.rs`：`DashMap` 后台进程管理，输出缓存上限 1MB
+- `src/tools/execute.rs`：`execute_terminal` 异步执行函数，支持超时转后台
+- `src/app/handlers/tools.rs`：`GET/PUT /api/agents/{agent_id}/tools-config` 端点
+- `AppState` 新增 `process_manager: Arc<ProcessManager>`
+- `Cargo.toml` 新增 `regex`、`dashmap` 依赖
+
+### 前端新增组件
+
+- `ToolCallCard.tsx`：5 种状态渲染（running/pending_approval/completed/blocked/rejected/error）
+- `TerminalToolSettings.tsx`：Agent 编辑页 Tools tab，可视化编辑黑名单/审批名单/超时/cwd
+- `types.ts` 新增 `ToolCallMessage`、`UiMessageItem`、扩展 `StreamEvent` 支持 `tool_call`/`tool_result`/`approval_required`
+- `useConversations` hook 处理工具相关 SSE 事件
+- `ChatPanel.tsx` 消息流区分普通消息和工具调用卡片，审批按钮直接在气泡内交互
+- `api.ts` 新增 `readAgentToolsConfig`、`updateAgentToolsConfig`、`approveToolCall`
+
+### SSE 事件扩展
+
+- `tool_call`：通知前端工具开始执行
+- `tool_result`：返回工具执行结果（stdout/stderr/exit_code/duration）
+- `approval_required`：触发气泡内审批卡片
+
+### 已完成补充
+
+- **Phase 3.2**：`POST /api/tools/approve` 审批端点。内存 `ApprovalManager`（DashMap）管理待审批条目，支持 approve/reject/always_approve 三种决策，10 分钟自动过期清理。
+### Function Calling 架构
+
+第三阶段工具系统使用正规 **OpenAI Function Calling 协议**，工具定义通过请求体的 `tools` 字段发送，不进入 system prompt。
+
+#### 核心改动
+
+- **LLM Client Trait**：`ChatClient::stream()` 返回 `Stream<StreamEvent>` 枚举（TextDelta / ToolCallStart / ToolCallArgsDelta / FinishedWithToolCalls / Finished），替代原来的 `Stream<String>`；`complete()` 和 `stream()` 均新增 `tools: Option<Vec<ToolDefinition>>` 参数
+- **请求构建**：`build_chat_request()` 接受 `tools` 参数，生成符合 OpenAI 规范的 `tools` JSON Schema；`OpenAiMessage` 支持 `role: "tool"` + `tool_call_id` 字段
+- **SSE 解析**：`parse_sse_line()` 区分 `content` delta 和 `tool_calls` delta，按 `index` 累积 `arguments`，检测 `finish_reason: "tool_calls"`
+- **执行循环**：SSE 流中实时累积 tool_calls → 流结束后安全检查 → 执行/审批 → 追加 assistant `tool_calls` 消息和 `role: "tool"` 结果消息 → 二次调用 LLM 获得最终回复
+- **Domain 扩展**：`ChatRole` 新增 `Tool` 变体；`ChatMessage` 新增 `tool_call_id: Option<String>` 字段
+
+#### 数据流
+
+```
+User Message → prepare_chat(tools_config) → LLM stream(tools=[execute_terminal])
+  ↓ StreamEvent::TextDelta → 前端 delta 事件
+  ↓ StreamEvent::ToolCallStart/ArgsDelta → 累积 tool_calls
+  ↓ StreamEvent::FinishedWithToolCalls → 触发工具执行
+  ↓ CommandChecker → Allowed/Blocked/NeedsApproval
+  ↓ execute_terminal → tool_result SSE 事件
+  ↓ ChatMessage{role:Tool, tool_call_id} → 追加到 messages
+  ↓ LLM complete(messages+tool_results) → follow-up 文本
+  ↓ done SSE 事件
+```
+
+
+### 待完成
+
+- Phase 6：端到端联调测试（放行/拦截/审批/后台进程全流程验证）

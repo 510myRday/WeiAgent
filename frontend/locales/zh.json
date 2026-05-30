@@ -34,6 +34,7 @@
     "personality": "个性 / 人设",
     "memory": "记忆",
     "instructions": "指令",
+    "tools": "工具",
     "builtin": "内置 Agent",
     "builtinBadge": "内置",
     "coreAgentModelHint": "这是核心智能体，建议配置能力强、上下文长、推理稳定的模型。",
