@@ -158,7 +158,7 @@ export type StreamEvent =
   | { event: 'tool_result'; data: { call_id: string; result: ToolResultData & { status: ToolCallStatus } } }
   | { event: 'approval_required'; data: { call_id: string; command: string; approval_id: string } };
 
-export type NavKey = 'chat' | 'agents' | 'groups' | 'settings';
+export type NavKey = 'chat' | 'agents' | 'groups' | 'tools' | 'settings';
 
 export type MobileView = 'list' | 'main';
 

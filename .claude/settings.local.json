@@ -3,7 +3,14 @@
     "allow": [
       "Bash(npx tsc *)",
       "Bash(cargo check *)",
-      "Bash(cargo test *)"
+      "Bash(cargo test *)",
+      "Bash(grep -n \"^\\\\\\\\.\" frontend/src/styles/components.css)",
+      "Bash(sed -n \"300,600p\" frontend/src/styles/components.css)",
+      "Bash(sed -n \"600,900p\" frontend/src/styles/components.css)",
+      "Bash(sed -n \"900,1200p\" frontend/src/styles/components.css)",
+      "Bash(sed -n \"1200,1500p\" frontend/src/styles/components.css)",
+      "Bash(sed -n \"1500,2003p\" frontend/src/styles/components.css)",
+      "Bash(git checkout *)"
     ]
   }
 }

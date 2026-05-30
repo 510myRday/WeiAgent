@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, Plus, Trash2 } from 'lucide-react';
+import { Save, Plus, Trash2, Shield, Clock, AlertTriangle, CheckCircle } from 'lucide-react';
 
 import type { AgentToolsConfig } from '../../api';
 import { readAgentToolsConfig, updateAgentToolsConfig } from '../../api';
@@ -24,10 +24,10 @@ export function TerminalToolSettings({ agentId, onError }: TerminalToolSettingsP
     setIsLoading(true);
     readAgentToolsConfig(agentId)
       .then((c) => { if (!cancelled) setConfig(c); })
-      .catch((e) => { if (!cancelled) onError(e instanceof Error ? e.message : 'Failed to load tools config'); })
+      .catch((e) => { if (!cancelled) onError(e instanceof Error ? e.message : t('tools.terminal.loadFailed')); })
       .finally(() => { if (!cancelled) setIsLoading(false); });
     return () => { cancelled = true; };
-  }, [agentId, onError]);
+  }, [agentId, onError, t]);
 
   async function handleSave() {
     if (!config) return;
@@ -36,7 +36,7 @@ export function TerminalToolSettings({ agentId, onError }: TerminalToolSettingsP
       const updated = await updateAgentToolsConfig(agentId, config);
       setConfig(updated);
     } catch (e) {
-      onError(e instanceof Error ? e.message : 'Failed to save tools config');
+      onError(e instanceof Error ? e.message : t('tools.terminal.saveFailed'));
     } finally {
       setIsSaving(false);
     }
@@ -67,56 +67,175 @@ export function TerminalToolSettings({ agentId, onError }: TerminalToolSettingsP
   }
 
   if (isLoading || !config) {
-    return <p className="muted centered">{isLoading ? 'Loading...' : 'No configuration'}</p>;
+    return (
+      <div className="terminal-loading-state">
+        <div className="loading-spinner"></div>
+        <p>{isLoading ? t('tools.terminal.loading') : t('tools.terminal.noConfig')}</p>
+      </div>
+    );
   }
 
   return (
-    <div className="terminal-tool-settings">
-      <div className="config-page-header">
-        <div>
-          <h2>Terminal Tool Configuration</h2>
-          <p>Configure security policies for terminal command execution</p>
+    <div className="terminal-tool-settings-v2">
+      {/* Header Section */}
+      <div className="settings-hero">
+        <div className="hero-content">
+          <div className="hero-icon">
+            <Shield size={32} />
+          </div>
+          <div className="hero-text">
+            <h2>{t('tools.terminal.configTitle')}</h2>
+            <p>{t('tools.terminal.configDesc')}</p>
+          </div>
         </div>
-        <Button variant="primary" onClick={handleSave} disabled={isSaving} icon={<Save size={16} />}>
-          {isSaving ? 'Saving...' : 'Save'}
+        <Button
+          variant="primary"
+          onClick={handleSave}
+          disabled={isSaving}
+          icon={<Save size={18} />}
+          className="save-button"
+        >
+          {isSaving ? t('tools.terminal.saving') : t('tools.terminal.save')}
         </Button>
       </div>
 
-      <FormField label="Enabled">
-        <label className="mode-toggle">
-          <input type="checkbox" checked={config.terminal.enabled} onChange={(e) => setConfig({ ...config, terminal: { ...config.terminal, enabled: e.target.checked } })} />
-          <span>{config.terminal.enabled ? 'On' : 'Off'}</span>
-        </label>
-      </FormField>
-
-      <FormField label="Default Timeout (ms)">
-        <input type="number" value={config.terminal.default_timeout_ms} onChange={(e) => setConfig({ ...config, terminal: { ...config.terminal, default_timeout_ms: Number(e.target.value) || 30000 } })} min={1000} step={1000} />
-      </FormField>
-
-      <div className="pattern-list-section">
-        <label>Blocked Patterns (always rejected)</label>
-        <div className="pattern-input-row">
-          <input value={blockedInput} onChange={(e) => setBlockedInput(e.target.value)} placeholder="Regex pattern..." onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addBlockedPattern(); } }} />
-          <IconButton variant="ghost" onClick={addBlockedPattern} label="Add"><Plus size={16} /></IconButton>
+      {/* Basic Settings Card */}
+      <div className="settings-card">
+        <div className="card-header">
+          <Clock size={20} />
+          <h3>{t('tools.terminal.basicSettings')}</h3>
         </div>
-        <ul className="pattern-list">
-          {config.terminal.blocked_patterns.map((p, i) => (
-            <li key={i}><code>{p}</code><button type="button" onClick={() => removeBlockedPattern(i)}><Trash2 size={14} /></button></li>
-          ))}
-        </ul>
+        <div className="card-body">
+          <div className="setting-row">
+            <div className="setting-info">
+              <label>{t('tools.terminal.enabled')}</label>
+              <p className="setting-desc">{t('tools.terminal.enabledDesc')}</p>
+            </div>
+            <label className="toggle-switch">
+              <input
+                type="checkbox"
+                checked={config.terminal.enabled}
+                onChange={(e) => setConfig({ ...config, terminal: { ...config.terminal, enabled: e.target.checked } })}
+              />
+              <span className="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div className="setting-row">
+            <div className="setting-info">
+              <label>{t('tools.terminal.defaultTimeout')}</label>
+              <p className="setting-desc">{t('tools.terminal.timeoutDesc')}</p>
+            </div>
+            <div className="timeout-input">
+              <input
+                type="number"
+                value={config.terminal.default_timeout_ms / 1000}
+                onChange={(e) => setConfig({
+                  ...config,
+                  terminal: {
+                    ...config.terminal,
+                    default_timeout_ms: (Number(e.target.value) || 30) * 1000
+                  }
+                })}
+                min={1}
+                step={1}
+              />
+              <span className="unit">秒</span>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div className="pattern-list-section">
-        <label>Approval Required Patterns (need user confirmation)</label>
-        <div className="pattern-input-row">
-          <input value={approvalInput} onChange={(e) => setApprovalInput(e.target.value)} placeholder="Regex pattern..." onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addApprovalPattern(); } }} />
-          <IconButton variant="ghost" onClick={addApprovalPattern} label="Add"><Plus size={16} /></IconButton>
+      {/* Blocked Patterns Card */}
+      <div className="settings-card danger-card">
+        <div className="card-header">
+          <AlertTriangle size={20} />
+          <h3>{t('tools.terminal.blockedPatternsLabel')}</h3>
+          <span className="badge">{config.terminal.blocked_patterns.length}</span>
         </div>
-        <ul className="pattern-list">
-          {config.terminal.approval_required_patterns.map((p, i) => (
-            <li key={i}><code>{p}</code><button type="button" onClick={() => removeApprovalPattern(i)}><Trash2 size={14} /></button></li>
-          ))}
-        </ul>
+        <div className="card-body">
+          <p className="card-description">{t('tools.terminal.blockedDesc')}</p>
+          <div className="pattern-input-wrapper">
+            <input
+              value={blockedInput}
+              onChange={(e) => setBlockedInput(e.target.value)}
+              placeholder={t('tools.terminal.patternPlaceholder')}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addBlockedPattern(); } }}
+              className="pattern-input"
+            />
+            <Button
+              variant="secondary"
+              onClick={addBlockedPattern}
+              icon={<Plus size={16} />}
+              className="add-btn"
+            >
+              {t('tools.terminal.add')}
+            </Button>
+          </div>
+          {config.terminal.blocked_patterns.length > 0 && (
+            <ul className="pattern-tags">
+              {config.terminal.blocked_patterns.map((p, i) => (
+                <li key={i} className="pattern-tag danger">
+                  <code>{p}</code>
+                  <button
+                    type="button"
+                    onClick={() => removeBlockedPattern(i)}
+                    className="remove-btn"
+                    title={t('tools.terminal.remove')}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      {/* Approval Required Patterns Card */}
+      <div className="settings-card warning-card">
+        <div className="card-header">
+          <CheckCircle size={20} />
+          <h3>{t('tools.terminal.approvalPatternsLabel')}</h3>
+          <span className="badge">{config.terminal.approval_required_patterns.length}</span>
+        </div>
+        <div className="card-body">
+          <p className="card-description">{t('tools.terminal.approvalDesc')}</p>
+          <div className="pattern-input-wrapper">
+            <input
+              value={approvalInput}
+              onChange={(e) => setApprovalInput(e.target.value)}
+              placeholder={t('tools.terminal.patternPlaceholder')}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addApprovalPattern(); } }}
+              className="pattern-input"
+            />
+            <Button
+              variant="secondary"
+              onClick={addApprovalPattern}
+              icon={<Plus size={16} />}
+              className="add-btn"
+            >
+              {t('tools.terminal.add')}
+            </Button>
+          </div>
+          {config.terminal.approval_required_patterns.length > 0 && (
+            <ul className="pattern-tags">
+              {config.terminal.approval_required_patterns.map((p, i) => (
+                <li key={i} className="pattern-tag warning">
+                  <code>{p}</code>
+                  <button
+                    type="button"
+                    onClick={() => removeApprovalPattern(i)}
+                    className="remove-btn"
+                    title={t('tools.terminal.remove')}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
     </div>
   );

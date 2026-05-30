@@ -7,6 +7,7 @@
     "chat": "聊天",
     "agents": "智能体",
     "groups": "群聊",
+    "tools": "工具",
     "settings": "设置"
   },
   "sidebar": {
@@ -97,6 +98,39 @@
     "entryHint": "后续可把多个 Agent 放进同一个上下文",
     "emptyTitle": "群聊功能预留",
     "emptyHint": "本阶段不新增后端模型，先保留入口和产品位置。"
+  },
+  "tools": {
+    "title": "工具管理",
+    "description": "配置 Agent 可用的内置工具及其安全策略。",
+    "terminal": {
+      "name": "终端命令执行",
+      "description": "允许 Agent 在沙箱中执行终端命令，支持安全策略和审批流程。",
+      "configTitle": "终端工具配置",
+      "configDesc": "配置终端命令执行的安全策略",
+      "enabled": "启用",
+      "on": "开",
+      "off": "关",
+      "defaultTimeout": "默认超时（毫秒）",
+      "blockedPatternsLabel": "阻断模式（始终拒绝）",
+      "approvalPatternsLabel": "审批模式（需要用户确认）",
+      "patternPlaceholder": "正则表达式...",
+      "add": "添加",
+      "save": "保存",
+      "saving": "保存中...",
+      "loading": "加载中...",
+      "noConfig": "无配置",
+      "loadFailed": "加载工具配置失败",
+      "saveFailed": "保存工具配置失败",
+      "basicSettings": "基本设置",
+      "enabledDesc": "开启或关闭终端命令执行功能",
+      "timeoutDesc": "命令执行的默认超时时间（秒）",
+      "blockedDesc": "匹配这些正则表达式的命令将被始终拒绝执行",
+      "approvalDesc": "匹配这些正则表达式的命令需要用户确认后才能执行",
+      "remove": "删除"
+    },
+    "comingSoon": "更多工具即将推出",
+    "selectHint": "从左侧选择一个工具查看或修改配置。",
+    "backToAgent": "返回 Agent 配置"
   },
   "settings": {
     "title": "后端设置",

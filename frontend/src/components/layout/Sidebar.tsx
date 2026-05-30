@@ -1,4 +1,4 @@
-import { Bot, Globe, MessageSquare, Settings, Users } from 'lucide-react';
+import { Bot, Globe, MessageSquare, Settings, Users, Wrench } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 import type { AppSettings, AvatarIcon, NavKey } from '../../types';
@@ -48,6 +48,7 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
         <NavButton active={activeNav === 'chat'} onClick={() => onNavChange('chat')} icon={<MessageSquare size={21} />} label={t('nav.chat')} />
         <NavButton active={activeNav === 'agents'} onClick={() => onNavChange('agents')} icon={<Bot size={21} />} label={t('nav.agents')} />
         <NavButton active={activeNav === 'groups'} onClick={() => onNavChange('groups')} icon={<Users size={21} />} label={t('nav.groups')} />
+        <NavButton active={activeNav === 'tools'} onClick={() => onNavChange('tools')} icon={<Wrench size={21} />} label={t('nav.tools')} />
         <NavButton active={activeNav === 'settings'} onClick={() => onNavChange('settings')} icon={<Settings size={21} />} label={t('nav.settings')} />
       </nav>
 

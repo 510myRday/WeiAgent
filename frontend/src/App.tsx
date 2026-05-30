@@ -5,6 +5,7 @@ import { useSettings, useProviders, useAgents } from './hooks';
 import { Sidebar } from './components/layout';
 import { ChatPanel } from './features/chat/ChatPanel';
 import { AgentsPanel } from './features/agents/AgentsPanel';
+import { ToolsPanel } from './features/tools/ToolsPanel';
 import { SettingsPanel } from './features/settings/SettingsPanel';
 import { AlertBanner, Button, EmptyState, ListItem, PaneHeader } from './components/ui';
 import { isLocale, useI18n } from './i18n';
@@ -139,6 +140,13 @@ export function App() {
       )}
       {activeNav === 'groups' && (
         <GroupsPlaceholder
+          onOpenMain={openMainPane}
+        />
+      )}
+      {activeNav === 'tools' && (
+        <ToolsPanel
+          agents={agents}
+          activeAgentId={activeAgentId}
           onOpenMain={openMainPane}
         />
       )}
