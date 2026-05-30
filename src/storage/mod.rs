@@ -2,11 +2,13 @@ mod agents;
 mod conversations;
 mod files;
 mod json_store;
+pub mod llm_logs;
 mod providers;
 mod validation;
 mod workspaces;
 
 pub use json_store::JsonStore;
+pub use llm_logs::LlmLogger;
 
 pub(super) const DEFAULT_AGENT_ICON: &str = "bot";
 pub(super) const DEFAULT_AGENT_COLOR: &str = "#22c55e";

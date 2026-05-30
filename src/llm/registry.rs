@@ -4,6 +4,7 @@ use crate::{
     domain::{ModelProvider, ProviderType},
     error::AppResult,
     llm::{client::DynChatClient, providers::openai_compatible::OpenAiCompatibleChatClient},
+    storage::LlmLogger,
 };
 
 pub trait LlmRegistry: Send + Sync {
@@ -16,10 +17,10 @@ pub struct DefaultLlmRegistry {
     openai_compatible: DynChatClient,
 }
 
-impl Default for DefaultLlmRegistry {
-    fn default() -> Self {
+impl DefaultLlmRegistry {
+    pub fn new(llm_logger: Arc<LlmLogger>) -> Self {
         Self {
-            openai_compatible: Arc::new(OpenAiCompatibleChatClient::new()),
+            openai_compatible: Arc::new(OpenAiCompatibleChatClient::new().with_logger(llm_logger)),
         }
     }
 }
@@ -42,7 +43,9 @@ mod tests {
 
     #[test]
     fn resolves_openai_compatible_client() {
-        let registry = DefaultLlmRegistry::default();
+        let temp = tempfile::tempdir().unwrap();
+        let logger = Arc::new(LlmLogger::new(temp.path(), false));
+        let registry = DefaultLlmRegistry::new(logger);
         let provider = ModelProvider {
             id: Uuid::new_v4(),
             provider_type: ProviderType::OpenAiCompatible,

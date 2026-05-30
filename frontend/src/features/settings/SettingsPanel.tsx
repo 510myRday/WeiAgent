@@ -1,11 +1,12 @@
 import { useState, useEffect, FormEvent } from 'react';
-import { Download, KeyRound, Plus, Save, Server, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { Download, FileText, KeyRound, Plus, Save, Server, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { AppSettings, ModelProvider, ModelProviderPayload } from '../../types';
 import { fetchModels, fetchModelsForProvider } from '../../api';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
 import { AlertBanner, Button, FormField, IconButton, ListItem, PaneHeader } from '../../components/ui';
+import { LlmLogsModal } from './LlmLogsModal';
 
 interface SettingsPanelProps {
   settingsForm: AppSettings;
@@ -54,6 +55,7 @@ export function SettingsPanel({
   const [isSubmittingProvider, setIsSubmittingProvider] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [error, setError] = useState('');
+  const [showLlmLogs, setShowLlmLogs] = useState(false);
 
   const activeProvider = providers.find((provider) => provider.id === activeProviderId);
 
@@ -172,6 +174,7 @@ export function SettingsPanel({
   }
 
   return (
+    <>
     <PanelShell
       className="settings-panel"
       sidebar={(
@@ -252,6 +255,21 @@ export function SettingsPanel({
                   />
                 </FormField>
               </div>
+              <div className="llm-log-toggle-row">
+                <label className="toggle-label">
+                  <input
+                    id="settings-llm-log"
+                    type="checkbox"
+                    checked={settingsForm.llm_log_enabled}
+                    onChange={(e) => onSettingsFormChange({ ...settingsForm, llm_log_enabled: e.target.checked })}
+                  />
+                  <span className="toggle-text">{t('settings.llmLogEnabled')}</span>
+                </label>
+                <Button variant="secondary" type="button" onClick={() => setShowLlmLogs(true)} icon={<FileText size={15} />}>
+                  {t('llmLogs.title')}
+                </Button>
+              </div>
+              <p className="hint-text small-hint">{t('settings.llmLogHint')}</p>
               <p className="hint-text">{t('settings.restartHint')}</p>
               <div className="form-actions">
                 <Button variant="primary" type="submit" icon={<Save size={17} />}>{t('settings.save')}</Button>
@@ -346,5 +364,7 @@ export function SettingsPanel({
         </div>
       )}
     />
+    {showLlmLogs ? <LlmLogsModal onClose={() => setShowLlmLogs(false)} /> : null}
+  </>
   );
 }

@@ -11,7 +11,7 @@ use app::{AppState, build_router, build_router_dev};
 use config::{AppConfig, log_level_filter};
 use error::{AppError, AppResult};
 use llm::registry::DefaultLlmRegistry;
-use storage::JsonStore;
+use storage::{JsonStore, LlmLogger};
 use tokio::{
     net::TcpListener,
     process::{Child, Command},
@@ -28,10 +28,15 @@ async fn main() -> AppResult<()> {
 
     let addr = config.socket_addr()?;
     let store = Arc::new(JsonStore::new(&config.data_dir).await?);
-    let llm_registry = Arc::new(DefaultLlmRegistry::default());
+    let llm_logger = Arc::new(LlmLogger::new(
+        &config.data_dir,
+        config.settings.llm_log_enabled,
+    ));
+    let llm_registry = Arc::new(DefaultLlmRegistry::new(llm_logger.clone()));
     let state = AppState {
         store,
         llm_registry,
+        llm_logger,
     };
     let app = if is_dev {
         build_router_dev(state)

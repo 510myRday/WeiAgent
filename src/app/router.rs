@@ -7,7 +7,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::app::{
     AppState,
-    handlers::{agents, conversations, providers, settings},
+    handlers::{agents, conversations, llm_logs, providers, settings},
     static_assets::serve_frontend,
 };
 
@@ -79,5 +79,10 @@ fn api_router() -> Router<AppState> {
         .route(
             "/api/conversations/{conversation_id}/messages/stream",
             post(conversations::send_message_stream),
+        )
+        .route("/api/llm-logs", get(llm_logs::list_llm_logs))
+        .route(
+            "/api/llm-logs/{log_id}",
+            get(llm_logs::get_llm_log).delete(llm_logs::delete_llm_log),
         )
 }

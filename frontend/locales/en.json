@@ -105,6 +105,8 @@
     "logLevel": "Log level",
     "requestTimeout": "Request timeout (seconds)",
     "requestRetries": "Timeout retry attempts",
+    "llmLogEnabled": "Enable LLM debug logs",
+    "llmLogHint": "When enabled, every LLM request and response will be saved under data/llm_logs/.",
     "restartHint": "Restart the backend after changing host or port.",
     "save": "Save settings"
   },
@@ -146,5 +148,23 @@
   "lang": {
     "switchTo": "Switch to English",
     "switchToZh": "Switch to Chinese"
+  },
+  "llmLogs": {
+    "title": "LLM Debug Logs",
+    "description": "View every LLM request and response.",
+    "empty": "No logs yet. Enable LLM debug logs in settings, then send a message.",
+    "request": "Request",
+    "response": "Response",
+    "streamChunks": "Stream chunks",
+    "error": "Error",
+    "agent": "Agent",
+    "model": "Model",
+    "provider": "Provider",
+    "time": "Time",
+    "status": "Status",
+    "view": "View",
+    "delete": "Delete",
+    "close": "Close",
+    "refresh": "Refresh"
   }
 }

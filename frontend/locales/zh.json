@@ -105,6 +105,8 @@
     "logLevel": "日志级别",
     "requestTimeout": "请求超时（秒）",
     "requestRetries": "超时重试次数",
+    "llmLogEnabled": "启用 LLM 调试日志",
+    "llmLogHint": "开启后，每次与 AI 模型的请求和响应内容会记录到 data/llm_logs/ 目录下。",
     "restartHint": "修改监听地址或端口后，需要重启后端生效。",
     "save": "保存设置"
   },
@@ -146,5 +148,23 @@
   "lang": {
     "switchTo": "切换到英文",
     "switchToZh": "切换到中文"
+  },
+  "llmLogs": {
+    "title": "LLM 调试日志",
+    "description": "查看每次与 AI 模型的请求和响应内容。",
+    "empty": "暂无日志记录。请在设置中开启 LLM 调试日志，然后发送消息。",
+    "request": "请求",
+    "response": "响应",
+    "streamChunks": "流式片段",
+    "error": "错误",
+    "agent": "Agent",
+    "model": "模型",
+    "provider": "提供商",
+    "time": "时间",
+    "status": "状态码",
+    "view": "查看",
+    "delete": "删除",
+    "close": "关闭",
+    "refresh": "刷新"
   }
 }

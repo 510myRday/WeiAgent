@@ -12,6 +12,7 @@ const defaultSettings: AppSettings = {
   language: 'zh',
   request_timeout_seconds: 60,
   request_retry_attempts: 3,
+  llm_log_enabled: false,
 };
 
 export function useSettings() {

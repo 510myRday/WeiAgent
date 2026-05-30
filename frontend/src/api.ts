@@ -7,6 +7,8 @@ import type {
   CreateAgentPayload,
   CreateConversationPayload,
   FetchProviderModelsPayload,
+  LlmLogDetail,
+  LlmLogEntry,
   ModelProvider,
   ModelProviderPayload,
   SendMessageResponse,
@@ -158,6 +160,20 @@ export function createConversation(
 
 export function deleteConversation(conversationId: string): Promise<void> {
   return request<void>(`/api/conversations/${conversationId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function listLlmLogs(): Promise<LlmLogEntry[]> {
+  return request<LlmLogEntry[]>('/api/llm-logs');
+}
+
+export function getLlmLog(logId: string): Promise<LlmLogDetail> {
+  return request<LlmLogDetail>(`/api/llm-logs/${logId}`);
+}
+
+export function deleteLlmLog(logId: string): Promise<void> {
+  return request<void>(`/api/llm-logs/${logId}`, {
     method: 'DELETE',
   });
 }

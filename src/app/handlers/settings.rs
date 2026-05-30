@@ -10,5 +10,7 @@ pub async fn update_settings(
     State(state): State<AppState>,
     Json(request): Json<AppSettings>,
 ) -> AppResult<Json<AppSettings>> {
-    Ok(Json(state.store.write_settings(request).await?))
+    let updated = state.store.write_settings(request).await?;
+    state.llm_logger.set_enabled(updated.llm_log_enabled);
+    Ok(Json(updated))
 }

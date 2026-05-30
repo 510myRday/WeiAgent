@@ -33,7 +33,7 @@ mod tests {
             client::{ChatClient, ChatStream, DynChatClient},
             registry::LlmRegistry,
         },
-        storage::JsonStore,
+        storage::{JsonStore, LlmLogger},
     };
 
     struct MockChatClient;
@@ -113,6 +113,7 @@ mod tests {
             llm_registry: Arc::new(MockLlmRegistry {
                 client: Arc::new(MockChatClient),
             }),
+            llm_logger: Arc::new(LlmLogger::new(tempfile::tempdir().unwrap().path(), false)),
         });
         (app, agent.id, provider.id, conversation.id)
     }

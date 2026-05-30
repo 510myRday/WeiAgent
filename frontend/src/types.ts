@@ -7,6 +7,7 @@ export type AppSettings = {
   language: 'zh' | 'en';
   request_timeout_seconds: number;
   request_retry_attempts: number;
+  llm_log_enabled: boolean;
 };
 
 export type ModelProvider = {
@@ -123,3 +124,18 @@ export type StreamEvent =
 export type NavKey = 'chat' | 'agents' | 'groups' | 'settings';
 
 export type MobileView = 'list' | 'main';
+
+export type LlmLogEntry = {
+  id: string;
+  agent_name: string;
+  model_id: string;
+  provider_name: string;
+  created_at: string;
+};
+
+export type LlmLogDetail = LlmLogEntry & {
+  raw_request: string;
+  raw_response?: string;
+  raw_status?: number;
+  error?: string;
+};

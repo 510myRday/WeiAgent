@@ -167,7 +167,7 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         setMessages((current) => {
           const last = current[current.length - 1];
           if (last?.role === 'assistant') {
-            return [...current.slice(0, -1), { ...last, id: msg.id || last.id, status: msg.status ?? last.status }];
+            return [...current.slice(0, -1), { ...last, id: msg.id || last.id, content: msg.content || last.content, status: msg.status ?? last.status }];
           }
           return [...current, msg];
         });

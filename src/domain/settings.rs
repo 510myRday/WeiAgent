@@ -18,6 +18,8 @@ pub struct AppSettings {
     pub request_timeout_seconds: u64,
     #[serde(default = "default_request_retry_attempts")]
     pub request_retry_attempts: u32,
+    #[serde(default = "default_llm_log_enabled")]
+    pub llm_log_enabled: bool,
 }
 
 impl Default for AppSettings {
@@ -31,6 +33,7 @@ impl Default for AppSettings {
             language: default_language(),
             request_timeout_seconds: default_request_timeout_seconds(),
             request_retry_attempts: default_request_retry_attempts(),
+            llm_log_enabled: default_llm_log_enabled(),
         }
     }
 }
@@ -65,4 +68,8 @@ fn default_request_timeout_seconds() -> u64 {
 
 fn default_request_retry_attempts() -> u32 {
     3
+}
+
+fn default_llm_log_enabled() -> bool {
+    false
 }
