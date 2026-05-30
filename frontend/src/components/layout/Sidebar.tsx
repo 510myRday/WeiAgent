@@ -48,11 +48,11 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
         <NavButton active={activeNav === 'chat'} onClick={() => onNavChange('chat')} icon={<MessageSquare size={21} />} label={t('nav.chat')} />
         <NavButton active={activeNav === 'agents'} onClick={() => onNavChange('agents')} icon={<Bot size={21} />} label={t('nav.agents')} />
         <NavButton active={activeNav === 'groups'} onClick={() => onNavChange('groups')} icon={<Users size={21} />} label={t('nav.groups')} />
+        <NavButton active={activeNav === 'settings'} onClick={() => onNavChange('settings')} icon={<Settings size={21} />} label={t('nav.settings')} />
       </nav>
 
       <div className="sidebar-spacer" />
       <div className="sidebar-footer">
-        <NavButton active={activeNav === 'settings'} onClick={() => onNavChange('settings')} icon={<Settings size={21} />} label={t('nav.settings')} />
         <IconButton
           className="lang-switch"
           variant="rail"

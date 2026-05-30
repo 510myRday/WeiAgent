@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use axum::{
     Json,
     http::StatusCode,
@@ -21,6 +23,8 @@ pub enum AppError {
     Llm(String),
     #[error("address error: {0}")]
     Address(#[from] std::net::AddrParseError),
+    #[error("address {0} is already in use")]
+    AddressInUse(SocketAddr),
 }
 
 #[derive(Debug, Serialize)]
@@ -34,9 +38,11 @@ impl IntoResponse for AppError {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::MissingApiKey => StatusCode::SERVICE_UNAVAILABLE,
-            AppError::Storage(_) | AppError::Json(_) | AppError::Llm(_) | AppError::Address(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            AppError::Storage(_)
+            | AppError::Json(_)
+            | AppError::Llm(_)
+            | AppError::Address(_)
+            | AppError::AddressInUse(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         let body = Json(ErrorBody {

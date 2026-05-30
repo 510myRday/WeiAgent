@@ -73,6 +73,7 @@ export type Conversation = {
   id: string;
   agent_id: string;
   title: string;
+  message_count: number;
   created_at: string;
   updated_at: string;
 };

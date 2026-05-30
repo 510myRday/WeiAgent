@@ -63,7 +63,7 @@
     "sending": "发送中",
     "send": "发送",
     "stop": "停止",
-    "placeholder": "输入消息...",
+    "placeholder": "输入消息... Enter 发送，Shift+Enter 换行",
     "placeholderDisabled": "请先选择一个 Agent",
     "messageLabel": "消息",
     "failed": "回复中断，已保存当前内容",

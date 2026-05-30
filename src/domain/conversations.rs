@@ -7,6 +7,8 @@ pub struct Conversation {
     pub id: Uuid,
     pub agent_id: Uuid,
     pub title: String,
+    #[serde(default)]
+    pub message_count: usize,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

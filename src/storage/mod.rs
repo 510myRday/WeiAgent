@@ -133,6 +133,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conversation_list_derives_title_and_message_count_from_messages() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let provider = store
+            .create_model_provider(provider_request("OpenAI", "gpt-4o-mini"))
+            .await
+            .unwrap();
+        let agent = store
+            .create_agent(CreateAgentRequest {
+                name: "Planner".to_string(),
+                model_provider_id: provider.id,
+                model_id: "gpt-4o-mini".to_string(),
+                avatar_icon: Some("sparkles".to_string()),
+                avatar_color: Some("#3b82f6".to_string()),
+            })
+            .await
+            .unwrap();
+        let conversation = store
+            .create_conversation(
+                agent.id,
+                CreateConversationRequest {
+                    title: Some("新会话".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+        let message = ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: agent.id,
+            conversation_id: conversation.id,
+            role: ChatRole::User,
+            content: "  这是第一条用户消息\n用于生成标题  ".to_string(),
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+        };
+
+        store
+            .append_conversation_messages(conversation.id, std::slice::from_ref(&message))
+            .await
+            .unwrap();
+
+        let listed = store.list_conversations(agent.id).await.unwrap();
+        let listed_conversation = listed
+            .iter()
+            .find(|item| item.id == conversation.id)
+            .unwrap();
+        assert_eq!(listed_conversation.message_count, 1);
+        assert_eq!(listed_conversation.title, "这是第一条用户消息 用于生成标题");
+    }
+
+    #[tokio::test]
     async fn initializes_builtin_agent_workspace_and_blocks_delete() {
         let temp_dir = tempfile::tempdir().unwrap();
         let store = JsonStore::new(temp_dir.path()).await.unwrap();

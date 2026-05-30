@@ -3,17 +3,74 @@ use tokio::fs;
 use uuid::Uuid;
 
 use crate::{
-    domain::{ChatMessage, ChatMessageStatus, Conversation, CreateConversationRequest},
+    domain::{ChatMessage, ChatMessageStatus, ChatRole, Conversation, CreateConversationRequest},
     error::{AppError, AppResult},
     storage::{files::write_json, json_store::JsonStore},
 };
 
+const CONVERSATION_TITLE_CHAR_LIMIT: usize = 80;
+
+fn is_generated_conversation_title(title: &str) -> bool {
+    matches!(
+        title.trim(),
+        "" | "New Conversation" | "New conversation" | "新会话" | "新建会话"
+    )
+}
+
+fn title_from_first_user_message(messages: &[ChatMessage]) -> Option<String> {
+    messages
+        .iter()
+        .find(|message| message.role == ChatRole::User)
+        .and_then(|message| {
+            let normalized = message
+                .content
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let title = normalized
+                .chars()
+                .take(CONVERSATION_TITLE_CHAR_LIMIT)
+                .collect::<String>();
+            (!title.is_empty()).then_some(title)
+        })
+}
+
 impl JsonStore {
     pub async fn list_conversations(&self, agent_id: Uuid) -> AppResult<Vec<Conversation>> {
-        self.get_agent(agent_id).await?;
-        let mut conversations = self
-            .read_conversations()
-            .await?
+        let _guard = self.lock.lock().await;
+        let agents = self.read_agents_unlocked().await?;
+        if !agents.iter().any(|agent| agent.id == agent_id) {
+            return Err(AppError::NotFound);
+        }
+
+        let mut changed = false;
+        let mut conversations = self.read_conversations_unlocked().await?;
+        for conversation in conversations
+            .iter_mut()
+            .filter(|conversation| conversation.agent_id == agent_id)
+        {
+            let messages = self
+                .read_conversation_messages_unchecked(conversation.id)
+                .await?;
+            if conversation.message_count != messages.len() {
+                conversation.message_count = messages.len();
+                changed = true;
+            }
+            if is_generated_conversation_title(&conversation.title) {
+                if let Some(title) = title_from_first_user_message(&messages) {
+                    if conversation.title != title {
+                        conversation.title = title;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if changed {
+            self.write_conversations_unlocked(&conversations).await?;
+        }
+
+        let mut conversations = conversations
             .into_iter()
             .filter(|conversation| conversation.agent_id == agent_id)
             .collect::<Vec<_>>();
@@ -51,6 +108,7 @@ impl JsonStore {
                 .filter(|title| !title.is_empty())
                 .unwrap_or("New Conversation")
                 .to_string(),
+            message_count: 0,
             created_at: now,
             updated_at: now,
         };
@@ -102,6 +160,12 @@ impl JsonStore {
             .await?;
         existing.extend_from_slice(messages);
         write_json(&self.conversation_file(conversation_id), &existing).await?;
+        conversation.message_count = existing.len();
+        if is_generated_conversation_title(&conversation.title) {
+            if let Some(title) = title_from_first_user_message(&existing) {
+                conversation.title = title;
+            }
+        }
         conversation.updated_at = Utc::now();
         self.write_conversations_unlocked(&conversations).await
     }
@@ -130,6 +194,7 @@ impl JsonStore {
         message.content = content;
         message.status = status;
         write_json(&self.conversation_file(conversation_id), &existing).await?;
+        conversation.message_count = existing.len();
         conversation.updated_at = Utc::now();
         self.write_conversations_unlocked(&conversations).await
     }

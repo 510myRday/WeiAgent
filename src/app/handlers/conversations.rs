@@ -327,12 +327,14 @@ pub async fn send_message_stream(
                     yield Ok(Event::default().event("assistant").json_data(&assistant_message).unwrap_or_else(|_| {
                         Event::default().event("error").data("failed to serialize assistant message")
                     }));
-                } else if !pending_content.is_empty() {
-                    yield Ok(Event::default().event("delta").data(std::mem::take(&mut pending_content)));
+                } else {
+                    if !pending_content.is_empty() {
+                        yield Ok(Event::default().event("delta").data(std::mem::take(&mut pending_content)));
+                    }
+                    yield Ok(Event::default().event("assistant").json_data(&assistant_message).unwrap_or_else(|_| {
+                        Event::default().event("error").data("failed to serialize assistant message")
+                    }));
                 }
-                yield Ok(Event::default().event("assistant").json_data(&assistant_message).unwrap_or_else(|_| {
-                    Event::default().event("error").data("failed to serialize assistant message")
-                }));
                 yield Ok(Event::default().event("done").data("ok"));
             }
             Err(error) => {

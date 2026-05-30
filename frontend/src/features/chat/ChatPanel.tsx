@@ -1,5 +1,5 @@
-import { useRef, useEffect, useCallback, useState, isValidElement, FormEvent } from 'react';
-import type { ReactNode } from 'react';
+import { useRef, useEffect, useLayoutEffect, useCallback, useState, isValidElement } from 'react';
+import type { FormEvent, KeyboardEvent, ReactNode } from 'react';
 import {
   ArrowLeft,
   Bot,
@@ -78,6 +78,7 @@ export function ChatPanel({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const composerFormRef = useRef<HTMLFormElement>(null);
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const displayAgentName = (agent: Agent) => agent.is_builtin ? t('agentConfig.builtinMasterName') : agent.name;
@@ -117,19 +118,29 @@ export function ChatPanel({
 
   const scrollToBottom = useCallback(
     (force = false) => {
+      const el = messagesContainerRef.current;
+      if (!el) return;
       if (!force && !isMessagesNearBottom()) return;
-      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      messagesEndRef.current?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth' });
+      el.scrollTop = el.scrollHeight;
       setIsAwayFromBottom(false);
     },
     [isMessagesNearBottom],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (!isLoadingChat && messages.length > 0) {
+      scrollToBottom(true);
+    }
+  }, [isLoadingChat, messages.length, scrollToBottom]);
+
+  useLayoutEffect(() => {
     scrollToBottom();
+  }, [messages, scrollToBottom]);
+
+  useEffect(() => {
     const frameId = window.requestAnimationFrame(updateScrollButtonVisibility);
     return () => window.cancelAnimationFrame(frameId);
-  }, [messages, scrollToBottom, updateScrollButtonVisibility]);
+  }, [messages, updateScrollButtonVisibility]);
 
   function handleAgentSelect(agentId: string) {
     onError('');
@@ -153,11 +164,19 @@ export function ChatPanel({
     setDraft('');
     onError('');
     void send(content, activeAgent.id, isStreamMode);
+    scrollToBottom(true);
+  }
+
+  function handleComposerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
+    e.preventDefault();
+    if (!activeAgent) return;
+    composerFormRef.current?.requestSubmit();
   }
 
   function handleNewConversation() {
     if (!activeAgent) return;
-    if (activeConversationId && messages.length === 0) {
+    if (activeConversation && activeConversation.message_count === 0) {
       onOpenMain();
       return;
     }
@@ -318,12 +337,14 @@ export function ChatPanel({
           </button>
         ) : null}
 
-        <form className="composer" onSubmit={handleSend}>
+        <form className="composer" ref={composerFormRef} onSubmit={handleSend}>
           <div className="composer-box">
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={handleComposerKeyDown}
               placeholder={activeAgent ? t('chat.placeholder') : t('chat.placeholderDisabled')}
+              aria-label={t('chat.messageLabel')}
               disabled={!activeAgent}
               rows={4}
             />
@@ -381,7 +402,7 @@ function MessageRow({
           <time dateTime={message.created_at}>{timeSeparatorLabel}</time>
         </div>
       ) : null}
-      <article className={'message-row ' + message.role}>
+      <article className={['message-row', message.role, message.status === 'streaming' ? 'is-streaming' : ''].filter(Boolean).join(' ')}>
         {!isUser ? <MessageAvatar agent={agent} settings={settings} isUser={false} /> : null}
         <div className="message-body">
           <div className="message-meta">
@@ -422,7 +443,11 @@ function MessageContent({ message }: { message: UiMessage }) {
   }
 
   if (message.status === 'streaming') {
-    return <p className="message-plain">{message.content}</p>;
+    return (
+      <div className="message-markdown streaming-content">
+        <MarkdownContent content={message.content} />
+      </div>
+    );
   }
 
   return (

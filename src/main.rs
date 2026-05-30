@@ -5,11 +5,11 @@ mod error;
 mod llm;
 mod storage;
 
-use std::{process::Stdio, sync::Arc};
+use std::{io::ErrorKind, process::Stdio, sync::Arc};
 
 use app::{AppState, build_router, build_router_dev};
 use config::{AppConfig, log_level_filter};
-use error::AppResult;
+use error::{AppError, AppResult};
 use llm::registry::DefaultLlmRegistry;
 use storage::JsonStore;
 use tokio::{
@@ -33,22 +33,28 @@ async fn main() -> AppResult<()> {
         store,
         llm_registry,
     };
-    let _vite_child = if is_dev {
-        Some(start_vite_dev_server().await?)
-    } else {
-        None
-    };
     let app = if is_dev {
         build_router_dev(state)
     } else {
         build_router(state)
+    };
+    let listener = TcpListener::bind(addr).await.map_err(|error| {
+        if error.kind() == ErrorKind::AddrInUse {
+            AppError::AddressInUse(addr)
+        } else {
+            AppError::Storage(error)
+        }
+    })?;
+    let _vite_child = if is_dev {
+        Some(start_vite_dev_server().await?)
+    } else {
+        None
     };
 
     tracing::info!("WeiAgent listening on http://{addr}");
     if is_dev {
         tracing::info!("WeiAgent dev frontend listening on http://127.0.0.1:5173");
     }
-    let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
 
     Ok(())

@@ -24,6 +24,10 @@ function toUiMessage(msg: { id: string; agent_id: string; conversation_id: strin
   return { ...msg, clientId: msg.id ?? genClientId() };
 }
 
+function isEmptyConversation(conversation: Conversation): boolean {
+  return (conversation.message_count ?? 0) === 0;
+}
+
 type UseConversationsOptions = {
   newConversationTitle: string;
   onError?: (msg: string) => void;
@@ -40,8 +44,6 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
   const loadChatIdRef = useRef(0);
   const sendRequestIdRef = useRef(0);
   const sendAbortControllerRef = useRef<AbortController | null>(null);
-  const pendingDeltaRef = useRef('');
-  const rafIdRef = useRef(0);
   const activeStreamRef = useRef({ agentId: '', conversationId: '' });
   const suppressNextLoadConversationIdRef = useRef('');
   const onErrorRef = useRef(onError);
@@ -84,22 +86,13 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
 
   const clearChat = useCallback(() => {
     ++loadChatIdRef.current;
-    pendingDeltaRef.current = '';
-    if (rafIdRef.current) {
-      cancelAnimationFrame(rafIdRef.current);
-      rafIdRef.current = 0;
-    }
     setConversations([]);
     setActiveConversationId('');
     setMessages([]);
     setIsLoadingChat(false);
   }, []);
 
-  const flushPendingDelta = useCallback(() => {
-    const delta = pendingDeltaRef.current;
-    pendingDeltaRef.current = '';
-    rafIdRef.current = 0;
-    if (!delta) return;
+  const appendDelta = useCallback((delta: string) => {
     setMessages((current) => {
       const last = current[current.length - 1];
       if (last?.role === 'assistant') {
@@ -122,11 +115,6 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
 
   const cancelActiveSend = useCallback(() => {
     sendRequestIdRef.current += 1;
-    pendingDeltaRef.current = '';
-    if (rafIdRef.current) {
-      cancelAnimationFrame(rafIdRef.current);
-      rafIdRef.current = 0;
-    }
     sendAbortControllerRef.current?.abort();
     sendAbortControllerRef.current = null;
     setMessages((current) => {
@@ -143,7 +131,6 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
   const handleStreamEvent = useCallback(
     (evt: { event: string; data: unknown }) => {
       if (evt.event === 'error') {
-        pendingDeltaRef.current = '';
         setIsSending(false);
         setMessages((current) => {
           const last = current[current.length - 1];
@@ -156,7 +143,6 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         return;
       }
       if (evt.event === 'done') {
-        if (pendingDeltaRef.current) flushPendingDelta();
         setIsSending(false);
         return;
       }
@@ -173,10 +159,7 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         return;
       }
       if (evt.event === 'delta') {
-        pendingDeltaRef.current += evt.data as string;
-        if (!rafIdRef.current) {
-          rafIdRef.current = requestAnimationFrame(() => flushPendingDelta());
-        }
+        appendDelta(evt.data as string);
         return;
       }
       if (evt.event === 'assistant') {
@@ -184,13 +167,13 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         setMessages((current) => {
           const last = current[current.length - 1];
           if (last?.role === 'assistant') {
-            return [...current.slice(0, -1), { ...msg, clientId: last.clientId }];
+            return [...current.slice(0, -1), { ...last, id: msg.id || last.id, status: msg.status ?? last.status }];
           }
           return [...current, msg];
         });
       }
     },
-    [flushPendingDelta],
+    [appendDelta],
   );
 
   const send = useCallback(
@@ -201,7 +184,6 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
       const optimisticAssistantClientId = genClientId();
       sendAbortControllerRef.current?.abort();
       sendAbortControllerRef.current = controller;
-      pendingDeltaRef.current = '';
       setIsSending(true);
       setMessages((current) => [
         ...current,
@@ -267,7 +249,6 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         void loadConversationsForAgent(agentId);
       } catch (cause) {
         if (requestId === sendRequestIdRef.current) {
-          if (pendingDeltaRef.current) flushPendingDelta();
           setIsSending(false);
           if (!isAbortError(cause)) {
             setMessages((current) => {
@@ -292,15 +273,12 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
 
   const createNewConversation = useCallback(
     async (agentId: string) => {
-      const newTitle = newConversationTitle;
-      const existing = conversations.find(
-        (c) => c.title === newTitle && c.id !== activeConversationId,
-      );
+      const existing = conversations.find(isEmptyConversation);
       if (existing) {
         setActiveConversationId(existing.id);
         return existing;
       }
-      const created = await createConversation(agentId, { title: newTitle });
+      const created = await createConversation(agentId, { title: newConversationTitle });
       setConversations((current) => [created, ...current]);
       setActiveConversationId(created.id);
       return created;
