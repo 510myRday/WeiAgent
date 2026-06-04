@@ -1278,6 +1278,45 @@
   flex-shrink: 0;
   border-radius: 7px;
   padding: 0 12px;
+  transition: background-color 0.2s, border-color 0.2s, transform 0.2s;
+}
+
+.send-button:hover,
+.send-button:focus-visible {
+  border-color: var(--color-primary-strong);
+  background: var(--color-primary-strong);
+}
+
+.send-button.is-stopping {
+  animation: pulse-stop 1.5s infinite;
+}
+
+.send-button.is-stopping:hover,
+.send-button.is-stopping:focus-visible {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-soft);
+}
+
+.send-button.is-stopping .stop-icon {
+  animation: rotate-stop 2s linear infinite;
+}
+
+@keyframes pulse-stop {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+  }
+}
+
+@keyframes rotate-stop {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .empty-state,

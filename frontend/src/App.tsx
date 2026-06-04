@@ -159,9 +159,20 @@ export function App() {
           activeProviderId={activeProviderId}
           initialSection={settingsSection}
           onProviderChange={setActiveProviderId}
-          onProviderAdd={addProvider}
-          onProviderEdit={editProvider}
-          onProviderRemove={removeProvider}
+          onProviderAdd={async (payload) => {
+            const created = await addProvider(payload);
+            await refreshAgents();
+            return created;
+          }}
+          onProviderEdit={async (id, payload) => {
+            const updated = await editProvider(id, payload);
+            await refreshAgents();
+            return updated;
+          }}
+          onProviderRemove={async (id) => {
+            await removeProvider(id);
+            await refreshAgents();
+          }}
           onOpenMain={openMainPane}
         />
       )}

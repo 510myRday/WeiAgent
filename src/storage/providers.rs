@@ -80,18 +80,19 @@ impl JsonStore {
         }
         if let Some(models) = request.models {
             let models = normalize_models(models)?;
-            for agent in agents
-                .iter()
-                .filter(|agent| agent.model_provider_id == provider.id)
-            {
+            let mut agents = agents;
+            let mut agents_changed = false;
+            for agent in agents.iter_mut().filter(|agent| agent.model_provider_id == provider.id) {
                 if !models.contains(&agent.model_id) {
-                    return Err(AppError::BadRequest(format!(
-                        "model {} is used by agent {}",
-                        agent.model_id, agent.name
-                    )));
+                    agent.model_id = String::new();
+                    agent.updated_at = Utc::now();
+                    agents_changed = true;
                 }
             }
             provider.models = models;
+            if agents_changed {
+                self.write_agents_unlocked(&agents).await?;
+            }
         }
         if let Some(extra_body) = request.extra_body {
             provider.extra_body = extra_body;

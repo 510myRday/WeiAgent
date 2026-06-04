@@ -67,6 +67,8 @@
     "stop": "Stop",
     "placeholder": "Type a message... Enter to send, Shift+Enter for newline",
     "placeholderDisabled": "Select an agent first",
+    "placeholderNoProvider": "Please select a provider and model",
+    "placeholderNoModel": "Please select a model",
     "messageLabel": "Message",
     "failed": "Response interrupted; current content was saved",
     "copy": "Copy",

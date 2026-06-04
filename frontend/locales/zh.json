@@ -67,6 +67,8 @@
     "stop": "停止",
     "placeholder": "输入消息... Enter 发送，Shift+Enter 换行",
     "placeholderDisabled": "请先选择一个 Agent",
+    "placeholderNoProvider": "请选择提供商和模型",
+    "placeholderNoModel": "请选择具体模型",
     "messageLabel": "消息",
     "failed": "回复中断，已保存当前内容",
     "copy": "复制",

@@ -83,6 +83,16 @@ export function ChatPanel({
   const composerFormRef = useRef<HTMLFormElement>(null);
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  const hasProvider = Boolean(activeAgent?.model_provider_id);
+  const hasModel = Boolean(activeAgent?.model_id);
+  const isComposerDisabled = !activeAgent || !hasProvider || !hasModel;
+  const composerPlaceholder = !activeAgent
+    ? t('chat.placeholderDisabled')
+    : !hasProvider
+      ? t('chat.placeholderNoProvider')
+      : !hasModel
+        ? t('chat.placeholderNoModel')
+        : t('chat.placeholder');
   const displayAgentName = (agent: Agent) => agent.is_builtin ? t('agentConfig.builtinMasterName') : agent.name;
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId);
   const filteredConversations = conversations.filter((conversation) =>
@@ -379,9 +389,9 @@ export function ChatPanel({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={handleComposerKeyDown}
-              placeholder={activeAgent ? t('chat.placeholder') : t('chat.placeholderDisabled')}
+              placeholder={composerPlaceholder}
               aria-label={t('chat.messageLabel')}
-              disabled={!activeAgent}
+              disabled={isComposerDisabled}
               rows={4}
             />
             <div className="composer-toolbar">
@@ -400,7 +410,13 @@ export function ChatPanel({
                 </label>
                 <button type="button" className="composer-tool" aria-label="Sound"><Volume2 size={18} /></button>
                 <Button className="back-button" type="button" onClick={onBackToList}>{t('common.back')}</Button>
-                <Button className="send-button" variant="primary" type="submit" disabled={!activeAgent || (!draft.trim() && !isSending)} icon={isSending ? <Square size={16} /> : <Send size={17} />}>
+                <Button
+                  className={`send-button${isSending ? ' is-stopping' : ''}`}
+                  variant={isSending ? 'danger' : 'primary'}
+                  type="submit"
+                  disabled={isComposerDisabled || (!draft.trim() && !isSending)}
+                  icon={isSending ? <Square className="stop-icon" size={16} /> : <Send size={17} />}
+                >
                   {isSending ? t('chat.stop') : t('chat.send')}
                 </Button>
               </div>
