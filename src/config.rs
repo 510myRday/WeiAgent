@@ -1,4 +1,7 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
 
 use tokio::fs;
 
@@ -22,7 +25,11 @@ impl AppConfig {
     }
 
     pub fn socket_addr(&self) -> Result<SocketAddr, std::net::AddrParseError> {
-        format!("{}:{}", self.settings.host, self.settings.port).parse()
+        self.settings
+            .host
+            .trim()
+            .parse::<IpAddr>()
+            .map(|host| SocketAddr::new(host, self.settings.port))
     }
 }
 
@@ -65,6 +72,17 @@ pub fn validate_settings(settings: &AppSettings) -> AppResult<()> {
     if settings.port == 0 {
         return Err(AppError::BadRequest("port cannot be 0".to_string()));
     }
+    let host = settings
+        .host
+        .trim()
+        .parse::<IpAddr>()
+        .map_err(|_| AppError::BadRequest("host must be a loopback IP address".to_string()))?;
+    if !host.is_loopback() {
+        return Err(AppError::BadRequest(
+            "WeiAgent may only listen on a loopback address until authentication is configured"
+                .to_string(),
+        ));
+    }
     if settings.avatar_icon.trim().is_empty() {
         return Err(AppError::BadRequest(
             "avatar_icon cannot be empty".to_string(),
@@ -101,5 +119,30 @@ pub fn log_level_filter(value: &str) -> tracing_subscriber::filter::LevelFilter 
         "warn" => tracing_subscriber::filter::LevelFilter::WARN,
         "error" => tracing_subscriber::filter::LevelFilter::ERROR,
         _ => tracing_subscriber::filter::LevelFilter::INFO,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_reject_non_loopback_hosts() {
+        let settings = AppSettings {
+            host: "0.0.0.0".to_string(),
+            ..AppSettings::default()
+        };
+        assert!(validate_settings(&settings).is_err());
+    }
+
+    #[test]
+    fn settings_allow_ipv4_and_ipv6_loopback_hosts() {
+        for host in ["127.0.0.1", "::1"] {
+            let settings = AppSettings {
+                host: host.to_string(),
+                ..AppSettings::default()
+            };
+            assert!(validate_settings(&settings).is_ok());
+        }
     }
 }

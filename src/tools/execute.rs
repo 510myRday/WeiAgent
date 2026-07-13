@@ -1,7 +1,8 @@
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
-    time::Duration,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
 };
 
 use tokio::process::Command;
@@ -17,6 +18,11 @@ use crate::{
     },
 };
 
+pub const MAX_TERMINAL_TIMEOUT_MS: u64 = 120_000;
+const MAX_LLM_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
+const DOCKER_AVAILABILITY_CACHE_TTL: Duration = Duration::from_secs(10);
+static DOCKER_AVAILABILITY: OnceLock<tokio::sync::Mutex<Option<(Instant, bool)>>> = OnceLock::new();
+
 pub struct ExecuteTerminalRequest {
     pub command: String,
     pub cwd: Option<String>,
@@ -31,7 +37,7 @@ pub struct ExecuteTerminalRequest {
 pub async fn execute_terminal(
     req: &ExecuteTerminalRequest,
     config: &TerminalToolConfig,
-    process_manager: &ProcessManager,
+    process_manager: &Arc<ProcessManager>,
 ) -> ToolResult {
     if !config.enabled {
         return ToolResult::Blocked {
@@ -50,12 +56,11 @@ pub async fn execute_terminal(
     }
 
     let checker = CommandChecker::new(config);
-    match checker.check(&req.command) {
-        CommandDecision::Blocked(reason) => return ToolResult::Blocked { reason },
-        CommandDecision::NeedsApproval if !req.approved => {
-            return ToolResult::PendingApproval {
-                command: req.command.clone(),
-                approval_id: Uuid::new_v4().to_string(),
+    let decision = checker.check(&req.command);
+    match &decision {
+        CommandDecision::Blocked(reason) => {
+            return ToolResult::Blocked {
+                reason: reason.clone(),
             };
         }
         CommandDecision::NeedsApproval | CommandDecision::Allowed => {}
@@ -71,6 +76,23 @@ pub async fn execute_terminal(
     } else {
         false
     };
+    if config.sandbox.mode == SandboxMode::Docker && !docker_available {
+        return ToolResult::Blocked {
+            reason:
+                "Docker sandbox is unavailable; refusing to fall back to unsandboxed host execution"
+                    .to_string(),
+        };
+    }
+    let context_granted = config.has_context_grant(&req.command, req.cwd.as_deref());
+    let needs_approval = !context_granted
+        && (matches!(decision, CommandDecision::NeedsApproval)
+            || config.sandbox.mode == SandboxMode::NativeRestricted);
+    if needs_approval && !req.approved {
+        return ToolResult::PendingApproval {
+            command: req.command.clone(),
+            approval_id: Uuid::new_v4().to_string(),
+        };
+    }
     let launch = match build_sandbox_command(
         &process_id,
         &req.command,
@@ -89,6 +111,7 @@ pub async fn execute_terminal(
         command: req.command.clone(),
         cwd: Some(workspace.cwd.to_string_lossy().to_string()),
         docker_container_name: launch.docker_container_name,
+        detached: req.background.unwrap_or(false),
     };
     if let Err(error) = process_manager
         .spawn(process_id.clone(), launch.command, metadata)
@@ -98,8 +121,10 @@ pub async fn execute_terminal(
             message: format!("Failed to start sandboxed command: {error}"),
         };
     }
+    let mut process_lease = ProcessLease::new(process_manager.clone(), process_id.clone());
 
     if req.background.unwrap_or(false) {
+        process_lease.disarm();
         return ToolResult::Running {
             process_id,
             message: format!(
@@ -113,8 +138,11 @@ pub async fn execute_terminal(
         };
     }
 
-    let timeout_ms = req.timeout_ms.unwrap_or(config.default_timeout_ms).max(1);
-    match process_manager
+    let timeout_ms = req
+        .timeout_ms
+        .unwrap_or(config.default_timeout_ms)
+        .clamp(1, MAX_TERMINAL_TIMEOUT_MS);
+    let result = match process_manager
         .wait_for_completion(&process_id, Duration::from_millis(timeout_ms))
         .await
     {
@@ -124,8 +152,8 @@ pub async fn execute_terminal(
                 "Command exceeded {timeout_ms}ms and continues in background with output capture ({})",
                 launch.runtime_label
             ),
-            stdout: info.stdout,
-            stderr: info.stderr,
+            stdout: truncate_for_llm(info.stdout),
+            stderr: truncate_for_llm(info.stderr),
             duration_ms: info.duration_ms,
             runtime: Some(launch.runtime_label),
         },
@@ -133,6 +161,43 @@ pub async fn execute_terminal(
         None => ToolResult::Error {
             message: "Process disappeared before completion".to_string(),
         },
+    };
+    process_lease.disarm();
+    result
+}
+
+struct ProcessLease {
+    process_manager: Arc<ProcessManager>,
+    process_id: String,
+    armed: bool,
+}
+
+impl ProcessLease {
+    fn new(process_manager: Arc<ProcessManager>, process_id: String) -> Self {
+        Self {
+            process_manager,
+            process_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProcessLease {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let process_manager = self.process_manager.clone();
+        let process_id = self.process_id.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = process_manager.stop(&process_id).await;
+            });
+        }
     }
 }
 
@@ -146,8 +211,8 @@ pub fn process_info_to_result_with_runtime(
 ) -> ToolResult {
     match info.status {
         ProcessStatus::Completed | ProcessStatus::Failed => ToolResult::Completed {
-            stdout: info.stdout,
-            stderr: info.stderr,
+            stdout: truncate_for_llm(info.stdout),
+            stderr: truncate_for_llm(info.stderr),
             exit_code: info.exit_code.unwrap_or(-1),
             duration_ms: info.duration_ms,
             runtime,
@@ -155,8 +220,8 @@ pub fn process_info_to_result_with_runtime(
         ProcessStatus::Running => ToolResult::Running {
             process_id: info.process_id,
             message: "Process is still running".to_string(),
-            stdout: info.stdout,
-            stderr: info.stderr,
+            stdout: truncate_for_llm(info.stdout),
+            stderr: truncate_for_llm(info.stderr),
             duration_ms: info.duration_ms,
             runtime,
         },
@@ -164,6 +229,15 @@ pub fn process_info_to_result_with_runtime(
             reason: "Process was stopped".to_string(),
         },
     }
+}
+
+fn truncate_for_llm(value: String) -> String {
+    if value.len() <= MAX_LLM_TOOL_OUTPUT_BYTES {
+        return value;
+    }
+    let start = value.len() - MAX_LLM_TOOL_OUTPUT_BYTES;
+    let tail = String::from_utf8_lossy(&value.as_bytes()[start..]);
+    format!("[output truncated; showing last {MAX_LLM_TOOL_OUTPUT_BYTES} bytes]\n{tail}")
 }
 
 struct ResolvedWorkspace {
@@ -197,8 +271,24 @@ fn resolve_workspace(
     if roots.is_empty() {
         return Err("No valid terminal workspace root is configured".to_string());
     }
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .and_then(|path| std::fs::canonicalize(path).ok());
+    if roots
+        .iter()
+        .any(|root| root.parent().is_none() || home.as_ref().is_some_and(|home| home == root))
+    {
+        return Err(
+            "Filesystem roots and the entire user home directory cannot be terminal workspace roots"
+                .to_string(),
+        );
+    }
 
-    let requested = cwd.map(PathBuf::from).unwrap_or_else(|| roots[0].clone());
+    let requested = match cwd.map(PathBuf::from) {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => roots[0].join(path),
+        None => roots[0].clone(),
+    };
     let canonical_cwd = std::fs::canonicalize(&requested).map_err(|error| {
         format!(
             "Working directory '{}' is invalid: {error}",
@@ -247,11 +337,9 @@ fn build_sandbox_command(
                 runtime_label: "docker".to_string(),
             })
         }
-        SandboxMode::Docker => Ok(PreparedLaunch {
-            command: build_native_restricted_command(shell_command, &workspace.cwd),
-            docker_container_name: None,
-            runtime_label: "native_restricted (docker unavailable fallback)".to_string(),
-        }),
+        SandboxMode::Docker => {
+            Err("Docker sandbox is unavailable; host execution fallback is disabled".to_string())
+        }
         SandboxMode::NativeRestricted => Ok(PreparedLaunch {
             command: build_native_restricted_command(shell_command, &workspace.cwd),
             docker_container_name: None,
@@ -261,15 +349,24 @@ fn build_sandbox_command(
 }
 
 async fn docker_runtime_available() -> bool {
+    let cache = DOCKER_AVAILABILITY.get_or_init(|| tokio::sync::Mutex::new(None));
+    let mut cached = cache.lock().await;
+    if let Some((checked_at, available)) = *cached
+        && checked_at.elapsed() < DOCKER_AVAILABILITY_CACHE_TTL
+    {
+        return available;
+    }
     let mut command = Command::new("docker");
     command
         .args(["info", "--format", "{{.ServerVersion}}"])
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    match command.status().await {
-        Ok(status) => status.success(),
-        Err(_) => false,
-    }
+    let available = match tokio::time::timeout(Duration::from_secs(3), command.status()).await {
+        Ok(Ok(status)) => status.success(),
+        Ok(Err(_)) | Err(_) => false,
+    };
+    *cached = Some((Instant::now(), available));
+    available
 }
 
 fn build_docker_command(
@@ -281,6 +378,9 @@ fn build_docker_command(
     let image = config.sandbox.docker_image.trim();
     if image.is_empty() {
         return Err("Docker sandbox image cannot be empty".to_string());
+    }
+    if image.starts_with('-') || image.chars().any(char::is_whitespace) {
+        return Err("Docker sandbox image is not a valid image reference".to_string());
     }
     if config.sandbox.cpu_limit <= 0.0 || config.sandbox.memory_limit_mb == 0 {
         return Err("Docker sandbox CPU and memory limits must be greater than zero".to_string());
@@ -297,6 +397,7 @@ fn build_docker_command(
     command.args([
         "run",
         "--rm",
+        "--init",
         "--name",
         &container_name,
         "--network",
@@ -311,6 +412,8 @@ fn build_docker_command(
         &config.sandbox.cpu_limit.to_string(),
         "--pids-limit",
         &config.sandbox.pids_limit.max(1).to_string(),
+        "--ulimit",
+        "nofile=1024:1024",
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -438,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn docker_mode_falls_back_to_native_when_docker_is_unavailable() {
+    fn docker_mode_fails_closed_when_docker_is_unavailable() {
         let root = tempfile::tempdir().unwrap();
         let workspace = ResolvedWorkspace {
             root: root.path().to_path_buf(),
@@ -446,13 +549,42 @@ mod tests {
             container_cwd: "/workspace".to_string(),
         };
         let config = TerminalToolConfig::default();
-        let launch =
-            build_sandbox_command("fallback-process", "echo fallback", &workspace, &config, false)
-                .unwrap();
-        assert!(launch.docker_container_name.is_none());
-        assert!(launch.runtime_label.contains("fallback"));
-        let program = launch.command.as_std().get_program().to_string_lossy();
-        assert!(program == "cmd" || program == "sh");
+        let launch = build_sandbox_command(
+            "fallback-process",
+            "echo fallback",
+            &workspace,
+            &config,
+            false,
+        );
+        assert!(launch.is_err());
+    }
+
+    #[tokio::test]
+    async fn native_execution_requires_context_bound_approval() {
+        let root = tempfile::tempdir().unwrap();
+        let config = TerminalToolConfig {
+            allowed_cwd_roots: vec![root.path().to_string_lossy().to_string()],
+            sandbox: crate::domain::TerminalSandboxConfig {
+                mode: SandboxMode::NativeRestricted,
+                ..crate::domain::TerminalSandboxConfig::default()
+            },
+            ..TerminalToolConfig::default()
+        };
+        let result = execute_terminal(
+            &ExecuteTerminalRequest {
+                command: "echo approval-required".to_string(),
+                cwd: None,
+                timeout_ms: Some(100),
+                background: Some(false),
+                approved: false,
+                agent_id: Uuid::new_v4(),
+                conversation_id: Uuid::new_v4(),
+                tool_call_id: "call-native".to_string(),
+            },
+            &config,
+            &Arc::new(ProcessManager::new()),
+        )
+        .await;
+        assert!(matches!(result, ToolResult::PendingApproval { .. }));
     }
 }
-

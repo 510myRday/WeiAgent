@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     time::{Duration, Instant},
 };
 
@@ -22,6 +22,11 @@ use crate::{
 
 const STREAM_SAVE_INTERVAL: Duration = Duration::from_millis(500);
 const STREAM_SAVE_CHARS: usize = 240;
+const MAX_TOOL_CALLS_PER_ITERATION: usize = 8;
+const MAX_TOTAL_TOOL_CALLS: usize = 32;
+const MAX_TOOL_CALL_ID_BYTES: usize = 256;
+const MAX_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
+const MAX_STREAM_CONTENT_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub enum AgentRunEvent {
@@ -41,9 +46,29 @@ pub enum AgentRunEvent {
         call_id: String,
         command: String,
         approval_id: String,
+        cwd: Option<String>,
+        runtime: String,
+        network_enabled: bool,
+        write_roots: Vec<String>,
+        background: bool,
     },
     Done,
     Error(String),
+}
+
+struct AgentRuntime<'a> {
+    state: &'a AppState,
+    client: &'a DynChatClient,
+    prepared: &'a PreparedChat,
+    options: RequestOptions,
+    use_streaming_llm: bool,
+    events: &'a Option<mpsc::Sender<AgentRunEvent>>,
+}
+
+#[derive(Default)]
+struct ToolBudget {
+    seen_call_ids: HashSet<String>,
+    total_calls: usize,
 }
 
 pub async fn run_agent(
@@ -51,13 +76,14 @@ pub async fn run_agent(
     prepared: PreparedChat,
     options: RequestOptions,
     use_streaming_llm: bool,
-    events: Option<mpsc::UnboundedSender<AgentRunEvent>>,
+    events: Option<mpsc::Sender<AgentRunEvent>>,
 ) -> AppResult<SendMessageResponse> {
     let client = state.llm_registry.client_for(&prepared.provider)?;
     let tools = state.tool_registry.definitions(&prepared.tools_config);
     let max_llm_iterations = prepared.tools_config.max_llm_iterations();
     let mut messages = prepared.messages_for_llm.clone();
     let user_message = prepared.user_message.clone();
+    let mut tool_budget = ToolBudget::default();
     state
         .store
         .append_conversation_messages(
@@ -66,19 +92,28 @@ pub async fn run_agent(
         )
         .await?;
     emit(&events, AgentRunEvent::User(user_message.clone()))?;
+    let runtime = AgentRuntime {
+        state: &state,
+        client: &client,
+        prepared: &prepared,
+        options,
+        use_streaming_llm,
+        events: &events,
+    };
 
     for iteration in 0..max_llm_iterations {
-        let output = run_llm_iteration(
-            &state,
-            &client,
-            &prepared,
-            &messages,
-            options,
-            tools.clone(),
-            use_streaming_llm,
-            &events,
-        )
-        .await?;
+        let output = match run_llm_iteration(&runtime, &messages, tools.clone()).await {
+            Ok(output) => output,
+            Err(error) => {
+                if events.as_ref().is_some_and(|sender| sender.is_closed()) {
+                    state
+                        .process_manager
+                        .stop_for_conversation(user_message.conversation_id)
+                        .await;
+                }
+                return Err(error);
+            }
+        };
 
         let assistant_message = ChatMessage {
             id: output.message_id,
@@ -114,9 +149,9 @@ pub async fn run_agent(
         execute_tool_calls(
             &state,
             &prepared,
-            &user_message,
             &mut messages,
             output.output.tool_calls,
+            &mut tool_budget,
             &events,
         )
         .await?;
@@ -127,17 +162,7 @@ pub async fn run_agent(
         }
     }
 
-    let summary = finalize_after_budget(
-        &state,
-        &client,
-        &prepared,
-        &mut messages,
-        options,
-        use_streaming_llm,
-        max_llm_iterations,
-        &events,
-    )
-    .await?;
+    let summary = finalize_after_budget(&runtime, &mut messages, max_llm_iterations).await?;
     emit(&events, AgentRunEvent::Assistant(summary.clone()))?;
     emit(&events, AgentRunEvent::Done)?;
     Ok(SendMessageResponse {
@@ -147,19 +172,14 @@ pub async fn run_agent(
 }
 
 async fn finalize_after_budget(
-    state: &AppState,
-    client: &DynChatClient,
-    prepared: &PreparedChat,
+    runtime: &AgentRuntime<'_>,
     messages: &mut Vec<ChatMessage>,
-    options: RequestOptions,
-    use_streaming_llm: bool,
     max_llm_iterations: usize,
-    events: &Option<mpsc::UnboundedSender<AgentRunEvent>>,
 ) -> AppResult<ChatMessage> {
     let budget_notice = ChatMessage {
         id: Uuid::new_v4(),
-        agent_id: prepared.agent.id,
-        conversation_id: prepared.user_message.conversation_id,
+        agent_id: runtime.prepared.agent.id,
+        conversation_id: runtime.prepared.user_message.conversation_id,
         role: ChatRole::User,
         content: format!(
             "System notice: tool-capable iterations reached the configured limit of {max_llm_iterations}. Do not call tools. Summarize completed work, failures, and remaining steps."
@@ -172,17 +192,7 @@ async fn finalize_after_budget(
     // Keep the budget notice in the in-memory LLM context only.
     messages.push(budget_notice);
 
-    let output = run_llm_iteration(
-        state,
-        client,
-        prepared,
-        messages,
-        options,
-        None,
-        use_streaming_llm,
-        events,
-    )
-    .await?;
+    let output = run_llm_iteration(runtime, messages, None).await?;
 
     let mut content = output.output.content;
     if content.trim().is_empty() {
@@ -193,8 +203,8 @@ async fn finalize_after_budget(
 
     let assistant_message = ChatMessage {
         id: output.message_id,
-        agent_id: prepared.agent.id,
-        conversation_id: prepared.user_message.conversation_id,
+        agent_id: runtime.prepared.agent.id,
+        conversation_id: runtime.prepared.user_message.conversation_id,
         role: ChatRole::Assistant,
         content,
         status: ChatMessageStatus::Done,
@@ -202,10 +212,11 @@ async fn finalize_after_budget(
         tool_calls: None,
         tool_call_id: None,
     };
-    state
+    runtime
+        .state
         .store
         .upsert_conversation_message(
-            prepared.user_message.conversation_id,
+            runtime.prepared.user_message.conversation_id,
             assistant_message.clone(),
         )
         .await?;
@@ -215,19 +226,49 @@ async fn finalize_after_budget(
 async fn execute_tool_calls(
     state: &AppState,
     prepared: &PreparedChat,
-    user_message: &ChatMessage,
     messages: &mut Vec<ChatMessage>,
     tool_calls: Vec<ToolCall>,
-    events: &Option<mpsc::UnboundedSender<AgentRunEvent>>,
+    budget: &mut ToolBudget,
+    events: &Option<mpsc::Sender<AgentRunEvent>>,
 ) -> AppResult<()> {
-    for call in tool_calls {
+    for (index, call) in tool_calls.into_iter().enumerate() {
+        let validation_error = if call.id.is_empty() {
+            Some("tool call id cannot be empty".to_string())
+        } else if call.id.len() > MAX_TOOL_CALL_ID_BYTES {
+            Some(format!(
+                "tool call id exceeds {MAX_TOOL_CALL_ID_BYTES} bytes"
+            ))
+        } else if !budget.seen_call_ids.insert(call.id.clone()) {
+            Some("duplicate tool call id in this run".to_string())
+        } else if index >= MAX_TOOL_CALLS_PER_ITERATION {
+            Some(format!(
+                "tool call limit per iteration ({MAX_TOOL_CALLS_PER_ITERATION}) exceeded"
+            ))
+        } else if budget.total_calls >= MAX_TOTAL_TOOL_CALLS {
+            Some(format!(
+                "total tool call limit ({MAX_TOTAL_TOOL_CALLS}) exceeded"
+            ))
+        } else {
+            budget.total_calls += 1;
+            None
+        };
+        if let Some(message) = validation_error {
+            let result = ToolResult::Error { message };
+            persist_tool_result(state, prepared, messages, &call.id, &result).await?;
+            emit(
+                events,
+                AgentRunEvent::ToolResult {
+                    call_id: call.id,
+                    result,
+                },
+            )?;
+            continue;
+        }
         let arguments = match serde_json::from_str::<Value>(&call.function.arguments) {
             Ok(Value::Object(map)) => Value::Object(map),
             Ok(other) => {
                 let result = ToolResult::Error {
-                    message: format!(
-                        "Invalid tool arguments: expected a JSON object, got {other}"
-                    ),
+                    message: format!("Invalid tool arguments: expected a JSON object, got {other}"),
                 };
                 persist_tool_result(state, prepared, messages, &call.id, &result).await?;
                 emit(
@@ -265,7 +306,7 @@ async fn execute_tool_calls(
 
         let context = ToolExecutionContext {
             agent_id: prepared.agent.id,
-            conversation_id: user_message.conversation_id,
+            conversation_id: prepared.user_message.conversation_id,
             call_id: call.id.clone(),
             tools_config: prepared.tools_config.clone(),
             store: state.store.clone(),
@@ -294,43 +335,43 @@ struct IterationOutput {
 }
 
 async fn run_llm_iteration(
-    state: &AppState,
-    client: &DynChatClient,
-    prepared: &PreparedChat,
+    runtime: &AgentRuntime<'_>,
     messages: &[ChatMessage],
-    options: RequestOptions,
     tools: Option<Vec<ToolDefinition>>,
-    use_streaming_llm: bool,
-    events: &Option<mpsc::UnboundedSender<AgentRunEvent>>,
 ) -> AppResult<IterationOutput> {
-    if use_streaming_llm {
-        stream_llm_iteration(state, client, prepared, messages, options, tools, events).await
+    if runtime.use_streaming_llm {
+        stream_llm_iteration(runtime, messages, tools).await
     } else {
+        let completion = runtime.client.complete(
+            &runtime.prepared.agent,
+            &runtime.prepared.provider,
+            messages,
+            &runtime.prepared.system_prompt,
+            runtime.options,
+            tools,
+        );
+        let output = if let Some(sender) = runtime.events {
+            tokio::select! {
+                result = completion => result?,
+                _ = sender.closed() => {
+                    return Err(AppError::Llm("stream client disconnected".to_string()));
+                }
+            }
+        } else {
+            completion.await?
+        };
         Ok(IterationOutput {
             message_id: Uuid::new_v4(),
             created_at: Utc::now(),
-            output: client
-                .complete(
-                    &prepared.agent,
-                    &prepared.provider,
-                    messages,
-                    &prepared.system_prompt,
-                    options,
-                    tools,
-                )
-                .await?,
+            output,
         })
     }
 }
 
 async fn stream_llm_iteration(
-    state: &AppState,
-    client: &DynChatClient,
-    prepared: &PreparedChat,
+    runtime: &AgentRuntime<'_>,
     messages: &[ChatMessage],
-    options: RequestOptions,
     tools: Option<Vec<ToolDefinition>>,
-    events: &Option<mpsc::UnboundedSender<AgentRunEvent>>,
 ) -> AppResult<IterationOutput> {
     let message_id = Uuid::new_v4();
     let created_at = Utc::now();
@@ -339,32 +380,69 @@ async fn stream_llm_iteration(
     let mut persisted_chars = 0_usize;
     let mut last_save = Instant::now();
     let mut calls: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
-    let mut stream = client
+    let mut stream = runtime
+        .client
         .stream(
-            &prepared.agent,
-            &prepared.provider,
+            &runtime.prepared.agent,
+            &runtime.prepared.provider,
             messages,
-            &prepared.system_prompt,
-            options,
+            &runtime.prepared.system_prompt,
+            runtime.options,
             tools,
         )
         .await?;
 
-    while let Some(event) = stream.next().await {
+    loop {
+        let next = if let Some(sender) = runtime.events {
+            tokio::select! {
+                event = stream.next() => event,
+                _ = sender.closed() => {
+                    mark_interrupted(
+                        runtime.state,
+                        runtime.prepared,
+                        message_id,
+                        created_at,
+                        &content,
+                        persisted,
+                    )
+                        .await;
+                    return Err(AppError::Llm("stream client disconnected".to_string()));
+                }
+            }
+        } else {
+            stream.next().await
+        };
+        let Some(event) = next else {
+            break;
+        };
         match event? {
             StreamEvent::TextDelta(delta) => {
+                if content.len().saturating_add(delta.len()) > MAX_STREAM_CONTENT_BYTES {
+                    return Err(AppError::Llm(format!(
+                        "streamed response exceeded {MAX_STREAM_CONTENT_BYTES} bytes"
+                    )));
+                }
                 content.push_str(&delta);
-                if emit(events, AgentRunEvent::Delta(delta)).is_err() {
-                    mark_interrupted(state, prepared, message_id, created_at, &content, persisted)
-                        .await;
+                if emit(runtime.events, AgentRunEvent::Delta(delta)).is_err() {
+                    mark_interrupted(
+                        runtime.state,
+                        runtime.prepared,
+                        message_id,
+                        created_at,
+                        &content,
+                        persisted,
+                    )
+                    .await;
                     return Err(AppError::Llm("stream client disconnected".to_string()));
                 }
                 if !persisted
                     || content.chars().count().saturating_sub(persisted_chars) >= STREAM_SAVE_CHARS
                     || last_save.elapsed() >= STREAM_SAVE_INTERVAL
                 {
-                    let message = partial_assistant(prepared, message_id, created_at, &content);
-                    state
+                    let message =
+                        partial_assistant(runtime.prepared, message_id, created_at, &content);
+                    runtime
+                        .state
                         .store
                         .upsert_conversation_message(message.conversation_id, message)
                         .await?;
@@ -379,11 +457,14 @@ async fn stream_llm_iteration(
                 builder.name = name;
             }
             StreamEvent::ToolCallArgsDelta { index, arguments } => {
-                calls
-                    .entry(index)
-                    .or_default()
-                    .arguments
-                    .push_str(&arguments);
+                let builder = calls.entry(index).or_default();
+                if builder.arguments.len().saturating_add(arguments.len()) > MAX_TOOL_ARGUMENT_BYTES
+                {
+                    return Err(AppError::Llm(format!(
+                        "tool arguments exceeded {MAX_TOOL_ARGUMENT_BYTES} bytes"
+                    )));
+                }
+                builder.arguments.push_str(&arguments);
             }
             StreamEvent::FinishedWithToolCalls | StreamEvent::Finished => {}
         }
@@ -422,12 +503,14 @@ async fn execute_tool_with_events(
     name: &str,
     arguments: Value,
     mut context: ToolExecutionContext,
-    events: &Option<mpsc::UnboundedSender<AgentRunEvent>>,
+    events: &Option<mpsc::Sender<AgentRunEvent>>,
 ) -> ToolResult {
     let Some(run_sender) = events.clone() else {
         return state.tool_registry.execute(name, arguments, context).await;
     };
-    let (tool_sender, mut tool_receiver) = mpsc::unbounded_channel();
+    let (tool_sender, mut tool_receiver) = mpsc::channel(16);
+    let process_manager = context.process_manager.clone();
+    let conversation_id = context.conversation_id;
     context.event_sender = Some(tool_sender);
     let execution = state.tool_registry.execute(name, arguments, context);
     tokio::pin!(execution);
@@ -435,6 +518,7 @@ async fn execute_tool_with_events(
         tokio::select! {
             result = &mut execution => return result,
             _ = run_sender.closed() => {
+                process_manager.stop_for_conversation(conversation_id).await;
                 return ToolResult::Rejected {
                     reason: "Approval client disconnected".to_string(),
                 };
@@ -442,11 +526,29 @@ async fn execute_tool_with_events(
             event = tool_receiver.recv() => {
                 let Some(event) = event else { continue; };
                 let mapped = match event {
-                    ToolExecutionEvent::ApprovalRequired { call_id, command, approval_id } => {
-                        AgentRunEvent::ApprovalRequired { call_id, command, approval_id }
+                    ToolExecutionEvent::ApprovalRequired {
+                        call_id,
+                        command,
+                        approval_id,
+                        cwd,
+                        runtime,
+                        network_enabled,
+                        write_roots,
+                        background,
+                    } => {
+                        AgentRunEvent::ApprovalRequired {
+                            call_id,
+                            command,
+                            approval_id,
+                            cwd,
+                            runtime,
+                            network_enabled,
+                            write_roots,
+                            background,
+                        }
                     }
                 };
-                if run_sender.send(mapped).is_err() {
+                if run_sender.try_send(mapped).is_err() {
                     return ToolResult::Rejected {
                         reason: "Approval client disconnected".to_string(),
                     };
@@ -523,13 +625,10 @@ async fn mark_interrupted(
         .await;
 }
 
-fn emit(
-    events: &Option<mpsc::UnboundedSender<AgentRunEvent>>,
-    event: AgentRunEvent,
-) -> AppResult<()> {
+fn emit(events: &Option<mpsc::Sender<AgentRunEvent>>, event: AgentRunEvent) -> AppResult<()> {
     if let Some(events) = events {
         events
-            .send(event)
+            .try_send(event)
             .map_err(|_| AppError::Llm("stream client disconnected".to_string()))?;
     }
     Ok(())

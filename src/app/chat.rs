@@ -7,6 +7,9 @@ use crate::{
     error::{AppError, AppResult},
 };
 
+const MAX_USER_MESSAGE_BYTES: usize = 100 * 1024;
+const MAX_SYSTEM_PROMPT_BYTES: usize = 512 * 1024;
+
 pub struct PreparedChat {
     pub agent: Agent,
     pub provider: ModelProvider,
@@ -26,6 +29,11 @@ pub async fn prepare_chat(
         return Err(AppError::BadRequest(
             "message content cannot be empty".to_string(),
         ));
+    }
+    if content.len() > MAX_USER_MESSAGE_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "message content exceeds {MAX_USER_MESSAGE_BYTES} bytes"
+        )));
     }
 
     let conversation = state.store.get_conversation(conversation_id).await?;
@@ -52,6 +60,11 @@ pub async fn prepare_chat(
     let mut messages_for_llm = history;
     messages_for_llm.push(user_message.clone());
     let system_prompt = state.store.build_agent_system_prompt(&agent).await?;
+    if system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "agent system prompt exceeds {MAX_SYSTEM_PROMPT_BYTES} bytes"
+        )));
+    }
     let tools_config = state.store.read_agent_tools_config(agent.id).await?;
 
     Ok(PreparedChat {

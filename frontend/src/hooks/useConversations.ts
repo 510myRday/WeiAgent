@@ -279,10 +279,19 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         return;
       }
       if (evt.event === 'approval_required') {
-        const d = evt.data as { call_id: string; command: string; approval_id: string };
+        const d = evt.data as {
+          call_id: string;
+          command: string;
+          approval_id: string;
+          cwd?: string;
+          runtime: string;
+          network_enabled: boolean;
+          write_roots: string[];
+          background: boolean;
+        };
         setMessages((current) => current.map((item) => {
           if ('type' in item && item.type === 'tool_call' && item.call_id === d.call_id) {
-            return { ...item, status: 'pending_approval', arguments: { ...item.arguments, command: d.command, approval_id: d.approval_id } };
+            return { ...item, status: 'pending_approval', arguments: { ...item.arguments, ...d } };
           }
           return item;
         }));

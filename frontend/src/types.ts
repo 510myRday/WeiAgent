@@ -135,7 +135,7 @@ export type ToolResultData = {
   process_id?: string;
   message?: string;
   reason?: string;
-  /** Actual runtime used: docker / native_restricted / fallback */
+  /** Actual runtime used: docker / native_restricted */
   runtime?: string;
 };
 
@@ -158,7 +158,19 @@ export type StreamEvent =
   | { event: 'error'; data: string }
   | { event: 'tool_call'; data: { call_id: string; name: string; arguments: Record<string, any> } }
   | { event: 'tool_result'; data: { call_id: string; result: ToolResultData & { status: ToolCallStatus } } }
-  | { event: 'approval_required'; data: { call_id: string; command: string; approval_id: string } };
+  | {
+      event: 'approval_required';
+      data: {
+        call_id: string;
+        command: string;
+        approval_id: string;
+        cwd?: string;
+        runtime: string;
+        network_enabled: boolean;
+        write_roots: string[];
+        background: boolean;
+      };
+    };
 
 export type NavKey = 'chat' | 'agents' | 'groups' | 'tools' | 'settings';
 

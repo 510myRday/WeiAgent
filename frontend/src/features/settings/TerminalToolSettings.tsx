@@ -11,7 +11,7 @@ interface TerminalToolSettingsProps {
   onError: (message: string) => void;
 }
 
-type PatternKind = 'blocked_patterns' | 'approval_required_patterns' | 'always_allowed_patterns' | 'allowed_cwd_roots';
+type PatternKind = 'blocked_patterns' | 'approval_required_patterns' | 'allowed_cwd_roots';
 
 export function TerminalToolSettings({ agentId, onError }: TerminalToolSettingsProps) {
   const { t } = useI18n();
@@ -21,7 +21,7 @@ export function TerminalToolSettings({ agentId, onError }: TerminalToolSettingsP
   const [processes, setProcesses] = useState<ToolProcessInfo[]>([]);
   const [isStoppingProcess, setIsStoppingProcess] = useState('');
   const [inputs, setInputs] = useState<Record<PatternKind, string>>({
-    blocked_patterns: '', approval_required_patterns: '', always_allowed_patterns: '', allowed_cwd_roots: '',
+    blocked_patterns: '', approval_required_patterns: '', allowed_cwd_roots: '',
   });
 
   useEffect(() => {
@@ -58,7 +58,7 @@ export function TerminalToolSettings({ agentId, onError }: TerminalToolSettingsP
   async function handleStopProcess(processId: string) {
     setIsStoppingProcess(processId);
     try {
-      const stopped = await stopToolProcess(processId);
+      const stopped = await stopToolProcess(processId, agentId);
       setProcesses((current) => current.map((process) => process.process_id === processId ? stopped : process));
     } catch (error) {
       onError(error instanceof Error ? error.message : t('tools.terminal.processStopFailed'));
@@ -94,6 +94,13 @@ export function TerminalToolSettings({ agentId, onError }: TerminalToolSettingsP
   function removeItem(kind: PatternKind, index: number) {
     if (!config) return;
     updateTerminal({ [kind]: config.terminal[kind].filter((_, itemIndex) => itemIndex !== index) });
+  }
+
+  function removeApprovalGrant(index: number) {
+    if (!config) return;
+    updateTerminal({
+      approval_grants: config.terminal.approval_grants.filter((_, grantIndex) => grantIndex !== index),
+    });
   }
 
   if (isLoading || !config) {
@@ -146,8 +153,9 @@ export function TerminalToolSettings({ agentId, onError }: TerminalToolSettingsP
               <input
                 type="number"
                 min={1}
-                value={Math.max(1, config.max_llm_iterations || 1)}
-                onChange={(event) => setConfig((current) => current ? { ...current, max_llm_iterations: Math.max(1, Number(event.target.value) || 1) } : current)}
+                max={50}
+                value={Math.min(50, Math.max(1, config.max_llm_iterations || 1))}
+                onChange={(event) => setConfig((current) => current ? { ...current, max_llm_iterations: Math.min(50, Math.max(1, Number(event.target.value) || 1)) } : current)}
               />
             </div>
           </div>
@@ -219,7 +227,34 @@ export function TerminalToolSettings({ agentId, onError }: TerminalToolSettingsP
       <PatternCard icon={<FolderLock size={20} />} title={t('tools.terminal.allowedRootsLabel')} description={t('tools.terminal.allowedRootsDesc')} values={terminal.allowed_cwd_roots} input={inputs.allowed_cwd_roots} placeholder={t('tools.terminal.pathPlaceholder')} kind="allowed_cwd_roots" tone="safe" onInput={(value) => setInputs((current) => ({ ...current, allowed_cwd_roots: value }))} onAdd={addItem} onRemove={removeItem} t={t} />
       <PatternCard icon={<AlertTriangle size={20} />} title={t('tools.terminal.blockedPatternsLabel')} description={t('tools.terminal.blockedDesc')} values={terminal.blocked_patterns} input={inputs.blocked_patterns} placeholder={t('tools.terminal.patternPlaceholder')} kind="blocked_patterns" tone="danger" onInput={(value) => setInputs((current) => ({ ...current, blocked_patterns: value }))} onAdd={addItem} onRemove={removeItem} t={t} />
       <PatternCard icon={<CheckCircle size={20} />} title={t('tools.terminal.approvalPatternsLabel')} description={t('tools.terminal.approvalDesc')} values={terminal.approval_required_patterns} input={inputs.approval_required_patterns} placeholder={t('tools.terminal.patternPlaceholder')} kind="approval_required_patterns" tone="warning" onInput={(value) => setInputs((current) => ({ ...current, approval_required_patterns: value }))} onAdd={addItem} onRemove={removeItem} t={t} />
-      <PatternCard icon={<BadgeCheck size={20} />} title={t('tools.terminal.alwaysAllowedPatternsLabel')} description={t('tools.terminal.alwaysAllowedDesc')} values={terminal.always_allowed_patterns} input={inputs.always_allowed_patterns} placeholder={t('tools.terminal.patternPlaceholder')} kind="always_allowed_patterns" tone="safe" onInput={(value) => setInputs((current) => ({ ...current, always_allowed_patterns: value }))} onAdd={addItem} onRemove={removeItem} t={t} />
+      <div className="settings-card">
+        <div className="card-header">
+          <BadgeCheck size={20} />
+          <h3>{t('tools.terminal.contextGrants')}</h3>
+          <span className="badge">{terminal.approval_grants.length}</span>
+        </div>
+        <div className="card-body">
+          <p className="card-description">{t('tools.terminal.contextGrantsDesc')}</p>
+          {terminal.approval_grants.length === 0 ? <p className="muted">{t('tools.terminal.noContextGrants')}</p> : (
+            <div className="tool-process-list">
+              {terminal.approval_grants.map((grant, index) => (
+                <article key={`${grant.command}-${grant.cwd || ''}-${index}`} className="tool-process-row">
+                  <div className="tool-process-row__header">
+                    <code>{grant.command}</code>
+                    <span>{grant.sandbox_mode}</span>
+                    <button type="button" className="tool-process-action" onClick={() => removeApprovalGrant(index)} title={t('tools.terminal.remove')}>
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                  <small>
+                    {grant.cwd || t('toolCard.defaultCwd')} · {grant.network_enabled ? t('toolCard.networkOn') : t('toolCard.networkOff')} · {grant.expires_at ? t('tools.terminal.grantExpires', { time: new Date(grant.expires_at).toLocaleString() }) : t('tools.terminal.grantExpired')}
+                  </small>
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

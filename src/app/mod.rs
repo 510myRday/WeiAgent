@@ -2,10 +2,12 @@ mod agent_executor;
 mod chat;
 pub mod handlers;
 mod router;
+mod run_manager;
 mod state;
 mod static_assets;
 
 pub use router::{build_router, build_router_dev};
+pub use run_manager::RunManager;
 pub use state::AppState;
 
 #[cfg(test)]
@@ -128,6 +130,7 @@ mod tests {
             process_manager: Arc::new(ProcessManager::new()),
             approval_manager: Arc::new(ApprovalManager::new()),
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
+            run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         });
         (app, agent.id, provider.id, conversation.id)
     }
@@ -286,9 +289,8 @@ mod tests {
             _options: crate::llm::client::RequestOptions,
             tools: Option<Vec<ToolDefinition>>,
         ) -> AppResult<ChatCompletionOutput> {
-            match &tools {
-                Some(list) => assert_eq!(list.len(), 3),
-                None => {}
+            if let Some(list) = &tools {
+                assert_eq!(list.len(), 3);
             }
             self.complete_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -370,6 +372,38 @@ mod tests {
         let mut tools_config = crate::domain::AgentToolsConfig::default();
         tools_config.terminal.sandbox.mode = crate::domain::SandboxMode::NativeRestricted;
         tools_config.terminal.allowed_cwd_roots = vec![root.to_string_lossy().to_string()];
+        for output in &outputs {
+            for call in &output.tool_calls {
+                if call.function.name != "execute_terminal" {
+                    continue;
+                }
+                let Ok(arguments) =
+                    serde_json::from_str::<serde_json::Value>(&call.function.arguments)
+                else {
+                    continue;
+                };
+                let Some(command) = arguments.get("command").and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let cwd = arguments
+                    .get("cwd")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let grant = crate::domain::TerminalApprovalGrant {
+                    command: command.to_string(),
+                    cwd,
+                    sandbox_mode: crate::domain::SandboxMode::NativeRestricted,
+                    network_enabled: true,
+                    workspace_read_only: false,
+                    created_at: Some(chrono::Utc::now()),
+                    expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                };
+                if !tools_config.terminal.approval_grants.contains(&grant) {
+                    tools_config.terminal.approval_grants.push(grant);
+                }
+            }
+        }
         store
             .update_agent_tools_config(agent.id, tools_config)
             .await
@@ -385,6 +419,7 @@ mod tests {
             process_manager: Arc::new(ProcessManager::new()),
             approval_manager: Arc::new(ApprovalManager::new()),
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
+            run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         };
         (
             build_router(state.clone()),
@@ -508,6 +543,12 @@ mod tests {
         let result: serde_json::Value = serde_json::from_str(&tool_message.content).unwrap();
         assert_eq!(result["status"], "running");
         let process_id = result["process_id"].as_str().unwrap();
+        let agent_id = state
+            .store
+            .get_conversation(conversation_id)
+            .await
+            .unwrap()
+            .agent_id;
 
         let mut process = None;
         for _ in 0..40 {
@@ -515,7 +556,9 @@ mod tests {
                 .clone()
                 .oneshot(
                     Request::builder()
-                        .uri(format!("/api/tools/processes/{process_id}"))
+                        .uri(format!(
+                            "/api/tools/processes/{process_id}?agent_id={agent_id}"
+                        ))
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -576,6 +619,10 @@ mod tests {
             .unwrap()
             .agent_id;
         let mut config = state.store.read_agent_tools_config(agent_id).await.unwrap();
+        config
+            .terminal
+            .approval_grants
+            .retain(|grant| grant.command != command);
         config.terminal.approval_required_patterns = vec![format!("^{}$", regex::escape(command))];
         state
             .store
@@ -620,8 +667,12 @@ mod tests {
                     .uri("/api/tools/approve")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        json!({"approval_id": approval_id, "decision": "always_approve"})
-                            .to_string(),
+                        json!({
+                            "approval_id": approval_id,
+                            "agent_id": agent_id,
+                            "decision": "always_approve"
+                        })
+                        .to_string(),
                     ))
                     .unwrap(),
             )
@@ -637,12 +688,10 @@ mod tests {
         assert!(first_text.contains("event: done"));
 
         let stored = state.store.read_agent_tools_config(agent_id).await.unwrap();
-        assert!(
-            stored
-                .terminal
-                .always_allowed_patterns
-                .contains(&format!("^{}$", regex::escape(command)))
-        );
+        assert!(stored.terminal.approval_grants.iter().any(|grant| {
+            grant.command == command
+                && grant.sandbox_mode == crate::domain::SandboxMode::NativeRestricted
+        }));
 
         let second_response = app
             .oneshot(
@@ -754,11 +803,19 @@ mod tests {
         )
         .unwrap();
         let process_id = result["process_id"].as_str().unwrap();
+        let agent_id = state
+            .store
+            .get_conversation(conversation_id)
+            .await
+            .unwrap()
+            .agent_id;
         let stop_response = app
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(format!("/api/tools/processes/{process_id}"))
+                    .uri(format!(
+                        "/api/tools/processes/{process_id}?agent_id={agent_id}"
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -919,6 +976,18 @@ mod tests {
         let mut tools_config = crate::domain::AgentToolsConfig::default();
         tools_config.terminal.sandbox.mode = crate::domain::SandboxMode::NativeRestricted;
         tools_config.terminal.allowed_cwd_roots = vec![root.to_string_lossy().to_string()];
+        tools_config
+            .terminal
+            .approval_grants
+            .push(crate::domain::TerminalApprovalGrant {
+                command: "echo streamed-tool".to_string(),
+                cwd: None,
+                sandbox_mode: crate::domain::SandboxMode::NativeRestricted,
+                network_enabled: true,
+                workspace_read_only: false,
+                created_at: Some(chrono::Utc::now()),
+                expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            });
         store
             .update_agent_tools_config(agent.id, tools_config)
             .await
@@ -955,6 +1024,7 @@ mod tests {
             process_manager: Arc::new(ProcessManager::new()),
             approval_manager: Arc::new(ApprovalManager::new()),
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
+            run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         };
         let app = build_router(state);
         let response = app
@@ -993,6 +1063,3 @@ mod tests {
         assert_eq!(messages.last().unwrap().content, "streamed final");
     }
 }
-
-
-

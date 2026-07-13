@@ -9,9 +9,10 @@ pub fn parse_sse_chunk(chunk: &str) -> Vec<AppResult<StreamEvent>> {
 }
 
 pub fn parse_sse_line(line: &str) -> Vec<AppResult<StreamEvent>> {
-    let Some(data) = line.strip_prefix("data: ") else {
+    let Some(data) = line.strip_prefix("data:") else {
         return Vec::new();
     };
+    let data = data.strip_prefix(' ').unwrap_or(data);
     if data == "[DONE]" {
         return vec![Ok(StreamEvent::Finished)];
     }
@@ -81,6 +82,15 @@ mod tests {
         assert!(matches!(&events[0], StreamEvent::TextDelta(s) if s == "hel"));
         assert!(matches!(&events[1], StreamEvent::TextDelta(s) if s == "lo"));
         assert!(matches!(&events[2], StreamEvent::Finished));
+    }
+
+    #[test]
+    fn accepts_sse_data_without_a_space() {
+        let parsed = parse_sse_line("data:[DONE]");
+        assert!(matches!(
+            parsed.into_iter().next().unwrap().unwrap(),
+            StreamEvent::Finished
+        ));
     }
 
     #[test]

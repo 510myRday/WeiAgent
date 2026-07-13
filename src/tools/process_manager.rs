@@ -23,6 +23,10 @@ use crate::{
 
 const MAX_OUTPUT_BYTES: usize = 1_000_000;
 const FINISHED_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+const MAX_RUNNING_PROCESSES: usize = 32;
+const MAX_RUNNING_PROCESSES_PER_AGENT: usize = 8;
+const MAX_PROCESS_LIFETIME: Duration = Duration::from_secs(60 * 60);
+const MAX_RETAINED_PROCESSES: usize = 256;
 
 #[derive(Debug, Clone)]
 pub struct ProcessMetadata {
@@ -32,6 +36,7 @@ pub struct ProcessMetadata {
     pub command: String,
     pub cwd: Option<String>,
     pub docker_container_name: Option<String>,
+    pub detached: bool,
 }
 
 struct ProcessState {
@@ -56,12 +61,14 @@ struct ProcessRecord {
 
 pub struct ProcessManager {
     processes: DashMap<String, Arc<ProcessRecord>>,
+    spawn_lock: Mutex<()>,
 }
 
 impl ProcessManager {
     pub fn new() -> Self {
         Self {
             processes: DashMap::new(),
+            spawn_lock: Mutex::new(()),
         }
     }
 
@@ -75,6 +82,21 @@ impl ProcessManager {
         mut command: Command,
         metadata: ProcessMetadata,
     ) -> AppResult<String> {
+        let _spawn_guard = self.spawn_lock.lock().await;
+        self.cleanup_finished().await;
+        let running_total = self.running_count(None).await;
+        if running_total >= MAX_RUNNING_PROCESSES {
+            return Err(AppError::Process(format!(
+                "global running process limit ({MAX_RUNNING_PROCESSES}) reached"
+            )));
+        }
+        let running_for_agent = self.running_count(Some(metadata.agent_id)).await;
+        if running_for_agent >= MAX_RUNNING_PROCESSES_PER_AGENT {
+            return Err(AppError::Process(format!(
+                "agent running process limit ({MAX_RUNNING_PROCESSES_PER_AGENT}) reached"
+            )));
+        }
+        command.stdin(std::process::Stdio::null());
         command.stdout(std::process::Stdio::piped());
         command.stderr(std::process::Stdio::piped());
         command.kill_on_drop(false);
@@ -103,6 +125,16 @@ impl ProcessManager {
             changed: Notify::new(),
         });
         self.processes.insert(process_id.clone(), record.clone());
+
+        let watchdog_record = record.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(MAX_PROCESS_LIFETIME).await;
+            if watchdog_record.state.lock().await.status != ProcessStatus::Running {
+                return;
+            }
+            watchdog_record.stop_requested.store(true, Ordering::SeqCst);
+            let _ = terminate_record(&watchdog_record, true).await;
+        });
 
         let stdout_task =
             stdout.map(|stdout| tokio::spawn(read_output(stdout, record.clone(), false)));
@@ -199,32 +231,75 @@ impl ProcessManager {
         }
         record.stop_requested.store(true, Ordering::SeqCst);
 
-        let result = if let Some(container_name) = &record.metadata.docker_container_name {
-            Command::new("docker")
-                .args(["stop", "--time", "1", container_name])
-                .output()
-                .await
-        } else if cfg!(windows) {
-            Command::new("taskkill")
-                .args(["/PID", &record.pid.to_string(), "/T", "/F"])
-                .output()
-                .await
-        } else {
-            Command::new("kill")
-                .args(["-TERM", &format!("-{}", record.pid)])
-                .output()
-                .await
+        let output = match terminate_record(&record, false).await {
+            Ok(output) => output,
+            Err(error) => {
+                record.stop_requested.store(false, Ordering::SeqCst);
+                return Err(AppError::Storage(error));
+            }
         };
-
-        if let Err(error) = result {
+        if !output.status.success() {
             record.stop_requested.store(false, Ordering::SeqCst);
-            return Err(AppError::Storage(error));
+            return Err(AppError::Process(format!(
+                "failed to terminate process: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+
+        if let Some(info) = self.wait_for_completion(id, Duration::from_secs(3)).await
+            && info.status != ProcessStatus::Running
+        {
+            return Ok(Some(info));
+        }
+
+        #[cfg(unix)]
+        {
+            let output = Command::new("kill")
+                .args(["-KILL", &format!("-{}", record.pid)])
+                .output()
+                .await?;
+            if !output.status.success() {
+                return Err(AppError::Process(format!(
+                    "failed to force-kill process: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )));
+            }
         }
 
         Ok(self
-            .wait_for_completion(id, Duration::from_secs(5))
+            .wait_for_completion(id, Duration::from_secs(2))
             .await
             .or(Some(current)))
+    }
+
+    pub async fn stop_for_conversation(&self, conversation_id: Uuid) {
+        let ids = self
+            .processes
+            .iter()
+            .filter(|entry| {
+                entry.metadata.conversation_id == conversation_id && !entry.metadata.detached
+            })
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        for id in ids {
+            let _ = self.stop(&id).await;
+        }
+    }
+
+    async fn running_count(&self, agent_id: Option<Uuid>) -> usize {
+        let records: Vec<_> = self
+            .processes
+            .iter()
+            .filter(|entry| agent_id.is_none_or(|id| entry.metadata.agent_id == id))
+            .map(|entry| entry.value().clone())
+            .collect();
+        let mut count = 0;
+        for record in records {
+            if record.state.lock().await.status == ProcessStatus::Running {
+                count += 1;
+            }
+        }
+        count
     }
 
     fn record(&self, id: &str) -> Option<Arc<ProcessRecord>> {
@@ -245,6 +320,32 @@ impl ProcessManager {
                 drop(state);
                 self.processes.remove(&id);
             }
+        }
+        let retained = self
+            .processes
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect::<Vec<_>>();
+        let mut finished = Vec::new();
+        for (id, record) in retained {
+            if record.state.lock().await.status != ProcessStatus::Running {
+                finished.push((id, record.started_at));
+            }
+        }
+        if finished.len() > MAX_RETAINED_PROCESSES {
+            finished.sort_by_key(|(_, started_at)| *started_at);
+            let remove_count = finished.len() - MAX_RETAINED_PROCESSES;
+            for (id, _) in finished.into_iter().take(remove_count) {
+                self.processes.remove(&id);
+            }
+        }
+    }
+
+    pub async fn cleanup_loop(self: Arc<Self>) {
+        let mut interval = tokio::time::interval(Duration::from_secs(10 * 60));
+        loop {
+            interval.tick().await;
+            self.cleanup_finished().await;
         }
     }
 }
@@ -279,12 +380,39 @@ where
 
 async fn append_limited(buffer: &Mutex<VecDeque<u8>>, data: &[u8]) {
     let mut buffer = buffer.lock().await;
-    for byte in data {
-        if buffer.len() >= MAX_OUTPUT_BYTES {
-            buffer.pop_front();
-        }
-        buffer.push_back(*byte);
+    buffer.extend(data.iter().copied());
+    let excess = buffer.len().saturating_sub(MAX_OUTPUT_BYTES);
+    if excess > 0 {
+        buffer.drain(..excess);
     }
+}
+
+async fn terminate_record(
+    record: &ProcessRecord,
+    force: bool,
+) -> std::io::Result<std::process::Output> {
+    if let Some(container_name) = &record.metadata.docker_container_name {
+        let mut command = Command::new("docker");
+        if force {
+            command.args(["kill", container_name]);
+        } else {
+            command.args(["stop", "--time", "1", container_name]);
+        }
+        return command.output().await;
+    }
+    if cfg!(windows) {
+        return Command::new("taskkill")
+            .args(["/PID", &record.pid.to_string(), "/T", "/F"])
+            .output()
+            .await;
+    }
+    Command::new("kill")
+        .args([
+            if force { "-KILL" } else { "-TERM" },
+            &format!("-{}", record.pid),
+        ])
+        .output()
+        .await
 }
 
 async fn snapshot(record: &ProcessRecord) -> ProcessInfo {

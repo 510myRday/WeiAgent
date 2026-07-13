@@ -25,6 +25,10 @@ pub enum AppError {
     Address(#[from] std::net::AddrParseError),
     #[error("address {0} is already in use")]
     AddressInUse(SocketAddr),
+    #[error("conflict: {0}")]
+    Conflict(String),
+    #[error("process error: {0}")]
+    Process(String),
 }
 
 #[derive(Debug, Serialize)]
@@ -37,10 +41,12 @@ impl IntoResponse for AppError {
         let status = match self {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::MissingApiKey => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Storage(_)
             | AppError::Json(_)
             | AppError::Llm(_)
+            | AppError::Process(_)
             | AppError::Address(_)
             | AppError::AddressInUse(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

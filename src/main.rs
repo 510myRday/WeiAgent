@@ -35,6 +35,7 @@ async fn main() -> AppResult<()> {
     ));
     let llm_registry = Arc::new(DefaultLlmRegistry::new(llm_logger.clone()));
     let process_manager = Arc::new(tools::process_manager::ProcessManager::new());
+    tokio::spawn(process_manager.clone().cleanup_loop());
     let approval_manager = Arc::new(tools::approval::ApprovalManager::new());
     let tool_registry = Arc::new(tools::registry::ToolRegistry::with_builtin_tools());
     let state = AppState {
@@ -44,6 +45,7 @@ async fn main() -> AppResult<()> {
         process_manager,
         approval_manager,
         tool_registry,
+        run_manager: Arc::new(app::RunManager::new()),
     };
     let app = if is_dev {
         build_router_dev(state)

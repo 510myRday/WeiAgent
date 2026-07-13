@@ -224,7 +224,10 @@ export function SettingsPanel({
             <form className="form-card entity-form narrow-form" onSubmit={handleSettingsSubmit}>
               <div className="form-grid two-column">
                 <FormField label={t('settings.host')} htmlFor="settings-host" required>
-                  <input id="settings-host" value={settingsForm.host} onChange={(e) => onSettingsFormChange({ ...settingsForm, host: e.target.value })} />
+                  <select id="settings-host" value={settingsForm.host} onChange={(e) => onSettingsFormChange({ ...settingsForm, host: e.target.value })}>
+                    <option value="127.0.0.1">127.0.0.1</option>
+                    <option value="::1">::1</option>
+                  </select>
                 </FormField>
                 <FormField label={t('settings.port')} htmlFor="settings-port" required>
                   <input id="settings-port" type="number" min={1} max={65535} value={settingsForm.port} onChange={(e) => onSettingsFormChange({ ...settingsForm, port: Number(e.target.value) })} />

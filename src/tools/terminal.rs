@@ -4,7 +4,6 @@ use crate::domain::{CommandDecision, TerminalToolConfig};
 
 pub struct CommandChecker {
     blocked: Vec<Regex>,
-    always_allowed: Vec<Regex>,
     approval: Vec<Regex>,
     invalid_patterns: Vec<String>,
 }
@@ -13,13 +12,10 @@ impl CommandChecker {
     pub fn new(config: &TerminalToolConfig) -> Self {
         let mut invalid_patterns = Vec::new();
         let blocked = compile_patterns(&config.blocked_patterns, &mut invalid_patterns);
-        let always_allowed =
-            compile_patterns(&config.always_allowed_patterns, &mut invalid_patterns);
         let approval = compile_patterns(&config.approval_required_patterns, &mut invalid_patterns);
 
         Self {
             blocked,
-            always_allowed,
             approval,
             invalid_patterns,
         }
@@ -42,9 +38,6 @@ impl CommandChecker {
                     re.as_str()
                 ));
             }
-        }
-        if self.always_allowed.iter().any(|re| re.is_match(command)) {
-            return CommandDecision::Allowed;
         }
         if self.approval.iter().any(|re| re.is_match(command)) {
             return CommandDecision::NeedsApproval;
@@ -110,7 +103,7 @@ mod tests {
     }
 
     #[test]
-    fn always_allowed_overrides_approval_but_not_blocked() {
+    fn legacy_always_allowed_patterns_do_not_bypass_policy() {
         let mut config = default_config();
         config
             .always_allowed_patterns
@@ -121,7 +114,7 @@ mod tests {
         let checker = CommandChecker::new(&config);
         assert_eq!(
             checker.check("git push origin main"),
-            CommandDecision::Allowed
+            CommandDecision::NeedsApproval
         );
         assert!(matches!(
             checker.check("rm -rf /"),

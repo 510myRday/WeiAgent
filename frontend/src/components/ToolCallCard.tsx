@@ -6,6 +6,7 @@ import type { ToolCallStatus, ToolResultData } from '../types';
 import { useI18n } from '../i18n';
 
 interface ToolCallCardProps {
+  agentId: string;
   callId: string;
   name: string;
   arguments: Record<string, any>;
@@ -47,7 +48,7 @@ function RuntimeBadge({ runtime, t }: { runtime?: string | null; t: (path: strin
   );
 }
 
-export function ToolCallCard({ name, arguments: args, status, result, onApprove }: ToolCallCardProps) {
+export function ToolCallCard({ agentId, name, arguments: args, status, result, onApprove }: ToolCallCardProps) {
   const { t } = useI18n();
   const command = typeof args.command === 'string' ? args.command : name;
   const processId = result?.process_id;
@@ -65,7 +66,7 @@ export function ToolCallCard({ name, arguments: args, status, result, onApprove 
     let timer: number | undefined;
     const refresh = async () => {
       try {
-        const next = await getToolProcess(processId);
+        const next = await getToolProcess(processId, agentId);
         if (cancelled) return;
         setProcess(next);
         setProcessError('');
@@ -81,13 +82,13 @@ export function ToolCallCard({ name, arguments: args, status, result, onApprove 
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [processId, t]);
+  }, [agentId, processId, t]);
 
   async function handleStop() {
     if (!processId) return;
     setIsStopping(true);
     try {
-      setProcess(await stopToolProcess(processId));
+      setProcess(await stopToolProcess(processId, agentId));
       setProcessError('');
     } catch (error) {
       setProcessError(error instanceof Error ? error.message : t('toolCard.stopFailed'));
@@ -104,6 +105,13 @@ export function ToolCallCard({ name, arguments: args, status, result, onApprove 
           <span>{t('toolCard.approvalTitle')}</span>
         </div>
         <pre className="tool-card__command">{command}</pre>
+        <dl className="tool-card__approval-context">
+          <div><dt>{t('toolCard.cwd')}</dt><dd>{String(args.cwd || t('toolCard.defaultCwd'))}</dd></div>
+          <div><dt>{t('toolCard.runtime')}</dt><dd>{String(args.runtime || t('toolCard.runtimeUnknown'))}</dd></div>
+          <div><dt>{t('toolCard.network')}</dt><dd>{args.network_enabled ? t('toolCard.enabled') : t('toolCard.disabled')}</dd></div>
+          <div><dt>{t('toolCard.background')}</dt><dd>{args.background ? t('toolCard.enabled') : t('toolCard.disabled')}</dd></div>
+          <div><dt>{t('toolCard.writeRoots')}</dt><dd>{Array.isArray(args.write_roots) && args.write_roots.length > 0 ? args.write_roots.join(', ') : t('toolCard.defaultCwd')}</dd></div>
+        </dl>
         <div className="tool-card__actions">
           <button type="button" onClick={() => onApprove('approve')} className="btn-approve">{t('toolCard.allow')}</button>
           <button type="button" onClick={() => onApprove('always_approve')} className="btn-always">{t('toolCard.alwaysAllow')}</button>

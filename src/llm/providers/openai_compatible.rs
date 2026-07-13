@@ -16,6 +16,10 @@ use crate::{
     storage::LlmLogger,
 };
 
+const MAX_LLM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_LLM_LOG_BYTES: usize = 1024 * 1024;
+const MAX_SSE_LINE_BUFFER_BYTES: usize = 1024 * 1024;
+
 #[derive(Clone)]
 pub struct OpenAiCompatibleChatClient {
     http: reqwest::Client,
@@ -181,7 +185,7 @@ impl ChatClient for OpenAiCompatibleChatClient {
         };
 
         let status = response.status();
-        let body = match response.text().await {
+        let body = match read_response_body_limited(response).await {
             Ok(body) => body,
             Err(error) => {
                 Self::spawn_log(
@@ -195,7 +199,7 @@ impl ChatClient for OpenAiCompatibleChatClient {
                     Some(status.as_u16()),
                     Some(&format!("failed to read response body: {error}")),
                 );
-                return Err(AppError::Llm(error.to_string()));
+                return Err(error);
             }
         };
 
@@ -337,8 +341,7 @@ impl ChatClient for OpenAiCompatibleChatClient {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response
-                .text()
+            let body = read_response_body_limited(response)
                 .await
                 .unwrap_or_else(|_| "failed to read error body".to_string());
             Self::spawn_log(
@@ -375,6 +378,8 @@ impl ChatClient for OpenAiCompatibleChatClient {
                 provider_name: String,
                 request_json: String,
                 raw_lines: Vec<String>,
+                raw_bytes: usize,
+                raw_truncated: bool,
                 raw_status: u16,
                 completed: bool,
             }
@@ -393,12 +398,21 @@ impl ChatClient for OpenAiCompatibleChatClient {
                         let provider_name = self.provider_name.clone();
                         let request_json = self.request_json.clone();
                         let raw_lines = std::mem::take(&mut self.raw_lines);
+                        let raw_truncated = self.raw_truncated;
                         let raw_status = self.raw_status;
                         tokio::spawn(async move {
                             let response_body = if raw_lines.is_empty() {
                                 None
                             } else {
-                                Some(raw_lines.join("\n"))
+                                Some(format!(
+                                    "{}{}",
+                                    raw_lines.join("\n"),
+                                    if raw_truncated {
+                                        "\n[LLM stream log truncated]"
+                                    } else {
+                                        ""
+                                    }
+                                ))
                             };
                             let _ = logger
                                 .write_log(
@@ -423,18 +437,38 @@ impl ChatClient for OpenAiCompatibleChatClient {
                 provider_name: provider_name.clone(),
                 request_json: request_json_clone,
                 raw_lines: Vec::new(),
+                raw_bytes: 0,
+                raw_truncated: false,
                 raw_status: stream_status,
                 completed: false,
             };
 
-            while let Some(chunk) = bytes.next().await {
+            loop {
+                let next = match tokio::time::timeout(options.timeout, bytes.next()).await {
+                    Ok(next) => next,
+                    Err(_) => {
+                        let error = AppError::Llm(format!(
+                            "LLM stream idle timeout after {}s",
+                            options.timeout.as_secs()
+                        ));
+                        guard.completed = true;
+                        yield Err(error);
+                        return;
+                    }
+                };
+                let Some(chunk) = next else { break; };
                 match chunk {
                     Ok(bytes) => {
                         buffer.push_str(&String::from_utf8_lossy(&bytes));
                         while let Some(index) = buffer.find('\n') {
                             let line = buffer[..index].trim_end_matches('\r').to_string();
                             buffer = buffer[index + 1..].to_string();
-                            guard.raw_lines.push(line.clone());
+                            if guard.raw_bytes.saturating_add(line.len()) <= MAX_LLM_LOG_BYTES {
+                                guard.raw_bytes += line.len();
+                                guard.raw_lines.push(line.clone());
+                            } else {
+                                guard.raw_truncated = true;
+                            }
                             for item in parse_sse_line(&line) {
                                 match item {
                                     Ok(event) => {
@@ -460,6 +494,13 @@ impl ChatClient for OpenAiCompatibleChatClient {
                                 }
                             }
                         }
+                        if buffer.len() > MAX_SSE_LINE_BUFFER_BYTES {
+                            guard.completed = true;
+                            yield Err(AppError::Llm(format!(
+                                "SSE line exceeded {MAX_SSE_LINE_BUFFER_BYTES} bytes"
+                            )));
+                            return;
+                        }
                     }
                     Err(error) => {
                         Self::spawn_log(
@@ -476,6 +517,25 @@ impl ChatClient for OpenAiCompatibleChatClient {
                         guard.completed = true;
                         yield Err(AppError::Llm(error.to_string()));
                         return;
+                    }
+                }
+            }
+            if !buffer.trim().is_empty() {
+                let line = buffer.trim_end_matches('\r').to_string();
+                if guard.raw_bytes.saturating_add(line.len()) <= MAX_LLM_LOG_BYTES {
+                    guard.raw_bytes += line.len();
+                    guard.raw_lines.push(line.clone());
+                } else {
+                    guard.raw_truncated = true;
+                }
+                for item in parse_sse_line(&line) {
+                    match item {
+                        Ok(event) => yield Ok(event),
+                        Err(error) => {
+                            guard.completed = true;
+                            yield Err(error);
+                            return;
+                        }
                     }
                 }
             }
@@ -508,10 +568,7 @@ impl ChatClient for OpenAiCompatibleChatClient {
             .map_err(|error| AppError::Llm(error.to_string()))?;
 
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|error| AppError::Llm(error.to_string()))?;
+        let body = read_response_body_limited(response).await?;
         if !status.is_success() {
             return Err(AppError::Llm(format!("upstream returned {status}: {body}")));
         }
@@ -529,6 +586,21 @@ impl ChatClient for OpenAiCompatibleChatClient {
         models.dedup();
         Ok(models)
     }
+}
+
+async fn read_response_body_limited(response: reqwest::Response) -> AppResult<String> {
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| AppError::Llm(error.to_string()))?;
+        if body.len().saturating_add(chunk.len()) > MAX_LLM_RESPONSE_BYTES {
+            return Err(AppError::Llm(format!(
+                "LLM response exceeded {MAX_LLM_RESPONSE_BYTES} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
 #[cfg(test)]

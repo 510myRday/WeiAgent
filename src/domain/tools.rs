@@ -10,9 +10,12 @@ pub struct TerminalToolConfig {
     /// Commands matching these regex patterns require interactive approval.
     #[serde(default = "default_approval_patterns")]
     pub approval_required_patterns: Vec<String>,
-    /// Commands approved with "always allow". Blocked patterns still take precedence.
+    /// Legacy compatibility field. Persistent bypass patterns are no longer honored.
     #[serde(default)]
     pub always_allowed_patterns: Vec<String>,
+    /// Exact, context-bound grants created by interactive "always allow".
+    #[serde(default)]
+    pub approval_grants: Vec<TerminalApprovalGrant>,
     /// Foreground wait timeout. A still-running command is moved to background after this time.
     #[serde(default = "default_timeout_ms")]
     pub default_timeout_ms: u64,
@@ -27,7 +30,7 @@ pub struct TerminalToolConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxMode {
-    /// Prefer Docker. If Docker is unavailable, fall back to native_restricted for this command.
+    /// Require Docker and fail closed when the daemon is unavailable.
     Docker,
     /// Compatibility mode with cwd containment and a sanitized environment, but no kernel sandbox.
     NativeRestricted,
@@ -49,6 +52,19 @@ pub struct TerminalSandboxConfig {
     pub pids_limit: u32,
     #[serde(default)]
     pub workspace_read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TerminalApprovalGrant {
+    pub command: String,
+    pub cwd: Option<String>,
+    pub sandbox_mode: SandboxMode,
+    pub network_enabled: bool,
+    pub workspace_read_only: bool,
+    #[serde(default)]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 fn default_timeout_ms() -> u64 {
@@ -76,7 +92,7 @@ fn default_pids_limit() -> u32 {
 }
 
 fn default_max_llm_iterations() -> u32 {
-    90
+    20
 }
 
 fn default_blocked_patterns() -> Vec<String> {
@@ -97,14 +113,16 @@ fn default_blocked_patterns() -> Vec<String> {
 
 fn default_approval_patterns() -> Vec<String> {
     vec![
-        r"rm\s+".into(),
-        r"git\s+push".into(),
-        r"git\s+reset".into(),
-        r"docker\s+rm".into(),
-        r"npm\s+publish".into(),
-        r"cargo\s+publish".into(),
+        r"(?i)\brm\b".into(),
+        r"(?i)\bgit\s+(?:-\S+\s+)*push\b".into(),
+        r"(?i)\bgit\s+(?:-\S+\s+)*reset\b".into(),
+        r"(?i)\bdocker\s+rm\b".into(),
+        r"(?i)\bnpm\s+publish\b".into(),
+        r"(?i)\bcargo\s+publish\b".into(),
         r"(?i)\bRemove-Item\b".into(),
         r"(?i)\bdel\b".into(),
+        r"(?i)\berase\b".into(),
+        r"(?i)\brd\b".into(),
         r"(?i)\brmdir\b".into(),
     ]
 }
@@ -130,6 +148,7 @@ impl Default for TerminalToolConfig {
             blocked_patterns: default_blocked_patterns(),
             approval_required_patterns: default_approval_patterns(),
             always_allowed_patterns: Vec::new(),
+            approval_grants: Vec::new(),
             default_timeout_ms: default_timeout_ms(),
             allowed_cwd_roots: Vec::new(),
             sandbox: TerminalSandboxConfig::default(),
@@ -159,7 +178,26 @@ impl Default for AgentToolsConfig {
 
 impl AgentToolsConfig {
     pub fn max_llm_iterations(&self) -> usize {
-        self.max_llm_iterations.max(1) as usize
+        self.max_llm_iterations.clamp(1, 50) as usize
+    }
+}
+
+impl TerminalToolConfig {
+    pub fn has_context_grant(&self, command: &str, cwd: Option<&str>) -> bool {
+        let effective_network_enabled = match &self.sandbox.mode {
+            SandboxMode::Docker => self.sandbox.network_enabled,
+            SandboxMode::NativeRestricted => true,
+        };
+        self.approval_grants.iter().any(|grant| {
+            grant.command == command
+                && grant.cwd.as_deref() == cwd
+                && grant.sandbox_mode == self.sandbox.mode
+                && grant.network_enabled == effective_network_enabled
+                && grant.workspace_read_only == self.sandbox.workspace_read_only
+                && grant
+                    .expires_at
+                    .is_some_and(|expires_at| expires_at > chrono::Utc::now())
+        })
     }
 }
 
@@ -181,6 +219,7 @@ pub enum ApprovalDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRequest {
     pub approval_id: String,
+    pub agent_id: uuid::Uuid,
     pub decision: ApprovalDecision,
 }
 
@@ -194,7 +233,15 @@ pub struct ApprovalResponse {
 #[derive(Debug, Clone)]
 pub struct PendingApproval {
     pub approval_id: String,
+    pub agent_id: uuid::Uuid,
+    pub conversation_id: uuid::Uuid,
+    pub tool_call_id: String,
     pub command: String,
+    pub cwd: Option<String>,
+    pub runtime: String,
+    pub network_enabled: bool,
+    pub write_roots: Vec<String>,
+    pub background: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,4 +309,3 @@ pub struct ProcessInfo {
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     pub duration_ms: u64,
 }
-

@@ -332,6 +332,7 @@ export function ChatPanel({
                     <div className="message-meta"><strong>{activeAgent ? displayAgentName(activeAgent) : 'Assistant'}</strong></div>
                     <div className="message-bubble">
                       <ToolCallCard
+                        agentId={activeAgent?.id ?? ''}
                         callId={toolMsg.call_id}
                         name={toolMsg.name}
                         arguments={toolMsg.arguments}
@@ -341,7 +342,8 @@ export function ChatPanel({
                           const approvalId = toolMsg.arguments.approval_id;
                           if (!approvalId) return;
                           try {
-                            await approveToolCall(approvalId, decision);
+                            if (!activeAgent) return;
+                            await approveToolCall(approvalId, activeAgent.id, decision);
                           } catch (e) {
                             onError(e instanceof Error ? e.message : 'Approval failed');
                           }

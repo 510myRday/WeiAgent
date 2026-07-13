@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -22,6 +23,11 @@ pub enum ToolExecutionEvent {
         call_id: String,
         command: String,
         approval_id: String,
+        cwd: Option<String>,
+        runtime: String,
+        network_enabled: bool,
+        write_roots: Vec<String>,
+        background: bool,
     },
 }
 
@@ -34,7 +40,7 @@ pub struct ToolExecutionContext {
     pub store: Arc<JsonStore>,
     pub process_manager: Arc<ProcessManager>,
     pub approval_manager: Arc<ApprovalManager>,
-    pub event_sender: Option<mpsc::UnboundedSender<ToolExecutionEvent>>,
+    pub event_sender: Option<mpsc::Sender<ToolExecutionEvent>>,
 }
 
 #[async_trait]
@@ -96,6 +102,18 @@ impl ToolRegistry {
 
 struct ExecuteTerminalTool;
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecuteTerminalArgs {
+    command: String,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    background: Option<bool>,
+}
+
 #[async_trait]
 impl AgentTool for ExecuteTerminalTool {
     fn definition(&self) -> ToolDefinition {
@@ -121,17 +139,37 @@ impl AgentTool for ExecuteTerminalTool {
     }
 
     async fn execute(&self, arguments: Value, context: ToolExecutionContext) -> ToolResult {
-        let command = arguments
-            .get("command")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let cwd = arguments
-            .get("cwd")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let timeout_ms = arguments.get("timeout_ms").and_then(Value::as_u64);
-        let background = arguments.get("background").and_then(Value::as_bool);
+        let args = match serde_json::from_value::<ExecuteTerminalArgs>(arguments) {
+            Ok(args) => args,
+            Err(error) => {
+                return ToolResult::Error {
+                    message: format!("Invalid execute_terminal arguments: {error}"),
+                };
+            }
+        };
+        if args
+            .cwd
+            .as_ref()
+            .is_some_and(|cwd| cwd.len() > 4_096 || cwd.trim().is_empty())
+        {
+            return ToolResult::Error {
+                message: "cwd must be a non-empty path no longer than 4096 bytes".to_string(),
+            };
+        }
+        if args.timeout_ms.is_some_and(|timeout| {
+            timeout == 0 || timeout > crate::tools::execute::MAX_TERMINAL_TIMEOUT_MS
+        }) {
+            return ToolResult::Error {
+                message: format!(
+                    "timeout_ms must be between 1 and {}",
+                    crate::tools::execute::MAX_TERMINAL_TIMEOUT_MS
+                ),
+            };
+        }
+        let command = args.command;
+        let cwd = args.cwd;
+        let timeout_ms = args.timeout_ms;
+        let background = args.background;
         let mut result = execute_terminal(
             &ExecuteTerminalRequest {
                 command: command.clone(),
@@ -160,7 +198,30 @@ impl AgentTool for ExecuteTerminalTool {
         };
         let decision_rx = context.approval_manager.register(PendingApproval {
             approval_id: approval_id.clone(),
+            agent_id: context.agent_id,
+            conversation_id: context.conversation_id,
+            tool_call_id: context.call_id.clone(),
             command: command.clone(),
+            cwd: cwd.clone().or_else(|| {
+                context
+                    .tools_config
+                    .terminal
+                    .allowed_cwd_roots
+                    .first()
+                    .cloned()
+            }),
+            runtime: match context.tools_config.terminal.sandbox.mode {
+                crate::domain::SandboxMode::Docker => "docker".to_string(),
+                crate::domain::SandboxMode::NativeRestricted => "native_unsandboxed".to_string(),
+            },
+            network_enabled: match context.tools_config.terminal.sandbox.mode {
+                crate::domain::SandboxMode::Docker => {
+                    context.tools_config.terminal.sandbox.network_enabled
+                }
+                crate::domain::SandboxMode::NativeRestricted => true,
+            },
+            write_roots: context.tools_config.terminal.allowed_cwd_roots.clone(),
+            background: background.unwrap_or(false),
         });
         let _approval_guard = ApprovalRegistrationGuard {
             manager: context.approval_manager.clone(),
@@ -171,7 +232,23 @@ impl AgentTool for ExecuteTerminalTool {
                 call_id: context.call_id.clone(),
                 command: command.clone(),
                 approval_id,
+                cwd: cwd.clone(),
+                runtime: match context.tools_config.terminal.sandbox.mode {
+                    crate::domain::SandboxMode::Docker => "docker".to_string(),
+                    crate::domain::SandboxMode::NativeRestricted => {
+                        "native_unsandboxed".to_string()
+                    }
+                },
+                network_enabled: match context.tools_config.terminal.sandbox.mode {
+                    crate::domain::SandboxMode::Docker => {
+                        context.tools_config.terminal.sandbox.network_enabled
+                    }
+                    crate::domain::SandboxMode::NativeRestricted => true,
+                },
+                write_roots: context.tools_config.terminal.allowed_cwd_roots.clone(),
+                background: background.unwrap_or(false),
             })
+            .await
             .is_err()
         {
             return ToolResult::Rejected {
@@ -188,7 +265,12 @@ impl AgentTool for ExecuteTerminalTool {
             Some(ApprovalDecision::AlwaysApprove) => {
                 if let Err(error) = context
                     .store
-                    .always_allow_terminal_command(context.agent_id, &command)
+                    .always_allow_terminal_command(
+                        context.agent_id,
+                        &command,
+                        cwd.as_deref(),
+                        &context.tools_config.terminal.sandbox,
+                    )
                     .await
                 {
                     return ToolResult::Error {
@@ -229,6 +311,12 @@ impl AgentTool for ExecuteTerminalTool {
 
 struct GetTerminalProcessTool;
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProcessToolArgs {
+    process_id: String,
+}
+
 #[async_trait]
 impl AgentTool for GetTerminalProcessTool {
     fn definition(&self) -> ToolDefinition {
@@ -251,18 +339,28 @@ impl AgentTool for GetTerminalProcessTool {
     }
 
     async fn execute(&self, arguments: Value, context: ToolExecutionContext) -> ToolResult {
-        let process_id = arguments
-            .get("process_id")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let Some(info) = context.process_manager.get(process_id).await else {
+        let args = match serde_json::from_value::<ProcessToolArgs>(arguments) {
+            Ok(args) => args,
+            Err(error) => {
+                return ToolResult::Error {
+                    message: format!("Invalid get_terminal_process arguments: {error}"),
+                };
+            }
+        };
+        let process_id = args.process_id;
+        if Uuid::parse_str(&process_id).is_err() {
+            return ToolResult::Error {
+                message: "process_id must be a UUID".to_string(),
+            };
+        }
+        let Some(info) = context.process_manager.get(&process_id).await else {
             return ToolResult::Error {
                 message: format!("Terminal process '{process_id}' was not found"),
             };
         };
-        if info.agent_id != context.agent_id {
+        if info.agent_id != context.agent_id || info.conversation_id != context.conversation_id {
             return ToolResult::Blocked {
-                reason: "The process belongs to another agent".to_string(),
+                reason: "The process belongs to another agent run".to_string(),
             };
         }
         process_info_to_result(info)
@@ -293,24 +391,36 @@ impl AgentTool for StopTerminalProcessTool {
     }
 
     async fn execute(&self, arguments: Value, context: ToolExecutionContext) -> ToolResult {
-        let process_id = arguments
-            .get("process_id")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let Some(existing) = context.process_manager.get(process_id).await else {
+        let args = match serde_json::from_value::<ProcessToolArgs>(arguments) {
+            Ok(args) => args,
+            Err(error) => {
+                return ToolResult::Error {
+                    message: format!("Invalid stop_terminal_process arguments: {error}"),
+                };
+            }
+        };
+        let process_id = args.process_id;
+        if Uuid::parse_str(&process_id).is_err() {
+            return ToolResult::Error {
+                message: "process_id must be a UUID".to_string(),
+            };
+        }
+        let Some(existing) = context.process_manager.get(&process_id).await else {
             return ToolResult::Error {
                 message: format!("Terminal process '{process_id}' was not found"),
             };
         };
-        if existing.agent_id != context.agent_id {
+        if existing.agent_id != context.agent_id
+            || existing.conversation_id != context.conversation_id
+        {
             return ToolResult::Blocked {
-                reason: "The process belongs to another agent".to_string(),
+                reason: "The process belongs to another agent run".to_string(),
             };
         }
         if existing.status != ProcessStatus::Running {
             return process_info_to_result(existing);
         }
-        match context.process_manager.stop(process_id).await {
+        match context.process_manager.stop(&process_id).await {
             Ok(Some(info)) => process_info_to_result(info),
             Ok(None) => ToolResult::Error {
                 message: format!("Terminal process '{process_id}' was not found"),

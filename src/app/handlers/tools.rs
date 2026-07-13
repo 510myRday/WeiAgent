@@ -35,24 +35,26 @@ pub async fn approve_tool_call(
     State(state): State<AppState>,
     Json(request): Json<ApprovalRequest>,
 ) -> AppResult<Json<ApprovalResponse>> {
-    let pending = state
-        .approval_manager
-        .resolve(&request.approval_id, request.decision.clone());
+    let pending = state.approval_manager.resolve(
+        &request.approval_id,
+        request.agent_id,
+        request.decision.clone(),
+    );
     match pending {
         Some(entry) => match request.decision {
             ApprovalDecision::Approve => Ok(Json(ApprovalResponse {
                 status: "approved".to_string(),
-                message: Some(format!("Command approved: {}", entry.command)),
+                message: Some(approval_summary("Command approved", &entry)),
             })),
             ApprovalDecision::Reject => Ok(Json(ApprovalResponse {
                 status: "rejected".to_string(),
-                message: Some("Command rejected by user".to_string()),
+                message: Some(approval_summary("Command rejected by user", &entry)),
             })),
             ApprovalDecision::AlwaysApprove => Ok(Json(ApprovalResponse {
                 status: "always_approved".to_string(),
-                message: Some(format!(
-                    "Command approved and an exact persistent allow rule will be stored: {}",
-                    entry.command
+                message: Some(approval_summary(
+                    "Command approved and a 24-hour context-bound grant will be stored",
+                    &entry,
                 )),
             })),
         },
@@ -63,34 +65,62 @@ pub async fn approve_tool_call(
     }
 }
 
+fn approval_summary(prefix: &str, entry: &crate::domain::PendingApproval) -> String {
+    format!(
+        "{prefix}: {} (agent={}, conversation={}, call={}, cwd={}, runtime={}, network={}, write_roots={}, background={})",
+        entry.command,
+        entry.agent_id,
+        entry.conversation_id,
+        entry.tool_call_id,
+        entry.cwd.as_deref().unwrap_or("<default>"),
+        entry.runtime,
+        entry.network_enabled,
+        entry.write_roots.join(";"),
+        entry.background,
+    )
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ProcessListQuery {
-    pub agent_id: Option<Uuid>,
+    pub agent_id: Uuid,
 }
 
 pub async fn list_tool_processes(
     State(state): State<AppState>,
     Query(query): Query<ProcessListQuery>,
 ) -> AppResult<Json<Vec<ProcessInfo>>> {
-    Ok(Json(state.process_manager.list(query.agent_id).await))
+    Ok(Json(state.process_manager.list(Some(query.agent_id)).await))
 }
 
 pub async fn get_tool_process(
     State(state): State<AppState>,
     Path(process_id): Path<String>,
+    Query(query): Query<ProcessListQuery>,
 ) -> AppResult<Json<ProcessInfo>> {
-    state
+    let info = state
         .process_manager
         .get(&process_id)
         .await
-        .map(Json)
-        .ok_or(AppError::NotFound)
+        .ok_or(AppError::NotFound)?;
+    if info.agent_id != query.agent_id {
+        return Err(AppError::NotFound);
+    }
+    Ok(Json(info))
 }
 
 pub async fn stop_tool_process(
     State(state): State<AppState>,
     Path(process_id): Path<String>,
+    Query(query): Query<ProcessListQuery>,
 ) -> AppResult<Json<ProcessInfo>> {
+    let info = state
+        .process_manager
+        .get(&process_id)
+        .await
+        .ok_or(AppError::NotFound)?;
+    if info.agent_id != query.agent_id {
+        return Err(AppError::NotFound);
+    }
     state
         .process_manager
         .stop(&process_id)

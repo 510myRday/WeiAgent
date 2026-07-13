@@ -1,9 +1,11 @@
 use axum::{
     Router,
-    http::Method,
+    extract::DefaultBodyLimit,
+    http::{HeaderName, HeaderValue},
     routing::{get, post, put},
 };
-use tower_http::cors::{Any, CorsLayer};
+use tower::limit::ConcurrencyLimitLayer;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::app::{
     AppState,
@@ -14,19 +16,25 @@ use crate::app::{
 pub fn build_router(state: AppState) -> Router {
     api_router()
         .fallback(|uri: axum::http::Uri| async move { serve_frontend(uri).await })
-        .layer(cors_layer())
+        .layer(security_headers())
+        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(ConcurrencyLimitLayer::new(64))
         .with_state(state)
 }
 
 pub fn build_router_dev(state: AppState) -> Router {
-    api_router().layer(cors_layer()).with_state(state)
+    api_router()
+        .layer(security_headers())
+        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(ConcurrencyLimitLayer::new(64))
+        .with_state(state)
 }
 
-fn cors_layer() -> CorsLayer {
-    CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers(Any)
+fn security_headers() -> SetResponseHeaderLayer<HeaderValue> {
+    SetResponseHeaderLayer::overriding(
+        HeaderName::from_static("cache-control"),
+        HeaderValue::from_static("no-store"),
+    )
 }
 
 fn api_router() -> Router<AppState> {

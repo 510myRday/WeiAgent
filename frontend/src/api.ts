@@ -186,6 +186,15 @@ export type AgentToolsConfig = {
     blocked_patterns: string[];
     approval_required_patterns: string[];
     always_allowed_patterns: string[];
+    approval_grants: Array<{
+      command: string;
+      cwd?: string;
+      sandbox_mode: 'docker' | 'native_restricted';
+      network_enabled: boolean;
+      workspace_read_only: boolean;
+      created_at?: string;
+      expires_at?: string;
+    }>;
     default_timeout_ms: number;
     allowed_cwd_roots: string[];
     sandbox: {
@@ -236,11 +245,12 @@ export type ApprovalDecision = 'approve' | 'reject' | 'always_approve';
 
 export function approveToolCall(
   approvalId: string,
+  agentId: string,
   decision: ApprovalDecision,
 ): Promise<{ status: string; message?: string }> {
   return request<{ status: string; message?: string }>('/api/tools/approve', {
     method: 'POST',
-    body: JSON.stringify({ approval_id: approvalId, decision }),
+    body: JSON.stringify({ approval_id: approvalId, agent_id: agentId, decision }),
   });
 }
 
@@ -250,12 +260,12 @@ export function listToolProcesses(agentId?: string): Promise<ToolProcessInfo[]> 
   return request<ToolProcessInfo[]>(`/api/tools/processes${query}`);
 }
 
-export function getToolProcess(processId: string): Promise<ToolProcessInfo> {
-  return request<ToolProcessInfo>(`/api/tools/processes/${encodeURIComponent(processId)}`);
+export function getToolProcess(processId: string, agentId: string): Promise<ToolProcessInfo> {
+  return request<ToolProcessInfo>(`/api/tools/processes/${encodeURIComponent(processId)}?agent_id=${encodeURIComponent(agentId)}`);
 }
 
-export function stopToolProcess(processId: string): Promise<ToolProcessInfo> {
-  return request<ToolProcessInfo>(`/api/tools/processes/${encodeURIComponent(processId)}`, {
+export function stopToolProcess(processId: string, agentId: string): Promise<ToolProcessInfo> {
+  return request<ToolProcessInfo>(`/api/tools/processes/${encodeURIComponent(processId)}?agent_id=${encodeURIComponent(agentId)}`, {
     method: 'DELETE',
   });
 }

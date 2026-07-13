@@ -102,7 +102,7 @@ WeiAgent/
 │   │       └── openai_compatible.rs  # OpenAI 兼容客户端实现（含重试）
 │   ├── tools/
 │   │   ├── registry.rs       # ToolRegistry、AgentTool、内置工具注册
-│   │   ├── execute.rs        # Docker/本机受限执行、超时转后台
+│   │   ├── execute.rs        # Docker/本机未隔离执行、超时转后台
 │   │   ├── process_manager.rs# 后台进程、输出、停止和状态管理
 │   │   ├── approval.rs       # 审批管理和自动 TTL 过期
 │   │   └── terminal.rs       # 命令策略检查
@@ -311,7 +311,7 @@ Agent 响应会额外返回后端保存的内置身份信息：
 
 - **黑名单模式**：命令不在黑名单和审批名单中的默认放行
 - **拒绝名单**（`blocked_patterns`）：匹配后直接拦截，如 `rm -rf /`、`curl|sh`、`sudo`、`chmod 777`、命令注入等
-- **审批名单**（`approval_required_patterns`）：匹配后在聊天气泡内显示审批卡片，用户点击允许/始终允许/拒绝
+- **审批名单**（`approval_required_patterns`）：匹配后在聊天气泡内显示审批卡片，用户点击允许/记住 24 小时/拒绝
 - 所有正则模式可在前端 Agent 编辑页的 Tools tab 中实时修改
 
 ### 工具配置
@@ -325,6 +325,7 @@ Agent 响应会额外返回后端保存的内置身份信息：
     "blocked_patterns": ["rm\\s+-rf\\s+/", "curl.*\\|\\s*sh", "sudo\\s+"],
     "approval_required_patterns": ["rm\\s+", "git\\s+push", "docker\\s+rm"],
     "always_allowed_patterns": [],
+    "approval_grants": [],
     "default_timeout_ms": 30000,
     "allowed_cwd_roots": [],
     "sandbox": {
@@ -400,7 +401,7 @@ User Message → prepare_chat(tools_config) → LLM stream(tools=[execute_termin
 第三阶段终端工具主链路已经完成闭环：
 
 - 新增 `src/app/agent_executor.rs`，流式和普通完整回复共用同一个 Agent 执行器。
-- Function Calling 改为最多 10 轮的真正执行循环，支持连续工具调用，超过上限明确报错。
+- Function Calling 使用可配置执行预算，默认 20 轮、硬上限 50 轮，并额外限制单轮和整次运行的工具调用数。
 - 新增 `src/tools/registry.rs` 通用 `ToolRegistry` / `AgentTool` 抽象，聊天执行器不再写死 `execute_terminal`。
 - 内置工具扩展为 `execute_terminal`、`get_terminal_process`、`stop_terminal_process`。
 - `execute_terminal` Schema 已向模型暴露 `command`、`cwd`、`timeout_ms`、`background`。
@@ -411,19 +412,22 @@ User Message → prepare_chat(tools_config) → LLM stream(tools=[execute_termin
   - `GET /api/tools/processes/{process_id}`
   - `DELETE /api/tools/processes/{process_id}`
 - 聊天气泡和 Tools 页面均可轮询后台进程状态、查看输出和停止进程。
-- `always_approve` 已实现完整语义：前端显示“始终允许”，后端将精确命令转义为正则并持久化到 `always_allowed_patterns`；阻断规则优先级仍高于始终允许。
+- “记住 24 小时”会保存上下文绑定授权，包含命令、工作目录、沙箱模式、网络和只读状态；设置页可以查看和撤销，旧的全局放行正则不再参与决策。
 - 审批注册时会启动独立 TTL 清理任务，10 分钟后自动拒绝并移除，不再依赖下一次审批请求触发清理。
 - 普通完整回复 API 已接入同一套多轮工具执行逻辑；需要人工审批的命令在普通接口中会安全拒绝，并提示使用 SSE 接口完成交互审批。
-- Docker 容器沙箱成为新配置的安全默认值，不做静默本机回退：
+- Docker 容器沙箱是安全默认值，并且失败关闭，不做静默本机回退：
   - 默认关闭容器网络
   - 只读根文件系统和受限 `/tmp`
   - 丢弃全部 Linux capabilities
   - 启用 `no-new-privileges`
   - 限制内存、CPU 和进程数
   - 仅挂载命中的 `allowed_cwd_roots`；为空时只允许后端当前工作目录
-- 保留 `native_restricted` 兼容模式：限制 cwd、清理环境变量、创建独立进程组，但界面明确提示它不属于内核级沙箱。
-- 已增加端到端测试，覆盖普通接口多轮工具、真实 SSE Function Calling、放行、拦截、审批、始终允许、显式后台、超时转后台、输出捕获、进程查询和停止。
-- 当前 Rust 测试共 29 项全部通过；前端 TypeScript + Vite 生产构建通过；严格 Clippy `-D warnings` 通过。
+- 保留 `native_restricted` 序列化名称用于配置兼容，但界面和审批中明确称为“本机未隔离模式”；未命中上下文授权时每次都必须审批。
+- 服务仅允许监听 loopback 地址，生产路由不开放任意来源 CORS。
+- 同一会话只允许一个活跃 Agent run；客户端断开或运行超时会停止本轮非显式后台进程。
+- 工具参数使用强类型反序列化并拒绝额外字段；工具调用 ID、参数、输出、上下文、进程数和运行时间均有硬上限。
+- 后台进程最长运行 1 小时，完成记录由定时清理任务回收；进程 API 要求 Agent 所有权参数。
+- 已增加端到端和安全回归测试，覆盖多轮工具、SSE Function Calling、审批归属、并发运行、Docker 失败关闭和原生执行审批。
 
 Docker 沙箱运行依赖本机 Docker daemon。Docker 不可用时命令会安全失败，不会自动降级到宿主机执行；如确需兼容模式，用户必须在 Tools 设置中显式选择 `native_restricted`。
 
@@ -433,31 +437,34 @@ Docker 沙箱运行依赖本机 Docker daemon。Docker 不可用时命令会安�
 
 ### 已实现
 
-1. **可配置工具循环预算（参考 Hermes）**
-   - `AgentToolsConfig.max_llm_iterations` 默认 `90`
+1. **可配置工具循环和资源预算**
+   - `AgentToolsConfig.max_llm_iterations` 默认 `20`，可配置范围 `1..=50`
    - 存在于 `data/agents/{id}/tools.json`
    - 前端 Tools 设置页可编辑
    - 达到预算后执行一次 **无 tools 的收尾总结调用**，而不是直接报错中断
+   - 单轮最多 8 个工具调用，整次运行最多 32 个工具调用，最长运行 15 分钟
 
-2. **终端 Docker 优先 + 本机回退**
+2. **终端 Docker 失败关闭**
    - 默认仍是 `sandbox.mode = docker`
-   - Docker daemon 不可用时自动回退到 `native_restricted`
-   - 不再因 Docker 不可用而直接失败
-   - 回退信息写入工具结果 message，便于排查
+   - Docker daemon 不可用时直接拒绝，不会执行宿主机命令
+   - 如需本机执行，必须显式选择未隔离模式并完成审批
 
 3. **参数校验收紧**
    - 工具参数必须是 JSON object
    - 非 object 不再静默变成空对象，而是返回结构化错误
+   - 工具参数使用 `deny_unknown_fields`，终端等待超时最大 120 秒
 
 ### 明确未做（非必要）
 
 - 不新增除终端外的工具
 - 不做 MCP / 插件 / toolset 生态
-- 不做 PTY / stdin 交互进程控制扩展
+- 当前终端工具保持非交互执行，stdin 明确关闭；PTY/session/write_stdin 作为后续独立能力
 - 不做 OpenClaw 式复杂 loop detection
 - 不做 Hermes 式 smart approval / 多后端
 - 不做持久 Docker 容器（仍是每命令临时容器）
 
 ### 验证
 
-- `cargo test --all-targets`：31 项全部通过
+- `cargo test`：37 项全部通过
+- `cargo clippy --all-targets --all-features -- -D warnings`：通过
+- `npm run build`：通过

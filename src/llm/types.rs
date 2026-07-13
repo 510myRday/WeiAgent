@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{Agent, ChatMessage};
 
+const MAX_CONTEXT_MESSAGES: usize = 200;
+const MAX_CONTEXT_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
+
 // ─── Tool Calling Types ───
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -96,15 +99,17 @@ pub fn build_chat_request(
         tool_calls: None,
         tool_call_id: None,
     });
-    request_messages.extend(messages.iter().map(|message| OpenAiMessage {
-        role: message.role.as_openai_role().to_string(),
-        content: message.content.clone(),
-        tool_calls: message.tool_calls.clone(),
-        tool_call_id: if message.role.as_openai_role() == "tool" {
-            message.tool_call_id.clone()
-        } else {
-            None
-        },
+    request_messages.extend(select_context_messages(messages).iter().map(|message| {
+        OpenAiMessage {
+            role: message.role.as_openai_role().to_string(),
+            content: message.content.clone(),
+            tool_calls: message.tool_calls.clone(),
+            tool_call_id: if message.role.as_openai_role() == "tool" {
+                message.tool_call_id.clone()
+            } else {
+                None
+            },
+        }
     }));
 
     ChatCompletionRequest {
@@ -114,6 +119,28 @@ pub fn build_chat_request(
         tools,
         extra_body: extra_body.clone(),
     }
+}
+
+fn select_context_messages(messages: &[ChatMessage]) -> Vec<&ChatMessage> {
+    let mut selected = Vec::new();
+    let mut bytes = 0_usize;
+    for message in messages.iter().rev() {
+        if selected.len() >= MAX_CONTEXT_MESSAGES
+            || bytes.saturating_add(message.content.len()) > MAX_CONTEXT_MESSAGE_BYTES
+        {
+            break;
+        }
+        bytes += message.content.len();
+        selected.push(message);
+    }
+    selected.reverse();
+    if let Some(first_user) = selected
+        .iter()
+        .position(|message| message.role.as_openai_role() == "user")
+    {
+        selected.drain(..first_user);
+    }
+    selected
 }
 
 #[derive(Debug, Deserialize)]

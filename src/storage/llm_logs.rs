@@ -13,6 +13,8 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 
+const MAX_LOG_FIELD_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmLogEntry {
     pub id: String,
@@ -86,10 +88,10 @@ impl LlmLogger {
                 provider_name: provider_name.to_string(),
                 created_at: Utc::now().to_rfc3339(),
             },
-            raw_request: raw_request.to_string(),
-            raw_response: raw_response.map(|s| s.to_string()),
+            raw_request: truncate_log_field(raw_request),
+            raw_response: raw_response.map(truncate_log_field),
             raw_status,
-            error: error.map(|s| s.to_string()),
+            error: error.map(truncate_log_field),
         };
         let content = serde_json::to_string_pretty(&detail)?;
         fs::write(self.logs_dir.join(format!("{id}.json")), content).await?;
@@ -130,4 +132,12 @@ impl LlmLogger {
         }
         Ok(())
     }
+}
+
+fn truncate_log_field(value: &str) -> String {
+    if value.len() <= MAX_LOG_FIELD_BYTES {
+        return value.to_string();
+    }
+    let tail = String::from_utf8_lossy(&value.as_bytes()[value.len() - MAX_LOG_FIELD_BYTES..]);
+    format!("[log field truncated]\n{tail}")
 }

@@ -129,6 +129,8 @@ impl JsonStore {
         &self,
         id: Uuid,
         command: &str,
+        cwd: Option<&str>,
+        sandbox: &crate::domain::TerminalSandboxConfig,
     ) -> AppResult<crate::domain::AgentToolsConfig> {
         self.get_agent(id).await?;
         let _guard = self.lock.lock().await;
@@ -146,14 +148,34 @@ impl JsonStore {
                 })?
             }
         };
-        let exact_pattern = format!("^{}$", regex::escape(command));
-        if !config
-            .terminal
-            .always_allowed_patterns
-            .iter()
-            .any(|pattern| pattern == &exact_pattern)
-        {
-            config.terminal.always_allowed_patterns.push(exact_pattern);
+        let grant = crate::domain::TerminalApprovalGrant {
+            command: command.to_string(),
+            cwd: cwd.map(str::to_string),
+            sandbox_mode: sandbox.mode.clone(),
+            network_enabled: match &sandbox.mode {
+                crate::domain::SandboxMode::Docker => sandbox.network_enabled,
+                crate::domain::SandboxMode::NativeRestricted => true,
+            },
+            workspace_read_only: sandbox.workspace_read_only,
+            created_at: Some(chrono::Utc::now()),
+            expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(24)),
+        };
+        config.terminal.approval_grants.retain(|existing| {
+            existing
+                .expires_at
+                .is_some_and(|expires_at| expires_at > chrono::Utc::now())
+        });
+        if !config.terminal.approval_grants.iter().any(|existing| {
+            existing.command == grant.command
+                && existing.cwd == grant.cwd
+                && existing.sandbox_mode == grant.sandbox_mode
+                && existing.network_enabled == grant.network_enabled
+                && existing.workspace_read_only == grant.workspace_read_only
+                && existing
+                    .expires_at
+                    .is_some_and(|expires_at| expires_at > chrono::Utc::now())
+        }) {
+            config.terminal.approval_grants.push(grant);
         }
         validate_tools_config(&config)?;
         let content = serde_json::to_string_pretty(&config)
@@ -243,6 +265,8 @@ fn join_prompt_sections<'a>(sections: impl IntoIterator<Item = (&'a str, &'a str
 }
 
 fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<()> {
+    const MAX_LLM_ITERATIONS: u32 = 50;
+    const MAX_ALLOWED_ROOTS: usize = 8;
     for pattern in config
         .terminal
         .blocked_patterns
@@ -256,19 +280,28 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
             ))
         })?;
     }
-    if config.max_llm_iterations == 0 {
-        return Err(crate::error::AppError::BadRequest(
-            "max_llm_iterations must be greater than zero".to_string(),
-        ));
+    if config.max_llm_iterations == 0 || config.max_llm_iterations > MAX_LLM_ITERATIONS {
+        return Err(crate::error::AppError::BadRequest(format!(
+            "max_llm_iterations must be between 1 and {MAX_LLM_ITERATIONS}"
+        )));
     }
-    if config.terminal.default_timeout_ms == 0 {
-        return Err(crate::error::AppError::BadRequest(
-            "terminal default_timeout_ms must be greater than zero".to_string(),
-        ));
+    if config.terminal.default_timeout_ms == 0
+        || config.terminal.default_timeout_ms > crate::tools::execute::MAX_TERMINAL_TIMEOUT_MS
+    {
+        return Err(crate::error::AppError::BadRequest(format!(
+            "terminal default_timeout_ms must be between 1 and {}",
+            crate::tools::execute::MAX_TERMINAL_TIMEOUT_MS
+        )));
     }
     if config.terminal.sandbox.docker_image.trim().is_empty() {
         return Err(crate::error::AppError::BadRequest(
             "terminal sandbox docker_image cannot be empty".to_string(),
+        ));
+    }
+    let docker_image = config.terminal.sandbox.docker_image.trim();
+    if docker_image.starts_with('-') || docker_image.chars().any(char::is_whitespace) {
+        return Err(crate::error::AppError::BadRequest(
+            "terminal sandbox docker_image is not a valid image reference".to_string(),
         ));
     }
     if config.terminal.sandbox.memory_limit_mb == 0
@@ -279,6 +312,37 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
             "terminal sandbox limits must be greater than zero".to_string(),
         ));
     }
+    if config.terminal.allowed_cwd_roots.len() > MAX_ALLOWED_ROOTS {
+        return Err(crate::error::AppError::BadRequest(format!(
+            "at most {MAX_ALLOWED_ROOTS} terminal workspace roots may be configured"
+        )));
+    }
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .and_then(|path| std::fs::canonicalize(path).ok());
+    let mut canonical_roots = std::collections::HashSet::new();
+    for root in &config.terminal.allowed_cwd_roots {
+        let path = std::fs::canonicalize(root).map_err(|error| {
+            crate::error::AppError::BadRequest(format!(
+                "terminal workspace root '{root}' is invalid: {error}"
+            ))
+        })?;
+        if path.parent().is_none() {
+            return Err(crate::error::AppError::BadRequest(
+                "filesystem roots cannot be used as terminal workspace roots".to_string(),
+            ));
+        }
+        if home.as_ref().is_some_and(|home| home == &path) {
+            return Err(crate::error::AppError::BadRequest(
+                "the entire user home directory cannot be used as a terminal workspace root"
+                    .to_string(),
+            ));
+        }
+        if !canonical_roots.insert(path) {
+            return Err(crate::error::AppError::BadRequest(
+                "terminal workspace roots must be unique".to_string(),
+            ));
+        }
+    }
     Ok(())
 }
-
