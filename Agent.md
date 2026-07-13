@@ -426,3 +426,38 @@ User Message → prepare_chat(tools_config) → LLM stream(tools=[execute_termin
 - 当前 Rust 测试共 29 项全部通过；前端 TypeScript + Vite 生产构建通过；严格 Clippy `-D warnings` 通过。
 
 Docker 沙箱运行依赖本机 Docker daemon。Docker 不可用时命令会安全失败，不会自动降级到宿主机执行；如确需兼容模式，用户必须在 Tools 设置中显式选择 `native_restricted`。
+
+## 工具内核收紧（2026-07-13 实施）
+
+本轮只做必要内核能力，不扩展工具数量，不引入 MCP / 插件 / PTY / 智能审批。
+
+### 已实现
+
+1. **可配置工具循环预算（参考 Hermes）**
+   - `AgentToolsConfig.max_llm_iterations` 默认 `90`
+   - 存在于 `data/agents/{id}/tools.json`
+   - 前端 Tools 设置页可编辑
+   - 达到预算后执行一次 **无 tools 的收尾总结调用**，而不是直接报错中断
+
+2. **终端 Docker 优先 + 本机回退**
+   - 默认仍是 `sandbox.mode = docker`
+   - Docker daemon 不可用时自动回退到 `native_restricted`
+   - 不再因 Docker 不可用而直接失败
+   - 回退信息写入工具结果 message，便于排查
+
+3. **参数校验收紧**
+   - 工具参数必须是 JSON object
+   - 非 object 不再静默变成空对象，而是返回结构化错误
+
+### 明确未做（非必要）
+
+- 不新增除终端外的工具
+- 不做 MCP / 插件 / toolset 生态
+- 不做 PTY / stdin 交互进程控制扩展
+- 不做 OpenClaw 式复杂 loop detection
+- 不做 Hermes 式 smart approval / 多后端
+- 不做持久 Docker 容器（仍是每命令临时容器）
+
+### 验证
+
+- `cargo test --all-targets`：31 项全部通过

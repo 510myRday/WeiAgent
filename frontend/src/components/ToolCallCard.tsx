@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Terminal, CheckCircle, XCircle, AlertTriangle, Loader2, Square, RefreshCw } from 'lucide-react';
+import { Terminal, CheckCircle, XCircle, AlertTriangle, Loader2, Square, RefreshCw, Box, Monitor } from 'lucide-react';
 
 import { getToolProcess, stopToolProcess, type ToolProcessInfo } from '../api';
 import type { ToolCallStatus, ToolResultData } from '../types';
@@ -14,10 +14,44 @@ interface ToolCallCardProps {
   onApprove?: (decision: 'approve' | 'reject' | 'always_approve') => void;
 }
 
+function normalizeRuntime(runtime?: string | null): {
+  key: 'docker' | 'native' | 'fallback' | 'unknown';
+  labelKey: string;
+  className: string;
+} {
+  const value = (runtime || '').toLowerCase();
+  if (!value) {
+    return { key: 'unknown', labelKey: 'toolCard.runtimeUnknown', className: 'tool-runtime-badge--unknown' };
+  }
+  if (value.includes('fallback')) {
+    return { key: 'fallback', labelKey: 'toolCard.runtimeFallback', className: 'tool-runtime-badge--fallback' };
+  }
+  if (value.startsWith('docker')) {
+    return { key: 'docker', labelKey: 'toolCard.runtimeDocker', className: 'tool-runtime-badge--docker' };
+  }
+  if (value.includes('native')) {
+    return { key: 'native', labelKey: 'toolCard.runtimeNative', className: 'tool-runtime-badge--native' };
+  }
+  return { key: 'unknown', labelKey: 'toolCard.runtimeUnknown', className: 'tool-runtime-badge--unknown' };
+}
+
+function RuntimeBadge({ runtime, t }: { runtime?: string | null; t: (path: string, vars?: Record<string, string | number>) => string }) {
+  if (!runtime) return null;
+  const info = normalizeRuntime(runtime);
+  const Icon = info.key === 'docker' ? Box : Monitor;
+  return (
+    <span className={`tool-runtime-badge ${info.className}`} title={runtime}>
+      <Icon size={12} />
+      {t(info.labelKey)}
+    </span>
+  );
+}
+
 export function ToolCallCard({ name, arguments: args, status, result, onApprove }: ToolCallCardProps) {
   const { t } = useI18n();
   const command = typeof args.command === 'string' ? args.command : name;
   const processId = result?.process_id;
+  const runtime = result?.runtime;
   const [process, setProcess] = useState<ToolProcessInfo | null>(null);
   const [processError, setProcessError] = useState('');
   const [isStopping, setIsStopping] = useState(false);
@@ -87,6 +121,7 @@ export function ToolCallCard({ name, arguments: args, status, result, onApprove 
         <div className="tool-card__header">
           {running ? <Loader2 size={18} className="animate-spin" /> : effectiveStatus === 'completed' ? <CheckCircle size={18} /> : <AlertTriangle size={18} />}
           <span>{running ? t('toolCard.backgroundRunning') : t(`toolCard.processStatus.${effectiveStatus}`)}</span>
+          <RuntimeBadge runtime={runtime} t={t} />
           {running ? (
             <button type="button" className="tool-process-action" onClick={handleStop} disabled={isStopping}>
               <Square size={14} /> {isStopping ? t('toolCard.stopping') : t('toolCard.stop')}
@@ -105,8 +140,11 @@ export function ToolCallCard({ name, arguments: args, status, result, onApprove 
   if (status === 'running') {
     return (
       <div className="tool-card tool-card--running">
-        <Loader2 size={18} className="animate-spin" />
-        <span>{t('toolCard.executing', { command })}</span>
+        <div className="tool-card__header">
+          <Loader2 size={18} className="animate-spin" />
+          <span>{t('toolCard.executing', { command })}</span>
+          <RuntimeBadge runtime={runtime} t={t} />
+        </div>
       </div>
     );
   }
@@ -117,6 +155,7 @@ export function ToolCallCard({ name, arguments: args, status, result, onApprove 
         <div className="tool-card__header">
           <CheckCircle size={18} />
           <span>{t('toolCard.completed', { code: result.exit_code ?? 0 })}</span>
+          <RuntimeBadge runtime={result.runtime} t={t} />
         </div>
         {result.stdout ? <pre className="tool-card__output">{result.stdout}</pre> : null}
         {result.stderr ? <pre className="tool-card__error">{result.stderr}</pre> : null}

@@ -180,6 +180,7 @@ export function deleteLlmLog(logId: string): Promise<void> {
 
 
 export type AgentToolsConfig = {
+  max_llm_iterations: number;
   terminal: {
     enabled: boolean;
     blocked_patterns: string[];

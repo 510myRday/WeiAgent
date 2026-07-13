@@ -27,7 +27,7 @@ pub struct TerminalToolConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxMode {
-    /// Execute inside a locked-down Docker container. No native fallback is performed.
+    /// Prefer Docker. If Docker is unavailable, fall back to native_restricted for this command.
     Docker,
     /// Compatibility mode with cwd containment and a sanitized environment, but no kernel sandbox.
     NativeRestricted,
@@ -73,6 +73,10 @@ fn default_cpu_limit() -> f64 {
 
 fn default_pids_limit() -> u32 {
     128
+}
+
+fn default_max_llm_iterations() -> u32 {
+    90
 }
 
 fn default_blocked_patterns() -> Vec<String> {
@@ -134,10 +138,29 @@ impl Default for TerminalToolConfig {
 }
 
 /// Agent tool configuration collection (tools.json top-level structure).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentToolsConfig {
+    /// Maximum tool-capable LLM iterations for one user turn.
+    /// After this budget is exhausted, one final no-tools summary call is made.
+    #[serde(default = "default_max_llm_iterations")]
+    pub max_llm_iterations: u32,
     #[serde(default)]
     pub terminal: TerminalToolConfig,
+}
+
+impl Default for AgentToolsConfig {
+    fn default() -> Self {
+        Self {
+            max_llm_iterations: default_max_llm_iterations(),
+            terminal: TerminalToolConfig::default(),
+        }
+    }
+}
+
+impl AgentToolsConfig {
+    pub fn max_llm_iterations(&self) -> usize {
+        self.max_llm_iterations.max(1) as usize
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +205,9 @@ pub enum ToolResult {
         stderr: String,
         exit_code: i32,
         duration_ms: u64,
+        /// Execution runtime actually used for this command.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime: Option<String>,
     },
     Running {
         process_id: String,
@@ -192,6 +218,9 @@ pub enum ToolResult {
         stderr: String,
         #[serde(default)]
         duration_ms: u64,
+        /// Execution runtime actually used for this command.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime: Option<String>,
     },
     Blocked {
         reason: String,
@@ -233,3 +262,4 @@ pub struct ProcessInfo {
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     pub duration_ms: u64,
 }
+

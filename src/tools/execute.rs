@@ -1,5 +1,6 @@
 use std::{
     path::{Path, PathBuf},
+    process::Stdio,
     time::Duration,
 };
 
@@ -65,11 +66,21 @@ pub async fn execute_terminal(
         Err(reason) => return ToolResult::Blocked { reason },
     };
     let process_id = process_manager.new_process_id();
-    let (command, docker_container_name) =
-        match build_sandbox_command(&process_id, &req.command, &workspace, config) {
-            Ok(command) => command,
-            Err(message) => return ToolResult::Error { message },
-        };
+    let docker_available = if config.sandbox.mode == SandboxMode::Docker {
+        docker_runtime_available().await
+    } else {
+        false
+    };
+    let launch = match build_sandbox_command(
+        &process_id,
+        &req.command,
+        &workspace,
+        config,
+        docker_available,
+    ) {
+        Ok(command) => command,
+        Err(message) => return ToolResult::Error { message },
+    };
 
     let metadata = ProcessMetadata {
         agent_id: req.agent_id,
@@ -77,10 +88,10 @@ pub async fn execute_terminal(
         tool_call_id: req.tool_call_id.clone(),
         command: req.command.clone(),
         cwd: Some(workspace.cwd.to_string_lossy().to_string()),
-        docker_container_name,
+        docker_container_name: launch.docker_container_name,
     };
     if let Err(error) = process_manager
-        .spawn(process_id.clone(), command, metadata)
+        .spawn(process_id.clone(), launch.command, metadata)
         .await
     {
         return ToolResult::Error {
@@ -91,10 +102,14 @@ pub async fn execute_terminal(
     if req.background.unwrap_or(false) {
         return ToolResult::Running {
             process_id,
-            message: "Command started in background with output capture".to_string(),
+            message: format!(
+                "Command started in background with output capture ({})",
+                launch.runtime_label
+            ),
             stdout: String::new(),
             stderr: String::new(),
             duration_ms: 0,
+            runtime: Some(launch.runtime_label),
         };
     }
 
@@ -106,13 +121,15 @@ pub async fn execute_terminal(
         Some(info) if info.status == ProcessStatus::Running => ToolResult::Running {
             process_id,
             message: format!(
-                "Command exceeded {timeout_ms}ms and continues in background with output capture"
+                "Command exceeded {timeout_ms}ms and continues in background with output capture ({})",
+                launch.runtime_label
             ),
             stdout: info.stdout,
             stderr: info.stderr,
             duration_ms: info.duration_ms,
+            runtime: Some(launch.runtime_label),
         },
-        Some(info) => process_info_to_result(info),
+        Some(info) => process_info_to_result_with_runtime(info, Some(launch.runtime_label)),
         None => ToolResult::Error {
             message: "Process disappeared before completion".to_string(),
         },
@@ -120,12 +137,20 @@ pub async fn execute_terminal(
 }
 
 pub fn process_info_to_result(info: ProcessInfo) -> ToolResult {
+    process_info_to_result_with_runtime(info, None)
+}
+
+pub fn process_info_to_result_with_runtime(
+    info: ProcessInfo,
+    runtime: Option<String>,
+) -> ToolResult {
     match info.status {
         ProcessStatus::Completed | ProcessStatus::Failed => ToolResult::Completed {
             stdout: info.stdout,
             stderr: info.stderr,
             exit_code: info.exit_code.unwrap_or(-1),
             duration_ms: info.duration_ms,
+            runtime,
         },
         ProcessStatus::Running => ToolResult::Running {
             process_id: info.process_id,
@@ -133,6 +158,7 @@ pub fn process_info_to_result(info: ProcessInfo) -> ToolResult {
             stdout: info.stdout,
             stderr: info.stderr,
             duration_ms: info.duration_ms,
+            runtime,
         },
         ProcessStatus::Stopped => ToolResult::Rejected {
             reason: "Process was stopped".to_string(),
@@ -144,6 +170,12 @@ struct ResolvedWorkspace {
     root: PathBuf,
     cwd: PathBuf,
     container_cwd: String,
+}
+
+struct PreparedLaunch {
+    command: Command,
+    docker_container_name: Option<String>,
+    runtime_label: String,
 }
 
 fn resolve_workspace(
@@ -203,13 +235,40 @@ fn build_sandbox_command(
     shell_command: &str,
     workspace: &ResolvedWorkspace,
     config: &TerminalToolConfig,
-) -> Result<(Command, Option<String>), String> {
+    docker_available: bool,
+) -> Result<PreparedLaunch, String> {
     match config.sandbox.mode {
-        SandboxMode::Docker => build_docker_command(process_id, shell_command, workspace, config),
-        SandboxMode::NativeRestricted => Ok((
-            build_native_restricted_command(shell_command, &workspace.cwd),
-            None,
-        )),
+        SandboxMode::Docker if docker_available => {
+            let (command, container_name) =
+                build_docker_command(process_id, shell_command, workspace, config)?;
+            Ok(PreparedLaunch {
+                command,
+                docker_container_name: container_name,
+                runtime_label: "docker".to_string(),
+            })
+        }
+        SandboxMode::Docker => Ok(PreparedLaunch {
+            command: build_native_restricted_command(shell_command, &workspace.cwd),
+            docker_container_name: None,
+            runtime_label: "native_restricted (docker unavailable fallback)".to_string(),
+        }),
+        SandboxMode::NativeRestricted => Ok(PreparedLaunch {
+            command: build_native_restricted_command(shell_command, &workspace.cwd),
+            docker_container_name: None,
+            runtime_label: "native_restricted".to_string(),
+        }),
+    }
+}
+
+async fn docker_runtime_available() -> bool {
+    let mut command = Command::new("docker");
+    command
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    match command.status().await {
+        Ok(status) => status.success(),
+        Err(_) => false,
     }
 }
 
@@ -377,4 +436,23 @@ mod tests {
         let result = resolve_workspace(Some(&outside.path().to_string_lossy()), &config);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn docker_mode_falls_back_to_native_when_docker_is_unavailable() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = ResolvedWorkspace {
+            root: root.path().to_path_buf(),
+            cwd: root.path().to_path_buf(),
+            container_cwd: "/workspace".to_string(),
+        };
+        let config = TerminalToolConfig::default();
+        let launch =
+            build_sandbox_command("fallback-process", "echo fallback", &workspace, &config, false)
+                .unwrap();
+        assert!(launch.docker_container_name.is_none());
+        assert!(launch.runtime_label.contains("fallback"));
+        let program = launch.command.as_std().get_program().to_string_lossy();
+        assert!(program == "cmd" || program == "sh");
+    }
 }
+

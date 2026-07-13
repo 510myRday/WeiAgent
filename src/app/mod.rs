@@ -286,7 +286,10 @@ mod tests {
             _options: crate::llm::client::RequestOptions,
             tools: Option<Vec<ToolDefinition>>,
         ) -> AppResult<ChatCompletionOutput> {
-            assert_eq!(tools.as_ref().map(Vec::len), Some(3));
+            match &tools {
+                Some(list) => assert_eq!(list.len(), 3),
+                None => {}
+            }
             self.complete_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.outputs
@@ -810,6 +813,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_budget_triggers_final_summary_without_tools() {
+        let outputs = vec![
+            ChatCompletionOutput {
+                content: String::new(),
+                tool_calls: vec![scripted_tool_call(
+                    "call-budget-1",
+                    "execute_terminal",
+                    json!({"command": "echo one"}),
+                )],
+            },
+            ChatCompletionOutput {
+                content: String::new(),
+                tool_calls: vec![scripted_tool_call(
+                    "call-budget-2",
+                    "execute_terminal",
+                    json!({"command": "echo two"}),
+                )],
+            },
+            ChatCompletionOutput {
+                content: "budget summary ready".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ];
+        let (app, state, conversation_id, _, client) = scripted_test_app(outputs).await;
+        let agent_id = state
+            .store
+            .get_conversation(conversation_id)
+            .await
+            .unwrap()
+            .agent_id;
+        let mut config = state.store.read_agent_tools_config(agent_id).await.unwrap();
+        config.max_llm_iterations = 2;
+        state
+            .store
+            .update_agent_tools_config(agent_id, config)
+            .await
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/conversations/{conversation_id}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"content": "hit budget"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["assistant"]["content"], "budget summary ready");
+        assert_eq!(
+            client
+                .complete_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
+        let messages = state
+            .store
+            .read_conversation_messages(conversation_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role == crate::domain::ChatRole::Tool)
+                .count(),
+            2
+        );
+        assert_eq!(messages.last().unwrap().content, "budget summary ready");
+    }
+
+    #[tokio::test]
     async fn streaming_function_call_runs_tool_and_streams_final_answer() {
         let root = tempfile::tempdir().unwrap().keep();
         let store = Arc::new(JsonStore::new(&root).await.unwrap());
@@ -915,3 +993,6 @@ mod tests {
         assert_eq!(messages.last().unwrap().content, "streamed final");
     }
 }
+
+
+

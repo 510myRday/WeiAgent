@@ -15,14 +15,13 @@ use crate::{
     error::{AppError, AppResult},
     llm::{
         client::{DynChatClient, RequestOptions},
-        types::{ChatCompletionOutput, StreamEvent, ToolCall, ToolCallFunction},
+        types::{ChatCompletionOutput, StreamEvent, ToolCall, ToolCallFunction, ToolDefinition},
     },
     tools::registry::{ToolExecutionContext, ToolExecutionEvent},
 };
 
 const STREAM_SAVE_INTERVAL: Duration = Duration::from_millis(500);
 const STREAM_SAVE_CHARS: usize = 240;
-const MAX_TOOL_ITERATIONS: usize = 10;
 
 #[derive(Debug, Clone)]
 pub enum AgentRunEvent {
@@ -56,6 +55,7 @@ pub async fn run_agent(
 ) -> AppResult<SendMessageResponse> {
     let client = state.llm_registry.client_for(&prepared.provider)?;
     let tools = state.tool_registry.definitions(&prepared.tools_config);
+    let max_llm_iterations = prepared.tools_config.max_llm_iterations();
     let mut messages = prepared.messages_for_llm.clone();
     let user_message = prepared.user_message.clone();
     state
@@ -67,34 +67,18 @@ pub async fn run_agent(
         .await?;
     emit(&events, AgentRunEvent::User(user_message.clone()))?;
 
-    for _iteration in 0..MAX_TOOL_ITERATIONS {
-        let output = if use_streaming_llm {
-            stream_llm_iteration(
-                &state,
-                &client,
-                &prepared,
-                &messages,
-                options,
-                tools.clone(),
-                &events,
-            )
-            .await?
-        } else {
-            IterationOutput {
-                message_id: Uuid::new_v4(),
-                created_at: Utc::now(),
-                output: client
-                    .complete(
-                        &prepared.agent,
-                        &prepared.provider,
-                        &messages,
-                        &prepared.system_prompt,
-                        options,
-                        tools.clone(),
-                    )
-                    .await?,
-            }
-        };
+    for iteration in 0..max_llm_iterations {
+        let output = run_llm_iteration(
+            &state,
+            &client,
+            &prepared,
+            &messages,
+            options,
+            tools.clone(),
+            use_streaming_llm,
+            &events,
+        )
+        .await?;
 
         let assistant_message = ChatMessage {
             id: output.message_id,
@@ -127,63 +111,180 @@ pub async fn run_agent(
             emit(&events, AgentRunEvent::Assistant(assistant_message.clone()))?;
         }
         messages.push(assistant_message);
+        execute_tool_calls(
+            &state,
+            &prepared,
+            &user_message,
+            &mut messages,
+            output.output.tool_calls,
+            &events,
+        )
+        .await?;
 
-        for call in output.output.tool_calls {
-            let arguments = match serde_json::from_str::<Value>(&call.function.arguments) {
-                Ok(Value::Object(map)) => Value::Object(map),
-                Ok(_) => Value::Object(Default::default()),
-                Err(error) => {
-                    let result = ToolResult::Error {
-                        message: format!("Invalid tool arguments: {error}"),
-                    };
-                    persist_tool_result(&state, &prepared, &mut messages, &call.id, &result)
-                        .await?;
-                    emit(
-                        &events,
-                        AgentRunEvent::ToolResult {
-                            call_id: call.id,
-                            result,
-                        },
-                    )?;
-                    continue;
-                }
-            };
-            emit(
-                &events,
-                AgentRunEvent::ToolCall {
-                    call_id: call.id.clone(),
-                    name: call.function.name.clone(),
-                    arguments: arguments.clone(),
-                },
-            )?;
-
-            let context = ToolExecutionContext {
-                agent_id: prepared.agent.id,
-                conversation_id: user_message.conversation_id,
-                call_id: call.id.clone(),
-                tools_config: prepared.tools_config.clone(),
-                store: state.store.clone(),
-                process_manager: state.process_manager.clone(),
-                approval_manager: state.approval_manager.clone(),
-                event_sender: None,
-            };
-            let result =
-                execute_tool_with_events(&state, &call.function.name, arguments, context, &events)
-                    .await;
-            emit(
-                &events,
-                AgentRunEvent::ToolResult {
-                    call_id: call.id.clone(),
-                    result: result.clone(),
-                },
-            )?;
-            persist_tool_result(&state, &prepared, &mut messages, &call.id, &result).await?;
+        // Final reserved turn after the last tool-capable iteration.
+        if iteration + 1 == max_llm_iterations {
+            break;
         }
     }
 
-    Err(AppError::Llm(format!(
-        "tool execution exceeded the maximum of {MAX_TOOL_ITERATIONS} LLM iterations"
-    )))
+    let summary = finalize_after_budget(
+        &state,
+        &client,
+        &prepared,
+        &mut messages,
+        options,
+        use_streaming_llm,
+        max_llm_iterations,
+        &events,
+    )
+    .await?;
+    emit(&events, AgentRunEvent::Assistant(summary.clone()))?;
+    emit(&events, AgentRunEvent::Done)?;
+    Ok(SendMessageResponse {
+        user: user_message,
+        assistant: summary,
+    })
+}
+
+async fn finalize_after_budget(
+    state: &AppState,
+    client: &DynChatClient,
+    prepared: &PreparedChat,
+    messages: &mut Vec<ChatMessage>,
+    options: RequestOptions,
+    use_streaming_llm: bool,
+    max_llm_iterations: usize,
+    events: &Option<mpsc::UnboundedSender<AgentRunEvent>>,
+) -> AppResult<ChatMessage> {
+    let budget_notice = ChatMessage {
+        id: Uuid::new_v4(),
+        agent_id: prepared.agent.id,
+        conversation_id: prepared.user_message.conversation_id,
+        role: ChatRole::User,
+        content: format!(
+            "System notice: tool-capable iterations reached the configured limit of {max_llm_iterations}. Do not call tools. Summarize completed work, failures, and remaining steps."
+        ),
+        status: ChatMessageStatus::Done,
+        created_at: Utc::now(),
+        tool_calls: None,
+        tool_call_id: None,
+    };
+    // Keep the budget notice in the in-memory LLM context only.
+    messages.push(budget_notice);
+
+    let output = run_llm_iteration(
+        state,
+        client,
+        prepared,
+        messages,
+        options,
+        None,
+        use_streaming_llm,
+        events,
+    )
+    .await?;
+
+    let mut content = output.output.content;
+    if content.trim().is_empty() {
+        content = format!(
+            "Tool execution stopped after {max_llm_iterations} tool-capable LLM iterations. Review the tool results above for completed work and remaining steps."
+        );
+    }
+
+    let assistant_message = ChatMessage {
+        id: output.message_id,
+        agent_id: prepared.agent.id,
+        conversation_id: prepared.user_message.conversation_id,
+        role: ChatRole::Assistant,
+        content,
+        status: ChatMessageStatus::Done,
+        created_at: output.created_at,
+        tool_calls: None,
+        tool_call_id: None,
+    };
+    state
+        .store
+        .upsert_conversation_message(
+            prepared.user_message.conversation_id,
+            assistant_message.clone(),
+        )
+        .await?;
+    Ok(assistant_message)
+}
+
+async fn execute_tool_calls(
+    state: &AppState,
+    prepared: &PreparedChat,
+    user_message: &ChatMessage,
+    messages: &mut Vec<ChatMessage>,
+    tool_calls: Vec<ToolCall>,
+    events: &Option<mpsc::UnboundedSender<AgentRunEvent>>,
+) -> AppResult<()> {
+    for call in tool_calls {
+        let arguments = match serde_json::from_str::<Value>(&call.function.arguments) {
+            Ok(Value::Object(map)) => Value::Object(map),
+            Ok(other) => {
+                let result = ToolResult::Error {
+                    message: format!(
+                        "Invalid tool arguments: expected a JSON object, got {other}"
+                    ),
+                };
+                persist_tool_result(state, prepared, messages, &call.id, &result).await?;
+                emit(
+                    events,
+                    AgentRunEvent::ToolResult {
+                        call_id: call.id,
+                        result,
+                    },
+                )?;
+                continue;
+            }
+            Err(error) => {
+                let result = ToolResult::Error {
+                    message: format!("Invalid tool arguments: {error}"),
+                };
+                persist_tool_result(state, prepared, messages, &call.id, &result).await?;
+                emit(
+                    events,
+                    AgentRunEvent::ToolResult {
+                        call_id: call.id,
+                        result,
+                    },
+                )?;
+                continue;
+            }
+        };
+        emit(
+            events,
+            AgentRunEvent::ToolCall {
+                call_id: call.id.clone(),
+                name: call.function.name.clone(),
+                arguments: arguments.clone(),
+            },
+        )?;
+
+        let context = ToolExecutionContext {
+            agent_id: prepared.agent.id,
+            conversation_id: user_message.conversation_id,
+            call_id: call.id.clone(),
+            tools_config: prepared.tools_config.clone(),
+            store: state.store.clone(),
+            process_manager: state.process_manager.clone(),
+            approval_manager: state.approval_manager.clone(),
+            event_sender: None,
+        };
+        let result =
+            execute_tool_with_events(state, &call.function.name, arguments, context, events).await;
+        emit(
+            events,
+            AgentRunEvent::ToolResult {
+                call_id: call.id.clone(),
+                result: result.clone(),
+            },
+        )?;
+        persist_tool_result(state, prepared, messages, &call.id, &result).await?;
+    }
+    Ok(())
 }
 
 struct IterationOutput {
@@ -192,13 +293,43 @@ struct IterationOutput {
     output: ChatCompletionOutput,
 }
 
+async fn run_llm_iteration(
+    state: &AppState,
+    client: &DynChatClient,
+    prepared: &PreparedChat,
+    messages: &[ChatMessage],
+    options: RequestOptions,
+    tools: Option<Vec<ToolDefinition>>,
+    use_streaming_llm: bool,
+    events: &Option<mpsc::UnboundedSender<AgentRunEvent>>,
+) -> AppResult<IterationOutput> {
+    if use_streaming_llm {
+        stream_llm_iteration(state, client, prepared, messages, options, tools, events).await
+    } else {
+        Ok(IterationOutput {
+            message_id: Uuid::new_v4(),
+            created_at: Utc::now(),
+            output: client
+                .complete(
+                    &prepared.agent,
+                    &prepared.provider,
+                    messages,
+                    &prepared.system_prompt,
+                    options,
+                    tools,
+                )
+                .await?,
+        })
+    }
+}
+
 async fn stream_llm_iteration(
     state: &AppState,
     client: &DynChatClient,
     prepared: &PreparedChat,
     messages: &[ChatMessage],
     options: RequestOptions,
-    tools: Option<Vec<crate::llm::types::ToolDefinition>>,
+    tools: Option<Vec<ToolDefinition>>,
     events: &Option<mpsc::UnboundedSender<AgentRunEvent>>,
 ) -> AppResult<IterationOutput> {
     let message_id = Uuid::new_v4();

@@ -140,6 +140,17 @@ export function TerminalToolSettings({ agentId, onError }: TerminalToolSettingsP
               <span>s</span>
             </div>
           </div>
+          <div className="setting-row">
+            <div className="setting-info"><label>{t('tools.terminal.maxLlmIterations')}</label><p className="setting-desc">{t('tools.terminal.maxLlmIterationsDesc')}</p></div>
+            <div className="timeout-input">
+              <input
+                type="number"
+                min={1}
+                value={Math.max(1, config.max_llm_iterations || 1)}
+                onChange={(event) => setConfig((current) => current ? { ...current, max_llm_iterations: Math.max(1, Number(event.target.value) || 1) } : current)}
+              />
+            </div>
+          </div>
         </div>
       </div>
 

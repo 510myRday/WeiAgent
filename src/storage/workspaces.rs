@@ -256,6 +256,11 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
             ))
         })?;
     }
+    if config.max_llm_iterations == 0 {
+        return Err(crate::error::AppError::BadRequest(
+            "max_llm_iterations must be greater than zero".to_string(),
+        ));
+    }
     if config.terminal.default_timeout_ms == 0 {
         return Err(crate::error::AppError::BadRequest(
             "terminal default_timeout_ms must be greater than zero".to_string(),
@@ -276,3 +281,4 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
     }
     Ok(())
 }
+

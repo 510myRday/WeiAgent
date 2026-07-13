@@ -135,6 +135,8 @@ export type ToolResultData = {
   process_id?: string;
   message?: string;
   reason?: string;
+  /** Actual runtime used: docker / native_restricted / fallback */
+  runtime?: string;
 };
 
 export type ToolCallMessage = {

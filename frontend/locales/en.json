@@ -170,6 +170,8 @@
       "basicSettings": "Basic Settings",
       "enabledDesc": "Enable or disable terminal command execution",
       "timeoutDesc": "Default timeout for command execution (seconds)",
+      "maxLlmIterations": "Max tool iterations",
+      "maxLlmIterationsDesc": "Maximum tool-capable LLM iterations per user turn. After the limit, one final no-tools summary is generated.",
       "blockedDesc": "Commands matching these regex patterns will always be rejected",
       "approvalDesc": "Commands matching these regex patterns require user confirmation",
       "remove": "Remove",
@@ -188,7 +190,7 @@
       "memoryLimit": "Memory Limit (MB)",
       "cpuLimit": "CPU Limit",
       "pidsLimit": "Process Limit",
-      "dockerHint": "Docker mode never falls back to native execution. If Docker is unavailable the command fails safely. Containers use a read-only root filesystem, dropped capabilities, no-new-privileges, and CPU/memory/process limits.",
+      "dockerHint": "Docker is preferred by default. If Docker is unavailable, the tool falls back to native_restricted local mode.",
       "backgroundProcesses": "Background Processes",
       "backgroundProcessesDesc": "View background processes started by this agent, including live output and execution status. Finished records are retained for 24 hours.",
       "noBackgroundProcesses": "No background processes",
@@ -241,6 +243,10 @@
     "rejected": "Rejected",
     "executionError": "Execution error",
     "duration": "Duration: {ms} ms",
+    "runtimeDocker": "Docker",
+    "runtimeNative": "Native restricted",
+    "runtimeFallback": "Native fallback",
+    "runtimeUnknown": "Unknown runtime",
     "processStatus": {
       "completed": "Background process completed",
       "failed": "Background process failed",
@@ -249,3 +255,5 @@
     }
   }
 }
+
+

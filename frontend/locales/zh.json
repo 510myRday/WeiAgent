@@ -126,6 +126,8 @@
       "basicSettings": "基本设置",
       "enabledDesc": "开启或关闭终端命令执行功能",
       "timeoutDesc": "命令执行的默认超时时间（秒）",
+      "maxLlmIterations": "最大工具轮次",
+      "maxLlmIterationsDesc": "一次用户请求内允许的带工具 LLM 迭代次数；耗尽后会再做一次无工具总结。",
       "blockedDesc": "匹配这些正则表达式的命令将被始终拒绝执行",
       "approvalDesc": "匹配这些正则表达式的命令需要用户确认后才能执行",
       "remove": "删除",
@@ -144,7 +146,7 @@
       "memoryLimit": "内存限制（MB）",
       "cpuLimit": "CPU 限制",
       "pidsLimit": "进程数限制",
-      "dockerHint": "Docker 模式无本机回退；Docker 不可用时命令会安全失败。容器使用只读根文件系统、丢弃 capabilities、禁止提权并限制 CPU/内存/进程数。",
+      "dockerHint": "默认优先 Docker；Docker 不可用时自动回退到 native_restricted 本机受限模式。",
       "backgroundProcesses": "后台进程",
       "backgroundProcessesDesc": "查看当前 Agent 启动的后台进程、实时输出和执行状态。完成记录保留 24 小时。",
       "noBackgroundProcesses": "暂无后台进程",
@@ -241,6 +243,10 @@
     "rejected": "已拒绝",
     "executionError": "执行错误",
     "duration": "运行时间：{ms} ms",
+    "runtimeDocker": "Docker",
+    "runtimeNative": "本机受限",
+    "runtimeFallback": "本机回退",
+    "runtimeUnknown": "未知运行时",
     "processStatus": {
       "completed": "后台进程已完成",
       "failed": "后台进程执行失败",
@@ -249,3 +255,5 @@
     }
   }
 }
+
+
