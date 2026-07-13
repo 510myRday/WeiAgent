@@ -68,7 +68,12 @@ pub async fn execute_terminal(
 
     let workspace = match resolve_workspace(req.cwd.as_deref(), config) {
         Ok(workspace) => workspace,
-        Err(reason) => return ToolResult::Blocked { reason },
+        Err(WorkspaceResolutionError::Invalid(message)) => {
+            return ToolResult::Error { message };
+        }
+        Err(WorkspaceResolutionError::Blocked(reason)) => {
+            return ToolResult::Blocked { reason };
+        }
     };
     let process_id = process_manager.new_process_id();
     let docker_available = if config.sandbox.mode == SandboxMode::Docker {
@@ -78,9 +83,9 @@ pub async fn execute_terminal(
     };
     if config.sandbox.mode == SandboxMode::Docker && !docker_available {
         return ToolResult::Blocked {
-            reason:
-                "Docker sandbox is unavailable; refusing to fall back to unsandboxed host execution"
-                    .to_string(),
+            reason: "Docker sandbox is unavailable. Start Docker Desktop and wait for its engine \
+                     to report running; refusing to fall back to unsandboxed host execution"
+                .to_string(),
         };
     }
     let context_granted = config.has_context_grant(&req.command, req.cwd.as_deref());
@@ -246,6 +251,11 @@ struct ResolvedWorkspace {
     container_cwd: String,
 }
 
+enum WorkspaceResolutionError {
+    Invalid(String),
+    Blocked(String),
+}
+
 struct PreparedLaunch {
     command: Command,
     docker_container_name: Option<String>,
@@ -255,12 +265,13 @@ struct PreparedLaunch {
 fn resolve_workspace(
     cwd: Option<&str>,
     config: &TerminalToolConfig,
-) -> Result<ResolvedWorkspace, String> {
+) -> Result<ResolvedWorkspace, WorkspaceResolutionError> {
     let roots = if config.allowed_cwd_roots.is_empty() {
-        vec![
-            std::env::current_dir()
-                .map_err(|error| format!("Failed to resolve server working directory: {error}"))?,
-        ]
+        vec![std::env::current_dir().map_err(|error| {
+            WorkspaceResolutionError::Invalid(format!(
+                "Failed to resolve server working directory: {error}"
+            ))
+        })?]
     } else {
         config.allowed_cwd_roots.iter().map(PathBuf::from).collect()
     };
@@ -269,7 +280,9 @@ fn resolve_workspace(
         .filter_map(|root| std::fs::canonicalize(root).ok())
         .collect();
     if roots.is_empty() {
-        return Err("No valid terminal workspace root is configured".to_string());
+        return Err(WorkspaceResolutionError::Invalid(
+            "No valid terminal workspace root is configured".to_string(),
+        ));
     }
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -278,10 +291,10 @@ fn resolve_workspace(
         .iter()
         .any(|root| root.parent().is_none() || home.as_ref().is_some_and(|home| home == root))
     {
-        return Err(
+        return Err(WorkspaceResolutionError::Blocked(
             "Filesystem roots and the entire user home directory cannot be terminal workspace roots"
                 .to_string(),
-        );
+        ));
     }
 
     let requested = match cwd.map(PathBuf::from) {
@@ -290,23 +303,27 @@ fn resolve_workspace(
         None => roots[0].clone(),
     };
     let canonical_cwd = std::fs::canonicalize(&requested).map_err(|error| {
-        format!(
-            "Working directory '{}' is invalid: {error}",
-            requested.display()
-        )
+        WorkspaceResolutionError::Invalid(format!(
+            "Working directory '{}' does not exist or cannot be accessed: {error}. Omit cwd to use \
+             the default workspace '{}'.",
+            requested.display(),
+            roots[0].display()
+        ))
     })?;
     let root = roots
         .into_iter()
         .find(|root| canonical_cwd.starts_with(root))
         .ok_or_else(|| {
-            format!(
+            WorkspaceResolutionError::Blocked(format!(
                 "Working directory '{}' is outside the configured sandbox roots",
                 canonical_cwd.display()
-            )
+            ))
         })?;
-    let relative = canonical_cwd
-        .strip_prefix(&root)
-        .map_err(|_| "Failed to calculate sandbox working directory".to_string())?;
+    let relative = canonical_cwd.strip_prefix(&root).map_err(|_| {
+        WorkspaceResolutionError::Invalid(
+            "Failed to calculate sandbox working directory".to_string(),
+        )
+    })?;
     let relative = path_to_container(relative);
     let container_cwd = if relative.is_empty() {
         "/workspace".to_string()
@@ -337,9 +354,11 @@ fn build_sandbox_command(
                 runtime_label: "docker".to_string(),
             })
         }
-        SandboxMode::Docker => {
-            Err("Docker sandbox is unavailable; host execution fallback is disabled".to_string())
-        }
+        SandboxMode::Docker => Err(
+            "Docker sandbox is unavailable. Start Docker Desktop and wait for its engine to \
+                 report running; host execution fallback is disabled"
+                .to_string(),
+        ),
         SandboxMode::NativeRestricted => Ok(PreparedLaunch {
             command: build_native_restricted_command(shell_command, &workspace.cwd),
             docker_container_name: None,
@@ -351,10 +370,10 @@ fn build_sandbox_command(
 async fn docker_runtime_available() -> bool {
     let cache = DOCKER_AVAILABILITY.get_or_init(|| tokio::sync::Mutex::new(None));
     let mut cached = cache.lock().await;
-    if let Some((checked_at, available)) = *cached
+    if let Some((checked_at, true)) = *cached
         && checked_at.elapsed() < DOCKER_AVAILABILITY_CACHE_TTL
     {
-        return available;
+        return true;
     }
     let mut command = Command::new("docker");
     command
@@ -392,7 +411,8 @@ fn build_docker_command(
     } else {
         "rw"
     };
-    let mount = format!("{}:/workspace:{mount_mode}", workspace.root.display());
+    let mount_source = docker_mount_source(&workspace.root);
+    let mount = format!("{mount_source}:/workspace:{mount_mode}");
     let mut command = Command::new("docker");
     command.args([
         "run",
@@ -427,7 +447,7 @@ fn build_docker_command(
         &workspace.container_cwd,
         image,
         "sh",
-        "-lc",
+        "-c",
         shell_command,
     ]);
     configure_process_group(&mut command);
@@ -494,6 +514,20 @@ fn path_to_container(path: &Path) -> String {
         .join("/")
 }
 
+fn docker_mount_source(path: &Path) -> String {
+    let source = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        if let Some(path) = source.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{path}");
+        }
+        if let Some(path) = source.strip_prefix(r"\\?\") {
+            return path.to_string();
+        }
+    }
+    source.into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +560,10 @@ mod tests {
         assert!(args.windows(2).any(|pair| pair[0] == "--memory"));
         assert!(args.windows(2).any(|pair| pair[0] == "--cpus"));
         assert!(args.windows(2).any(|pair| pair[0] == "--pids-limit"));
+        assert!(
+            args.windows(3)
+                .any(|args| args == ["sh", "-c", "echo sandbox"])
+        );
     }
 
     #[test]
@@ -537,7 +575,35 @@ mod tests {
             ..TerminalToolConfig::default()
         };
         let result = resolve_workspace(Some(&outside.path().to_string_lossy()), &config);
-        assert!(result.is_err());
+        assert!(matches!(result, Err(WorkspaceResolutionError::Blocked(_))));
+    }
+
+    #[test]
+    fn workspace_resolution_reports_missing_cwd_as_invalid() {
+        let allowed = tempfile::tempdir().unwrap();
+        let missing = allowed.path().join("missing");
+        let config = TerminalToolConfig {
+            allowed_cwd_roots: vec![allowed.path().to_string_lossy().to_string()],
+            ..TerminalToolConfig::default()
+        };
+        let result = resolve_workspace(Some(&missing.to_string_lossy()), &config);
+        let Err(WorkspaceResolutionError::Invalid(message)) = result else {
+            panic!("missing cwd should be reported as invalid");
+        };
+        assert!(message.contains("Omit cwd to use the default workspace"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn docker_mount_source_strips_windows_verbatim_prefixes() {
+        assert_eq!(
+            docker_mount_source(Path::new(r"\\?\D:\Code_Save\rust\WeiAgent")),
+            r"D:\Code_Save\rust\WeiAgent"
+        );
+        assert_eq!(
+            docker_mount_source(Path::new(r"\\?\UNC\server\share\workspace")),
+            r"\\server\share\workspace"
+        );
     }
 
     #[test]

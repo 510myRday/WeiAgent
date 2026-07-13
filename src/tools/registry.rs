@@ -119,12 +119,12 @@ impl AgentTool for ExecuteTerminalTool {
     fn definition(&self) -> ToolDefinition {
         tool_definition(
             "execute_terminal",
-            "Execute a command in the configured terminal sandbox. Set background=true for long-running services. If a foreground command exceeds timeout_ms it automatically continues in the background and returns a process_id.",
+            "Execute a command in the configured terminal sandbox. Omit cwd to use the configured workspace root; never invent or guess a cwd. Only set cwd when the user explicitly requires a known existing directory inside an allowed root. Set background=true for long-running services. If a foreground command exceeds timeout_ms it automatically continues in the background and returns a process_id. A blocked or error result means the command did not run; do not claim success or invent an exit code.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "Shell command to execute" },
-                    "cwd": { "type": "string", "description": "Optional host working directory inside an allowed sandbox root" },
+                    "cwd": { "type": "string", "description": "Optional existing host directory inside an allowed sandbox root. Omit this field to use the configured workspace; never guess a path." },
                     "timeout_ms": { "type": "integer", "minimum": 1, "description": "Foreground wait timeout before the command continues in background" },
                     "background": { "type": "boolean", "description": "Start immediately in background and return a process_id" }
                 },
