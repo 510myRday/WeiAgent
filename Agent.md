@@ -77,18 +77,22 @@ WeiAgent/
 │   │   ├── router.rs         # API 路由定义
 │   │   ├── state.rs          # AppState（Arc<JsonStore> + DynLlmRegistry）
 │   │   ├── chat.rs           # 聊天准备：构建 system_prompt、组装消息
+│   │   ├── agent_executor.rs # 普通/流式统一的多轮 Agent + Tool 执行器
 │   │   ├── static_assets.rs  # rust-embed 前端资源服务
 │   │   └── handlers/
 │   │       ├── agents.rs
 │   │       ├── conversations.rs  # 流式/非流式发送消息、SSE 事件
 │   │       ├── providers.rs
-│   │       └── settings.rs
+│   │       ├── settings.rs
+│   │       ├── tools.rs      # 工具配置、审批、后台进程 API
+│   │       └── llm_logs.rs
 │   ├── domain/
 │   │   ├── agents.rs         # Agent、AgentWorkspace、请求/响应类型
 │   │   ├── chat.rs           # ChatMessage、ChatRole、SendMessageRequest
 │   │   ├── conversations.rs  # Conversation
 │   │   ├── providers.rs      # ModelProvider、ProviderType、请求/响应类型
-│   │   └── settings.rs       # AppSettings（含默认值）
+│   │   ├── settings.rs       # AppSettings（含默认值）
+│   │   └── tools.rs          # 工具、审批、沙箱和进程类型
 │   ├── llm/
 │   │   ├── client.rs         # ChatClient trait、RequestOptions
 │   │   ├── registry.rs       # LlmRegistry trait、DefaultLlmRegistry
@@ -96,6 +100,12 @@ WeiAgent/
 │   │   ├── sse.rs            # SSE chunk 解析
 │   │   └── providers/
 │   │       └── openai_compatible.rs  # OpenAI 兼容客户端实现（含重试）
+│   ├── tools/
+│   │   ├── registry.rs       # ToolRegistry、AgentTool、内置工具注册
+│   │   ├── execute.rs        # Docker/本机受限执行、超时转后台
+│   │   ├── process_manager.rs# 后台进程、输出、停止和状态管理
+│   │   ├── approval.rs       # 审批管理和自动 TTL 过期
+│   │   └── terminal.rs       # 命令策略检查
 │   └── storage/
 │       ├── mod.rs            # 常量、测试
 │       ├── json_store.rs     # JsonStore 结构体与文件管理
@@ -314,8 +324,18 @@ Agent 响应会额外返回后端保存的内置身份信息：
     "enabled": true,
     "blocked_patterns": ["rm\\s+-rf\\s+/", "curl.*\\|\\s*sh", "sudo\\s+"],
     "approval_required_patterns": ["rm\\s+", "git\\s+push", "docker\\s+rm"],
+    "always_allowed_patterns": [],
     "default_timeout_ms": 30000,
-    "allowed_cwd_roots": []
+    "allowed_cwd_roots": [],
+    "sandbox": {
+      "mode": "docker",
+      "docker_image": "rust:1-bookworm",
+      "network_enabled": false,
+      "memory_limit_mb": 512,
+      "cpu_limit": 1.0,
+      "pids_limit": 128,
+      "workspace_read_only": false
+    }
   }
 }
 ```
@@ -375,6 +395,34 @@ User Message → prepare_chat(tools_config) → LLM stream(tools=[execute_termin
 ```
 
 
-### 待完成
+### 第三阶段完成状态（2026-07-13）
 
-- Phase 6：端到端联调测试（放行/拦截/审批/后台进程全流程验证）
+第三阶段终端工具主链路已经完成闭环：
+
+- 新增 `src/app/agent_executor.rs`，流式和普通完整回复共用同一个 Agent 执行器。
+- Function Calling 改为最多 10 轮的真正执行循环，支持连续工具调用，超过上限明确报错。
+- 新增 `src/tools/registry.rs` 通用 `ToolRegistry` / `AgentTool` 抽象，聊天执行器不再写死 `execute_terminal`。
+- 内置工具扩展为 `execute_terminal`、`get_terminal_process`、`stop_terminal_process`。
+- `execute_terminal` Schema 已向模型暴露 `command`、`cwd`、`timeout_ms`、`background`。
+- 前台命令超过 `timeout_ms` 后不再杀死，而是保留为后台进程并返回 `process_id`。
+- 后台进程实时捕获 stdout/stderr，各输出缓冲区上限 1MB；完成记录在进程管理器中保留 24 小时。
+- 新增后台进程 API：
+  - `GET /api/tools/processes?agent_id={agent_id}`
+  - `GET /api/tools/processes/{process_id}`
+  - `DELETE /api/tools/processes/{process_id}`
+- 聊天气泡和 Tools 页面均可轮询后台进程状态、查看输出和停止进程。
+- `always_approve` 已实现完整语义：前端显示“始终允许”，后端将精确命令转义为正则并持久化到 `always_allowed_patterns`；阻断规则优先级仍高于始终允许。
+- 审批注册时会启动独立 TTL 清理任务，10 分钟后自动拒绝并移除，不再依赖下一次审批请求触发清理。
+- 普通完整回复 API 已接入同一套多轮工具执行逻辑；需要人工审批的命令在普通接口中会安全拒绝，并提示使用 SSE 接口完成交互审批。
+- Docker 容器沙箱成为新配置的安全默认值，不做静默本机回退：
+  - 默认关闭容器网络
+  - 只读根文件系统和受限 `/tmp`
+  - 丢弃全部 Linux capabilities
+  - 启用 `no-new-privileges`
+  - 限制内存、CPU 和进程数
+  - 仅挂载命中的 `allowed_cwd_roots`；为空时只允许后端当前工作目录
+- 保留 `native_restricted` 兼容模式：限制 cwd、清理环境变量、创建独立进程组，但界面明确提示它不属于内核级沙箱。
+- 已增加端到端测试，覆盖普通接口多轮工具、真实 SSE Function Calling、放行、拦截、审批、始终允许、显式后台、超时转后台、输出捕获、进程查询和停止。
+- 当前 Rust 测试共 29 项全部通过；前端 TypeScript + Vite 生产构建通过；严格 Clippy `-D warnings` 通过。
+
+Docker 沙箱运行依赖本机 Docker daemon。Docker 不可用时命令会安全失败，不会自动降级到宿主机执行；如确需兼容模式，用户必须在 Tools 设置中显式选择 `native_restricted`。

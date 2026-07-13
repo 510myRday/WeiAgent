@@ -73,16 +73,19 @@ impl JsonStore {
         if let Some(base_url) = request.base_url {
             provider.base_url = validate_non_empty("base_url", &base_url)?;
         }
-        if let Some(api_key) = request.api_key {
-            if !api_key.trim().is_empty() {
-                provider.api_key = api_key.trim().to_string();
-            }
+        if let Some(api_key) = request.api_key
+            && !api_key.trim().is_empty()
+        {
+            provider.api_key = api_key.trim().to_string();
         }
         if let Some(models) = request.models {
             let models = normalize_models(models)?;
             let mut agents = agents;
             let mut agents_changed = false;
-            for agent in agents.iter_mut().filter(|agent| agent.model_provider_id == provider.id) {
+            for agent in agents
+                .iter_mut()
+                .filter(|agent| agent.model_provider_id == provider.id)
+            {
                 if !models.contains(&agent.model_id) {
                     agent.model_id = String::new();
                     agent.updated_at = Utc::now();

@@ -184,11 +184,38 @@ export type AgentToolsConfig = {
     enabled: boolean;
     blocked_patterns: string[];
     approval_required_patterns: string[];
+    always_allowed_patterns: string[];
     default_timeout_ms: number;
     allowed_cwd_roots: string[];
+    sandbox: {
+      mode: 'docker' | 'native_restricted';
+      docker_image: string;
+      network_enabled: boolean;
+      memory_limit_mb: number;
+      cpu_limit: number;
+      pids_limit: number;
+      workspace_read_only: boolean;
+    };
   };
 };
 
+export type ToolProcessStatus = 'running' | 'completed' | 'failed' | 'stopped';
+
+export type ToolProcessInfo = {
+  process_id: string;
+  agent_id: string;
+  conversation_id: string;
+  tool_call_id: string;
+  command: string;
+  cwd?: string;
+  status: ToolProcessStatus;
+  stdout: string;
+  stderr: string;
+  exit_code?: number;
+  started_at: string;
+  finished_at?: string;
+  duration_ms: number;
+};
 export function readAgentToolsConfig(agentId: string): Promise<AgentToolsConfig> {
   return request<AgentToolsConfig>(`/api/agents/${agentId}/tools-config`);
 }
@@ -216,6 +243,21 @@ export function approveToolCall(
   });
 }
 
+
+export function listToolProcesses(agentId?: string): Promise<ToolProcessInfo[]> {
+  const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
+  return request<ToolProcessInfo[]>(`/api/tools/processes${query}`);
+}
+
+export function getToolProcess(processId: string): Promise<ToolProcessInfo> {
+  return request<ToolProcessInfo>(`/api/tools/processes/${encodeURIComponent(processId)}`);
+}
+
+export function stopToolProcess(processId: string): Promise<ToolProcessInfo> {
+  return request<ToolProcessInfo>(`/api/tools/processes/${encodeURIComponent(processId)}`, {
+    method: 'DELETE',
+  });
+}
 export function readConversationMessages(conversationId: string): Promise<ChatMessage[]> {
   return request<ChatMessage[]>(`/api/conversations/${conversationId}/messages`);
 }

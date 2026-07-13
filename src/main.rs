@@ -36,12 +36,14 @@ async fn main() -> AppResult<()> {
     let llm_registry = Arc::new(DefaultLlmRegistry::new(llm_logger.clone()));
     let process_manager = Arc::new(tools::process_manager::ProcessManager::new());
     let approval_manager = Arc::new(tools::approval::ApprovalManager::new());
+    let tool_registry = Arc::new(tools::registry::ToolRegistry::with_builtin_tools());
     let state = AppState {
         store,
         llm_registry,
         llm_logger,
         process_manager,
         approval_manager,
+        tool_registry,
     };
     let app = if is_dev {
         build_router_dev(state)

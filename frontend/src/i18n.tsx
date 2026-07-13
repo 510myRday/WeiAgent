@@ -37,7 +37,7 @@ type I18nContextValue = {
   locale: Locale;
   setLocale: (locale: Locale) => void;
   setLocaleStateOnly: (locale: Locale) => void;
-  t: (path: string) => string;
+  t: (path: string, params?: Record<string, string | number>) => string;
 };
 
 const I18nContext = createContext<I18nContextValue | null>(null);
@@ -60,7 +60,13 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   }, [locale]);
 
   const t = useCallback(
-    (path: string) => getByPath(messages[locale] as unknown as Record<string, unknown>, path),
+    (path: string, params?: Record<string, string | number>) => {
+      const template = getByPath(messages[locale] as unknown as Record<string, unknown>, path);
+      if (!params) return template;
+      return template.replace(/\{(\w+)\}/g, (match, key: string) => (
+        Object.prototype.hasOwnProperty.call(params, key) ? String(params[key]) : match
+      ));
+    },
     [locale],
   );
 

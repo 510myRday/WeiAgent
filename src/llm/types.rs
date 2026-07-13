@@ -18,26 +18,6 @@ pub struct FunctionDefinition {
     pub parameters: serde_json::Value,
 }
 
-impl ToolDefinition {
-    pub fn execute_terminal() -> Self {
-        Self {
-            kind: "function".to_string(),
-            function: FunctionDefinition {
-                name: "execute_terminal".to_string(),
-                description: "Execute a shell command in the terminal.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "command": { "type": "string", "description": "The shell command to execute" },
-                        "cwd": { "type": "string", "description": "Optional working directory" }
-                    },
-                    "required": ["command"]
-                }),
-            },
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolCall {
     pub id: String,

@@ -3,7 +3,7 @@ use tokio::fs;
 use uuid::Uuid;
 
 use crate::{
-    domain::{ChatMessage, ChatMessageStatus, ChatRole, Conversation, CreateConversationRequest},
+    domain::{ChatMessage, ChatRole, Conversation, CreateConversationRequest},
     error::{AppError, AppResult},
     storage::{files::write_json, json_store::JsonStore},
 };
@@ -56,13 +56,12 @@ impl JsonStore {
                 conversation.message_count = messages.len();
                 changed = true;
             }
-            if is_generated_conversation_title(&conversation.title) {
-                if let Some(title) = title_from_first_user_message(&messages) {
-                    if conversation.title != title {
-                        conversation.title = title;
-                        changed = true;
-                    }
-                }
+            if is_generated_conversation_title(&conversation.title)
+                && let Some(title) = title_from_first_user_message(&messages)
+                && conversation.title != title
+            {
+                conversation.title = title;
+                changed = true;
             }
         }
 
@@ -161,21 +160,19 @@ impl JsonStore {
         existing.extend_from_slice(messages);
         write_json(&self.conversation_file(conversation_id), &existing).await?;
         conversation.message_count = existing.len();
-        if is_generated_conversation_title(&conversation.title) {
-            if let Some(title) = title_from_first_user_message(&existing) {
-                conversation.title = title;
-            }
+        if is_generated_conversation_title(&conversation.title)
+            && let Some(title) = title_from_first_user_message(&existing)
+        {
+            conversation.title = title;
         }
         conversation.updated_at = Utc::now();
         self.write_conversations_unlocked(&conversations).await
     }
 
-    pub async fn update_conversation_message(
+    pub async fn upsert_conversation_message(
         &self,
         conversation_id: Uuid,
-        message_id: Uuid,
-        content: String,
-        status: ChatMessageStatus,
+        message: ChatMessage,
     ) -> AppResult<()> {
         let _guard = self.lock.lock().await;
         let mut conversations = self.read_conversations_unlocked().await?;
@@ -183,16 +180,14 @@ impl JsonStore {
             .iter_mut()
             .find(|conversation| conversation.id == conversation_id)
             .ok_or(AppError::NotFound)?;
-
         let mut existing = self
             .read_conversation_messages_unchecked(conversation_id)
             .await?;
-        let message = existing
-            .iter_mut()
-            .find(|message| message.id == message_id)
-            .ok_or(AppError::NotFound)?;
-        message.content = content;
-        message.status = status;
+        if let Some(stored) = existing.iter_mut().find(|stored| stored.id == message.id) {
+            *stored = message;
+        } else {
+            existing.push(message);
+        }
         write_json(&self.conversation_file(conversation_id), &existing).await?;
         conversation.message_count = existing.len();
         conversation.updated_at = Utc::now();

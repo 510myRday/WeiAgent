@@ -1,241 +1,251 @@
-import { useState, useEffect } from 'react';
-import { Save, Plus, Trash2, Shield, Clock, AlertTriangle, CheckCircle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Save, Plus, Trash2, Shield, Clock, AlertTriangle, CheckCircle, Box, FolderLock, BadgeCheck, Square, RefreshCw } from 'lucide-react';
 
-import type { AgentToolsConfig } from '../../api';
-import { readAgentToolsConfig, updateAgentToolsConfig } from '../../api';
+import type { AgentToolsConfig, ToolProcessInfo } from '../../api';
+import { listToolProcesses, readAgentToolsConfig, stopToolProcess, updateAgentToolsConfig } from '../../api';
 import { useI18n } from '../../i18n';
-import { Button, FormField, IconButton } from '../../components/ui';
+import { Button } from '../../components/ui';
 
 interface TerminalToolSettingsProps {
   agentId: string;
   onError: (message: string) => void;
 }
 
+type PatternKind = 'blocked_patterns' | 'approval_required_patterns' | 'always_allowed_patterns' | 'allowed_cwd_roots';
+
 export function TerminalToolSettings({ agentId, onError }: TerminalToolSettingsProps) {
   const { t } = useI18n();
   const [config, setConfig] = useState<AgentToolsConfig | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [blockedInput, setBlockedInput] = useState('');
-  const [approvalInput, setApprovalInput] = useState('');
+  const [processes, setProcesses] = useState<ToolProcessInfo[]>([]);
+  const [isStoppingProcess, setIsStoppingProcess] = useState('');
+  const [inputs, setInputs] = useState<Record<PatternKind, string>>({
+    blocked_patterns: '', approval_required_patterns: '', always_allowed_patterns: '', allowed_cwd_roots: '',
+  });
 
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
     readAgentToolsConfig(agentId)
-      .then((c) => { if (!cancelled) setConfig(c); })
-      .catch((e) => { if (!cancelled) onError(e instanceof Error ? e.message : t('tools.terminal.loadFailed')); })
+      .then((next) => { if (!cancelled) setConfig(next); })
+      .catch((error) => { if (!cancelled) onError(error instanceof Error ? error.message : t('tools.terminal.loadFailed')); })
       .finally(() => { if (!cancelled) setIsLoading(false); });
     return () => { cancelled = true; };
   }, [agentId, onError, t]);
 
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const refresh = async () => {
+      try {
+        const next = await listToolProcesses(agentId);
+        if (cancelled) return;
+        setProcesses(next);
+        timer = window.setTimeout(refresh, next.some((process) => process.status === 'running') ? 1500 : 4000);
+      } catch (error) {
+        if (!cancelled) onError(error instanceof Error ? error.message : t('tools.terminal.processLoadFailed'));
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [agentId, onError, t]);
+
+  async function handleStopProcess(processId: string) {
+    setIsStoppingProcess(processId);
+    try {
+      const stopped = await stopToolProcess(processId);
+      setProcesses((current) => current.map((process) => process.process_id === processId ? stopped : process));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : t('tools.terminal.processStopFailed'));
+    } finally {
+      setIsStoppingProcess('');
+    }
+  }
   async function handleSave() {
     if (!config) return;
     setIsSaving(true);
     try {
-      const updated = await updateAgentToolsConfig(agentId, config);
-      setConfig(updated);
-    } catch (e) {
-      onError(e instanceof Error ? e.message : t('tools.terminal.saveFailed'));
+      setConfig(await updateAgentToolsConfig(agentId, config));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : t('tools.terminal.saveFailed'));
     } finally {
       setIsSaving(false);
     }
   }
 
-  function addBlockedPattern() {
-    const p = blockedInput.trim();
-    if (!p || !config) return;
-    setConfig({ ...config, terminal: { ...config.terminal, blocked_patterns: [...config.terminal.blocked_patterns, p] } });
-    setBlockedInput('');
+  function updateTerminal(patch: Partial<AgentToolsConfig['terminal']>) {
+    setConfig((current) => current ? { ...current, terminal: { ...current.terminal, ...patch } } : current);
   }
 
-  function removeBlockedPattern(index: number) {
+  function addItem(kind: PatternKind) {
+    const value = inputs[kind].trim();
+    if (!value || !config) return;
+    const current = config.terminal[kind];
+    if (current.includes(value)) return;
+    updateTerminal({ [kind]: [...current, value] });
+    setInputs((previous) => ({ ...previous, [kind]: '' }));
+  }
+
+  function removeItem(kind: PatternKind, index: number) {
     if (!config) return;
-    setConfig({ ...config, terminal: { ...config.terminal, blocked_patterns: config.terminal.blocked_patterns.filter((_, i) => i !== index) } });
-  }
-
-  function addApprovalPattern() {
-    const p = approvalInput.trim();
-    if (!p || !config) return;
-    setConfig({ ...config, terminal: { ...config.terminal, approval_required_patterns: [...config.terminal.approval_required_patterns, p] } });
-    setApprovalInput('');
-  }
-
-  function removeApprovalPattern(index: number) {
-    if (!config) return;
-    setConfig({ ...config, terminal: { ...config.terminal, approval_required_patterns: config.terminal.approval_required_patterns.filter((_, i) => i !== index) } });
+    updateTerminal({ [kind]: config.terminal[kind].filter((_, itemIndex) => itemIndex !== index) });
   }
 
   if (isLoading || !config) {
     return (
       <div className="terminal-loading-state">
-        <div className="loading-spinner"></div>
+        <div className="loading-spinner" />
         <p>{isLoading ? t('tools.terminal.loading') : t('tools.terminal.noConfig')}</p>
       </div>
     );
   }
 
+  const terminal = config.terminal;
+  const sandbox = terminal.sandbox;
+
   return (
     <div className="terminal-tool-settings-v2">
-      {/* Header Section */}
       <div className="settings-hero">
         <div className="hero-content">
-          <div className="hero-icon">
-            <Shield size={32} />
-          </div>
+          <div className="hero-icon"><Shield size={32} /></div>
           <div className="hero-text">
             <h2>{t('tools.terminal.configTitle')}</h2>
             <p>{t('tools.terminal.configDesc')}</p>
           </div>
         </div>
-        <Button
-          variant="primary"
-          onClick={handleSave}
-          disabled={isSaving}
-          icon={<Save size={18} />}
-          className="save-button"
-        >
+        <Button variant="primary" onClick={handleSave} disabled={isSaving} icon={<Save size={18} />} className="save-button">
           {isSaving ? t('tools.terminal.saving') : t('tools.terminal.save')}
         </Button>
       </div>
 
-      {/* Basic Settings Card */}
       <div className="settings-card">
-        <div className="card-header">
-          <Clock size={20} />
-          <h3>{t('tools.terminal.basicSettings')}</h3>
-        </div>
+        <div className="card-header"><Clock size={20} /><h3>{t('tools.terminal.basicSettings')}</h3></div>
         <div className="card-body">
           <div className="setting-row">
-            <div className="setting-info">
-              <label>{t('tools.terminal.enabled')}</label>
-              <p className="setting-desc">{t('tools.terminal.enabledDesc')}</p>
-            </div>
+            <div className="setting-info"><label>{t('tools.terminal.enabled')}</label><p className="setting-desc">{t('tools.terminal.enabledDesc')}</p></div>
             <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={config.terminal.enabled}
-                onChange={(e) => setConfig({ ...config, terminal: { ...config.terminal, enabled: e.target.checked } })}
-              />
-              <span className="toggle-slider"></span>
+              <input type="checkbox" checked={terminal.enabled} onChange={(event) => updateTerminal({ enabled: event.target.checked })} />
+              <span className="toggle-slider" />
             </label>
           </div>
-
           <div className="setting-row">
-            <div className="setting-info">
-              <label>{t('tools.terminal.defaultTimeout')}</label>
-              <p className="setting-desc">{t('tools.terminal.timeoutDesc')}</p>
-            </div>
+            <div className="setting-info"><label>{t('tools.terminal.defaultTimeout')}</label><p className="setting-desc">{t('tools.terminal.timeoutDesc')}</p></div>
             <div className="timeout-input">
-              <input
-                type="number"
-                value={config.terminal.default_timeout_ms / 1000}
-                onChange={(e) => setConfig({
-                  ...config,
-                  terminal: {
-                    ...config.terminal,
-                    default_timeout_ms: (Number(e.target.value) || 30) * 1000
-                  }
-                })}
-                min={1}
-                step={1}
-              />
-              <span className="unit">秒</span>
+              <input type="number" min={1} value={Math.max(1, Math.round(terminal.default_timeout_ms / 1000))} onChange={(event) => updateTerminal({ default_timeout_ms: Math.max(1, Number(event.target.value) || 1) * 1000 })} />
+              <span>s</span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Blocked Patterns Card */}
-      <div className="settings-card danger-card">
-        <div className="card-header">
-          <AlertTriangle size={20} />
-          <h3>{t('tools.terminal.blockedPatternsLabel')}</h3>
-          <span className="badge">{config.terminal.blocked_patterns.length}</span>
-        </div>
+      <div className="settings-card">
+        <div className="card-header"><Box size={20} /><h3>{t('tools.terminal.sandboxSettings')}</h3></div>
         <div className="card-body">
-          <p className="card-description">{t('tools.terminal.blockedDesc')}</p>
-          <div className="pattern-input-wrapper">
-            <input
-              value={blockedInput}
-              onChange={(e) => setBlockedInput(e.target.value)}
-              placeholder={t('tools.terminal.patternPlaceholder')}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addBlockedPattern(); } }}
-              className="pattern-input"
-            />
-            <Button
-              variant="secondary"
-              onClick={addBlockedPattern}
-              icon={<Plus size={16} />}
-              className="add-btn"
-            >
-              {t('tools.terminal.add')}
-            </Button>
+          <p className="card-description">{t('tools.terminal.dockerHint')}</p>
+          <div className="setting-row">
+            <div className="setting-info"><label>{t('tools.terminal.sandboxMode')}</label></div>
+            <select value={sandbox.mode} onChange={(event) => updateTerminal({ sandbox: { ...sandbox, mode: event.target.value as 'docker' | 'native_restricted' } })}>
+              <option value="docker">{t('tools.terminal.dockerMode')}</option>
+              <option value="native_restricted">{t('tools.terminal.nativeMode')}</option>
+            </select>
           </div>
-          {config.terminal.blocked_patterns.length > 0 && (
-            <ul className="pattern-tags">
-              {config.terminal.blocked_patterns.map((p, i) => (
-                <li key={i} className="pattern-tag danger">
-                  <code>{p}</code>
-                  <button
-                    type="button"
-                    onClick={() => removeBlockedPattern(i)}
-                    className="remove-btn"
-                    title={t('tools.terminal.remove')}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          {sandbox.mode === 'docker' ? (
+            <>
+              <div className="setting-row">
+                <div className="setting-info"><label>{t('tools.terminal.dockerImage')}</label></div>
+                <input value={sandbox.docker_image} onChange={(event) => updateTerminal({ sandbox: { ...sandbox, docker_image: event.target.value } })} />
+              </div>
+              <div className="sandbox-grid">
+                <label>{t('tools.terminal.memoryLimit')}<input type="number" min={64} value={sandbox.memory_limit_mb} onChange={(event) => updateTerminal({ sandbox: { ...sandbox, memory_limit_mb: Math.max(1, Number(event.target.value) || 1) } })} /></label>
+                <label>{t('tools.terminal.cpuLimit')}<input type="number" min={0.1} step={0.1} value={sandbox.cpu_limit} onChange={(event) => updateTerminal({ sandbox: { ...sandbox, cpu_limit: Math.max(0.1, Number(event.target.value) || 0.1) } })} /></label>
+                <label>{t('tools.terminal.pidsLimit')}<input type="number" min={1} value={sandbox.pids_limit} onChange={(event) => updateTerminal({ sandbox: { ...sandbox, pids_limit: Math.max(1, Number(event.target.value) || 1) } })} /></label>
+              </div>
+              <div className="setting-row">
+                <div className="setting-info"><label>{t('tools.terminal.networkEnabled')}</label></div>
+                <label className="toggle-switch"><input type="checkbox" checked={sandbox.network_enabled} onChange={(event) => updateTerminal({ sandbox: { ...sandbox, network_enabled: event.target.checked } })} /><span className="toggle-slider" /></label>
+              </div>
+              <div className="setting-row">
+                <div className="setting-info"><label>{t('tools.terminal.workspaceReadOnly')}</label></div>
+                <label className="toggle-switch"><input type="checkbox" checked={sandbox.workspace_read_only} onChange={(event) => updateTerminal({ sandbox: { ...sandbox, workspace_read_only: event.target.checked } })} /><span className="toggle-slider" /></label>
+              </div>
+            </>
+          ) : null}
         </div>
       </div>
 
-      {/* Approval Required Patterns Card */}
-      <div className="settings-card warning-card">
-        <div className="card-header">
-          <CheckCircle size={20} />
-          <h3>{t('tools.terminal.approvalPatternsLabel')}</h3>
-          <span className="badge">{config.terminal.approval_required_patterns.length}</span>
-        </div>
+
+      <div className="settings-card">
+        <div className="card-header"><RefreshCw size={20} /><h3>{t('tools.terminal.backgroundProcesses')}</h3><span className="badge">{processes.length}</span></div>
         <div className="card-body">
-          <p className="card-description">{t('tools.terminal.approvalDesc')}</p>
-          <div className="pattern-input-wrapper">
-            <input
-              value={approvalInput}
-              onChange={(e) => setApprovalInput(e.target.value)}
-              placeholder={t('tools.terminal.patternPlaceholder')}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addApprovalPattern(); } }}
-              className="pattern-input"
-            />
-            <Button
-              variant="secondary"
-              onClick={addApprovalPattern}
-              icon={<Plus size={16} />}
-              className="add-btn"
-            >
-              {t('tools.terminal.add')}
-            </Button>
-          </div>
-          {config.terminal.approval_required_patterns.length > 0 && (
-            <ul className="pattern-tags">
-              {config.terminal.approval_required_patterns.map((p, i) => (
-                <li key={i} className="pattern-tag warning">
-                  <code>{p}</code>
-                  <button
-                    type="button"
-                    onClick={() => removeApprovalPattern(i)}
-                    className="remove-btn"
-                    title={t('tools.terminal.remove')}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </li>
+          <p className="card-description">{t('tools.terminal.backgroundProcessesDesc')}</p>
+          {processes.length === 0 ? <p className="muted">{t('tools.terminal.noBackgroundProcesses')}</p> : (
+            <div className="tool-process-list">
+              {processes.map((process) => (
+                <article key={process.process_id} className={`tool-process-row is-${process.status}`}>
+                  <div className="tool-process-row__header">
+                    <code>{process.command}</code>
+                    <span>{t(`toolCard.processStatus.${process.status}`)}</span>
+                    {process.status === 'running' ? (
+                      <button type="button" className="tool-process-action" onClick={() => handleStopProcess(process.process_id)} disabled={isStoppingProcess === process.process_id}>
+                        <Square size={13} /> {isStoppingProcess === process.process_id ? t('toolCard.stopping') : t('toolCard.stop')}
+                      </button>
+                    ) : null}
+                  </div>
+                  {process.stdout ? <pre className="tool-card__output">{process.stdout}</pre> : null}
+                  {process.stderr ? <pre className="tool-card__error">{process.stderr}</pre> : null}
+                  <small>{process.process_id} · {t('toolCard.duration', { ms: process.duration_ms })}</small>
+                </article>
               ))}
-            </ul>
+            </div>
           )}
         </div>
+      </div>
+      <PatternCard icon={<FolderLock size={20} />} title={t('tools.terminal.allowedRootsLabel')} description={t('tools.terminal.allowedRootsDesc')} values={terminal.allowed_cwd_roots} input={inputs.allowed_cwd_roots} placeholder={t('tools.terminal.pathPlaceholder')} kind="allowed_cwd_roots" tone="safe" onInput={(value) => setInputs((current) => ({ ...current, allowed_cwd_roots: value }))} onAdd={addItem} onRemove={removeItem} t={t} />
+      <PatternCard icon={<AlertTriangle size={20} />} title={t('tools.terminal.blockedPatternsLabel')} description={t('tools.terminal.blockedDesc')} values={terminal.blocked_patterns} input={inputs.blocked_patterns} placeholder={t('tools.terminal.patternPlaceholder')} kind="blocked_patterns" tone="danger" onInput={(value) => setInputs((current) => ({ ...current, blocked_patterns: value }))} onAdd={addItem} onRemove={removeItem} t={t} />
+      <PatternCard icon={<CheckCircle size={20} />} title={t('tools.terminal.approvalPatternsLabel')} description={t('tools.terminal.approvalDesc')} values={terminal.approval_required_patterns} input={inputs.approval_required_patterns} placeholder={t('tools.terminal.patternPlaceholder')} kind="approval_required_patterns" tone="warning" onInput={(value) => setInputs((current) => ({ ...current, approval_required_patterns: value }))} onAdd={addItem} onRemove={removeItem} t={t} />
+      <PatternCard icon={<BadgeCheck size={20} />} title={t('tools.terminal.alwaysAllowedPatternsLabel')} description={t('tools.terminal.alwaysAllowedDesc')} values={terminal.always_allowed_patterns} input={inputs.always_allowed_patterns} placeholder={t('tools.terminal.patternPlaceholder')} kind="always_allowed_patterns" tone="safe" onInput={(value) => setInputs((current) => ({ ...current, always_allowed_patterns: value }))} onAdd={addItem} onRemove={removeItem} t={t} />
+    </div>
+  );
+}
+
+function PatternCard({ icon, title, description, values, input, placeholder, kind, tone, onInput, onAdd, onRemove, t }: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  values: string[];
+  input: string;
+  placeholder: string;
+  kind: PatternKind;
+  tone: 'danger' | 'warning' | 'safe';
+  onInput: (value: string) => void;
+  onAdd: (kind: PatternKind) => void;
+  onRemove: (kind: PatternKind, index: number) => void;
+  t: (path: string) => string;
+}) {
+  return (
+    <div className={`settings-card ${tone === 'danger' ? 'danger-card' : tone === 'warning' ? 'warning-card' : ''}`}>
+      <div className="card-header">{icon}<h3>{title}</h3><span className="badge">{values.length}</span></div>
+      <div className="card-body">
+        <p className="card-description">{description}</p>
+        <div className="pattern-input-wrapper">
+          <input value={input} onChange={(event) => onInput(event.target.value)} placeholder={placeholder} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); onAdd(kind); } }} className="pattern-input" />
+          <Button variant="secondary" onClick={() => onAdd(kind)} icon={<Plus size={16} />} className="add-btn">{t('tools.terminal.add')}</Button>
+        </div>
+        {values.length > 0 ? (
+          <ul className="pattern-tags">
+            {values.map((value, index) => (
+              <li key={`${value}-${index}`} className={`pattern-tag ${tone}`}>
+                <code>{value}</code>
+                <button type="button" onClick={() => onRemove(kind, index)} className="remove-btn" title={t('tools.terminal.remove')}><Trash2 size={14} /></button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
     </div>
   );

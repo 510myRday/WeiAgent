@@ -22,18 +22,18 @@ pub fn parse_sse_line(line: &str) -> Vec<AppResult<StreamEvent>> {
             let mut events = Vec::new();
             for choice in &chunk.choices {
                 // Check finish_reason for tool_calls
-                if let Some(ref reason) = choice.finish_reason {
-                    if reason == "tool_calls" {
-                        events.push(Ok(StreamEvent::FinishedWithToolCalls));
-                        continue;
-                    }
+                if let Some(ref reason) = choice.finish_reason
+                    && reason == "tool_calls"
+                {
+                    events.push(Ok(StreamEvent::FinishedWithToolCalls));
+                    continue;
                 }
 
                 // Text content delta
-                if let Some(ref content) = choice.delta.content {
-                    if !content.is_empty() {
-                        events.push(Ok(StreamEvent::TextDelta(content.clone())));
-                    }
+                if let Some(ref content) = choice.delta.content
+                    && !content.is_empty()
+                {
+                    events.push(Ok(StreamEvent::TextDelta(content.clone())));
                 }
 
                 // Tool calls delta
@@ -50,13 +50,12 @@ pub fn parse_sse_line(line: &str) -> Vec<AppResult<StreamEvent>> {
                         }
                         if let Some(args) =
                             tc.function.as_ref().and_then(|f| f.arguments.as_deref())
+                            && !args.is_empty()
                         {
-                            if !args.is_empty() {
-                                events.push(Ok(StreamEvent::ToolCallArgsDelta {
-                                    index: tc.index,
-                                    arguments: args.to_string(),
-                                }));
-                            }
+                            events.push(Ok(StreamEvent::ToolCallArgsDelta {
+                                index: tc.index,
+                                arguments: args.to_string(),
+                            }));
                         }
                     }
                 }

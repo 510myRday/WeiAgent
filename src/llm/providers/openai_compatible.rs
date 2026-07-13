@@ -83,6 +83,7 @@ impl OpenAiCompatibleChatClient {
         Err(last_error.unwrap_or_else(|| AppError::Llm("request failed".to_string())))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_log(
         logger: &Option<Arc<LlmLogger>>,
         enabled: bool,

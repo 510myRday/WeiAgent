@@ -65,6 +65,7 @@ impl LlmLogger {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn write_log(
         &self,
         agent_name: &str,
@@ -101,7 +102,7 @@ impl LlmLogger {
         let mut dir = fs::read_dir(&self.logs_dir).await?;
         while let Some(entry) = dir.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "json") {
+            if path.extension().is_some_and(|ext| ext == "json") {
                 let content = fs::read_to_string(&path).await?;
                 if let Ok(detail) = serde_json::from_str::<LlmLogDetail>(&content) {
                     entries.push(detail.summary);

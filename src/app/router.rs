@@ -85,6 +85,11 @@ fn api_router() -> Router<AppState> {
             get(tools::read_agent_tools_config).put(tools::update_agent_tools_config),
         )
         .route("/api/tools/approve", post(tools::approve_tool_call))
+        .route("/api/tools/processes", get(tools::list_tool_processes))
+        .route(
+            "/api/tools/processes/{process_id}",
+            get(tools::get_tool_process).delete(tools::stop_tool_process),
+        )
         .route("/api/llm-logs", get(llm_logs::list_llm_logs))
         .route(
             "/api/llm-logs/{log_id}",

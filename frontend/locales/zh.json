@@ -128,7 +128,28 @@
       "timeoutDesc": "命令执行的默认超时时间（秒）",
       "blockedDesc": "匹配这些正则表达式的命令将被始终拒绝执行",
       "approvalDesc": "匹配这些正则表达式的命令需要用户确认后才能执行",
-      "remove": "删除"
+      "remove": "删除",
+      "alwaysAllowedPatternsLabel": "始终允许模式",
+      "alwaysAllowedDesc": "匹配这些正则表达式的命令会跳过审批，但不能覆盖阻断模式",
+      "allowedRootsLabel": "允许的工作目录根路径",
+      "allowedRootsDesc": "为空时仅允许后端当前工作目录；Docker 只会挂载命中的根目录",
+      "pathPlaceholder": "绝对路径...",
+      "sandboxSettings": "沙箱设置",
+      "sandboxMode": "沙箱模式",
+      "dockerMode": "Docker 容器（推荐，真正隔离）",
+      "nativeMode": "本机受限模式（兼容，无内核隔离）",
+      "dockerImage": "Docker 镜像",
+      "networkEnabled": "允许容器网络",
+      "workspaceReadOnly": "工作区只读",
+      "memoryLimit": "内存限制（MB）",
+      "cpuLimit": "CPU 限制",
+      "pidsLimit": "进程数限制",
+      "dockerHint": "Docker 模式无本机回退；Docker 不可用时命令会安全失败。容器使用只读根文件系统、丢弃 capabilities、禁止提权并限制 CPU/内存/进程数。",
+      "backgroundProcesses": "后台进程",
+      "backgroundProcessesDesc": "查看当前 Agent 启动的后台进程、实时输出和执行状态。完成记录保留 24 小时。",
+      "noBackgroundProcesses": "暂无后台进程",
+      "processLoadFailed": "加载后台进程失败",
+      "processStopFailed": "停止后台进程失败"
     },
     "comingSoon": "更多工具即将推出",
     "selectHint": "从左侧选择一个工具查看或修改配置。",
@@ -171,8 +192,8 @@
     "unknown": "未知错误",
     "dismiss": "关闭错误提示",
     "validation": "名称、提供商和模型不能为空。",
-    "providerValidation": "提供商名称、Base URL、API Key 和模型列表不能为空。"
-    ,"avatarDuplicate": "不能和其他 Agent 使用完全相同的头像图标和颜色。"
+    "providerValidation": "提供商名称、Base URL、API Key 和模型列表不能为空。",
+    "avatarDuplicate": "不能和其他 Agent 使用完全相同的头像图标和颜色。"
   },
   "deleteConfirm": {
     "title": "删除 Agent",
@@ -203,5 +224,28 @@
     "delete": "删除",
     "close": "关闭",
     "refresh": "刷新"
+  },
+  "toolCard": {
+    "approvalTitle": "请求执行终端命令",
+    "allow": "允许一次",
+    "alwaysAllow": "始终允许",
+    "reject": "拒绝",
+    "backgroundRunning": "后台进程运行中",
+    "stop": "停止",
+    "stopping": "停止中...",
+    "refreshFailed": "刷新后台进程失败",
+    "stopFailed": "停止后台进程失败",
+    "executing": "正在执行：{command}",
+    "completed": "执行完成（退出码：{code}）",
+    "blocked": "已被安全策略拦截",
+    "rejected": "已拒绝",
+    "executionError": "执行错误",
+    "duration": "运行时间：{ms} ms",
+    "processStatus": {
+      "completed": "后台进程已完成",
+      "failed": "后台进程执行失败",
+      "stopped": "后台进程已停止",
+      "running": "后台进程运行中"
+    }
   }
 }

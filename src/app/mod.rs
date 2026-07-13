@@ -1,3 +1,4 @@
+mod agent_executor;
 mod chat;
 pub mod handlers;
 mod router;
@@ -35,7 +36,9 @@ mod tests {
             types::{ChatCompletionOutput, StreamEvent, ToolDefinition},
         },
         storage::{JsonStore, LlmLogger},
-        tools::{approval::ApprovalManager, process_manager::ProcessManager},
+        tools::{
+            approval::ApprovalManager, process_manager::ProcessManager, registry::ToolRegistry,
+        },
     };
 
     struct MockChatClient;
@@ -124,6 +127,7 @@ mod tests {
             llm_logger: Arc::new(LlmLogger::new(tempfile::tempdir().unwrap().path(), false)),
             process_manager: Arc::new(ProcessManager::new()),
             approval_manager: Arc::new(ApprovalManager::new()),
+            tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
         });
         (app, agent.id, provider.id, conversation.id)
     }
@@ -255,5 +259,659 @@ mod tests {
         assert!(text.contains("event: assistant"));
         assert!(text.contains("mock stream"));
         assert!(text.contains("event: done"));
+    }
+
+    struct ScriptedChatClient {
+        outputs: std::sync::Mutex<std::collections::VecDeque<ChatCompletionOutput>>,
+        complete_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ScriptedChatClient {
+        fn new(outputs: Vec<ChatCompletionOutput>) -> Self {
+            Self {
+                outputs: std::sync::Mutex::new(outputs.into()),
+                complete_calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ChatClient for ScriptedChatClient {
+        async fn complete(
+            &self,
+            _agent: &Agent,
+            _provider: &ModelProvider,
+            _messages: &[ChatMessage],
+            _system_prompt: &str,
+            _options: crate::llm::client::RequestOptions,
+            tools: Option<Vec<ToolDefinition>>,
+        ) -> AppResult<ChatCompletionOutput> {
+            assert_eq!(tools.as_ref().map(Vec::len), Some(3));
+            self.complete_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.outputs
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| crate::error::AppError::Llm("script exhausted".to_string()))
+        }
+
+        async fn stream(
+            &self,
+            _agent: &Agent,
+            _provider: &ModelProvider,
+            _messages: &[ChatMessage],
+            _system_prompt: &str,
+            _options: crate::llm::client::RequestOptions,
+            _tools: Option<Vec<ToolDefinition>>,
+        ) -> AppResult<ChatStream> {
+            Ok(Box::pin(stream::iter(vec![Ok(StreamEvent::Finished)])))
+        }
+
+        async fn list_models(&self, _provider: &ModelProvider) -> AppResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn scripted_tool_call(
+        id: &str,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> crate::llm::types::ToolCall {
+        crate::llm::types::ToolCall {
+            id: id.to_string(),
+            kind: "function".to_string(),
+            function: crate::llm::types::ToolCallFunction {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            },
+        }
+    }
+
+    async fn scripted_test_app(
+        outputs: Vec<ChatCompletionOutput>,
+    ) -> (
+        Router,
+        AppState,
+        Uuid,
+        std::path::PathBuf,
+        Arc<ScriptedChatClient>,
+    ) {
+        let root = tempfile::tempdir().unwrap().keep();
+        let store = Arc::new(JsonStore::new(&root).await.unwrap());
+        let provider = store
+            .create_model_provider(CreateModelProviderRequest {
+                provider_type: ProviderType::OpenAiCompatible,
+                name: "Scripted Provider".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["test-model".to_string()],
+                extra_body: serde_json::Value::Null,
+            })
+            .await
+            .unwrap();
+        let agent = store
+            .create_agent(CreateAgentRequest {
+                name: "Tool Agent".to_string(),
+                model_provider_id: provider.id,
+                model_id: "test-model".to_string(),
+                avatar_icon: Some("bot".to_string()),
+                avatar_color: Some("#22c55e".to_string()),
+            })
+            .await
+            .unwrap();
+        let conversation = store
+            .create_conversation(agent.id, CreateConversationRequest { title: None })
+            .await
+            .unwrap();
+        let mut tools_config = crate::domain::AgentToolsConfig::default();
+        tools_config.terminal.sandbox.mode = crate::domain::SandboxMode::NativeRestricted;
+        tools_config.terminal.allowed_cwd_roots = vec![root.to_string_lossy().to_string()];
+        store
+            .update_agent_tools_config(agent.id, tools_config)
+            .await
+            .unwrap();
+
+        let client = Arc::new(ScriptedChatClient::new(outputs));
+        let state = AppState {
+            store,
+            llm_registry: Arc::new(MockLlmRegistry {
+                client: client.clone(),
+            }),
+            llm_logger: Arc::new(LlmLogger::new(&root, false)),
+            process_manager: Arc::new(ProcessManager::new()),
+            approval_manager: Arc::new(ApprovalManager::new()),
+            tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
+        };
+        (
+            build_router(state.clone()),
+            state,
+            conversation.id,
+            root,
+            client,
+        )
+    }
+
+    fn delayed_echo_command() -> String {
+        if cfg!(windows) {
+            "ping -n 2 127.0.0.1 >NUL && echo background-finished".to_string()
+        } else {
+            "sleep 0.2; echo background-finished".to_string()
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_endpoint_runs_multiple_tool_rounds() {
+        let outputs = vec![
+            ChatCompletionOutput {
+                content: String::new(),
+                tool_calls: vec![scripted_tool_call(
+                    "call-1",
+                    "execute_terminal",
+                    json!({"command": "echo first"}),
+                )],
+            },
+            ChatCompletionOutput {
+                content: String::new(),
+                tool_calls: vec![scripted_tool_call(
+                    "call-2",
+                    "execute_terminal",
+                    json!({"command": "echo second"}),
+                )],
+            },
+            ChatCompletionOutput {
+                content: "all tool rounds completed".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ];
+        let (app, state, conversation_id, _, client) = scripted_test_app(outputs).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/conversations/{conversation_id}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"content": "run tools"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["assistant"]["content"], "all tool rounds completed");
+        assert_eq!(
+            client
+                .complete_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
+        let messages = state
+            .store
+            .read_conversation_messages(conversation_id)
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 6);
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role == crate::domain::ChatRole::Tool)
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_moves_process_to_background_and_captures_output() {
+        let outputs = vec![
+            ChatCompletionOutput {
+                content: String::new(),
+                tool_calls: vec![scripted_tool_call(
+                    "call-background",
+                    "execute_terminal",
+                    json!({"command": delayed_echo_command(), "timeout_ms": 10}),
+                )],
+            },
+            ChatCompletionOutput {
+                content: "background process started".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ];
+        let (app, state, conversation_id, _, _) = scripted_test_app(outputs).await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/conversations/{conversation_id}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"content": "start background"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let messages = state
+            .store
+            .read_conversation_messages(conversation_id)
+            .await
+            .unwrap();
+        let tool_message = messages
+            .iter()
+            .find(|message| message.role == crate::domain::ChatRole::Tool)
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_str(&tool_message.content).unwrap();
+        assert_eq!(result["status"], "running");
+        let process_id = result["process_id"].as_str().unwrap();
+
+        let mut process = None;
+        for _ in 0..40 {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/tools/processes/{process_id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            if value["status"] != "running" {
+                process = Some(value);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let process = process.expect("background process did not finish");
+        assert_eq!(process["status"], "completed");
+        assert!(
+            process["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("background-finished")
+        );
+    }
+
+    #[tokio::test]
+    async fn always_approve_persists_and_skips_future_approval() {
+        let command = "echo approve-me";
+        let outputs = vec![
+            ChatCompletionOutput {
+                content: String::new(),
+                tool_calls: vec![scripted_tool_call(
+                    "call-approval-1",
+                    "execute_terminal",
+                    json!({"command": command}),
+                )],
+            },
+            ChatCompletionOutput {
+                content: "approved once".to_string(),
+                tool_calls: Vec::new(),
+            },
+            ChatCompletionOutput {
+                content: String::new(),
+                tool_calls: vec![scripted_tool_call(
+                    "call-approval-2",
+                    "execute_terminal",
+                    json!({"command": command}),
+                )],
+            },
+            ChatCompletionOutput {
+                content: "approved permanently".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ];
+        let (app, state, conversation_id, _, _) = scripted_test_app(outputs).await;
+        let agent_id = state
+            .store
+            .get_conversation(conversation_id)
+            .await
+            .unwrap()
+            .agent_id;
+        let mut config = state.store.read_agent_tools_config(agent_id).await.unwrap();
+        config.terminal.approval_required_patterns = vec![format!("^{}$", regex::escape(command))];
+        state
+            .store
+            .update_agent_tools_config(agent_id, config)
+            .await
+            .unwrap();
+
+        let stream_app = app.clone();
+        let first_request = tokio::spawn(async move {
+            stream_app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!(
+                            "/api/conversations/{conversation_id}/messages/stream"
+                        ))
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"content": "approve", "stream": false}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        });
+        for _ in 0..100 {
+            if state.approval_manager.pending_count() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(state.approval_manager.pending_count(), 1);
+        let approval_id = state
+            .approval_manager
+            .resolve_for_test_id()
+            .expect("missing approval id");
+        let approval_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tools/approve")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"approval_id": approval_id, "decision": "always_approve"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(approval_response.status(), StatusCode::OK);
+        let first_response = first_request.await.unwrap();
+        let first_body = to_bytes(first_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let first_text = String::from_utf8(first_body.to_vec()).unwrap();
+        assert!(first_text.contains("event: approval_required"));
+        assert!(first_text.contains("event: done"));
+
+        let stored = state.store.read_agent_tools_config(agent_id).await.unwrap();
+        assert!(
+            stored
+                .terminal
+                .always_allowed_patterns
+                .contains(&format!("^{}$", regex::escape(command)))
+        );
+
+        let second_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/conversations/{conversation_id}/messages/stream"
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"content": "again", "stream": false}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let second_body = to_bytes(second_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let second_text = String::from_utf8(second_body.to_vec()).unwrap();
+        assert!(!second_text.contains("event: approval_required"));
+        assert!(second_text.contains("event: done"));
+    }
+    #[tokio::test]
+    async fn blocked_tool_call_is_reported_without_starting_a_process() {
+        let outputs = vec![
+            ChatCompletionOutput {
+                content: String::new(),
+                tool_calls: vec![scripted_tool_call(
+                    "call-blocked",
+                    "execute_terminal",
+                    json!({"command": "rm -rf /"}),
+                )],
+            },
+            ChatCompletionOutput {
+                content: "dangerous command blocked".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ];
+        let (app, state, conversation_id, _, _) = scripted_test_app(outputs).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/conversations/{conversation_id}/messages/stream"
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"content": "unsafe", "stream": false}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("event: tool_result"));
+        assert!(text.contains("blocked"));
+        assert!(state.process_manager.list(None).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn model_can_start_and_stop_an_explicit_background_process() {
+        let command = if cfg!(windows) {
+            "ping -n 10 127.0.0.1 >NUL".to_string()
+        } else {
+            "sleep 5".to_string()
+        };
+        let outputs = vec![
+            ChatCompletionOutput {
+                content: String::new(),
+                tool_calls: vec![scripted_tool_call(
+                    "call-explicit-background",
+                    "execute_terminal",
+                    json!({"command": command, "background": true, "timeout_ms": 5000}),
+                )],
+            },
+            ChatCompletionOutput {
+                content: "service started".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ];
+        let (app, state, conversation_id, _, _) = scripted_test_app(outputs).await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/conversations/{conversation_id}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"content": "start service"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let messages = state
+            .store
+            .read_conversation_messages(conversation_id)
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_str(
+            &messages
+                .iter()
+                .find(|message| message.role == crate::domain::ChatRole::Tool)
+                .unwrap()
+                .content,
+        )
+        .unwrap();
+        let process_id = result["process_id"].as_str().unwrap();
+        let stop_response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/tools/processes/{process_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stop_response.status(), StatusCode::OK);
+        let body = to_bytes(stop_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_ne!(value["status"], "running");
+    }
+    struct StreamingToolClient {
+        streams: std::sync::Mutex<std::collections::VecDeque<Vec<StreamEvent>>>,
+    }
+
+    #[async_trait]
+    impl ChatClient for StreamingToolClient {
+        async fn complete(
+            &self,
+            _agent: &Agent,
+            _provider: &ModelProvider,
+            _messages: &[ChatMessage],
+            _system_prompt: &str,
+            _options: crate::llm::client::RequestOptions,
+            _tools: Option<Vec<ToolDefinition>>,
+        ) -> AppResult<ChatCompletionOutput> {
+            Err(crate::error::AppError::Llm(
+                "complete was not expected".to_string(),
+            ))
+        }
+
+        async fn stream(
+            &self,
+            _agent: &Agent,
+            _provider: &ModelProvider,
+            _messages: &[ChatMessage],
+            _system_prompt: &str,
+            _options: crate::llm::client::RequestOptions,
+            tools: Option<Vec<ToolDefinition>>,
+        ) -> AppResult<ChatStream> {
+            assert_eq!(tools.as_ref().map(Vec::len), Some(3));
+            let events = self.streams.lock().unwrap().pop_front().ok_or_else(|| {
+                crate::error::AppError::Llm("stream script exhausted".to_string())
+            })?;
+            Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
+        }
+
+        async fn list_models(&self, _provider: &ModelProvider) -> AppResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_function_call_runs_tool_and_streams_final_answer() {
+        let root = tempfile::tempdir().unwrap().keep();
+        let store = Arc::new(JsonStore::new(&root).await.unwrap());
+        let provider = store
+            .create_model_provider(CreateModelProviderRequest {
+                provider_type: ProviderType::OpenAiCompatible,
+                name: "Streaming Provider".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["test-model".to_string()],
+                extra_body: serde_json::Value::Null,
+            })
+            .await
+            .unwrap();
+        let agent = store
+            .create_agent(CreateAgentRequest {
+                name: "Streaming Tool Agent".to_string(),
+                model_provider_id: provider.id,
+                model_id: "test-model".to_string(),
+                avatar_icon: Some("bot".to_string()),
+                avatar_color: Some("#22c55e".to_string()),
+            })
+            .await
+            .unwrap();
+        let conversation = store
+            .create_conversation(agent.id, CreateConversationRequest { title: None })
+            .await
+            .unwrap();
+        let mut tools_config = crate::domain::AgentToolsConfig::default();
+        tools_config.terminal.sandbox.mode = crate::domain::SandboxMode::NativeRestricted;
+        tools_config.terminal.allowed_cwd_roots = vec![root.to_string_lossy().to_string()];
+        store
+            .update_agent_tools_config(agent.id, tools_config)
+            .await
+            .unwrap();
+        let arguments = json!({"command": "echo streamed-tool"}).to_string();
+        let client = Arc::new(StreamingToolClient {
+            streams: std::sync::Mutex::new(
+                vec![
+                    vec![
+                        StreamEvent::ToolCallStart {
+                            index: 0,
+                            id: "stream-call".to_string(),
+                            name: "execute_terminal".to_string(),
+                        },
+                        StreamEvent::ToolCallArgsDelta {
+                            index: 0,
+                            arguments,
+                        },
+                        StreamEvent::FinishedWithToolCalls,
+                    ],
+                    vec![
+                        StreamEvent::TextDelta("streamed ".to_string()),
+                        StreamEvent::TextDelta("final".to_string()),
+                        StreamEvent::Finished,
+                    ],
+                ]
+                .into(),
+            ),
+        });
+        let state = AppState {
+            store: store.clone(),
+            llm_registry: Arc::new(MockLlmRegistry { client }),
+            llm_logger: Arc::new(LlmLogger::new(&root, false)),
+            process_manager: Arc::new(ProcessManager::new()),
+            approval_manager: Arc::new(ApprovalManager::new()),
+            tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
+        };
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/conversations/{}/messages/stream",
+                        conversation.id
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"content": "stream a tool", "stream": true}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("event: tool_call"));
+        assert!(text.contains("event: tool_result"));
+        assert!(text.contains("streamed final"));
+        assert!(text.contains("event: done"));
+        let messages = store
+            .read_conversation_messages(conversation.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role == crate::domain::ChatRole::Tool)
+                .count(),
+            1
+        );
+        assert_eq!(messages.last().unwrap().content, "streamed final");
     }
 }

@@ -1,67 +1,145 @@
 use serde::{Deserialize, Serialize};
 
-/// 终端工具配置，存储在 data/agents/{agent_id}/tools.json
+/// Terminal tool configuration stored in data/agents/{agent_id}/tools.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalToolConfig {
     pub enabled: bool,
-    /// 直接拒绝的命令模式（正则）
+    /// Commands matching these regex patterns are rejected before any allow rule.
+    #[serde(default = "default_blocked_patterns")]
     pub blocked_patterns: Vec<String>,
-    /// 需要审批的命令模式（正则）
+    /// Commands matching these regex patterns require interactive approval.
+    #[serde(default = "default_approval_patterns")]
     pub approval_required_patterns: Vec<String>,
-    /// 默认超时(ms)，超时后自动转后台
+    /// Commands approved with "always allow". Blocked patterns still take precedence.
+    #[serde(default)]
+    pub always_allowed_patterns: Vec<String>,
+    /// Foreground wait timeout. A still-running command is moved to background after this time.
     #[serde(default = "default_timeout_ms")]
     pub default_timeout_ms: u64,
-    /// 允许的工作目录根路径
+    /// Host roots that may be mounted/used by the tool. Empty means the server working directory.
     #[serde(default)]
     pub allowed_cwd_roots: Vec<String>,
+    /// Process/container sandbox configuration.
+    #[serde(default)]
+    pub sandbox: TerminalSandboxConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxMode {
+    /// Execute inside a locked-down Docker container. No native fallback is performed.
+    Docker,
+    /// Compatibility mode with cwd containment and a sanitized environment, but no kernel sandbox.
+    NativeRestricted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalSandboxConfig {
+    #[serde(default = "default_sandbox_mode")]
+    pub mode: SandboxMode,
+    #[serde(default = "default_docker_image")]
+    pub docker_image: String,
+    #[serde(default)]
+    pub network_enabled: bool,
+    #[serde(default = "default_memory_limit_mb")]
+    pub memory_limit_mb: u64,
+    #[serde(default = "default_cpu_limit")]
+    pub cpu_limit: f64,
+    #[serde(default = "default_pids_limit")]
+    pub pids_limit: u32,
+    #[serde(default)]
+    pub workspace_read_only: bool,
 }
 
 fn default_timeout_ms() -> u64 {
-    30000
+    30_000
+}
+
+fn default_sandbox_mode() -> SandboxMode {
+    SandboxMode::Docker
+}
+
+fn default_docker_image() -> String {
+    "rust:1-bookworm".to_string()
+}
+
+fn default_memory_limit_mb() -> u64 {
+    512
+}
+
+fn default_cpu_limit() -> f64 {
+    1.0
+}
+
+fn default_pids_limit() -> u32 {
+    128
+}
+
+fn default_blocked_patterns() -> Vec<String> {
+    vec![
+        r"rm\s+-rf\s+/".into(),
+        r"curl.*\|\s*sh".into(),
+        r"wget.*\|\s*sh".into(),
+        r"sudo\s+".into(),
+        r"chmod\s+777".into(),
+        r";\s*rm\s+-rf".into(),
+        r"\$\(".into(),
+        r"(?i)\bformat\s+[a-z]:".into(),
+        r"(?i)\bdel\s+/[fsq]".into(),
+        r"(?i)\brmdir\s+/s".into(),
+        r"(?i)\bRemove-Item\b.*\b-Recurse\b".into(),
+    ]
+}
+
+fn default_approval_patterns() -> Vec<String> {
+    vec![
+        r"rm\s+".into(),
+        r"git\s+push".into(),
+        r"git\s+reset".into(),
+        r"docker\s+rm".into(),
+        r"npm\s+publish".into(),
+        r"cargo\s+publish".into(),
+        r"(?i)\bRemove-Item\b".into(),
+        r"(?i)\bdel\b".into(),
+        r"(?i)\brmdir\b".into(),
+    ]
+}
+
+impl Default for TerminalSandboxConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_sandbox_mode(),
+            docker_image: default_docker_image(),
+            network_enabled: false,
+            memory_limit_mb: default_memory_limit_mb(),
+            cpu_limit: default_cpu_limit(),
+            pids_limit: default_pids_limit(),
+            workspace_read_only: false,
+        }
+    }
 }
 
 impl Default for TerminalToolConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            blocked_patterns: vec![
-                r"rm\s+-rf\s+/".into(),
-                r"curl.*\|\s*sh".into(),
-                r"wget.*\|\s*sh".into(),
-                r"sudo\s+".into(),
-                r"chmod\s+777".into(),
-                r";\s*rm\s+-rf".into(),
-                r"\$\(".into(),
-                r"(?i)\bformat\s+[a-z]:".into(),
-                r"(?i)\bdel\s+/[fsq]".into(),
-                r"(?i)\brmdir\s+/s".into(),
-                r"(?i)\bRemove-Item\b.*\b-Recurse\b".into(),
-            ],
-            approval_required_patterns: vec![
-                r"rm\s+".into(),
-                r"git\s+push".into(),
-                r"git\s+reset".into(),
-                r"docker\s+rm".into(),
-                r"npm\s+publish".into(),
-                r"cargo\s+publish".into(),
-                r"(?i)\bRemove-Item\b".into(),
-                r"(?i)\bdel\b".into(),
-                r"(?i)\brmdir\b".into(),
-            ],
+            blocked_patterns: default_blocked_patterns(),
+            approval_required_patterns: default_approval_patterns(),
+            always_allowed_patterns: Vec::new(),
             default_timeout_ms: default_timeout_ms(),
-            allowed_cwd_roots: vec![],
+            allowed_cwd_roots: Vec::new(),
+            sandbox: TerminalSandboxConfig::default(),
         }
     }
 }
 
-/// Agent 工具配置集合（tools.json 顶层结构）
+/// Agent tool configuration collection (tools.json top-level structure).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentToolsConfig {
     #[serde(default)]
     pub terminal: TerminalToolConfig,
 }
 
-/// 命令安全检查结果
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandDecision {
     Allowed,
@@ -69,7 +147,6 @@ pub enum CommandDecision {
     Blocked(String),
 }
 
-/// 审批决策
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDecision {
@@ -78,14 +155,12 @@ pub enum ApprovalDecision {
     AlwaysApprove,
 }
 
-/// 审批请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRequest {
     pub approval_id: String,
     pub decision: ApprovalDecision,
 }
 
-/// 审批响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalResponse {
     pub status: String,
@@ -93,18 +168,12 @@ pub struct ApprovalResponse {
     pub message: Option<String>,
 }
 
-/// 待审批条目（内存中存储）
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PendingApproval {
     pub approval_id: String,
     pub command: String,
-    pub cwd: Option<String>,
-    pub agent_id: uuid::Uuid,
-    pub created_at: std::time::Instant,
 }
 
-/// 工具执行结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ToolResult {
@@ -117,6 +186,12 @@ pub enum ToolResult {
     Running {
         process_id: String,
         message: String,
+        #[serde(default)]
+        stdout: String,
+        #[serde(default)]
+        stderr: String,
+        #[serde(default)]
+        duration_ms: u64,
     },
     Blocked {
         reason: String,
@@ -131,4 +206,30 @@ pub enum ToolResult {
     Error {
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessStatus {
+    Running,
+    Completed,
+    Failed,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessInfo {
+    pub process_id: String,
+    pub agent_id: uuid::Uuid,
+    pub conversation_id: uuid::Uuid,
+    pub tool_call_id: String,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub status: ProcessStatus,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub duration_ms: u64,
 }

@@ -116,9 +116,48 @@ impl JsonStore {
         config: crate::domain::AgentToolsConfig,
     ) -> AppResult<crate::domain::AgentToolsConfig> {
         self.get_agent(id).await?;
+        validate_tools_config(&config)?;
         let _guard = self.lock.lock().await;
         let content = serde_json::to_string_pretty(&config)
             .map_err(|e| crate::error::AppError::BadRequest(e.to_string()))?;
+        self.write_workspace_text_unlocked(id, WORKSPACE_TOOLS, &content)
+            .await?;
+        Ok(config)
+    }
+
+    pub async fn always_allow_terminal_command(
+        &self,
+        id: Uuid,
+        command: &str,
+    ) -> AppResult<crate::domain::AgentToolsConfig> {
+        self.get_agent(id).await?;
+        let _guard = self.lock.lock().await;
+        let path = self.agent_workspace_dir(id).join(WORKSPACE_TOOLS);
+        let mut config = if fs::metadata(&path).await.is_err() {
+            crate::domain::AgentToolsConfig::default()
+        } else {
+            let content = fs::read_to_string(&path).await?;
+            let trimmed = content.trim();
+            if trimmed.is_empty() || trimmed == "[]" {
+                crate::domain::AgentToolsConfig::default()
+            } else {
+                serde_json::from_str(trimmed).map_err(|error| {
+                    crate::error::AppError::BadRequest(format!("invalid tools.json: {error}"))
+                })?
+            }
+        };
+        let exact_pattern = format!("^{}$", regex::escape(command));
+        if !config
+            .terminal
+            .always_allowed_patterns
+            .iter()
+            .any(|pattern| pattern == &exact_pattern)
+        {
+            config.terminal.always_allowed_patterns.push(exact_pattern);
+        }
+        validate_tools_config(&config)?;
+        let content = serde_json::to_string_pretty(&config)
+            .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
         self.write_workspace_text_unlocked(id, WORKSPACE_TOOLS, &content)
             .await?;
         Ok(config)
@@ -201,4 +240,39 @@ fn join_prompt_sections<'a>(sections: impl IntoIterator<Item = (&'a str, &'a str
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<()> {
+    for pattern in config
+        .terminal
+        .blocked_patterns
+        .iter()
+        .chain(config.terminal.approval_required_patterns.iter())
+        .chain(config.terminal.always_allowed_patterns.iter())
+    {
+        regex::Regex::new(pattern).map_err(|error| {
+            crate::error::AppError::BadRequest(format!(
+                "invalid terminal regex '{pattern}': {error}"
+            ))
+        })?;
+    }
+    if config.terminal.default_timeout_ms == 0 {
+        return Err(crate::error::AppError::BadRequest(
+            "terminal default_timeout_ms must be greater than zero".to_string(),
+        ));
+    }
+    if config.terminal.sandbox.docker_image.trim().is_empty() {
+        return Err(crate::error::AppError::BadRequest(
+            "terminal sandbox docker_image cannot be empty".to_string(),
+        ));
+    }
+    if config.terminal.sandbox.memory_limit_mb == 0
+        || config.terminal.sandbox.cpu_limit <= 0.0
+        || config.terminal.sandbox.pids_limit == 0
+    {
+        return Err(crate::error::AppError::BadRequest(
+            "terminal sandbox limits must be greater than zero".to_string(),
+        ));
+    }
+    Ok(())
 }

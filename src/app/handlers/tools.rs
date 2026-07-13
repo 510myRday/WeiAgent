@@ -1,12 +1,13 @@
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
 };
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
     app::AppState,
-    domain::{AgentToolsConfig, ApprovalDecision, ApprovalRequest, ApprovalResponse},
+    domain::{AgentToolsConfig, ApprovalDecision, ApprovalRequest, ApprovalResponse, ProcessInfo},
     error::{AppError, AppResult},
 };
 
@@ -34,9 +35,6 @@ pub async fn approve_tool_call(
     State(state): State<AppState>,
     Json(request): Json<ApprovalRequest>,
 ) -> AppResult<Json<ApprovalResponse>> {
-    // 清理过期审批
-    state.approval_manager.cleanup_expired();
-
     let pending = state
         .approval_manager
         .resolve(&request.approval_id, request.decision.clone());
@@ -51,8 +49,11 @@ pub async fn approve_tool_call(
                 message: Some("Command rejected by user".to_string()),
             })),
             ApprovalDecision::AlwaysApprove => Ok(Json(ApprovalResponse {
-                status: "approved".to_string(),
-                message: Some(format!("Command approved: {}", entry.command)),
+                status: "always_approved".to_string(),
+                message: Some(format!(
+                    "Command approved and an exact persistent allow rule will be stored: {}",
+                    entry.command
+                )),
             })),
         },
         None => Err(AppError::BadRequest(format!(
@@ -60,4 +61,40 @@ pub async fn approve_tool_call(
             request.approval_id
         ))),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProcessListQuery {
+    pub agent_id: Option<Uuid>,
+}
+
+pub async fn list_tool_processes(
+    State(state): State<AppState>,
+    Query(query): Query<ProcessListQuery>,
+) -> AppResult<Json<Vec<ProcessInfo>>> {
+    Ok(Json(state.process_manager.list(query.agent_id).await))
+}
+
+pub async fn get_tool_process(
+    State(state): State<AppState>,
+    Path(process_id): Path<String>,
+) -> AppResult<Json<ProcessInfo>> {
+    state
+        .process_manager
+        .get(&process_id)
+        .await
+        .map(Json)
+        .ok_or(AppError::NotFound)
+}
+
+pub async fn stop_tool_process(
+    State(state): State<AppState>,
+    Path(process_id): Path<String>,
+) -> AppResult<Json<ProcessInfo>> {
+    state
+        .process_manager
+        .stop(&process_id)
+        .await?
+        .map(Json)
+        .ok_or(AppError::NotFound)
 }

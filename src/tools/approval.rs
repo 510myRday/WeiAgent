@@ -1,3 +1,5 @@
+use std::{sync::Arc, time::Duration};
+
 use dashmap::DashMap;
 use tokio::sync::oneshot;
 
@@ -10,24 +12,43 @@ struct PendingApprovalEntry {
 
 pub struct ApprovalManager {
     pending: DashMap<String, PendingApprovalEntry>,
+    ttl: Duration,
 }
 
 impl ApprovalManager {
     pub fn new() -> Self {
+        Self::with_ttl(Duration::from_secs(600))
+    }
+
+    pub fn with_ttl(ttl: Duration) -> Self {
         Self {
             pending: DashMap::new(),
+            ttl,
         }
     }
 
-    pub fn register(&self, entry: PendingApproval) -> oneshot::Receiver<ApprovalDecision> {
+    pub fn register(
+        self: &Arc<Self>,
+        entry: PendingApproval,
+    ) -> oneshot::Receiver<ApprovalDecision> {
+        let approval_id = entry.approval_id.clone();
         let (decision_tx, decision_rx) = oneshot::channel();
         self.pending.insert(
-            entry.approval_id.clone(),
+            approval_id.clone(),
             PendingApprovalEntry {
                 approval: entry,
                 decision_tx: std::sync::Mutex::new(Some(decision_tx)),
             },
         );
+
+        let manager = Arc::downgrade(self);
+        let ttl = self.ttl;
+        tokio::spawn(async move {
+            tokio::time::sleep(ttl).await;
+            if let Some(manager) = manager.upgrade() {
+                manager.expire(&approval_id);
+            }
+        });
         decision_rx
     }
 
@@ -37,18 +58,50 @@ impl ApprovalManager {
         decision: ApprovalDecision,
     ) -> Option<PendingApproval> {
         let (_, entry) = self.pending.remove(approval_id)?;
-        if let Ok(mut tx) = entry.decision_tx.lock() {
-            if let Some(tx) = tx.take() {
-                let _ = tx.send(decision);
-            }
-        }
+        send_decision(&entry, decision);
         Some(entry.approval)
     }
 
-    /// 清理超过 10 分钟的过期审批
-    pub fn cleanup_expired(&self) {
-        let max_age = std::time::Duration::from_secs(600);
-        self.pending
-            .retain(|_, v| v.approval.created_at.elapsed() < max_age);
+    pub fn cancel(&self, approval_id: &str) {
+        self.pending.remove(approval_id);
+    }
+    #[cfg(test)]
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    #[cfg(test)]
+    pub fn resolve_for_test_id(&self) -> Option<String> {
+        self.pending.iter().next().map(|entry| entry.key().clone())
+    }
+    fn expire(&self, approval_id: &str) {
+        if let Some((_, entry)) = self.pending.remove(approval_id) {
+            send_decision(&entry, ApprovalDecision::Reject);
+        }
+    }
+}
+
+fn send_decision(entry: &PendingApprovalEntry, decision: ApprovalDecision) {
+    if let Ok(mut sender) = entry.decision_tx.lock()
+        && let Some(sender) = sender.take()
+    {
+        let _ = sender.send(decision);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn approvals_expire_without_an_api_request() {
+        let manager = Arc::new(ApprovalManager::with_ttl(Duration::from_millis(20)));
+        let receiver = manager.register(PendingApproval {
+            approval_id: "approval-1".to_string(),
+            command: "echo test".to_string(),
+        });
+        assert_eq!(manager.pending_count(), 1);
+        assert_eq!(receiver.await.unwrap(), ApprovalDecision::Reject);
+        assert_eq!(manager.pending_count(), 0);
     }
 }

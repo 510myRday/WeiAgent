@@ -4,6 +4,7 @@ use crate::domain::{CommandDecision, TerminalToolConfig};
 
 pub struct CommandChecker {
     blocked: Vec<Regex>,
+    always_allowed: Vec<Regex>,
     approval: Vec<Regex>,
     invalid_patterns: Vec<String>,
 }
@@ -11,31 +12,14 @@ pub struct CommandChecker {
 impl CommandChecker {
     pub fn new(config: &TerminalToolConfig) -> Self {
         let mut invalid_patterns = Vec::new();
-        let blocked = config
-            .blocked_patterns
-            .iter()
-            .filter_map(|p| match Regex::new(p) {
-                Ok(re) => Some(re),
-                Err(_) => {
-                    invalid_patterns.push(p.clone());
-                    None
-                }
-            })
-            .collect();
-        let approval = config
-            .approval_required_patterns
-            .iter()
-            .filter_map(|p| match Regex::new(p) {
-                Ok(re) => Some(re),
-                Err(_) => {
-                    invalid_patterns.push(p.clone());
-                    None
-                }
-            })
-            .collect();
+        let blocked = compile_patterns(&config.blocked_patterns, &mut invalid_patterns);
+        let always_allowed =
+            compile_patterns(&config.always_allowed_patterns, &mut invalid_patterns);
+        let approval = compile_patterns(&config.approval_required_patterns, &mut invalid_patterns);
 
         Self {
             blocked,
+            always_allowed,
             approval,
             invalid_patterns,
         }
@@ -59,13 +43,27 @@ impl CommandChecker {
                 ));
             }
         }
-        for re in &self.approval {
-            if re.is_match(command) {
-                return CommandDecision::NeedsApproval;
-            }
+        if self.always_allowed.iter().any(|re| re.is_match(command)) {
+            return CommandDecision::Allowed;
+        }
+        if self.approval.iter().any(|re| re.is_match(command)) {
+            return CommandDecision::NeedsApproval;
         }
         CommandDecision::Allowed
     }
+}
+
+fn compile_patterns(patterns: &[String], invalid: &mut Vec<String>) -> Vec<Regex> {
+    patterns
+        .iter()
+        .filter_map(|pattern| match Regex::new(pattern) {
+            Ok(regex) => Some(regex),
+            Err(_) => {
+                invalid.push(pattern.clone());
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -109,5 +107,25 @@ mod tests {
             checker.check("git push origin main"),
             CommandDecision::NeedsApproval
         );
+    }
+
+    #[test]
+    fn always_allowed_overrides_approval_but_not_blocked() {
+        let mut config = default_config();
+        config
+            .always_allowed_patterns
+            .push(format!("^{}$", regex::escape("git push origin main")));
+        config
+            .always_allowed_patterns
+            .push(format!("^{}$", regex::escape("rm -rf /")));
+        let checker = CommandChecker::new(&config);
+        assert_eq!(
+            checker.check("git push origin main"),
+            CommandDecision::Allowed
+        );
+        assert!(matches!(
+            checker.check("rm -rf /"),
+            CommandDecision::Blocked(_)
+        ));
     }
 }

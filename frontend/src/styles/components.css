@@ -2461,3 +2461,105 @@
   }
 }
 
+
+/* Terminal sandbox and background process controls */
+.terminal-tool-settings-v2 select,
+.terminal-tool-settings-v2 .setting-row > input,
+.sandbox-grid input {
+  min-height: 38px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--color-text);
+  padding: 8px 10px;
+}
+
+.terminal-tool-settings-v2 .setting-row > input {
+  width: min(360px, 52%);
+}
+
+.sandbox-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.sandbox-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.pattern-tag.safe {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.tool-process-action {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-pane);
+  color: var(--color-danger);
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.tool-process-action:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+@media (max-width: 720px) {
+  .sandbox-grid { grid-template-columns: 1fr; }
+  .terminal-tool-settings-v2 .setting-row > input { width: 100%; }
+}
+
+.tool-process-list {
+  display: grid;
+  gap: 12px;
+}
+
+.tool-process-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  padding: 12px;
+}
+
+.tool-process-row__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.tool-process-row__header code {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-process-row__header > span {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.tool-process-row pre {
+  max-height: 220px;
+  overflow: auto;
+  margin-top: 10px;
+}
+
+.tool-process-row small {
+  display: block;
+  margin-top: 8px;
+  color: var(--color-muted);
+  overflow-wrap: anywhere;
+}

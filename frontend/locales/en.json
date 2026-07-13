@@ -138,8 +138,8 @@
     "unknown": "Unknown error",
     "dismiss": "Dismiss error",
     "validation": "Name, provider and model are required.",
-    "providerValidation": "Provider name, Base URL, API key and models are required."
-    ,"avatarDuplicate": "Another Agent already uses the same avatar icon and color."
+    "providerValidation": "Provider name, Base URL, API key and models are required.",
+    "avatarDuplicate": "Another Agent already uses the same avatar icon and color."
   },
   "deleteConfirm": {
     "title": "Delete Agent",
@@ -172,7 +172,28 @@
       "timeoutDesc": "Default timeout for command execution (seconds)",
       "blockedDesc": "Commands matching these regex patterns will always be rejected",
       "approvalDesc": "Commands matching these regex patterns require user confirmation",
-      "remove": "Remove"
+      "remove": "Remove",
+      "alwaysAllowedPatternsLabel": "Always Allowed Patterns",
+      "alwaysAllowedDesc": "Commands matching these regex patterns skip approval, but blocked patterns still take precedence",
+      "allowedRootsLabel": "Allowed Working Directory Roots",
+      "allowedRootsDesc": "When empty, only the server working directory is allowed. Docker mounts only the matching root.",
+      "pathPlaceholder": "Absolute path...",
+      "sandboxSettings": "Sandbox Settings",
+      "sandboxMode": "Sandbox Mode",
+      "dockerMode": "Docker container (recommended, real isolation)",
+      "nativeMode": "Restricted native mode (compatibility, no kernel isolation)",
+      "dockerImage": "Docker Image",
+      "networkEnabled": "Allow container network",
+      "workspaceReadOnly": "Read-only workspace",
+      "memoryLimit": "Memory Limit (MB)",
+      "cpuLimit": "CPU Limit",
+      "pidsLimit": "Process Limit",
+      "dockerHint": "Docker mode never falls back to native execution. If Docker is unavailable the command fails safely. Containers use a read-only root filesystem, dropped capabilities, no-new-privileges, and CPU/memory/process limits.",
+      "backgroundProcesses": "Background Processes",
+      "backgroundProcessesDesc": "View background processes started by this agent, including live output and execution status. Finished records are retained for 24 hours.",
+      "noBackgroundProcesses": "No background processes",
+      "processLoadFailed": "Failed to load background processes",
+      "processStopFailed": "Failed to stop background process"
     },
     "comingSoon": "More tools coming soon",
     "selectHint": "Select a tool on the left to view or modify its configuration.",
@@ -203,5 +224,28 @@
     "delete": "Delete",
     "close": "Close",
     "refresh": "Refresh"
+  },
+  "toolCard": {
+    "approvalTitle": "Request to execute terminal command",
+    "allow": "Allow once",
+    "alwaysAllow": "Always allow",
+    "reject": "Reject",
+    "backgroundRunning": "Background process is running",
+    "stop": "Stop",
+    "stopping": "Stopping...",
+    "refreshFailed": "Failed to refresh background process",
+    "stopFailed": "Failed to stop background process",
+    "executing": "Executing: {command}",
+    "completed": "Completed (exit code: {code})",
+    "blocked": "Blocked by security policy",
+    "rejected": "Rejected",
+    "executionError": "Execution error",
+    "duration": "Duration: {ms} ms",
+    "processStatus": {
+      "completed": "Background process completed",
+      "failed": "Background process failed",
+      "stopped": "Background process stopped",
+      "running": "Background process is running"
+    }
   }
 }

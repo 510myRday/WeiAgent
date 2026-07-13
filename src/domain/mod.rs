@@ -18,5 +18,5 @@ pub use providers::{
 pub use settings::AppSettings;
 pub use tools::{
     AgentToolsConfig, ApprovalDecision, ApprovalRequest, ApprovalResponse, CommandDecision,
-    PendingApproval, TerminalToolConfig, ToolResult,
+    PendingApproval, ProcessInfo, ProcessStatus, SandboxMode, TerminalToolConfig, ToolResult,
 };
