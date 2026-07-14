@@ -102,7 +102,7 @@ pub fn host_os_label() -> &'static str {
 
 pub fn host_shell_label() -> &'static str {
     if cfg!(windows) {
-        "cmd.exe (command strings use cmd.exe syntax; UTF-8 code page is applied automatically)"
+        "cmd.exe (command strings use cmd.exe syntax; WeiAgent forces a UTF-8 shell wrapper and decodes local code-page output as a fallback)"
     } else {
         "POSIX shell via sh -lc"
     }

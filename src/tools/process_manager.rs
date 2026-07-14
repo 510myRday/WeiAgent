@@ -437,6 +437,8 @@ async fn snapshot(record: &ProcessRecord) -> ProcessInfo {
     let state = record.state.lock().await;
     let stdout = record.stdout.lock().await;
     let stderr = record.stderr.lock().await;
+    let stdout_bytes: Vec<u8> = stdout.iter().copied().collect();
+    let stderr_bytes: Vec<u8> = stderr.iter().copied().collect();
     ProcessInfo {
         process_id: record.process_id.clone(),
         agent_id: record.metadata.agent_id,
@@ -445,13 +447,153 @@ async fn snapshot(record: &ProcessRecord) -> ProcessInfo {
         command: record.metadata.command.clone(),
         cwd: record.metadata.cwd.clone(),
         status: state.status.clone(),
-        stdout: String::from_utf8_lossy(&stdout.iter().copied().collect::<Vec<_>>()).to_string(),
-        stderr: String::from_utf8_lossy(&stderr.iter().copied().collect::<Vec<_>>()).to_string(),
+        stdout: decode_process_output(&stdout_bytes),
+        stderr: decode_process_output(&stderr_bytes),
         exit_code: state.exit_code,
         started_at: record.started_at,
         finished_at: state.finished_at,
         duration_ms: state
             .duration_ms
             .unwrap_or_else(|| record.started_instant.elapsed().as_millis() as u64),
+    }
+}
+
+/// Decode captured process bytes for display / LLM consumption.
+///
+/// Prefer strict UTF-8 (what we request via the Windows shell wrapper). When the
+/// stream is not valid UTF-8 — common for cmd.exe builtins and older Windows
+/// tools that still emit the system OEM/ANSI code page — fall back to the host
+/// code page (GBK/CP936 on Chinese Windows) instead of `from_utf8_lossy`, which
+/// would turn multi-byte Chinese into replacement characters.
+fn decode_process_output(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    if let Ok(value) = std::str::from_utf8(bytes) {
+        return value.to_string();
+    }
+
+    #[cfg(windows)]
+    {
+        let mut fallback: Option<String> = None;
+        for code_page in windows_decode_code_page_candidates() {
+            if let Some(encoding) = encoding_for_windows_code_page(code_page) {
+                let (cow, _, had_errors) = encoding.decode(bytes);
+                if !had_errors {
+                    return cow.into_owned();
+                }
+                if fallback.is_none() {
+                    fallback = Some(cow.into_owned());
+                }
+            }
+        }
+        if let Some(value) = fallback {
+            return value;
+        }
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    #[cfg(not(windows))]
+    {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+#[cfg(windows)]
+fn windows_decode_code_page_candidates() -> Vec<u32> {
+    let [oem, acp] = windows_fallback_code_pages();
+    let mut pages = Vec::with_capacity(4);
+    // Prefer East-Asian multi-byte pages first so Chinese console output is not
+    // misread as a clean single-byte ANSI mapping (e.g. windows-1252).
+    for code_page in [oem, acp, 936] {
+        if is_east_asian_code_page(code_page) && !pages.contains(&code_page) {
+            pages.push(code_page);
+        }
+    }
+    // Always attempt GBK: common for Chinese Windows cmd.exe builtins.
+    if !pages.contains(&936) {
+        pages.push(936);
+    }
+    for code_page in [oem, acp] {
+        if !pages.contains(&code_page) {
+            pages.push(code_page);
+        }
+    }
+    pages
+}
+
+#[cfg(windows)]
+fn is_east_asian_code_page(code_page: u32) -> bool {
+    matches!(code_page, 932 | 936 | 949 | 950 | 54936)
+}
+
+#[cfg(windows)]
+fn windows_fallback_code_pages() -> [u32; 2] {
+    // Console programs typically use the OEM code page; GUI/legacy tools may use ACP.
+    unsafe { [GetOEMCP(), GetACP()] }
+}
+
+#[cfg(windows)]
+fn encoding_for_windows_code_page(code_page: u32) -> Option<&'static encoding_rs::Encoding> {
+    match code_page {
+        65001 => Some(encoding_rs::UTF_8),
+        936 => Some(encoding_rs::GBK),
+        54936 => Some(encoding_rs::GB18030),
+        950 => Some(encoding_rs::BIG5),
+        932 => Some(encoding_rs::SHIFT_JIS),
+        949 => Some(encoding_rs::EUC_KR),
+        1250 => Some(encoding_rs::WINDOWS_1250),
+        1251 => Some(encoding_rs::WINDOWS_1251),
+        1252 => Some(encoding_rs::WINDOWS_1252),
+        1253 => Some(encoding_rs::WINDOWS_1253),
+        1254 => Some(encoding_rs::WINDOWS_1254),
+        1255 => Some(encoding_rs::WINDOWS_1255),
+        1256 => Some(encoding_rs::WINDOWS_1256),
+        1257 => Some(encoding_rs::WINDOWS_1257),
+        1258 => Some(encoding_rs::WINDOWS_1258),
+        20866 => Some(encoding_rs::KOI8_R),
+        21866 => Some(encoding_rs::KOI8_U),
+        28591 => Some(encoding_rs::WINDOWS_1252),
+        28592 => Some(encoding_rs::ISO_8859_2),
+        28605 => Some(encoding_rs::ISO_8859_15),
+        _ => encoding_rs::Encoding::for_label(format!("windows-{code_page}").as_bytes())
+            .or_else(|| encoding_rs::Encoding::for_label(format!("cp{code_page}").as_bytes())),
+    }
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetACP() -> u32;
+    fn GetOEMCP() -> u32;
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_process_output_keeps_valid_utf8() {
+        assert_eq!(decode_process_output("hello 世界".as_bytes()), "hello 世界");
+    }
+
+    #[test]
+    fn decode_process_output_decodes_gbk_dir_style_text() {
+        // GBK for: 驱动器 D 中的卷没有标签。
+        let gbk = [
+            0xC7, 0xFD, 0xB6, 0xAF, 0xC6, 0xF7, 0x20, 0x44, 0x20, 0xD6, 0xD0, 0xB5, 0xC4, 0xBE,
+            0xED, 0xC3, 0xBB, 0xD3, 0xD0, 0xB1, 0xEA, 0xC7, 0xA9, 0xA1, 0xA3,
+        ];
+        let decoded = decode_process_output(&gbk);
+        assert!(
+            decoded.contains("驱动器") && decoded.contains("标签"),
+            "unexpected decode: {decoded:?}"
+        );
+    }
+
+    #[test]
+    fn decode_process_output_empty_is_empty() {
+        assert_eq!(decode_process_output(&[]), "");
     }
 }

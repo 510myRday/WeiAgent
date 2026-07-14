@@ -12,6 +12,7 @@ dependencies = [
  "base64",
  "chrono",
  "dashmap",
+ "encoding_rs",
  "flate2",
  "futures-util",
  "mime_guess",

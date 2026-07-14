@@ -373,15 +373,10 @@ fn build_os_sandbox_command(
         .arg(os_command_path(&workspace.root));
 
     if cfg!(windows) {
-        let shell_command = windows_utf8_command(shell_command);
         command
             .arg("powershell.exe")
             .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
-            .arg(format!(
-                "$ErrorActionPreference = 'Stop'; $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $command = {}; Set-Location -LiteralPath {}; & cmd.exe /D /S /C $command; exit $LASTEXITCODE",
-                quote_powershell_literal(&shell_command),
-                quote_powershell_literal(&windows_command_path(&workspace.cwd))
-            ));
+            .arg(windows_powershell_cmd_script(shell_command, Some(&workspace.cwd)));
     } else {
         command.arg("sh").args(["-lc"]).arg(format!(
             "cd -- {} && {}",
@@ -397,10 +392,12 @@ fn build_os_sandbox_command(
 
 fn build_host_command(shell_command: &str, cwd: &Path, runtime: &str) -> Command {
     let mut command = if cfg!(windows) {
-        let mut command = Command::new("cmd.exe");
+        // Match the sandbox path: PowerShell UTF-8 console setup + cmd.exe syntax.
+        // `chcp 65001` alone is not enough for many Windows builtins/tools.
+        let mut command = Command::new("powershell.exe");
         command
-            .args(["/D", "/S", "/C"])
-            .arg(windows_utf8_command(shell_command));
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+            .arg(windows_powershell_cmd_script(shell_command, Some(cwd)));
         command
     } else {
         let mut command = Command::new("sh");
@@ -426,6 +423,27 @@ fn windows_utf8_command(command: &str) -> String {
     format!("chcp 65001>nul & {command}")
 }
 
+/// Shared Windows launch wrapper used by both full_access and os_sandbox.
+///
+/// Forces PowerShell's output encoding to UTF-8, optionally cds into `cwd`,
+/// then runs the user command through cmd.exe so existing cmd syntax stays valid.
+/// `chcp 65001` remains as a belt-and-suspenders measure for cmd builtins.
+fn windows_powershell_cmd_script(shell_command: &str, cwd: Option<&Path>) -> String {
+    let shell_command = windows_utf8_command(shell_command);
+    let set_location = match cwd {
+        Some(cwd) => format!(
+            "Set-Location -LiteralPath {}; ",
+            quote_powershell_literal(&windows_command_path(cwd))
+        ),
+        None => String::new(),
+    };
+    format!(
+        "$ErrorActionPreference = 'Stop'; $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); {set_location}$command = {}; & cmd.exe /D /S /C $command; exit $LASTEXITCODE",
+        quote_powershell_literal(&shell_command)
+    )
+}
+
+
 fn quote_unix_path(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
 }
@@ -440,7 +458,6 @@ fn os_command_path(path: &Path) -> std::ffi::OsString {
     path.as_os_str().to_os_string()
 }
 
-#[cfg(windows)]
 fn windows_command_path(path: &Path) -> String {
     let value = path.to_string_lossy();
     if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
@@ -637,6 +654,41 @@ mod tests {
             windows_utf8_command("echo test"),
             "chcp 65001>nul & echo test"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_powershell_wrapper_is_shared_by_host_and_sandbox() {
+        let cwd = PathBuf::from(r"D:\workspace");
+        let script = windows_powershell_cmd_script("echo test", Some(&cwd));
+        assert!(script.contains("[Text.UTF8Encoding]::new($false)"));
+        assert!(script.contains("chcp 65001>nul & echo test"));
+        assert!(script.contains("cmd.exe /D /S /C"));
+        assert!(script.contains("Set-Location -LiteralPath"));
+        assert!(script.contains(r"D:\workspace"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn full_access_windows_host_uses_powershell_utf8_wrapper() {
+        if !cfg!(windows) {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let launch = build_host_command("echo host", root.path(), "full_access");
+        let program = launch.as_std().get_program().to_string_lossy().to_lowercase();
+        assert!(
+            program.contains("powershell"),
+            "expected powershell host launcher, got {program}"
+        );
+        let args = launch
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let joined = args.join(" ");
+        assert!(joined.contains("UTF8Encoding"));
+        assert!(joined.contains("echo host") || joined.contains("chcp 65001"));
     }
 
     #[tokio::test]
