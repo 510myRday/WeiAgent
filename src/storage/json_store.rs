@@ -11,6 +11,7 @@ use crate::{
 };
 
 pub struct JsonStore {
+    pub data_dir: PathBuf,
     pub(super) settings_file: PathBuf,
     pub(super) tool_defaults_file: PathBuf,
     pub(super) providers_file: PathBuf,
@@ -45,6 +46,7 @@ impl JsonStore {
         }
 
         let store = Self {
+            data_dir: root,
             settings_file,
             tool_defaults_file,
             providers_file,
