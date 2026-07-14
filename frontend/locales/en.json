@@ -315,6 +315,8 @@
     "duration": "Duration: {ms} ms",
     "commandTitle": "Terminal command",
     "stdoutTitle": "Terminal output",
+    "noOutput": "No output",
+    "noOutputFailed": "No output (command failed, but the process wrote no error text)",
     "stderrTitle": "Error output",
     "showAllCommand": "View full command",
     "showAllOutput": "View full output",

@@ -315,6 +315,8 @@
     "duration": "运行时间：{ms} ms",
     "commandTitle": "终端命令",
     "stdoutTitle": "终端输出",
+    "noOutput": "无输出",
+    "noOutputFailed": "无输出（命令失败，但进程没有写入任何错误信息）",
     "stderrTitle": "错误输出",
     "showAllCommand": "查看完整命令",
     "showAllOutput": "查看全部输出",

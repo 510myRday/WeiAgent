@@ -302,10 +302,22 @@ mod tests {
             .unwrap();
 
         let stored = store.get_agent(agent.id).await.unwrap();
-        let prompt = store.build_agent_system_prompt(&stored).await.unwrap();
+        let tools_config = store.read_agent_tools_config(stored.id).await.unwrap();
+        let prompt = store
+            .build_agent_system_prompt(&stored, &tools_config)
+            .await
+            .unwrap();
+        assert!(prompt.starts_with("## Environment"));
+        assert!(prompt.contains("## Personality"));
+        assert!(prompt.find("## Environment").unwrap() < prompt.find("## Personality").unwrap());
         assert!(prompt.contains("Calm and direct."));
         assert!(prompt.contains("User prefers concise plans."));
         assert!(prompt.contains("Ask only important questions."));
+        let again = store
+            .build_agent_system_prompt(&stored, &tools_config)
+            .await
+            .unwrap();
+        assert_eq!(prompt, again);
     }
 
     #[tokio::test]

@@ -32,6 +32,10 @@ interface ToolCallCardProps {
   onApprove?: (decision: 'approve' | 'reject' | 'always_approve') => Promise<void> | void;
 }
 
+function hasText(value?: string | null): boolean {
+  return Boolean(value && value.trim().length > 0);
+}
+
 function PermissionModeBadge({
   permissionMode,
   t,
@@ -128,6 +132,40 @@ function TerminalContent({
       >
         <pre className={`terminal-output-modal__content terminal-output-modal__content--${tone}`}>{content}</pre>
       </Dialog>
+    </>
+  );
+}
+
+function TerminalOutputs({
+  stdout,
+  stderr,
+  failed,
+  t,
+}: {
+  stdout?: string | null;
+  stderr?: string | null;
+  failed: boolean;
+  t: (path: string, vars?: Record<string, string | number>) => string;
+}) {
+  const hasStdout = hasText(stdout);
+  const hasStderr = hasText(stderr);
+
+  if (!hasStdout && !hasStderr) {
+    return (
+      <div className={`tool-card__output-shell tool-card__output-shell--empty${failed ? ' tool-card__output-shell--empty-failed' : ''}`}>
+        <pre className="tool-card__output tool-card__output--empty">
+          {t(failed ? 'toolCard.noOutputFailed' : 'toolCard.noOutput')}
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {hasStdout ? <TerminalContent content={stdout!.trimEnd()} tone="stdout" t={t} /> : null}
+      {hasStderr ? (
+        <TerminalContent content={stderr!.trimEnd()} tone={failed ? 'stderr' : 'stdout'} t={t} />
+      ) : null}
     </>
   );
 }
@@ -244,8 +282,16 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
           ) : null}
         </div>
         <TerminalContent content={command} tone="command" t={t} />
-        {process?.stdout ? <TerminalContent content={process.stdout} tone="stdout" t={t} /> : null}
-        {process?.stderr ? <TerminalContent content={process.stderr} tone={failed ? 'stderr' : 'stdout'} t={t} /> : null}
+        {process ? (
+          running && !hasText(process.stdout) && !hasText(process.stderr) ? null : (
+            <TerminalOutputs
+              stdout={process.stdout}
+              stderr={process.stderr}
+              failed={failed}
+              t={t}
+            />
+          )
+        ) : null}
         {process ? <p className="tool-card__reason">{t('toolCard.duration', { ms: process.duration_ms })}</p> : null}
         {processError ? <p className="tool-card__reason"><RefreshCw size={13} /> {processError}</p> : null}
       </div>
@@ -277,8 +323,12 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
           <PermissionModeBadge permissionMode={permissionMode} t={t} />
         </div>
         <TerminalContent content={command} tone="command" t={t} />
-        {result.stdout ? <TerminalContent content={result.stdout} tone="stdout" t={t} /> : null}
-        {result.stderr ? <TerminalContent content={result.stderr} tone={failed ? 'stderr' : 'stdout'} t={t} /> : null}
+        <TerminalOutputs
+          stdout={result.stdout}
+          stderr={result.stderr}
+          failed={failed}
+          t={t}
+        />
       </div>
     );
   }

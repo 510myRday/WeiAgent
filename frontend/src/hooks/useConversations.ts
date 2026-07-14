@@ -191,7 +191,14 @@ export function useConversations({
     setMessages((current) => {
       const last = current[current.length - 1];
       if (last && 'role' in last && last.role === 'assistant') {
-        return [...current.slice(0, -1), { ...last, content: last.content + delta }];
+        return [
+          ...current.slice(0, -1),
+          {
+            ...last,
+            content: last.content + delta,
+            status: 'streaming' as const,
+          },
+        ];
       }
       const prevUi = last && 'role' in last ? last : undefined;
       return [
@@ -202,6 +209,7 @@ export function useConversations({
           conversation_id: prevUi?.conversation_id ?? activeStreamRef.current.conversationId,
           role: 'assistant' as const,
           content: delta,
+          status: 'streaming' as const,
           created_at: new Date().toISOString(),
           clientId: genClientId(),
         },
@@ -242,6 +250,16 @@ export function useConversations({
       }
       if (evt.event === 'done') {
         setIsSending(false);
+        setMessages((current) => {
+          const last = current[current.length - 1];
+          if (last && 'role' in last && last.role === 'assistant' && last.status === 'streaming') {
+            if (!last.content) {
+              return current.slice(0, -1);
+            }
+            return [...current.slice(0, -1), { ...last, status: 'done' as const }];
+          }
+          return current;
+        });
         return;
       }
       if (evt.event === 'user') {
@@ -265,9 +283,17 @@ export function useConversations({
         setMessages((current) => {
           const last = current[current.length - 1];
           if (last && 'role' in last && last.role === 'assistant') {
-            return [...current.slice(0, -1), { ...last, id: msg.id || last.id, content: msg.content || last.content, status: msg.status ?? last.status }];
+            return [
+              ...current.slice(0, -1),
+              {
+                ...last,
+                id: msg.id || last.id,
+                content: msg.content || last.content,
+                status: msg.status ?? 'done',
+              },
+            ];
           }
-          return [...current, msg];
+          return [...current, { ...msg, status: msg.status ?? 'done' }];
         });
         return;
       }

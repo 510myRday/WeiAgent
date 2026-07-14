@@ -59,12 +59,6 @@ pub async fn prepare_chat(
     };
     let mut messages_for_llm = history;
     messages_for_llm.push(user_message.clone());
-    let system_prompt = state.store.build_agent_system_prompt(&agent).await?;
-    if system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
-        return Err(AppError::BadRequest(format!(
-            "agent system prompt exceeds {MAX_SYSTEM_PROMPT_BYTES} bytes"
-        )));
-    }
     let mut tools_config = state.store.read_agent_tools_config(agent.id).await?;
     if tools_config.terminal.enabled
         && tools_config.terminal.permission_mode
@@ -72,6 +66,15 @@ pub async fn prepare_chat(
         && !state.sandbox_runtime.is_available_cached()
     {
         tools_config.terminal.enabled = false;
+    }
+    let system_prompt = state
+        .store
+        .build_agent_system_prompt(&agent, &tools_config)
+        .await?;
+    if system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "agent system prompt exceeds {MAX_SYSTEM_PROMPT_BYTES} bytes"
+        )));
     }
 
     Ok(PreparedChat {

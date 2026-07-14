@@ -160,7 +160,7 @@ export function ChatPanel({
 
   useLayoutEffect(() => {
     scrollToBottom();
-  }, [messages, scrollToBottom]);
+  }, [messages, isSending, scrollToBottom]);
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(updateScrollButtonVisibility);
@@ -389,6 +389,19 @@ export function ChatPanel({
               />
             );
           })}
+          {shouldShowAgentWaitingBubble(messages, isSending) ? (
+            <article className="message-row assistant is-streaming is-waiting" aria-live="polite">
+              <MessageAvatar agent={activeAgent} settings={settings} isUser={false} />
+              <div className="message-body">
+                <div className="message-meta">
+                  <strong>{activeAgent ? displayAgentName(activeAgent) : 'Assistant'}</strong>
+                </div>
+                <div className="message-bubble">
+                  <TypingIndicator label={t('chat.sending')} />
+                </div>
+              </div>
+            </article>
+          ) : null}
           <div ref={messagesEndRef} />
         </div>
 
@@ -449,6 +462,39 @@ export function ChatPanel({
   );
 }
 
+
+function shouldShowAgentWaitingBubble(messages: UiMessageItem[], isSending: boolean): boolean {
+  if (!isSending) return false;
+
+  const last = messages[messages.length - 1];
+  if (!last) return true;
+
+  // Tool agent-loop: keep a typing bubble under tool cards, except while waiting for user approval.
+  if ('type' in last && last.type === 'tool_call') {
+    return last.status !== 'pending_approval';
+  }
+
+  if ('role' in last && last.role === 'assistant') {
+    // Empty streaming assistant already renders dots inside the bubble.
+    // Streaming text already communicates progress.
+    // Finalized assistant content should not flash a trailing waiting bubble before `done`.
+    return false;
+  }
+
+  // e.g. last item is a user message and the optimistic assistant bubble is missing.
+  return true;
+}
+
+function TypingIndicator({ label }: { label: string }) {
+  return (
+    <div className="typing-indicator" role="status" aria-label={label}>
+      <span />
+      <span />
+      <span />
+    </div>
+  );
+}
+
 function MessageRow({
   message,
   showTimeSeparator,
@@ -505,14 +551,10 @@ function MessageAvatar({ agent, settings, isUser }: { agent?: Agent; settings: A
 }
 
 function MessageContent({ message }: { message: UiMessage }) {
+  const { t } = useI18n();
+
   if (message.status === 'streaming' && !message.content) {
-    return (
-      <div className="typing-indicator" role="status" aria-label="Preparing response">
-        <span />
-        <span />
-        <span />
-      </div>
-    );
+    return <TypingIndicator label={t('chat.sending')} />;
   }
 
   if (message.status === 'streaming') {

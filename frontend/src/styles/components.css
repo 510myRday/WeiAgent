@@ -283,6 +283,26 @@
   background: #fff7f7;
 }
 
+.tool-card__output-shell--empty {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+
+.tool-card__output-shell--empty-failed {
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+
+.tool-card__output-shell--empty-failed .tool-card__output--empty {
+  color: #b42318;
+}
+
+.tool-card__output-shell .tool-card__output--empty {
+  color: #94a3b8;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-style: normal;
+}
+
 .tool-card__output-shell .tool-card__output {
   box-sizing: border-box;
   max-height: calc(5 * 1.5em + 20px);
