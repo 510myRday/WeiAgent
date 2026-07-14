@@ -102,7 +102,7 @@ WeiAgent/
 │   │       └── openai_compatible.rs  # OpenAI 兼容客户端实现（含重试）
 │   ├── tools/
 │   │   ├── registry.rs       # ToolRegistry、AgentTool、内置工具注册
-│   │   ├── execute.rs        # Docker/本机未隔离执行、超时转后台
+│   │   ├── execute.rs        # OS 沙箱/完整访问执行、超时转后台
 │   │   ├── process_manager.rs# 后台进程、输出、停止和状态管理
 │   │   ├── approval.rs       # 审批管理和自动 TTL 过期
 │   │   └── terminal.rs       # 命令策略检查
@@ -127,6 +127,7 @@ WeiAgent/
 │   └── vite.config.ts        # Vite 配置（proxy、vendor chunk 分割）
 └── data/                     # 运行时数据（dev 模式在项目根目录，release 在 exe 同目录）
     ├── settings.json
+    ├── tool_defaults.json
     ├── model_providers.json
     ├── agents.json
     ├── conversations.json
@@ -134,7 +135,8 @@ WeiAgent/
     │   ├── personality.md
     │   ├── memory.md
     │   ├── instructions.md
-    │   └── tools.json
+    │   └── tools.json         # Agent 工具覆盖项和上下文授权
+    ├── runtimes/              # WeiAgent 托管的 OS 沙箱运行时
     └── conversations/{conversation_id}.json
 ```
 
@@ -144,6 +146,7 @@ WeiAgent/
 
 - `data/settings.json`：保存应用监听地址、端口、日志级别、用户头像图标和颜色、语言、请求超时秒数、超时重试次数。默认值：`127.0.0.1:18283`、`info`、`bot/#22c55e`、`zh`、`60`、`3`
 - `data/model_providers.json`：保存 OpenAI 兼容模型提供商、Base URL、API Key、模型列表和 extra_body（额外请求体 JSON）。API Key 本地明文保存，但 API 响应通过 `has_api_key` 布尔值和 `masked_api_key`（如 `****cret`）脱敏返回
+- `data/tool_defaults.json`：保存所有 Agent 默认继承的工具配置，不保存任何 Agent 上下文授权
 - `data/agents.json`：保存 Agent 配置，包含 `id`、`name`、`model_provider_id`、`model_id`、`is_builtin`、`avatar_icon`、`avatar_color`、`created_at`、`updated_at`
 - `data/conversations.json` 与 `data/conversations/{conversation_id}.json`：保存多会话元数据和消息。会话标题自动从第一条用户消息截取（最多 80 字符）；`message_count` 在列表查询时自动修正
 
@@ -213,9 +216,9 @@ WeiAgent/
 - `data/agents/{agent_id}/personality.md`：个性、人设、沟通风格
 - `data/agents/{agent_id}/memory.md`：长期记忆、用户偏好、项目背景和重要决策
 - `data/agents/{agent_id}/instructions.md`：核心工作规则、输出要求和默认流程
-- `data/agents/{agent_id}/tools.json`：未来工具调用配置占位，本阶段不参与提示词
+- `data/agents/{agent_id}/tools.json`：只保存该 Agent 相对全局默认值的覆盖字段，以及该 Agent 的上下文授权；旧版完整配置会自动迁移为差异覆盖
 
-运行时会将 `personality.md`、`memory.md`、`instructions.md` 按 `## Personality`、`## Memory`、`## Instructions` 标题合并为 system prompt 发送给模型。`tools.json` 不进入提示词，后续工具阶段会接入模型工具调用接口。
+运行时会将 `personality.md`、`memory.md`、`instructions.md` 按 `## Personality`、`## Memory`、`## Instructions` 标题合并为 system prompt 发送给模型。工具执行使用“全局默认 + Agent 覆盖 + Agent 授权”合并后的有效配置，`tools.json` 本身不进入提示词。
 
 Agent 已不再使用单一的 `system_prompt` 字段，工作空间的三份 Markdown 文档完全取代了它。
 
@@ -305,166 +308,83 @@ Agent 响应会额外返回后端保存的内置身份信息：
 - Agent 模板：继续增加更多内置 Agent 或可导入模板
 ## 第三阶段：终端工具系统
 
-第三阶段为 Agent 添加终端命令执行能力，采用黑名单安全策略，审批交互嵌入聊天气泡。
+终端工具采用本机 OS 沙箱和人工审批，不使用 Docker，也不提供自动审批。
 
-### 安全策略
+### 权限模式
 
-- **黑名单模式**：命令不在黑名单和审批名单中的默认放行
-- **拒绝名单**（`blocked_patterns`）：匹配后直接拦截，如 `rm -rf /`、`curl|sh`、`sudo`、`chmod 777`、命令注入等
-- **审批名单**（`approval_required_patterns`）：匹配后在聊天气泡内显示审批卡片，用户点击允许/记住 24 小时/拒绝
-- 所有正则模式可在前端 Agent 编辑页的 Tools tab 中实时修改
+- `request_approval`：普通命令通过 Codex OS sandbox helper 的 `:workspace` 权限配置执行。工作区内写入自动完成，网络和工作区外写入被沙箱拒绝。
+- `full_access`：命令直接在宿主机执行，不使用沙箱，也不产生审批提示。
+- 模型只有显式设置 `sandbox_permissions = "require_escalated"` 并提供 `justification` 时，才会在 `request_approval` 模式下请求人工批准。
+- 用户可允许一次、记住 24 小时或拒绝。记忆授权精确绑定命令和工作目录。
 
 ### 工具配置
 
-每个 Agent 的 `data/agents/{agent_id}/tools.json` 存储终端工具配置：
+- 全局工具页编辑 `data/tool_defaults.json`，作为所有 Agent 的默认配置。
+- Agent 的 Tools 标签按字段选择“继承默认”或保存独立覆盖，不复制整份全局配置。
+- `approval_grants` 始终属于具体 Agent，不参与全局继承。
+- API 同时返回 `defaults`、`overrides`、`effective`，聊天执行只使用合并后的 `effective`。
 
 ```json
 {
+  "max_llm_iterations": 20,
   "terminal": {
     "enabled": true,
-    "blocked_patterns": ["rm\\s+-rf\\s+/", "curl.*\\|\\s*sh", "sudo\\s+"],
-    "approval_required_patterns": ["rm\\s+", "git\\s+push", "docker\\s+rm"],
-    "always_allowed_patterns": [],
+    "permission_mode": "request_approval",
     "approval_grants": [],
     "default_timeout_ms": 30000,
-    "allowed_cwd_roots": [],
-    "sandbox": {
-      "mode": "docker",
-      "docker_image": "rust:1-bookworm",
-      "network_enabled": false,
-      "memory_limit_mb": 512,
-      "cpu_limit": 1.0,
-      "pids_limit": 128,
-      "workspace_read_only": false
-    }
+    "allowed_cwd_roots": []
   }
 }
 ```
 
-### 后端新增模块
+### 执行模型
 
-- `src/domain/tools.rs`：`TerminalToolConfig`、`AgentToolsConfig`、`CommandDecision`、`ToolResult` 类型定义
-- `src/tools/terminal.rs`：`CommandChecker` 正则匹配引擎，含单元测试
-- `src/tools/process_manager.rs`：`DashMap` 后台进程管理，输出缓存上限 1MB
-- `src/tools/execute.rs`：`execute_terminal` 异步执行函数，支持超时转后台
-- `src/app/handlers/tools.rs`：`GET/PUT /api/agents/{agent_id}/tools-config` 端点
-- `AppState` 新增 `process_manager: Arc<ProcessManager>`
-- `Cargo.toml` 新增 `regex`、`dashmap` 依赖
-
-### 前端新增组件
-
-- `ToolCallCard.tsx`：5 种状态渲染（running/pending_approval/completed/blocked/rejected/error）
-- `TerminalToolSettings.tsx`：Agent 编辑页 Tools tab，可视化编辑黑名单/审批名单/超时/cwd
-- `types.ts` 新增 `ToolCallMessage`、`UiMessageItem`、扩展 `StreamEvent` 支持 `tool_call`/`tool_result`/`approval_required`
-- `useConversations` hook 处理工具相关 SSE 事件
-- `ChatPanel.tsx` 消息流区分普通消息和工具调用卡片，审批按钮直接在气泡内交互
-- `api.ts` 新增 `readAgentToolsConfig`、`updateAgentToolsConfig`、`approveToolCall`
-
-### SSE 事件扩展
-
-- `tool_call`：通知前端工具开始执行
-- `tool_result`：返回工具执行结果（stdout/stderr/exit_code/duration）
-- `approval_required`：触发气泡内审批卡片
-
-### 已完成补充
-
-- **Phase 3.2**：`POST /api/tools/approve` 审批端点。内存 `ApprovalManager`（DashMap）管理待审批条目，支持 approve/reject/always_approve 三种决策，10 分钟自动过期清理。
-### Function Calling 架构
-
-第三阶段工具系统使用正规 **OpenAI Function Calling 协议**，工具定义通过请求体的 `tools` 字段发送，不进入 system prompt。
-
-#### 核心改动
-
-- **LLM Client Trait**：`ChatClient::stream()` 返回 `Stream<StreamEvent>` 枚举（TextDelta / ToolCallStart / ToolCallArgsDelta / FinishedWithToolCalls / Finished），替代原来的 `Stream<String>`；`complete()` 和 `stream()` 均新增 `tools: Option<Vec<ToolDefinition>>` 参数
-- **请求构建**：`build_chat_request()` 接受 `tools` 参数，生成符合 OpenAI 规范的 `tools` JSON Schema；`OpenAiMessage` 支持 `role: "tool"` + `tool_call_id` 字段
-- **SSE 解析**：`parse_sse_line()` 区分 `content` delta 和 `tool_calls` delta，按 `index` 累积 `arguments`，检测 `finish_reason: "tool_calls"`
-- **执行循环**：SSE 流中实时累积 tool_calls → 流结束后安全检查 → 执行/审批 → 追加 assistant `tool_calls` 消息和 `role: "tool"` 结果消息 → 二次调用 LLM 获得最终回复
-- **Domain 扩展**：`ChatRole` 新增 `Tool` 变体；`ChatMessage` 新增 `tool_call_id: Option<String>` 字段
-
-#### 数据流
-
-```
-User Message → prepare_chat(tools_config) → LLM stream(tools=[execute_terminal])
-  ↓ StreamEvent::TextDelta → 前端 delta 事件
-  ↓ StreamEvent::ToolCallStart/ArgsDelta → 累积 tool_calls
-  ↓ StreamEvent::FinishedWithToolCalls → 触发工具执行
-  ↓ CommandChecker → Allowed/Blocked/NeedsApproval
-  ↓ execute_terminal → tool_result SSE 事件
-  ↓ ChatMessage{role:Tool, tool_call_id} → 追加到 messages
-  ↓ LLM complete(messages+tool_results) → follow-up 文本
-  ↓ done SSE 事件
+```text
+User Message
+  -> LLM Function Calling
+  -> execute_terminal
+  -> use_default
+       -> Codex OS sandbox helper
+       -> workspace write / network denied
+  -> require_escalated
+       -> approval_required SSE
+       -> user approve
+       -> direct host execution
+  -> tool_result
+  -> role=tool message
+  -> follow-up LLM response
 ```
 
+### 终端能力
 
-### 第三阶段完成状态（2026-07-13）
+- 内置工具：`execute_terminal`、`get_terminal_process`、`stop_terminal_process`
+- 工具参数：`command`、`cwd`、`timeout_ms`、`background`、`sandbox_permissions`、`justification`
+- `cwd` 省略、空字符串或 `.` 都使用配置的默认工作区；非空 `cwd` 必须是已存在目录，不允许失败后静默切换到猜测路径
+- 终端工具定义会明确告知模型当前宿主 OS 和命令解释器，避免在 Windows 上默认生成 `/tmp`、heredoc、`python3` 等 Unix 假设
+- 前台等待超时后自动转为后台进程并返回 `process_id`
+- 普通前台命令只在执行期间由进程管理器捕获输出，完成后立即移除，不出现在后台进程列表
+- 只有显式 `background: true` 或超过前台等待时间的任务会进入后台进程列表
+- stdout/stderr 各保留最后 1MB，返回模型时限制为最后 64KB
+- 真正的后台进程最长运行 1 小时，完成记录保留 24 小时
+- 全局最多 32 个运行进程，每个 Agent 最多 8 个
+- 单轮最多 8 个工具调用，单次 Agent run 最多 32 个，最长运行 15 分钟
+- LLM 工具循环默认 20 轮，最大 50 轮；耗尽后执行一次无工具总结
+- 同一会话只允许一个活跃 Agent run
+- 当前终端保持非交互执行，stdin 关闭，不提供 PTY/session/write_stdin
 
-第三阶段终端工具主链路已经完成闭环：
+### OS 沙箱运行时
 
-- 新增 `src/app/agent_executor.rs`，流式和普通完整回复共用同一个 Agent 执行器。
-- Function Calling 使用可配置执行预算，默认 20 轮、硬上限 50 轮，并额外限制单轮和整次运行的工具调用数。
-- 新增 `src/tools/registry.rs` 通用 `ToolRegistry` / `AgentTool` 抽象，聊天执行器不再写死 `execute_terminal`。
-- 内置工具扩展为 `execute_terminal`、`get_terminal_process`、`stop_terminal_process`。
-- `execute_terminal` Schema 已向模型暴露 `command`、`cwd`、`timeout_ms`、`background`。
-- 前台命令超过 `timeout_ms` 后不再杀死，而是保留为后台进程并返回 `process_id`。
-- 后台进程实时捕获 stdout/stderr，各输出缓冲区上限 1MB；完成记录在进程管理器中保留 24 小时。
-- 新增后台进程 API：
-  - `GET /api/tools/processes?agent_id={agent_id}`
-  - `GET /api/tools/processes/{process_id}`
-  - `DELETE /api/tools/processes/{process_id}`
-- 聊天气泡和 Tools 页面均可轮询后台进程状态、查看输出和停止进程。
-- “记住 24 小时”会保存上下文绑定授权，包含命令、工作目录、沙箱模式、网络和只读状态；设置页可以查看和撤销，旧的全局放行正则不再参与决策。
-- 审批注册时会启动独立 TTL 清理任务，10 分钟后自动拒绝并移除，不再依赖下一次审批请求触发清理。
-- 普通完整回复 API 已接入同一套多轮工具执行逻辑；需要人工审批的命令在普通接口中会安全拒绝，并提示使用 SSE 接口完成交互审批。
-- Docker 容器沙箱是安全默认值，并且失败关闭，不做静默本机回退：
-  - 默认关闭容器网络
-  - 只读根文件系统和受限 `/tmp`
-  - 丢弃全部 Linux capabilities
-  - 启用 `no-new-privileges`
-  - 限制内存、CPU 和进程数
-  - 仅挂载命中的 `allowed_cwd_roots`；为空时只允许后端当前工作目录
-- 保留 `native_restricted` 序列化名称用于配置兼容，但界面和审批中明确称为“本机未隔离模式”；未命中上下文授权时每次都必须审批。
-- 服务仅允许监听 loopback 地址，生产路由不开放任意来源 CORS。
-- 同一会话只允许一个活跃 Agent run；客户端断开或运行超时会停止本轮非显式后台进程。
-- 工具参数使用强类型反序列化并拒绝额外字段；工具调用 ID、参数、输出、上下文、进程数和运行时间均有硬上限。
-- 后台进程最长运行 1 小时，完成记录由定时清理任务回收；进程 API 要求 Agent 所有权参数。
-- 已增加端到端和安全回归测试，覆盖多轮工具、SSE Function Calling、审批归属、并发运行、Docker 失败关闭和原生执行审批。
-
-Docker 沙箱运行依赖本机 Docker daemon。Docker 不可用时命令会安全失败，不会自动降级到宿主机执行；如确需兼容模式，用户必须在 Tools 设置中显式选择 `native_restricted`。
-
-## 工具内核收紧（2026-07-13 实施）
-
-本轮只做必要内核能力，不扩展工具数量，不引入 MCP / 插件 / PTY / 智能审批。
-
-### 已实现
-
-1. **可配置工具循环和资源预算**
-   - `AgentToolsConfig.max_llm_iterations` 默认 `20`，可配置范围 `1..=50`
-   - 存在于 `data/agents/{id}/tools.json`
-   - 前端 Tools 设置页可编辑
-   - 达到预算后执行一次 **无 tools 的收尾总结调用**，而不是直接报错中断
-   - 单轮最多 8 个工具调用，整次运行最多 32 个工具调用，最长运行 15 分钟
-
-2. **终端 Docker 失败关闭**
-   - 默认仍是 `sandbox.mode = docker`
-   - Docker daemon 不可用时直接拒绝，不会执行宿主机命令
-   - 如需本机执行，必须显式选择未隔离模式并完成审批
-
-3. **参数校验收紧**
-   - 工具参数必须是 JSON object
-   - 非 object 不再静默变成空对象，而是返回结构化错误
-   - 工具参数使用 `deny_unknown_fields`，终端等待超时最大 120 秒
-
-### 明确未做（非必要）
-
-- 不新增除终端外的工具
-- 不做 MCP / 插件 / toolset 生态
-- 当前终端工具保持非交互执行，stdin 明确关闭；PTY/session/write_stdin 作为后续独立能力
-- 不做 OpenClaw 式复杂 loop detection
-- 不做 Hermes 式 smart approval / 多后端
-- 不做持久 Docker 容器（仍是每命令临时容器）
+- WeiAgent 会依次发现 `WEIAGENT_OS_SANDBOX_BIN`、托管安装版本和系统 Codex。
+- 全局工具页可以查看、刷新或安装固定版本的托管沙箱运行时。
+- 当前托管版本为 Codex CLI `0.137.0`，按 OS/CPU 从 npm Registry 下载平台原生包，不要求用户安装 Node.js 或 npm。
+- 下载过程流式写入临时文件，限制最大体积，使用 Registry 提供的 SHA-512 integrity 校验后安全解包。
+- 托管运行时安装到 `data/runtimes/codex/{version}/{platform}`，独立 `CODEX_HOME` 保存到 `data/runtimes/codex-home`。
+- OS sandbox helper 不可用时，请求批准模式不会向模型暴露终端工具，也不会自动降级为完全访问。
+- 完全访问模式必须由用户显式选择，不依赖 helper。
+- Codex CLI 采用 Apache-2.0 许可证，第三方归属信息见 `THIRD_PARTY_NOTICES.md`。
 
 ### 验证
 
-- `cargo test`：37 项全部通过
-- `cargo clippy --all-targets --all-features -- -D warnings`：通过
-- `npm run build`：通过
+- 后端单元与端到端测试覆盖权限模式、人工审批、授权记忆、真实 OS 沙箱边界、后台进程和工具预算
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `npm run build`

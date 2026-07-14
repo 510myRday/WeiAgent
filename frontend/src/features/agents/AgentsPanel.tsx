@@ -316,7 +316,7 @@ export function AgentsPanel({
                   ))}
                 </div>
                 {activeWorkspaceField === 'tools' && activeAgent ? (
-                  <TerminalToolSettings agentId={activeAgent.id} onError={setError} />
+                  <TerminalToolSettings scope="agent" agentId={activeAgent.id} onError={setError} />
                 ) : (
                   <FormField label={activeWorkspaceLabel} htmlFor="agent-workspace-field">
                     <textarea

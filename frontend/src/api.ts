@@ -183,30 +183,48 @@ export type AgentToolsConfig = {
   max_llm_iterations: number;
   terminal: {
     enabled: boolean;
-    blocked_patterns: string[];
-    approval_required_patterns: string[];
-    always_allowed_patterns: string[];
+    permission_mode: 'request_approval' | 'full_access';
     approval_grants: Array<{
       command: string;
       cwd?: string;
-      sandbox_mode: 'docker' | 'native_restricted';
-      network_enabled: boolean;
-      workspace_read_only: boolean;
+      permission_mode: 'request_approval';
       created_at?: string;
       expires_at?: string;
     }>;
     default_timeout_ms: number;
     allowed_cwd_roots: string[];
-    sandbox: {
-      mode: 'docker' | 'native_restricted';
-      docker_image: string;
-      network_enabled: boolean;
-      memory_limit_mb: number;
-      cpu_limit: number;
-      pids_limit: number;
-      workspace_read_only: boolean;
-    };
   };
+};
+
+export type AgentToolsOverrides = {
+  version: 1;
+  max_llm_iterations?: number;
+  terminal: {
+    enabled?: boolean;
+    permission_mode?: 'request_approval' | 'full_access';
+    approval_grants: AgentToolsConfig['terminal']['approval_grants'];
+    default_timeout_ms?: number;
+    allowed_cwd_roots?: string[];
+  };
+};
+
+export type AgentToolsSettings = {
+  defaults: AgentToolsConfig;
+  overrides: AgentToolsOverrides;
+  effective: AgentToolsConfig;
+};
+
+export type SandboxRuntimeStatus = {
+  supported: boolean;
+  available: boolean;
+  managed_installed: boolean;
+  installing: boolean;
+  target_version: string;
+  platform?: string;
+  source?: 'managed' | 'environment' | 'system';
+  detected_version?: string;
+  executable?: string;
+  error?: string;
 };
 
 export type ToolProcessStatus = 'running' | 'completed' | 'failed' | 'stopped';
@@ -226,18 +244,51 @@ export type ToolProcessInfo = {
   finished_at?: string;
   duration_ms: number;
 };
-export function readAgentToolsConfig(agentId: string): Promise<AgentToolsConfig> {
-  return request<AgentToolsConfig>(`/api/agents/${agentId}/tools-config`);
+export function readToolDefaults(): Promise<AgentToolsConfig> {
+  return request<AgentToolsConfig>('/api/tools/defaults');
+}
+
+export function updateToolDefaults(config: AgentToolsConfig): Promise<AgentToolsConfig> {
+  return request<AgentToolsConfig>('/api/tools/defaults', {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  });
+}
+
+export function readAgentToolsConfig(agentId: string): Promise<AgentToolsSettings> {
+  return request<AgentToolsSettings>(`/api/agents/${agentId}/tools-config`);
 }
 
 export function updateAgentToolsConfig(
   agentId: string,
-  config: AgentToolsConfig,
-): Promise<AgentToolsConfig> {
-  return request<AgentToolsConfig>(`/api/agents/${agentId}/tools-config`, {
+  config: AgentToolsOverrides,
+): Promise<AgentToolsSettings> {
+  return request<AgentToolsSettings>(`/api/agents/${agentId}/tools-config`, {
     method: 'PUT',
     body: JSON.stringify(config),
   });
+}
+
+export function readSandboxRuntime(): Promise<SandboxRuntimeStatus> {
+  return request<SandboxRuntimeStatus>('/api/tools/sandbox-runtime');
+}
+
+export function refreshSandboxRuntime(): Promise<SandboxRuntimeStatus> {
+  return request<SandboxRuntimeStatus>('/api/tools/sandbox-runtime/refresh', {
+    method: 'POST',
+  });
+}
+
+export async function installSandboxRuntime(): Promise<SandboxRuntimeStatus> {
+  const response = await fetch('/api/tools/sandbox-runtime', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    signal: AbortSignal.timeout(15 * 60 * 1000),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  return response.json() as Promise<SandboxRuntimeStatus>;
 }
 
 

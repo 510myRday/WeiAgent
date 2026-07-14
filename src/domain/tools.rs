@@ -1,18 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 /// Terminal tool configuration stored in data/agents/{agent_id}/tools.json.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct TerminalToolConfig {
     pub enabled: bool,
-    /// Commands matching these regex patterns are rejected before any allow rule.
-    #[serde(default = "default_blocked_patterns")]
-    pub blocked_patterns: Vec<String>,
-    /// Commands matching these regex patterns require interactive approval.
-    #[serde(default = "default_approval_patterns")]
-    pub approval_required_patterns: Vec<String>,
-    /// Legacy compatibility field. Persistent bypass patterns are no longer honored.
+    /// User-facing permission mode for local terminal execution.
     #[serde(default)]
-    pub always_allowed_patterns: Vec<String>,
+    pub permission_mode: TerminalPermissionMode,
     /// Exact, context-bound grants created by interactive "always allow".
     #[serde(default)]
     pub approval_grants: Vec<TerminalApprovalGrant>,
@@ -22,45 +17,24 @@ pub struct TerminalToolConfig {
     /// Host roots that may be mounted/used by the tool. Empty means the server working directory.
     #[serde(default)]
     pub allowed_cwd_roots: Vec<String>,
-    /// Process/container sandbox configuration.
-    #[serde(default)]
-    pub sandbox: TerminalSandboxConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum SandboxMode {
-    /// Require Docker and fail closed when the daemon is unavailable.
-    Docker,
-    /// Compatibility mode with cwd containment and a sanitized environment, but no kernel sandbox.
-    NativeRestricted,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TerminalSandboxConfig {
-    #[serde(default = "default_sandbox_mode")]
-    pub mode: SandboxMode,
-    #[serde(default = "default_docker_image")]
-    pub docker_image: String,
-    #[serde(default)]
-    pub network_enabled: bool,
-    #[serde(default = "default_memory_limit_mb")]
-    pub memory_limit_mb: u64,
-    #[serde(default = "default_cpu_limit")]
-    pub cpu_limit: f64,
-    #[serde(default = "default_pids_limit")]
-    pub pids_limit: u32,
-    #[serde(default)]
-    pub workspace_read_only: bool,
+pub enum TerminalPermissionMode {
+    /// Routine work runs in the local OS sandbox. Full host access requires user approval.
+    #[default]
+    RequestApproval,
+    /// Commands run directly on the host without sandboxing or approval prompts.
+    FullAccess,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct TerminalApprovalGrant {
     pub command: String,
     pub cwd: Option<String>,
-    pub sandbox_mode: SandboxMode,
-    pub network_enabled: bool,
-    pub workspace_read_only: bool,
+    pub permission_mode: TerminalPermissionMode,
     #[serde(default)]
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
@@ -71,93 +45,25 @@ fn default_timeout_ms() -> u64 {
     30_000
 }
 
-fn default_sandbox_mode() -> SandboxMode {
-    SandboxMode::Docker
-}
-
-fn default_docker_image() -> String {
-    "rust:1-bookworm".to_string()
-}
-
-fn default_memory_limit_mb() -> u64 {
-    512
-}
-
-fn default_cpu_limit() -> f64 {
-    1.0
-}
-
-fn default_pids_limit() -> u32 {
-    128
-}
-
 fn default_max_llm_iterations() -> u32 {
     20
-}
-
-fn default_blocked_patterns() -> Vec<String> {
-    vec![
-        r"rm\s+-rf\s+/".into(),
-        r"curl.*\|\s*sh".into(),
-        r"wget.*\|\s*sh".into(),
-        r"sudo\s+".into(),
-        r"chmod\s+777".into(),
-        r";\s*rm\s+-rf".into(),
-        r"\$\(".into(),
-        r"(?i)\bformat\s+[a-z]:".into(),
-        r"(?i)\bdel\s+/[fsq]".into(),
-        r"(?i)\brmdir\s+/s".into(),
-        r"(?i)\bRemove-Item\b.*\b-Recurse\b".into(),
-    ]
-}
-
-fn default_approval_patterns() -> Vec<String> {
-    vec![
-        r"(?i)\brm\b".into(),
-        r"(?i)\bgit\s+(?:-\S+\s+)*push\b".into(),
-        r"(?i)\bgit\s+(?:-\S+\s+)*reset\b".into(),
-        r"(?i)\bdocker\s+rm\b".into(),
-        r"(?i)\bnpm\s+publish\b".into(),
-        r"(?i)\bcargo\s+publish\b".into(),
-        r"(?i)\bRemove-Item\b".into(),
-        r"(?i)\bdel\b".into(),
-        r"(?i)\berase\b".into(),
-        r"(?i)\brd\b".into(),
-        r"(?i)\brmdir\b".into(),
-    ]
-}
-
-impl Default for TerminalSandboxConfig {
-    fn default() -> Self {
-        Self {
-            mode: default_sandbox_mode(),
-            docker_image: default_docker_image(),
-            network_enabled: false,
-            memory_limit_mb: default_memory_limit_mb(),
-            cpu_limit: default_cpu_limit(),
-            pids_limit: default_pids_limit(),
-            workspace_read_only: false,
-        }
-    }
 }
 
 impl Default for TerminalToolConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            blocked_patterns: default_blocked_patterns(),
-            approval_required_patterns: default_approval_patterns(),
-            always_allowed_patterns: Vec::new(),
+            enabled: false,
+            permission_mode: TerminalPermissionMode::RequestApproval,
             approval_grants: Vec::new(),
             default_timeout_ms: default_timeout_ms(),
             allowed_cwd_roots: Vec::new(),
-            sandbox: TerminalSandboxConfig::default(),
         }
     }
 }
 
 /// Agent tool configuration collection (tools.json top-level structure).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct AgentToolsConfig {
     /// Maximum tool-capable LLM iterations for one user turn.
     /// After this budget is exhausted, one final no-tools summary call is made.
@@ -182,30 +88,132 @@ impl AgentToolsConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentToolsOverrides {
+    #[serde(default = "tool_overrides_version")]
+    pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_llm_iterations: Option<u32>,
+    #[serde(default)]
+    pub terminal: TerminalToolOverrides,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalToolOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<TerminalPermissionMode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approval_grants: Vec<TerminalApprovalGrant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_cwd_roots: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentToolsSettings {
+    pub defaults: AgentToolsConfig,
+    pub overrides: AgentToolsOverrides,
+    pub effective: AgentToolsConfig,
+}
+
+fn tool_overrides_version() -> u32 {
+    1
+}
+
+impl Default for AgentToolsOverrides {
+    fn default() -> Self {
+        Self {
+            version: tool_overrides_version(),
+            max_llm_iterations: None,
+            terminal: TerminalToolOverrides::default(),
+        }
+    }
+}
+
+impl AgentToolsOverrides {
+    pub fn apply_to(&self, defaults: &AgentToolsConfig) -> AgentToolsConfig {
+        AgentToolsConfig {
+            max_llm_iterations: self
+                .max_llm_iterations
+                .unwrap_or(defaults.max_llm_iterations),
+            terminal: TerminalToolConfig {
+                enabled: self.terminal.enabled.unwrap_or(defaults.terminal.enabled),
+                permission_mode: self
+                    .terminal
+                    .permission_mode
+                    .clone()
+                    .unwrap_or_else(|| defaults.terminal.permission_mode.clone()),
+                approval_grants: self.terminal.approval_grants.clone(),
+                default_timeout_ms: self
+                    .terminal
+                    .default_timeout_ms
+                    .unwrap_or(defaults.terminal.default_timeout_ms),
+                allowed_cwd_roots: self
+                    .terminal
+                    .allowed_cwd_roots
+                    .clone()
+                    .unwrap_or_else(|| defaults.terminal.allowed_cwd_roots.clone()),
+            },
+        }
+    }
+
+    pub fn from_full_config(
+        config: &AgentToolsConfig,
+        defaults: &AgentToolsConfig,
+    ) -> AgentToolsOverrides {
+        AgentToolsOverrides {
+            version: tool_overrides_version(),
+            max_llm_iterations: (config.max_llm_iterations != defaults.max_llm_iterations)
+                .then_some(config.max_llm_iterations),
+            terminal: TerminalToolOverrides {
+                enabled: (config.terminal.enabled != defaults.terminal.enabled)
+                    .then_some(config.terminal.enabled),
+                permission_mode: (config.terminal.permission_mode
+                    != defaults.terminal.permission_mode)
+                    .then_some(config.terminal.permission_mode.clone()),
+                approval_grants: config.terminal.approval_grants.clone(),
+                default_timeout_ms: (config.terminal.default_timeout_ms
+                    != defaults.terminal.default_timeout_ms)
+                    .then_some(config.terminal.default_timeout_ms),
+                allowed_cwd_roots: (config.terminal.allowed_cwd_roots
+                    != defaults.terminal.allowed_cwd_roots)
+                    .then_some(config.terminal.allowed_cwd_roots.clone()),
+            },
+        }
+    }
+
+    #[cfg(test)]
+    pub fn full_override(config: &AgentToolsConfig) -> AgentToolsOverrides {
+        AgentToolsOverrides {
+            version: tool_overrides_version(),
+            max_llm_iterations: Some(config.max_llm_iterations),
+            terminal: TerminalToolOverrides {
+                enabled: Some(config.terminal.enabled),
+                permission_mode: Some(config.terminal.permission_mode.clone()),
+                approval_grants: config.terminal.approval_grants.clone(),
+                default_timeout_ms: Some(config.terminal.default_timeout_ms),
+                allowed_cwd_roots: Some(config.terminal.allowed_cwd_roots.clone()),
+            },
+        }
+    }
+}
+
 impl TerminalToolConfig {
     pub fn has_context_grant(&self, command: &str, cwd: Option<&str>) -> bool {
-        let effective_network_enabled = match &self.sandbox.mode {
-            SandboxMode::Docker => self.sandbox.network_enabled,
-            SandboxMode::NativeRestricted => true,
-        };
         self.approval_grants.iter().any(|grant| {
             grant.command == command
                 && grant.cwd.as_deref() == cwd
-                && grant.sandbox_mode == self.sandbox.mode
-                && grant.network_enabled == effective_network_enabled
-                && grant.workspace_read_only == self.sandbox.workspace_read_only
+                && grant.permission_mode == TerminalPermissionMode::RequestApproval
                 && grant
                     .expires_at
                     .is_some_and(|expires_at| expires_at > chrono::Utc::now())
         })
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CommandDecision {
-    Allowed,
-    NeedsApproval,
-    Blocked(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -239,8 +247,8 @@ pub struct PendingApproval {
     pub command: String,
     pub cwd: Option<String>,
     pub runtime: String,
-    pub network_enabled: bool,
-    pub write_roots: Vec<String>,
+    pub permission: String,
+    pub justification: Option<String>,
     pub background: bool,
 }
 

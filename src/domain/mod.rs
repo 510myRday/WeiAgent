@@ -2,6 +2,7 @@ pub mod agents;
 pub mod chat;
 pub mod conversations;
 pub mod providers;
+pub mod runtime;
 pub mod settings;
 pub mod tools;
 
@@ -15,9 +16,10 @@ pub use providers::{
     CreateModelProviderRequest, FetchProviderModelsRequest, ModelProvider, ModelProviderResponse,
     ProviderType, UpdateModelProviderRequest,
 };
+pub use runtime::{SandboxRuntimeSource, SandboxRuntimeStatus};
 pub use settings::AppSettings;
 pub use tools::{
-    AgentToolsConfig, ApprovalDecision, ApprovalRequest, ApprovalResponse, CommandDecision,
-    PendingApproval, ProcessInfo, ProcessStatus, SandboxMode, TerminalApprovalGrant,
-    TerminalSandboxConfig, TerminalToolConfig, ToolResult,
+    AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision, ApprovalRequest,
+    ApprovalResponse, PendingApproval, ProcessInfo, ProcessStatus, TerminalApprovalGrant,
+    TerminalPermissionMode, TerminalToolConfig, ToolResult,
 };

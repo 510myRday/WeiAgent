@@ -27,7 +27,7 @@ import remarkMath from 'remark-math';
 
 import type { Agent, AppSettings, Conversation, UiMessage, UiMessageItem, ToolCallMessage } from '../../types';
 import { ToolCallCard } from '../../components/ToolCallCard';
-import { approveToolCall } from '../../api';
+import { approveToolCall, readAgentToolsConfig, type AgentToolsConfig } from '../../api';
 import { useI18n } from '../../i18n';
 import { useConversations } from '../../hooks';
 import { AvatarBadge } from '../../components/AvatarPicker';
@@ -69,6 +69,7 @@ export function ChatPanel({
     removeConversation,
   } = useConversations({
     newConversationTitle: t('conversation.newTitle'),
+    approvalDisconnectedMessage: t('toolCard.approvalDisconnected'),
     onError,
     timeoutSeconds: settings.request_timeout_seconds,
   });
@@ -77,6 +78,7 @@ export function ChatPanel({
   const [isStreamMode, setIsStreamMode] = useState(true);
   const [conversationFilter, setConversationFilter] = useState('');
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
+  const [terminalPermissionMode, setTerminalPermissionMode] = useState<AgentToolsConfig['terminal']['permission_mode'] | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -103,8 +105,20 @@ export function ChatPanel({
     cancelActiveSend();
     clearChat();
     setConversationFilter('');
+    setTerminalPermissionMode(null);
     if (!activeAgentId) return;
     void loadConversationsForAgent(activeAgentId);
+    let cancelled = false;
+    void readAgentToolsConfig(activeAgentId)
+      .then((settings) => {
+        if (!cancelled) setTerminalPermissionMode(settings.effective.terminal.permission_mode);
+      })
+      .catch(() => {
+        if (!cancelled) setTerminalPermissionMode(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [activeAgentId, cancelActiveSend, clearChat, loadConversationsForAgent]);
 
   useEffect(() => {
@@ -326,11 +340,11 @@ export function ChatPanel({
             if ('type' in item && item.type === 'tool_call') {
               const toolMsg = item as ToolCallMessage;
               return (
-                <div key={toolMsg.call_id} className="message-row assistant">
+                <div key={toolMsg.call_id} className="message-row assistant message-row--tool">
                   {!false && <MessageAvatar agent={activeAgent} settings={settings} isUser={false} />}
                   <div className="message-body">
                     <div className="message-meta"><strong>{activeAgent ? displayAgentName(activeAgent) : 'Assistant'}</strong></div>
-                    <div className="message-bubble">
+                    <div className="message-bubble message-bubble--tool">
                       <ToolCallCard
                         agentId={activeAgent?.id ?? ''}
                         callId={toolMsg.call_id}
@@ -338,14 +352,17 @@ export function ChatPanel({
                         arguments={toolMsg.arguments}
                         status={toolMsg.status}
                         result={toolMsg.result}
+                        permissionMode={terminalPermissionMode}
                         onApprove={async (decision) => {
                           const approvalId = toolMsg.arguments.approval_id;
                           if (!approvalId) return;
                           try {
-                            if (!activeAgent) return;
-                            await approveToolCall(approvalId, activeAgent.id, decision);
+                            const approvalAgentId = toolMsg.arguments.agent_id || activeAgent?.id;
+                            if (!approvalAgentId) return;
+                            await approveToolCall(approvalId, approvalAgentId, decision);
                           } catch (e) {
                             onError(e instanceof Error ? e.message : 'Approval failed');
+                            throw e;
                           }
                         }}
                       />

@@ -12,8 +12,11 @@ use crate::{
     storage::JsonStore,
     tools::{
         approval::ApprovalManager,
-        execute::{ExecuteTerminalRequest, execute_terminal, process_info_to_result},
+        execute::{
+            ExecuteTerminalRequest, SandboxPermissions, execute_terminal, process_info_to_result,
+        },
         process_manager::ProcessManager,
+        runtime::SandboxRuntimeManager,
     },
 };
 
@@ -21,12 +24,13 @@ use crate::{
 pub enum ToolExecutionEvent {
     ApprovalRequired {
         call_id: String,
+        agent_id: Uuid,
         command: String,
         approval_id: String,
         cwd: Option<String>,
         runtime: String,
-        network_enabled: bool,
-        write_roots: Vec<String>,
+        permission: String,
+        justification: Option<String>,
         background: bool,
     },
 }
@@ -40,6 +44,7 @@ pub struct ToolExecutionContext {
     pub store: Arc<JsonStore>,
     pub process_manager: Arc<ProcessManager>,
     pub approval_manager: Arc<ApprovalManager>,
+    pub sandbox_runtime: Arc<SandboxRuntimeManager>,
     pub event_sender: Option<mpsc::Sender<ToolExecutionEvent>>,
 }
 
@@ -112,21 +117,38 @@ struct ExecuteTerminalArgs {
     timeout_ms: Option<u64>,
     #[serde(default)]
     background: Option<bool>,
+    #[serde(default)]
+    sandbox_permissions: SandboxPermissions,
+    #[serde(default)]
+    justification: Option<String>,
 }
 
 #[async_trait]
 impl AgentTool for ExecuteTerminalTool {
     fn definition(&self) -> ToolDefinition {
+        let description = format!(
+            "Execute a local terminal command. {} In request-approval mode, commands run inside an OS-enforced workspace sandbox with network access blocked. Use sandbox_permissions='require_escalated' only when the user explicitly asked to write outside the workspace, use the internet, or otherwise needs full host access, and include a short justification. If a sandboxed attempt is denied, retry with escalation instead of inventing success. In full-access mode commands run directly without approval. For the default workspace, omit cwd, pass an empty value, or use '.'. Set cwd only to a directory known to exist; never guess paths such as /tmp. Set background=true for long-running services.",
+            terminal_shell_guidance()
+        );
         tool_definition(
             "execute_terminal",
-            "Execute a command in the configured terminal sandbox. Omit cwd to use the configured workspace root; never invent or guess a cwd. Only set cwd when the user explicitly requires a known existing directory inside an allowed root. Set background=true for long-running services. If a foreground command exceeds timeout_ms it automatically continues in the background and returns a process_id. A blocked or error result means the command did not run; do not claim success or invent an exit code.",
+            &description,
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "Shell command to execute" },
-                    "cwd": { "type": "string", "description": "Optional existing host directory inside an allowed sandbox root. Omit this field to use the configured workspace; never guess a path." },
+                    "cwd": { "type": "string", "description": "Optional existing host directory. Omit it, leave it empty, or use '.' for the configured workspace root. Never invent a temporary directory." },
                     "timeout_ms": { "type": "integer", "minimum": 1, "description": "Foreground wait timeout before the command continues in background" },
-                    "background": { "type": "boolean", "description": "Start immediately in background and return a process_id" }
+                    "background": { "type": "boolean", "description": "Start immediately in background and return a process_id" },
+                    "sandbox_permissions": {
+                        "type": "string",
+                        "enum": ["use_default", "require_escalated"],
+                        "description": "Use the OS sandbox by default. Request escalation only for external writes, internet access, or another explicit need for full host access."
+                    },
+                    "justification": {
+                        "type": "string",
+                        "description": "Required when sandbox_permissions is require_escalated. Explain why full host access is needed."
+                    }
                 },
                 "required": ["command"],
                 "additionalProperties": false
@@ -147,15 +169,10 @@ impl AgentTool for ExecuteTerminalTool {
                 };
             }
         };
-        if args
-            .cwd
-            .as_ref()
-            .is_some_and(|cwd| cwd.len() > 4_096 || cwd.trim().is_empty())
-        {
-            return ToolResult::Error {
-                message: "cwd must be a non-empty path no longer than 4096 bytes".to_string(),
-            };
-        }
+        let cwd = match normalize_optional_cwd(args.cwd) {
+            Ok(cwd) => cwd,
+            Err(message) => return ToolResult::Error { message },
+        };
         if args.timeout_ms.is_some_and(|timeout| {
             timeout == 0 || timeout > crate::tools::execute::MAX_TERMINAL_TIMEOUT_MS
         }) {
@@ -167,15 +184,30 @@ impl AgentTool for ExecuteTerminalTool {
             };
         }
         let command = args.command;
-        let cwd = args.cwd;
         let timeout_ms = args.timeout_ms;
         let background = args.background;
+        let sandbox_permissions = args.sandbox_permissions;
+        let justification = args.justification;
+        if context.tools_config.terminal.permission_mode
+            == crate::domain::TerminalPermissionMode::RequestApproval
+            && sandbox_permissions == SandboxPermissions::RequireEscalated
+            && justification
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty() || value.len() > 2_000)
+        {
+            return ToolResult::Error {
+                message:
+                    "justification is required for require_escalated and must be at most 2000 bytes"
+                        .to_string(),
+            };
+        }
         let mut result = execute_terminal(
             &ExecuteTerminalRequest {
                 command: command.clone(),
                 cwd: cwd.clone(),
                 timeout_ms,
                 background,
+                sandbox_permissions,
                 approved: false,
                 agent_id: context.agent_id,
                 conversation_id: context.conversation_id,
@@ -183,6 +215,7 @@ impl AgentTool for ExecuteTerminalTool {
             },
             &context.tools_config.terminal,
             &context.process_manager,
+            &context.sandbox_runtime,
         )
         .await;
 
@@ -210,17 +243,9 @@ impl AgentTool for ExecuteTerminalTool {
                     .first()
                     .cloned()
             }),
-            runtime: match context.tools_config.terminal.sandbox.mode {
-                crate::domain::SandboxMode::Docker => "docker".to_string(),
-                crate::domain::SandboxMode::NativeRestricted => "native_unsandboxed".to_string(),
-            },
-            network_enabled: match context.tools_config.terminal.sandbox.mode {
-                crate::domain::SandboxMode::Docker => {
-                    context.tools_config.terminal.sandbox.network_enabled
-                }
-                crate::domain::SandboxMode::NativeRestricted => true,
-            },
-            write_roots: context.tools_config.terminal.allowed_cwd_roots.clone(),
+            runtime: "full_access".to_string(),
+            permission: "full_access".to_string(),
+            justification: justification.clone(),
             background: background.unwrap_or(false),
         });
         let _approval_guard = ApprovalRegistrationGuard {
@@ -230,22 +255,13 @@ impl AgentTool for ExecuteTerminalTool {
         if event_sender
             .send(ToolExecutionEvent::ApprovalRequired {
                 call_id: context.call_id.clone(),
+                agent_id: context.agent_id,
                 command: command.clone(),
                 approval_id,
                 cwd: cwd.clone(),
-                runtime: match context.tools_config.terminal.sandbox.mode {
-                    crate::domain::SandboxMode::Docker => "docker".to_string(),
-                    crate::domain::SandboxMode::NativeRestricted => {
-                        "native_unsandboxed".to_string()
-                    }
-                },
-                network_enabled: match context.tools_config.terminal.sandbox.mode {
-                    crate::domain::SandboxMode::Docker => {
-                        context.tools_config.terminal.sandbox.network_enabled
-                    }
-                    crate::domain::SandboxMode::NativeRestricted => true,
-                },
-                write_roots: context.tools_config.terminal.allowed_cwd_roots.clone(),
+                runtime: "full_access".to_string(),
+                permission: "full_access".to_string(),
+                justification: justification.clone(),
                 background: background.unwrap_or(false),
             })
             .await
@@ -265,12 +281,7 @@ impl AgentTool for ExecuteTerminalTool {
             Some(ApprovalDecision::AlwaysApprove) => {
                 if let Err(error) = context
                     .store
-                    .always_allow_terminal_command(
-                        context.agent_id,
-                        &command,
-                        cwd.as_deref(),
-                        &context.tools_config.terminal.sandbox,
-                    )
+                    .always_allow_terminal_command(context.agent_id, &command, cwd.as_deref())
                     .await
                 {
                     return ToolResult::Error {
@@ -296,6 +307,7 @@ impl AgentTool for ExecuteTerminalTool {
                 cwd,
                 timeout_ms,
                 background,
+                sandbox_permissions,
                 approved: true,
                 agent_id: context.agent_id,
                 conversation_id: context.conversation_id,
@@ -303,6 +315,7 @@ impl AgentTool for ExecuteTerminalTool {
             },
             &context.tools_config.terminal,
             &context.process_manager,
+            &context.sandbox_runtime,
         )
         .await;
         result
@@ -443,6 +456,28 @@ fn tool_definition(name: &str, description: &str, parameters: Value) -> ToolDefi
     }
 }
 
+fn normalize_optional_cwd(cwd: Option<String>) -> Result<Option<String>, String> {
+    let Some(cwd) = cwd else {
+        return Ok(None);
+    };
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return Ok(None);
+    }
+    if cwd.len() > 4_096 {
+        return Err("cwd must be no longer than 4096 bytes".to_string());
+    }
+    Ok(Some(cwd.to_string()))
+}
+
+fn terminal_shell_guidance() -> &'static str {
+    if cfg!(windows) {
+        "The host is Windows and command is interpreted by cmd.exe. Use Windows-compatible commands and paths; do not assume a POSIX shell, /tmp, sh heredocs, python3, ls, or pwd are available."
+    } else {
+        "The host is Unix-like and command is interpreted by a POSIX shell."
+    }
+}
+
 struct ApprovalRegistrationGuard {
     manager: Arc<ApprovalManager>,
     approval_id: String,
@@ -451,5 +486,50 @@ struct ApprovalRegistrationGuard {
 impl Drop for ApprovalRegistrationGuard {
     fn drop(&mut self) {
         self.manager.cancel(&self.approval_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ToolRegistry, normalize_optional_cwd};
+    use crate::domain::AgentToolsConfig;
+
+    #[test]
+    fn blank_cwd_uses_the_default_workspace() {
+        assert_eq!(normalize_optional_cwd(None).unwrap(), None);
+        assert_eq!(normalize_optional_cwd(Some(String::new())).unwrap(), None);
+        assert_eq!(
+            normalize_optional_cwd(Some(" \r\n\t ".to_string())).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn cwd_is_trimmed_and_length_limited() {
+        assert_eq!(
+            normalize_optional_cwd(Some("  .  ".to_string())).unwrap(),
+            Some(".".to_string())
+        );
+        assert!(normalize_optional_cwd(Some("x".repeat(4_097))).is_err());
+    }
+
+    #[test]
+    fn terminal_definition_describes_the_host_shell() {
+        let mut config = AgentToolsConfig::default();
+        config.terminal.enabled = true;
+        let definitions = ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .unwrap();
+        let terminal = definitions
+            .iter()
+            .find(|definition| definition.function.name == "execute_terminal")
+            .unwrap();
+        let expected_shell = if cfg!(windows) {
+            "interpreted by cmd.exe"
+        } else {
+            "interpreted by a POSIX shell"
+        };
+        assert!(terminal.function.description.contains(expected_shell));
+        assert!(terminal.function.description.contains("omit cwd"));
     }
 }

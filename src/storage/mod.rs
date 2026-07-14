@@ -50,6 +50,67 @@ mod tests {
         let settings = store.read_settings().await.unwrap();
         assert_eq!(settings.host, "127.0.0.1");
         assert!(temp_dir.path().join("model_providers.json").exists());
+        assert!(temp_dir.path().join("tool_defaults.json").exists());
+    }
+
+    #[tokio::test]
+    async fn agent_tool_overrides_inherit_global_defaults() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let agent = store
+            .list_agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.is_builtin)
+            .unwrap();
+        let mut defaults = store.read_tool_defaults().await.unwrap();
+        defaults.max_llm_iterations = 12;
+        defaults.terminal.default_timeout_ms = 45_000;
+        store.update_tool_defaults(defaults).await.unwrap();
+
+        let inherited = store.read_agent_tools_settings(agent.id).await.unwrap();
+        assert_eq!(inherited.effective.max_llm_iterations, 12);
+        assert_eq!(inherited.effective.terminal.default_timeout_ms, 45_000);
+        assert_eq!(inherited.overrides.max_llm_iterations, None);
+
+        let mut overrides = inherited.overrides;
+        overrides.terminal.enabled = Some(false);
+        let updated = store
+            .update_agent_tools_overrides(agent.id, overrides)
+            .await
+            .unwrap();
+        assert!(!updated.effective.terminal.enabled);
+        assert_eq!(updated.effective.max_llm_iterations, 12);
+        assert_eq!(updated.effective.terminal.default_timeout_ms, 45_000);
+    }
+
+    #[tokio::test]
+    async fn legacy_agent_tools_config_migrates_to_differences() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let agent = store
+            .list_agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.is_builtin)
+            .unwrap();
+        let defaults = store.read_tool_defaults().await.unwrap();
+        let mut legacy = defaults.clone();
+        let legacy_enabled = !defaults.terminal.enabled;
+        legacy.terminal.enabled = legacy_enabled;
+        let legacy_path = store.agent_workspace_dir(agent.id).join(WORKSPACE_TOOLS);
+        tokio::fs::write(&legacy_path, serde_json::to_string_pretty(&legacy).unwrap())
+            .await
+            .unwrap();
+
+        let settings = store.read_agent_tools_settings(agent.id).await.unwrap();
+        assert_eq!(settings.overrides.terminal.enabled, Some(legacy_enabled));
+        assert_eq!(settings.overrides.max_llm_iterations, None);
+        let migrated: serde_json::Value =
+            serde_json::from_str(&tokio::fs::read_to_string(legacy_path).await.unwrap()).unwrap();
+        assert_eq!(migrated["version"], 1);
     }
 
     #[tokio::test]

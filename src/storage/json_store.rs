@@ -12,6 +12,7 @@ use crate::{
 
 pub struct JsonStore {
     pub(super) settings_file: PathBuf,
+    pub(super) tool_defaults_file: PathBuf,
     pub(super) providers_file: PathBuf,
     pub(super) agents_file: PathBuf,
     pub(super) agents_dir: PathBuf,
@@ -24,6 +25,7 @@ impl JsonStore {
     pub async fn new(root: impl AsRef<Path>) -> AppResult<Self> {
         let root = root.as_ref().to_path_buf();
         let settings_file = root.join("settings.json");
+        let tool_defaults_file = root.join("tool_defaults.json");
         let providers_file = root.join("model_providers.json");
         let agents_file = root.join("agents.json");
         let agents_dir = root.join("agents");
@@ -36,9 +38,15 @@ impl JsonStore {
         ensure_json_array(&agents_file).await?;
         ensure_json_array(&conversations_file).await?;
         load_or_init_settings(&settings_file).await?;
+        if fs::metadata(&tool_defaults_file).await.is_err() {
+            let content =
+                serde_json::to_string_pretty(&crate::domain::AgentToolsConfig::default())?;
+            fs::write(&tool_defaults_file, content).await?;
+        }
 
         let store = Self {
             settings_file,
+            tool_defaults_file,
             providers_file,
             agents_file,
             agents_dir,

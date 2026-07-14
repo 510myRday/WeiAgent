@@ -73,7 +73,7 @@ impl JsonStore {
             .into_iter()
             .filter(|conversation| conversation.agent_id == agent_id)
             .collect::<Vec<_>>();
-        conversations.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        conversations.sort_by_key(|item| std::cmp::Reverse(item.updated_at));
         Ok(conversations)
     }
 

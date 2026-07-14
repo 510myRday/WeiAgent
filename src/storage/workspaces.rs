@@ -91,25 +91,74 @@ impl JsonStore {
         })
     }
 
+    pub async fn read_tool_defaults(&self) -> AppResult<crate::domain::AgentToolsConfig> {
+        let _guard = self.lock.lock().await;
+        self.read_tool_defaults_unlocked().await
+    }
+
+    pub async fn update_tool_defaults(
+        &self,
+        mut config: crate::domain::AgentToolsConfig,
+    ) -> AppResult<crate::domain::AgentToolsConfig> {
+        if !config.terminal.approval_grants.is_empty() {
+            return Err(crate::error::AppError::BadRequest(
+                "global tool defaults cannot contain agent approval grants".to_string(),
+            ));
+        }
+        config.terminal.approval_grants.clear();
+        validate_tools_config(&config)?;
+        let _guard = self.lock.lock().await;
+        let content = serde_json::to_string_pretty(&config)
+            .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
+        fs::write(&self.tool_defaults_file, content).await?;
+        Ok(config)
+    }
+
+    pub async fn read_agent_tools_settings(
+        &self,
+        id: Uuid,
+    ) -> AppResult<crate::domain::AgentToolsSettings> {
+        self.get_agent(id).await?;
+        let _guard = self.lock.lock().await;
+        let defaults = self.read_tool_defaults_unlocked().await?;
+        let overrides = self
+            .read_agent_tools_overrides_unlocked(id, &defaults)
+            .await?;
+        let effective = overrides.apply_to(&defaults);
+        Ok(crate::domain::AgentToolsSettings {
+            defaults,
+            overrides,
+            effective,
+        })
+    }
+
     pub async fn read_agent_tools_config(
         &self,
         id: Uuid,
     ) -> AppResult<crate::domain::AgentToolsConfig> {
-        self.get_agent(id).await?;
-        let _guard = self.lock.lock().await;
-        let path = self.agent_workspace_dir(id).join(WORKSPACE_TOOLS);
-        if fs::metadata(&path).await.is_err() {
-            return Ok(crate::domain::AgentToolsConfig::default());
-        }
-        let content = fs::read_to_string(path).await?;
-        let trimmed = content.trim();
-        if trimmed.is_empty() || trimmed == "[]" {
-            return Ok(crate::domain::AgentToolsConfig::default());
-        }
-        serde_json::from_str(trimmed)
-            .map_err(|e| crate::error::AppError::BadRequest(format!("invalid tools.json: {e}")))
+        Ok(self.read_agent_tools_settings(id).await?.effective)
     }
 
+    pub async fn update_agent_tools_overrides(
+        &self,
+        id: Uuid,
+        overrides: crate::domain::AgentToolsOverrides,
+    ) -> AppResult<crate::domain::AgentToolsSettings> {
+        self.get_agent(id).await?;
+        let _guard = self.lock.lock().await;
+        let defaults = self.read_tool_defaults_unlocked().await?;
+        validate_tools_overrides(&overrides, &defaults)?;
+        self.write_agent_tools_overrides_unlocked(id, &overrides)
+            .await?;
+        let effective = overrides.apply_to(&defaults);
+        Ok(crate::domain::AgentToolsSettings {
+            defaults,
+            overrides,
+            effective,
+        })
+    }
+
+    #[cfg(test)]
     pub async fn update_agent_tools_config(
         &self,
         id: Uuid,
@@ -118,9 +167,8 @@ impl JsonStore {
         self.get_agent(id).await?;
         validate_tools_config(&config)?;
         let _guard = self.lock.lock().await;
-        let content = serde_json::to_string_pretty(&config)
-            .map_err(|e| crate::error::AppError::BadRequest(e.to_string()))?;
-        self.write_workspace_text_unlocked(id, WORKSPACE_TOOLS, &content)
+        let overrides = crate::domain::AgentToolsOverrides::full_override(&config);
+        self.write_agent_tools_overrides_unlocked(id, &overrides)
             .await?;
         Ok(config)
     }
@@ -130,59 +178,104 @@ impl JsonStore {
         id: Uuid,
         command: &str,
         cwd: Option<&str>,
-        sandbox: &crate::domain::TerminalSandboxConfig,
     ) -> AppResult<crate::domain::AgentToolsConfig> {
         self.get_agent(id).await?;
         let _guard = self.lock.lock().await;
-        let path = self.agent_workspace_dir(id).join(WORKSPACE_TOOLS);
-        let mut config = if fs::metadata(&path).await.is_err() {
-            crate::domain::AgentToolsConfig::default()
-        } else {
-            let content = fs::read_to_string(&path).await?;
-            let trimmed = content.trim();
-            if trimmed.is_empty() || trimmed == "[]" {
-                crate::domain::AgentToolsConfig::default()
-            } else {
-                serde_json::from_str(trimmed).map_err(|error| {
-                    crate::error::AppError::BadRequest(format!("invalid tools.json: {error}"))
-                })?
-            }
-        };
+        let defaults = self.read_tool_defaults_unlocked().await?;
+        let mut overrides = self
+            .read_agent_tools_overrides_unlocked(id, &defaults)
+            .await?;
         let grant = crate::domain::TerminalApprovalGrant {
             command: command.to_string(),
             cwd: cwd.map(str::to_string),
-            sandbox_mode: sandbox.mode.clone(),
-            network_enabled: match &sandbox.mode {
-                crate::domain::SandboxMode::Docker => sandbox.network_enabled,
-                crate::domain::SandboxMode::NativeRestricted => true,
-            },
-            workspace_read_only: sandbox.workspace_read_only,
+            permission_mode: crate::domain::TerminalPermissionMode::RequestApproval,
             created_at: Some(chrono::Utc::now()),
             expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(24)),
         };
-        config.terminal.approval_grants.retain(|existing| {
+        overrides.terminal.approval_grants.retain(|existing| {
             existing
                 .expires_at
                 .is_some_and(|expires_at| expires_at > chrono::Utc::now())
         });
-        if !config.terminal.approval_grants.iter().any(|existing| {
+        if !overrides.terminal.approval_grants.iter().any(|existing| {
             existing.command == grant.command
                 && existing.cwd == grant.cwd
-                && existing.sandbox_mode == grant.sandbox_mode
-                && existing.network_enabled == grant.network_enabled
-                && existing.workspace_read_only == grant.workspace_read_only
+                && existing.permission_mode == grant.permission_mode
                 && existing
                     .expires_at
                     .is_some_and(|expires_at| expires_at > chrono::Utc::now())
         }) {
-            config.terminal.approval_grants.push(grant);
+            overrides.terminal.approval_grants.push(grant);
         }
+        validate_tools_overrides(&overrides, &defaults)?;
+        self.write_agent_tools_overrides_unlocked(id, &overrides)
+            .await?;
+        Ok(overrides.apply_to(&defaults))
+    }
+
+    async fn read_tool_defaults_unlocked(&self) -> AppResult<crate::domain::AgentToolsConfig> {
+        let content = fs::read_to_string(&self.tool_defaults_file).await?;
+        let mut config: crate::domain::AgentToolsConfig = serde_json::from_str(content.trim())
+            .map_err(|error| {
+                crate::error::AppError::BadRequest(format!("invalid tool_defaults.json: {error}"))
+            })?;
+        if !config.terminal.approval_grants.is_empty() {
+            return Err(crate::error::AppError::BadRequest(
+                "tool_defaults.json cannot contain agent approval grants".to_string(),
+            ));
+        }
+        config.terminal.approval_grants.clear();
         validate_tools_config(&config)?;
-        let content = serde_json::to_string_pretty(&config)
+        Ok(config)
+    }
+
+    async fn read_agent_tools_overrides_unlocked(
+        &self,
+        id: Uuid,
+        defaults: &crate::domain::AgentToolsConfig,
+    ) -> AppResult<crate::domain::AgentToolsOverrides> {
+        let path = self.agent_workspace_dir(id).join(WORKSPACE_TOOLS);
+        if fs::metadata(&path).await.is_err() {
+            return Ok(crate::domain::AgentToolsOverrides::default());
+        }
+        let content = fs::read_to_string(&path).await?;
+        let trimmed = content.trim();
+        if trimmed.is_empty() || trimmed == "[]" {
+            return Ok(crate::domain::AgentToolsOverrides::default());
+        }
+        let value: serde_json::Value = serde_json::from_str(trimmed).map_err(|error| {
+            crate::error::AppError::BadRequest(format!("invalid tools.json: {error}"))
+        })?;
+        let overrides = if value.get("version").is_some() {
+            serde_json::from_value::<crate::domain::AgentToolsOverrides>(value).map_err(
+                |error| crate::error::AppError::BadRequest(format!("invalid tools.json: {error}")),
+            )?
+        } else {
+            let legacy = serde_json::from_value::<crate::domain::AgentToolsConfig>(value).map_err(
+                |error| {
+                    crate::error::AppError::BadRequest(format!(
+                        "invalid legacy tools.json: {error}"
+                    ))
+                },
+            )?;
+            let migrated = crate::domain::AgentToolsOverrides::from_full_config(&legacy, defaults);
+            self.write_agent_tools_overrides_unlocked(id, &migrated)
+                .await?;
+            migrated
+        };
+        validate_tools_overrides(&overrides, defaults)?;
+        Ok(overrides)
+    }
+
+    async fn write_agent_tools_overrides_unlocked(
+        &self,
+        id: Uuid,
+        overrides: &crate::domain::AgentToolsOverrides,
+    ) -> AppResult<()> {
+        let content = serde_json::to_string_pretty(overrides)
             .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
         self.write_workspace_text_unlocked(id, WORKSPACE_TOOLS, &content)
-            .await?;
-        Ok(config)
+            .await
     }
 
     pub(super) async fn ensure_agent_workspace_unlocked(&self, agent: &Agent) -> AppResult<()> {
@@ -200,7 +293,7 @@ impl JsonStore {
         )
         .await?;
         let default_tools =
-            serde_json::to_string_pretty(&crate::domain::AgentToolsConfig::default())
+            serde_json::to_string_pretty(&crate::domain::AgentToolsOverrides::default())
                 .unwrap_or_else(|_| "{}".to_string());
         ensure_text_file(&workspace.join(WORKSPACE_TOOLS), default_tools).await?;
         Ok(())
@@ -267,19 +360,6 @@ fn join_prompt_sections<'a>(sections: impl IntoIterator<Item = (&'a str, &'a str
 fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<()> {
     const MAX_LLM_ITERATIONS: u32 = 50;
     const MAX_ALLOWED_ROOTS: usize = 8;
-    for pattern in config
-        .terminal
-        .blocked_patterns
-        .iter()
-        .chain(config.terminal.approval_required_patterns.iter())
-        .chain(config.terminal.always_allowed_patterns.iter())
-    {
-        regex::Regex::new(pattern).map_err(|error| {
-            crate::error::AppError::BadRequest(format!(
-                "invalid terminal regex '{pattern}': {error}"
-            ))
-        })?;
-    }
     if config.max_llm_iterations == 0 || config.max_llm_iterations > MAX_LLM_ITERATIONS {
         return Err(crate::error::AppError::BadRequest(format!(
             "max_llm_iterations must be between 1 and {MAX_LLM_ITERATIONS}"
@@ -292,25 +372,6 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
             "terminal default_timeout_ms must be between 1 and {}",
             crate::tools::execute::MAX_TERMINAL_TIMEOUT_MS
         )));
-    }
-    if config.terminal.sandbox.docker_image.trim().is_empty() {
-        return Err(crate::error::AppError::BadRequest(
-            "terminal sandbox docker_image cannot be empty".to_string(),
-        ));
-    }
-    let docker_image = config.terminal.sandbox.docker_image.trim();
-    if docker_image.starts_with('-') || docker_image.chars().any(char::is_whitespace) {
-        return Err(crate::error::AppError::BadRequest(
-            "terminal sandbox docker_image is not a valid image reference".to_string(),
-        ));
-    }
-    if config.terminal.sandbox.memory_limit_mb == 0
-        || config.terminal.sandbox.cpu_limit <= 0.0
-        || config.terminal.sandbox.pids_limit == 0
-    {
-        return Err(crate::error::AppError::BadRequest(
-            "terminal sandbox limits must be greater than zero".to_string(),
-        ));
     }
     if config.terminal.allowed_cwd_roots.len() > MAX_ALLOWED_ROOTS {
         return Err(crate::error::AppError::BadRequest(format!(
@@ -345,4 +406,17 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
         }
     }
     Ok(())
+}
+
+fn validate_tools_overrides(
+    overrides: &crate::domain::AgentToolsOverrides,
+    defaults: &crate::domain::AgentToolsConfig,
+) -> AppResult<()> {
+    if overrides.version != 1 {
+        return Err(crate::error::AppError::BadRequest(format!(
+            "unsupported tools.json version {}",
+            overrides.version
+        )));
+    }
+    validate_tools_config(&overrides.apply_to(defaults))
 }

@@ -146,7 +146,6 @@ export function App() {
       {activeNav === 'tools' && (
         <ToolsPanel
           agents={agents}
-          activeAgentId={activeAgentId}
           onOpenMain={openMainPane}
         />
       )}

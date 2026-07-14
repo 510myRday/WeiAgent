@@ -40,8 +40,13 @@ mod tests {
         storage::{JsonStore, LlmLogger},
         tools::{
             approval::ApprovalManager, process_manager::ProcessManager, registry::ToolRegistry,
+            runtime::SandboxRuntimeManager,
         },
     };
+
+    fn test_sandbox_runtime(root: &std::path::Path) -> Arc<SandboxRuntimeManager> {
+        Arc::new(SandboxRuntimeManager::new_available_for_tests(root).unwrap())
+    }
 
     struct MockChatClient;
 
@@ -95,7 +100,7 @@ mod tests {
 
     async fn test_app() -> (Router, Uuid, Uuid, Uuid) {
         let temp_dir = tempfile::tempdir().unwrap().keep();
-        let store = Arc::new(JsonStore::new(temp_dir).await.unwrap());
+        let store = Arc::new(JsonStore::new(&temp_dir).await.unwrap());
         let provider = store
             .create_model_provider(CreateModelProviderRequest {
                 provider_type: ProviderType::OpenAiCompatible,
@@ -129,6 +134,7 @@ mod tests {
             llm_logger: Arc::new(LlmLogger::new(tempfile::tempdir().unwrap().path(), false)),
             process_manager: Arc::new(ProcessManager::new()),
             approval_manager: Arc::new(ApprovalManager::new()),
+            sandbox_runtime: test_sandbox_runtime(&temp_dir),
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         });
@@ -370,40 +376,9 @@ mod tests {
             .await
             .unwrap();
         let mut tools_config = crate::domain::AgentToolsConfig::default();
-        tools_config.terminal.sandbox.mode = crate::domain::SandboxMode::NativeRestricted;
+        tools_config.terminal.enabled = true;
+        tools_config.terminal.permission_mode = crate::domain::TerminalPermissionMode::FullAccess;
         tools_config.terminal.allowed_cwd_roots = vec![root.to_string_lossy().to_string()];
-        for output in &outputs {
-            for call in &output.tool_calls {
-                if call.function.name != "execute_terminal" {
-                    continue;
-                }
-                let Ok(arguments) =
-                    serde_json::from_str::<serde_json::Value>(&call.function.arguments)
-                else {
-                    continue;
-                };
-                let Some(command) = arguments.get("command").and_then(serde_json::Value::as_str)
-                else {
-                    continue;
-                };
-                let cwd = arguments
-                    .get("cwd")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-                let grant = crate::domain::TerminalApprovalGrant {
-                    command: command.to_string(),
-                    cwd,
-                    sandbox_mode: crate::domain::SandboxMode::NativeRestricted,
-                    network_enabled: true,
-                    workspace_read_only: false,
-                    created_at: Some(chrono::Utc::now()),
-                    expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
-                };
-                if !tools_config.terminal.approval_grants.contains(&grant) {
-                    tools_config.terminal.approval_grants.push(grant);
-                }
-            }
-        }
         store
             .update_agent_tools_config(agent.id, tools_config)
             .await
@@ -418,6 +393,7 @@ mod tests {
             llm_logger: Arc::new(LlmLogger::new(&root, false)),
             process_manager: Arc::new(ProcessManager::new()),
             approval_manager: Arc::new(ApprovalManager::new()),
+            sandbox_runtime: test_sandbox_runtime(&root),
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         };
@@ -591,7 +567,11 @@ mod tests {
                 tool_calls: vec![scripted_tool_call(
                     "call-approval-1",
                     "execute_terminal",
-                    json!({"command": command}),
+                    json!({
+                        "command": command,
+                        "sandbox_permissions": "require_escalated",
+                        "justification": "test full host access"
+                    }),
                 )],
             },
             ChatCompletionOutput {
@@ -603,7 +583,11 @@ mod tests {
                 tool_calls: vec![scripted_tool_call(
                     "call-approval-2",
                     "execute_terminal",
-                    json!({"command": command}),
+                    json!({
+                        "command": command,
+                        "sandbox_permissions": "require_escalated",
+                        "justification": "test remembered full host access"
+                    }),
                 )],
             },
             ChatCompletionOutput {
@@ -619,11 +603,12 @@ mod tests {
             .unwrap()
             .agent_id;
         let mut config = state.store.read_agent_tools_config(agent_id).await.unwrap();
+        config.terminal.enabled = true;
         config
             .terminal
             .approval_grants
             .retain(|grant| grant.command != command);
-        config.terminal.approval_required_patterns = vec![format!("^{}$", regex::escape(command))];
+        config.terminal.permission_mode = crate::domain::TerminalPermissionMode::RequestApproval;
         state
             .store
             .update_agent_tools_config(agent_id, config)
@@ -659,6 +644,7 @@ mod tests {
             .approval_manager
             .resolve_for_test_id()
             .expect("missing approval id");
+        let duplicate_approval_id = approval_id.clone();
         let approval_response = app
             .clone()
             .oneshot(
@@ -679,6 +665,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(approval_response.status(), StatusCode::OK);
+        let duplicate_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tools/approve")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "approval_id": duplicate_approval_id,
+                            "agent_id": agent_id,
+                            "decision": "always_approve"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(duplicate_response.status(), StatusCode::OK);
+        let duplicate_body = to_bytes(duplicate_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let duplicate_value: serde_json::Value = serde_json::from_slice(&duplicate_body).unwrap();
+        assert_eq!(duplicate_value["status"], "always_approved");
         let first_response = first_request.await.unwrap();
         let first_body = to_bytes(first_response.into_body(), usize::MAX)
             .await
@@ -690,7 +701,7 @@ mod tests {
         let stored = state.store.read_agent_tools_config(agent_id).await.unwrap();
         assert!(stored.terminal.approval_grants.iter().any(|grant| {
             grant.command == command
-                && grant.sandbox_mode == crate::domain::SandboxMode::NativeRestricted
+                && grant.permission_mode == crate::domain::TerminalPermissionMode::RequestApproval
         }));
 
         let second_response = app
@@ -716,22 +727,39 @@ mod tests {
         assert!(second_text.contains("event: done"));
     }
     #[tokio::test]
-    async fn blocked_tool_call_is_reported_without_starting_a_process() {
+    async fn invalid_escalation_is_reported_without_starting_a_process() {
         let outputs = vec![
             ChatCompletionOutput {
                 content: String::new(),
                 tool_calls: vec![scripted_tool_call(
                     "call-blocked",
                     "execute_terminal",
-                    json!({"command": "rm -rf /"}),
+                    json!({
+                        "command": "echo invalid",
+                        "sandbox_permissions": "require_escalated"
+                    }),
                 )],
             },
             ChatCompletionOutput {
-                content: "dangerous command blocked".to_string(),
+                content: "invalid escalation rejected".to_string(),
                 tool_calls: Vec::new(),
             },
         ];
         let (app, state, conversation_id, _, _) = scripted_test_app(outputs).await;
+        let agent_id = state
+            .store
+            .get_conversation(conversation_id)
+            .await
+            .unwrap()
+            .agent_id;
+        let mut config = state.store.read_agent_tools_config(agent_id).await.unwrap();
+        config.terminal.enabled = true;
+        config.terminal.permission_mode = crate::domain::TerminalPermissionMode::RequestApproval;
+        state
+            .store
+            .update_agent_tools_config(agent_id, config)
+            .await
+            .unwrap();
         let response = app
             .oneshot(
                 Request::builder()
@@ -750,7 +778,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(text.contains("event: tool_result"));
-        assert!(text.contains("blocked"));
+        assert!(text.contains("justification is required"));
         assert!(state.process_manager.list(None).await.is_empty());
     }
 
@@ -974,20 +1002,9 @@ mod tests {
             .await
             .unwrap();
         let mut tools_config = crate::domain::AgentToolsConfig::default();
-        tools_config.terminal.sandbox.mode = crate::domain::SandboxMode::NativeRestricted;
+        tools_config.terminal.enabled = true;
+        tools_config.terminal.permission_mode = crate::domain::TerminalPermissionMode::FullAccess;
         tools_config.terminal.allowed_cwd_roots = vec![root.to_string_lossy().to_string()];
-        tools_config
-            .terminal
-            .approval_grants
-            .push(crate::domain::TerminalApprovalGrant {
-                command: "echo streamed-tool".to_string(),
-                cwd: None,
-                sandbox_mode: crate::domain::SandboxMode::NativeRestricted,
-                network_enabled: true,
-                workspace_read_only: false,
-                created_at: Some(chrono::Utc::now()),
-                expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
-            });
         store
             .update_agent_tools_config(agent.id, tools_config)
             .await
@@ -1023,6 +1040,7 @@ mod tests {
             llm_logger: Arc::new(LlmLogger::new(&root, false)),
             process_manager: Arc::new(ProcessManager::new()),
             approval_manager: Arc::new(ApprovalManager::new()),
+            sandbox_runtime: test_sandbox_runtime(&root),
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         };

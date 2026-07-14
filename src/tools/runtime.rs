@@ -1,0 +1,629 @@
+use std::{
+    ffi::OsStr,
+    path::{Component, Path, PathBuf},
+    process::Stdio,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use flate2::read::GzDecoder;
+use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha512};
+use tokio::{
+    fs,
+    io::AsyncWriteExt,
+    process::Command,
+    sync::{Mutex, RwLock},
+};
+use uuid::Uuid;
+
+use crate::{
+    domain::{SandboxRuntimeSource, SandboxRuntimeStatus},
+    error::{AppError, AppResult},
+};
+
+pub const MANAGED_CODEX_VERSION: &str = "0.137.0";
+const MAX_RUNTIME_DOWNLOAD_BYTES: u64 = 600 * 1024 * 1024;
+const RUNTIME_MANIFEST_FILE: &str = "weiagent-runtime.json";
+
+#[derive(Debug, Clone)]
+pub struct SandboxExecutable {
+    pub program: PathBuf,
+    pub codex_home: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ManagedRuntimeManifest {
+    package_version: String,
+    integrity: String,
+    executable: String,
+    installed_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NpmPackageMetadata {
+    version: String,
+    dist: NpmPackageDist,
+}
+
+#[derive(Debug, Deserialize)]
+struct NpmPackageDist {
+    tarball: String,
+    integrity: String,
+    #[serde(default, rename = "unpackedSize")]
+    unpacked_size: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeCandidate {
+    program: PathBuf,
+    source: SandboxRuntimeSource,
+    managed_installed: bool,
+}
+
+pub struct SandboxRuntimeManager {
+    runtime_root: PathBuf,
+    codex_home: PathBuf,
+    client: reqwest::Client,
+    status: RwLock<SandboxRuntimeStatus>,
+    install_lock: Mutex<()>,
+    installing: AtomicBool,
+    allow_system_discovery: bool,
+}
+
+impl SandboxRuntimeManager {
+    pub fn new(data_dir: impl AsRef<Path>) -> AppResult<Self> {
+        Self::with_system_discovery(data_dir, true)
+    }
+
+    #[cfg(test)]
+    pub fn new_for_tests(data_dir: impl AsRef<Path>) -> AppResult<Self> {
+        let mut manager = Self::with_system_discovery(data_dir, false)?;
+        let status = manager.status.get_mut();
+        status.available = true;
+        status.source = Some(SandboxRuntimeSource::System);
+        status.detected_version = Some(MANAGED_CODEX_VERSION.to_string());
+        status.executable = Some(if cfg!(windows) { "codex.exe" } else { "codex" }.to_string());
+        Ok(manager)
+    }
+
+    #[cfg(test)]
+    pub fn new_available_for_tests(data_dir: impl AsRef<Path>) -> AppResult<Self> {
+        let mut manager = Self::with_system_discovery(data_dir, false)?;
+        let program = if cfg!(windows) { "codex.exe" } else { "codex" };
+        manager.status = RwLock::new(SandboxRuntimeStatus {
+            supported: true,
+            available: true,
+            managed_installed: false,
+            installing: false,
+            target_version: MANAGED_CODEX_VERSION.to_string(),
+            platform: platform_package_suffix().map(str::to_string),
+            source: Some(SandboxRuntimeSource::Environment),
+            detected_version: Some("codex-cli test".to_string()),
+            executable: Some(program.to_string()),
+            error: None,
+        });
+        Ok(manager)
+    }
+
+    fn with_system_discovery(
+        data_dir: impl AsRef<Path>,
+        allow_system_discovery: bool,
+    ) -> AppResult<Self> {
+        let runtime_root = data_dir.as_ref().join("runtimes").join("codex");
+        let codex_home = data_dir.as_ref().join("runtimes").join("codex-home");
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(15 * 60))
+            .user_agent(format!("WeiAgent/{}", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|error| {
+                AppError::Process(format!("failed to build runtime client: {error}"))
+            })?;
+        let platform = platform_package_suffix().map(str::to_string);
+        Ok(Self {
+            runtime_root,
+            codex_home,
+            client,
+            status: RwLock::new(SandboxRuntimeStatus {
+                supported: platform.is_some(),
+                available: false,
+                managed_installed: false,
+                installing: false,
+                target_version: MANAGED_CODEX_VERSION.to_string(),
+                platform,
+                source: None,
+                detected_version: None,
+                executable: None,
+                error: None,
+            }),
+            install_lock: Mutex::new(()),
+            installing: AtomicBool::new(false),
+            allow_system_discovery,
+        })
+    }
+
+    pub async fn initialize(&self) -> AppResult<SandboxRuntimeStatus> {
+        fs::create_dir_all(&self.runtime_root).await?;
+        fs::create_dir_all(&self.codex_home).await?;
+        self.refresh().await
+    }
+
+    pub async fn status(&self) -> SandboxRuntimeStatus {
+        self.status.read().await.clone()
+    }
+
+    pub fn is_available_cached(&self) -> bool {
+        self.status
+            .try_read()
+            .map(|status| status.available)
+            .unwrap_or(false)
+    }
+
+    pub async fn executable(&self) -> Option<SandboxExecutable> {
+        let status = self.status.read().await;
+        if !status.available {
+            return None;
+        }
+        let executable = status.executable.as_ref()?;
+        Some(SandboxExecutable {
+            program: PathBuf::from(executable),
+            codex_home: self.codex_home.clone(),
+        })
+    }
+
+    pub async fn refresh(&self) -> AppResult<SandboxRuntimeStatus> {
+        let platform = platform_package_suffix().map(str::to_string);
+        let managed_installed = self.managed_manifest().await.is_some();
+        let mut last_error = None;
+
+        for candidate in self.candidates(managed_installed).await {
+            match probe_codex(&candidate.program, &self.codex_home).await {
+                Ok(version) => {
+                    let status = SandboxRuntimeStatus {
+                        supported: platform.is_some(),
+                        available: true,
+                        managed_installed: candidate.managed_installed,
+                        installing: self.installing.load(Ordering::SeqCst),
+                        target_version: MANAGED_CODEX_VERSION.to_string(),
+                        platform,
+                        source: Some(candidate.source),
+                        detected_version: Some(version),
+                        executable: Some(candidate.program.to_string_lossy().to_string()),
+                        error: None,
+                    };
+                    *self.status.write().await = status.clone();
+                    return Ok(status);
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+
+        let status = SandboxRuntimeStatus {
+            supported: platform.is_some(),
+            available: false,
+            managed_installed,
+            installing: self.installing.load(Ordering::SeqCst),
+            target_version: MANAGED_CODEX_VERSION.to_string(),
+            platform,
+            source: None,
+            detected_version: None,
+            executable: None,
+            error: last_error,
+        };
+        *self.status.write().await = status.clone();
+        Ok(status)
+    }
+
+    pub async fn install(self: &Arc<Self>) -> AppResult<SandboxRuntimeStatus> {
+        let _guard = self.install_lock.try_lock().map_err(|_| {
+            AppError::Conflict("sandbox runtime installation is already in progress".to_string())
+        })?;
+        let package_suffix = platform_package_suffix().ok_or_else(|| {
+            AppError::BadRequest(
+                "managed sandbox runtime is not available for this platform".to_string(),
+            )
+        })?;
+        self.installing.store(true, Ordering::SeqCst);
+        {
+            let mut status = self.status.write().await;
+            status.installing = true;
+            status.error = None;
+        }
+
+        let result = self.install_inner(package_suffix).await;
+        self.installing.store(false, Ordering::SeqCst);
+        match result {
+            Ok(()) => self.refresh().await,
+            Err(error) => {
+                let mut status = self.status.write().await;
+                status.installing = false;
+                status.error = Some(error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    async fn install_inner(&self, package_suffix: &str) -> AppResult<()> {
+        fs::create_dir_all(&self.runtime_root).await?;
+        fs::create_dir_all(&self.codex_home).await?;
+
+        let package_version = format!("{MANAGED_CODEX_VERSION}-{package_suffix}");
+        let metadata_url = format!("https://registry.npmjs.org/@openai%2Fcodex/{package_version}");
+        let metadata = self
+            .client
+            .get(metadata_url)
+            .send()
+            .await
+            .map_err(runtime_download_error)?
+            .error_for_status()
+            .map_err(runtime_download_error)?
+            .json::<NpmPackageMetadata>()
+            .await
+            .map_err(runtime_download_error)?;
+        if metadata.version != package_version {
+            return Err(AppError::Process(format!(
+                "runtime registry returned unexpected version '{}'",
+                metadata.version
+            )));
+        }
+        if metadata
+            .dist
+            .unpacked_size
+            .is_some_and(|size| size > MAX_RUNTIME_DOWNLOAD_BYTES)
+        {
+            return Err(AppError::Process(
+                "runtime package exceeds the configured size limit".to_string(),
+            ));
+        }
+
+        let install_id = Uuid::new_v4().simple().to_string();
+        let archive_path = self
+            .runtime_root
+            .join(format!(".download-{install_id}.tgz"));
+        let staging_dir = self.runtime_root.join(format!(".staging-{install_id}"));
+        ensure_child_path(&self.runtime_root, &archive_path)?;
+        ensure_child_path(&self.runtime_root, &staging_dir)?;
+        fs::create_dir_all(&staging_dir).await?;
+
+        let install_result = async {
+            self.download_archive(
+                &metadata.dist.tarball,
+                &metadata.dist.integrity,
+                &archive_path,
+            )
+            .await?;
+            let archive_for_extract = archive_path.clone();
+            let staging_for_extract = staging_dir.clone();
+            tokio::task::spawn_blocking(move || {
+                extract_runtime_archive(&archive_for_extract, &staging_for_extract)
+            })
+            .await
+            .map_err(|error| {
+                AppError::Process(format!("runtime extraction task failed: {error}"))
+            })??;
+
+            let executable = find_runtime_executable(&staging_dir).ok_or_else(|| {
+                AppError::Process(
+                    "downloaded runtime did not contain the Codex executable".to_string(),
+                )
+            })?;
+            let relative_executable = executable
+                .strip_prefix(&staging_dir)
+                .map_err(|_| {
+                    AppError::Process("runtime executable escaped staging directory".to_string())
+                })?
+                .to_path_buf();
+            let final_dir = self.managed_version_dir();
+            ensure_child_path(&self.runtime_root, &final_dir)?;
+            if let Some(parent) = final_dir.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+            if fs::metadata(&final_dir).await.is_ok() {
+                fs::remove_dir_all(&final_dir).await?;
+            }
+            fs::rename(&staging_dir, &final_dir).await?;
+            let manifest = ManagedRuntimeManifest {
+                package_version,
+                integrity: metadata.dist.integrity,
+                executable: relative_executable.to_string_lossy().to_string(),
+                installed_at: chrono::Utc::now(),
+            };
+            fs::write(
+                final_dir.join(RUNTIME_MANIFEST_FILE),
+                serde_json::to_string_pretty(&manifest)?,
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+
+        let _ = fs::remove_file(&archive_path).await;
+        if fs::metadata(&staging_dir).await.is_ok() {
+            let _ = fs::remove_dir_all(&staging_dir).await;
+        }
+        install_result
+    }
+
+    async fn download_archive(
+        &self,
+        url: &str,
+        integrity: &str,
+        destination: &Path,
+    ) -> AppResult<()> {
+        let expected = parse_sha512_integrity(integrity)?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(runtime_download_error)?
+            .error_for_status()
+            .map_err(runtime_download_error)?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_RUNTIME_DOWNLOAD_BYTES)
+        {
+            return Err(AppError::Process(
+                "runtime download exceeds the configured size limit".to_string(),
+            ));
+        }
+
+        let mut file = fs::File::create(destination).await?;
+        let mut stream = response.bytes_stream();
+        let mut hasher = Sha512::new();
+        let mut received = 0_u64;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(runtime_download_error)?;
+            received = received.saturating_add(chunk.len() as u64);
+            if received > MAX_RUNTIME_DOWNLOAD_BYTES {
+                return Err(AppError::Process(
+                    "runtime download exceeds the configured size limit".to_string(),
+                ));
+            }
+            hasher.update(&chunk);
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        let actual = hasher.finalize();
+        if actual.as_slice() != expected.as_slice() {
+            return Err(AppError::Process(
+                "runtime package integrity verification failed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn candidates(&self, managed_installed: bool) -> Vec<RuntimeCandidate> {
+        let mut candidates = Vec::new();
+        if let Some(path) = std::env::var_os("WEIAGENT_OS_SANDBOX_BIN") {
+            candidates.push(RuntimeCandidate {
+                program: PathBuf::from(path),
+                source: SandboxRuntimeSource::Environment,
+                managed_installed,
+            });
+        }
+        if let Some(manifest) = self.managed_manifest().await {
+            candidates.push(RuntimeCandidate {
+                program: self.managed_version_dir().join(manifest.executable),
+                source: SandboxRuntimeSource::Managed,
+                managed_installed: true,
+            });
+        }
+        if self.allow_system_discovery {
+            for program in system_codex_programs() {
+                candidates.push(RuntimeCandidate {
+                    program: PathBuf::from(program),
+                    source: SandboxRuntimeSource::System,
+                    managed_installed,
+                });
+            }
+        }
+        candidates
+    }
+
+    async fn managed_manifest(&self) -> Option<ManagedRuntimeManifest> {
+        let path = self.managed_version_dir().join(RUNTIME_MANIFEST_FILE);
+        let content = fs::read_to_string(path).await.ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    fn managed_version_dir(&self) -> PathBuf {
+        self.runtime_root
+            .join(MANAGED_CODEX_VERSION)
+            .join(platform_package_suffix().unwrap_or("unsupported"))
+    }
+}
+
+fn runtime_download_error(error: reqwest::Error) -> AppError {
+    AppError::Process(format!("sandbox runtime download failed: {error}"))
+}
+
+async fn probe_codex(program: &Path, codex_home: &Path) -> Result<String, String> {
+    let mut command = Command::new(program);
+    command
+        .arg("--version")
+        .env("CODEX_HOME", codex_home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(5), command.output())
+        .await
+        .map_err(|_| format!("'{} --version' timed out", program.display()))?
+        .map_err(|error| format!("failed to start '{}': {error}", program.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "'{} --version' failed: {}",
+            program.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if version.is_empty() {
+        return Err(format!(
+            "'{} --version' returned no version",
+            program.display()
+        ));
+    }
+    Ok(version)
+}
+
+fn parse_sha512_integrity(value: &str) -> AppResult<Vec<u8>> {
+    let encoded = value.strip_prefix("sha512-").ok_or_else(|| {
+        AppError::Process("runtime registry did not provide SHA-512 integrity".to_string())
+    })?;
+    BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|error| AppError::Process(format!("invalid runtime integrity value: {error}")))
+}
+
+fn extract_runtime_archive(archive_path: &Path, destination: &Path) -> AppResult<()> {
+    let file = std::fs::File::open(archive_path)?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        let relative = path.strip_prefix("package").map_err(|_| {
+            AppError::Process(format!(
+                "runtime archive contained an unexpected path '{}'",
+                path.display()
+            ))
+        })?;
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        if relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
+            return Err(AppError::Process(
+                "runtime archive contained an unsafe path".to_string(),
+            ));
+        }
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            return Err(AppError::Process(
+                "runtime archive contained an unsupported link".to_string(),
+            ));
+        }
+        let output = destination.join(relative);
+        ensure_child_path(destination, &output)?;
+        if entry_type.is_dir() {
+            std::fs::create_dir_all(&output)?;
+        } else if entry_type.is_file() {
+            if let Some(parent) = output.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut output_file = std::fs::File::create(&output)?;
+            std::io::copy(&mut entry, &mut output_file)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(mode) = entry.header().mode() {
+                    std::fs::set_permissions(&output, std::fs::Permissions::from_mode(mode))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn find_runtime_executable(root: &Path) -> Option<PathBuf> {
+    let expected = if cfg!(windows) { "codex.exe" } else { "codex" };
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        for entry in std::fs::read_dir(directory).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name() == Some(OsStr::new(expected))
+                && path.parent()?.file_name() == Some(OsStr::new("bin"))
+            {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn ensure_child_path(root: &Path, path: &Path) -> AppResult<()> {
+    let root = absolute_lexical(root)?;
+    let path = absolute_lexical(path)?;
+    if !path.starts_with(&root) || path == root {
+        return Err(AppError::Process(format!(
+            "runtime path '{}' escaped '{}'",
+            path.display(),
+            root.display()
+        )));
+    }
+    Ok(())
+}
+
+fn absolute_lexical(path: &Path) -> AppResult<PathBuf> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut output = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                output.pop();
+            }
+            other => output.push(other.as_os_str()),
+        }
+    }
+    Ok(output)
+}
+
+fn platform_package_suffix() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => Some("win32-x64"),
+        ("windows", "aarch64") => Some("win32-arm64"),
+        ("linux", "x86_64") => Some("linux-x64"),
+        ("linux", "aarch64") => Some("linux-arm64"),
+        ("macos", "x86_64") => Some("darwin-x64"),
+        ("macos", "aarch64") => Some("darwin-arm64"),
+        _ => None,
+    }
+}
+
+fn system_codex_programs() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["codex.cmd", "codex.exe"]
+    } else {
+        &["codex"]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integrity_requires_sha512() {
+        assert!(parse_sha512_integrity("sha256-abc").is_err());
+        assert_eq!(
+            parse_sha512_integrity("sha512-YWJj").unwrap(),
+            b"abc".to_vec()
+        );
+    }
+
+    #[test]
+    fn runtime_paths_must_stay_under_the_runtime_root() {
+        let root = PathBuf::from("runtime");
+        assert!(ensure_child_path(&root, &root.join("version")).is_ok());
+        assert!(ensure_child_path(&root, &root.join("..").join("outside")).is_err());
+    }
+}

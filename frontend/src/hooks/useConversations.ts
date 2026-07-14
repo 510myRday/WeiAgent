@@ -47,6 +47,19 @@ function statusFromToolResult(result: any): ToolCallStatus {
   return 'completed';
 }
 
+function rejectPendingApprovals(items: UiMessageItem[], reason: string): UiMessageItem[] {
+  return items.map((item) => {
+    if ('type' in item && item.type === 'tool_call' && item.status === 'pending_approval') {
+      return {
+        ...item,
+        status: 'rejected',
+        result: { reason },
+      };
+    }
+    return item;
+  });
+}
+
 function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
   const items: UiMessageItem[] = [];
   const toolIndexes = new Map<string, number>();
@@ -106,11 +119,17 @@ function isEmptyConversation(conversation: Conversation): boolean {
 
 type UseConversationsOptions = {
   newConversationTitle: string;
+  approvalDisconnectedMessage: string;
   onError?: (msg: string) => void;
   timeoutSeconds: number;
 };
 
-export function useConversations({ newConversationTitle, onError, timeoutSeconds }: UseConversationsOptions) {
+export function useConversations({
+  newConversationTitle,
+  approvalDisconnectedMessage,
+  onError,
+  timeoutSeconds,
+}: UseConversationsOptions) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState('');
   const [messages, setMessages] = useState<UiMessageItem[]>([]);
@@ -195,26 +214,28 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
     sendAbortControllerRef.current?.abort();
     sendAbortControllerRef.current = null;
     setMessages((current) => {
-      const last = current[current.length - 1];
+      const next = rejectPendingApprovals(current, approvalDisconnectedMessage);
+      const last = next[next.length - 1];
       if (last && 'role' in last && last.role === 'assistant' && last.status === 'streaming') {
-        if (!last.content) return current.slice(0, -1);
-        return [...current.slice(0, -1), { ...last, status: 'failed' }];
+        if (!last.content) return next.slice(0, -1);
+        return [...next.slice(0, -1), { ...last, status: 'failed' }];
       }
-      return current;
+      return next;
     });
     setIsSending(false);
-  }, []);
+  }, [approvalDisconnectedMessage]);
 
   const handleStreamEvent = useCallback(
     (evt: { event: string; data: unknown }) => {
       if (evt.event === 'error') {
         setIsSending(false);
         setMessages((current) => {
-          const last = current[current.length - 1];
+          const next = rejectPendingApprovals(current, approvalDisconnectedMessage);
+          const last = next[next.length - 1];
           if (last && 'role' in last && last.role === 'assistant' && last.status === 'streaming' && !last.content) {
-            return current.slice(0, -1);
+            return next.slice(0, -1);
           }
-          return current;
+          return next;
         });
         onErrorRef.current?.(typeof evt.data === 'string' ? evt.data : 'Stream error');
         return;
@@ -281,12 +302,13 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
       if (evt.event === 'approval_required') {
         const d = evt.data as {
           call_id: string;
+          agent_id: string;
           command: string;
           approval_id: string;
           cwd?: string;
           runtime: string;
-          network_enabled: boolean;
-          write_roots: string[];
+          permission: string;
+          justification?: string;
           background: boolean;
         };
         setMessages((current) => current.map((item) => {
@@ -298,7 +320,7 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         return;
       }
     },
-    [appendDelta],
+    [appendDelta, approvalDisconnectedMessage],
   );
 
   const send = useCallback(
@@ -362,11 +384,12 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
           setIsSending(false);
           if (!isAbortError(cause)) {
             setMessages((current) => {
-              const last = current[current.length - 1];
+              const next = rejectPendingApprovals(current, approvalDisconnectedMessage);
+              const last = next[next.length - 1];
               if (last && 'clientId' in last && last.clientId === optimisticAssistantClientId) {
-                return [...current.slice(0, -1), { ...last, status: 'failed' as const }];
+                return [...next.slice(0, -1), { ...last, status: 'failed' as const }];
               }
-              return current;
+              return next;
             });
             onErrorRef.current?.(cause instanceof Error ? cause.message : 'Send failed');
           }
@@ -378,7 +401,7 @@ export function useConversations({ newConversationTitle, onError, timeoutSeconds
         }
       }
     },
-    [activeConversationId, handleStreamEvent, loadConversationsForAgent, newConversationTitle, timeoutSeconds],
+    [activeConversationId, approvalDisconnectedMessage, handleStreamEvent, loadConversationsForAgent, newConversationTitle, timeoutSeconds],
   );
 
   const createNewConversation = useCallback(

@@ -8,13 +8,17 @@ build = "build.rs"
 async-stream = "0.3"
 async-trait = "0.1"
 axum = "0.8"
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+flate2 = "1"
 futures-util = "0.3"
 mime_guess = "2"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 rust-embed = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", features = ["limit", "util"] }
@@ -22,7 +26,6 @@ tower-http = { version = "0.6", features = ["fs", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 uuid = { version = "1", features = ["v4", "serde"] }
-regex = "1"
 dashmap = "6"
 
 [dev-dependencies]

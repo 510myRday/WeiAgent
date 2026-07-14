@@ -44,12 +44,13 @@ pub enum AgentRunEvent {
     },
     ApprovalRequired {
         call_id: String,
+        agent_id: Uuid,
         command: String,
         approval_id: String,
         cwd: Option<String>,
         runtime: String,
-        network_enabled: bool,
-        write_roots: Vec<String>,
+        permission: String,
+        justification: Option<String>,
         background: bool,
     },
     Done,
@@ -312,6 +313,7 @@ async fn execute_tool_calls(
             store: state.store.clone(),
             process_manager: state.process_manager.clone(),
             approval_manager: state.approval_manager.clone(),
+            sandbox_runtime: state.sandbox_runtime.clone(),
             event_sender: None,
         };
         let result =
@@ -528,22 +530,24 @@ async fn execute_tool_with_events(
                 let mapped = match event {
                     ToolExecutionEvent::ApprovalRequired {
                         call_id,
+                        agent_id,
                         command,
                         approval_id,
                         cwd,
                         runtime,
-                        network_enabled,
-                        write_roots,
+                        permission,
+                        justification,
                         background,
                     } => {
                         AgentRunEvent::ApprovalRequired {
                             call_id,
+                            agent_id,
                             command,
                             approval_id,
                             cwd,
                             runtime,
-                            network_enabled,
-                            write_roots,
+                            permission,
+                            justification,
                             background,
                         }
                     }

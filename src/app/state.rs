@@ -4,7 +4,10 @@ use crate::{
     app::run_manager::RunManager,
     llm::registry::DynLlmRegistry,
     storage::{JsonStore, LlmLogger},
-    tools::{approval::ApprovalManager, process_manager::ProcessManager, registry::ToolRegistry},
+    tools::{
+        approval::ApprovalManager, process_manager::ProcessManager, registry::ToolRegistry,
+        runtime::SandboxRuntimeManager,
+    },
 };
 
 #[derive(Clone)]
@@ -14,6 +17,7 @@ pub struct AppState {
     pub llm_logger: Arc<LlmLogger>,
     pub process_manager: Arc<ProcessManager>,
     pub approval_manager: Arc<ApprovalManager>,
+    pub sandbox_runtime: Arc<SandboxRuntimeManager>,
     pub tool_registry: Arc<ToolRegistry>,
     pub run_manager: Arc<RunManager>,
 }

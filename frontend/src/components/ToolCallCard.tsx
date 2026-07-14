@@ -1,5 +1,21 @@
-import { useEffect, useState } from 'react';
-import { Terminal, CheckCircle, XCircle, AlertTriangle, Loader2, Square, RefreshCw, Box, Monitor } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle,
+  Clock3,
+  Copy,
+  Hand,
+  Loader2,
+  Maximize2,
+  RefreshCw,
+  ShieldAlert,
+  Square,
+  Terminal,
+  X,
+  XCircle,
+} from 'lucide-react';
 
 import { getToolProcess, stopToolProcess, type ToolProcessInfo } from '../api';
 import type { ToolCallStatus, ToolResultData } from '../types';
@@ -12,50 +28,158 @@ interface ToolCallCardProps {
   arguments: Record<string, any>;
   status: ToolCallStatus;
   result?: ToolResultData;
-  onApprove?: (decision: 'approve' | 'reject' | 'always_approve') => void;
+  permissionMode?: 'request_approval' | 'full_access' | null;
+  onApprove?: (decision: 'approve' | 'reject' | 'always_approve') => Promise<void> | void;
 }
 
-function normalizeRuntime(runtime?: string | null): {
-  key: 'docker' | 'native' | 'fallback' | 'unknown';
-  labelKey: string;
-  className: string;
-} {
-  const value = (runtime || '').toLowerCase();
-  if (!value) {
-    return { key: 'unknown', labelKey: 'toolCard.runtimeUnknown', className: 'tool-runtime-badge--unknown' };
-  }
-  if (value.includes('fallback')) {
-    return { key: 'fallback', labelKey: 'toolCard.runtimeFallback', className: 'tool-runtime-badge--fallback' };
-  }
-  if (value.startsWith('docker')) {
-    return { key: 'docker', labelKey: 'toolCard.runtimeDocker', className: 'tool-runtime-badge--docker' };
-  }
-  if (value.includes('native')) {
-    return { key: 'native', labelKey: 'toolCard.runtimeNative', className: 'tool-runtime-badge--native' };
-  }
-  return { key: 'unknown', labelKey: 'toolCard.runtimeUnknown', className: 'tool-runtime-badge--unknown' };
-}
-
-function RuntimeBadge({ runtime, t }: { runtime?: string | null; t: (path: string, vars?: Record<string, string | number>) => string }) {
-  if (!runtime) return null;
-  const info = normalizeRuntime(runtime);
-  const Icon = info.key === 'docker' ? Box : Monitor;
+function PermissionModeBadge({
+  permissionMode,
+  t,
+}: {
+  permissionMode?: 'request_approval' | 'full_access' | null;
+  t: (path: string, vars?: Record<string, string | number>) => string;
+}) {
+  if (!permissionMode) return null;
+  const isFullAccess = permissionMode === 'full_access';
+  const Icon = isFullAccess ? ShieldAlert : Hand;
+  const label = t(isFullAccess ? 'toolCard.permissionModeFullAccess' : 'toolCard.permissionModeRequestApproval');
   return (
-    <span className={`tool-runtime-badge ${info.className}`} title={runtime}>
+    <span className={`tool-card__permission-badge ${isFullAccess ? 'tool-card__permission-badge--full-access' : 'tool-card__permission-badge--approval'}`} title={label}>
       <Icon size={12} />
-      {t(info.labelKey)}
+      {label}
     </span>
   );
 }
 
-export function ToolCallCard({ agentId, name, arguments: args, status, result, onApprove }: ToolCallCardProps) {
+function TerminalContent({
+  content,
+  tone,
+  t,
+}: {
+  content: string;
+  tone: 'command' | 'stdout' | 'stderr';
+  t: (path: string, vars?: Record<string, string | number>) => string;
+}) {
+  const previewRef = useRef<HTMLPreElement>(null);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const isCommand = tone === 'command';
+  const title = isCommand
+    ? t('toolCard.commandTitle')
+    : tone === 'stderr'
+      ? t('toolCard.stderrTitle')
+      : t('toolCard.stdoutTitle');
+  const showAllLabel = t(isCommand ? 'toolCard.showAllCommand' : 'toolCard.showAllOutput');
+  const copyLabel = t(isCommand ? 'toolCard.copyCommand' : 'toolCard.copyOutput');
+
+  useLayoutEffect(() => {
+    const preview = previewRef.current;
+    if (!preview) return;
+
+    const updateOverflow = () => {
+      setIsOverflowing(preview.scrollHeight > preview.clientHeight + 1);
+    };
+    updateOverflow();
+
+    const observer = new ResizeObserver(updateOverflow);
+    observer.observe(preview);
+    return () => observer.disconnect();
+  }, [content]);
+
+  useEffect(() => {
+    if (!isExpanded) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsExpanded(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isExpanded]);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  const modal = isExpanded ? (
+    <div
+      className="modal-overlay terminal-output-overlay"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) setIsExpanded(false);
+      }}
+    >
+      <section
+        className="modal-container terminal-output-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        <header className="terminal-output-modal__header">
+          <div className="terminal-output-modal__title">
+            <span className={`terminal-output-modal__icon terminal-output-modal__icon--${tone}`}>
+              <Terminal size={18} />
+            </span>
+            <div>
+              <h2>{title}</h2>
+              <p>{t(isCommand ? 'toolCard.commandModalHint' : 'toolCard.outputModalHint')}</p>
+            </div>
+          </div>
+          <div className="terminal-output-modal__actions">
+            <button type="button" className="terminal-output-modal__icon-button" onClick={handleCopy} aria-label={copyLabel} title={copyLabel}>
+              {copied ? <Check size={18} /> : <Copy size={18} />}
+            </button>
+            <button type="button" className="terminal-output-modal__icon-button" onClick={() => setIsExpanded(false)} aria-label={t('toolCard.closeOutput')} title={t('toolCard.closeOutput')} autoFocus>
+              <X size={20} />
+            </button>
+          </div>
+        </header>
+        <div className="terminal-output-modal__body">
+          <pre className={`terminal-output-modal__content terminal-output-modal__content--${tone}`}>{content}</pre>
+        </div>
+      </section>
+    </div>
+  ) : null;
+
+  return (
+    <>
+      <div className={`tool-card__output-shell tool-card__output-shell--${tone}`}>
+        <pre ref={previewRef} className={`tool-card__output tool-card__output--${tone}`}>{content}</pre>
+        {isOverflowing ? (
+          <div className="tool-card__output-footer">
+            <button type="button" onClick={() => setIsExpanded(true)} aria-label={showAllLabel}>
+              <Maximize2 size={14} />
+              {showAllLabel}
+            </button>
+          </div>
+        ) : null}
+      </div>
+      {modal ? createPortal(modal, document.body) : null}
+    </>
+  );
+}
+
+export function ToolCallCard({ agentId, name, arguments: args, status, result, permissionMode, onApprove }: ToolCallCardProps) {
   const { t } = useI18n();
   const command = typeof args.command === 'string' ? args.command : name;
   const processId = result?.process_id;
-  const runtime = result?.runtime;
   const [process, setProcess] = useState<ToolProcessInfo | null>(null);
   const [processError, setProcessError] = useState('');
   const [isStopping, setIsStopping] = useState(false);
+  const [approvalDecision, setApprovalDecision] = useState<'approve' | 'reject' | 'always_approve' | null>(null);
+
+  useEffect(() => {
+    setApprovalDecision(null);
+  }, [args.approval_id, status]);
 
   useEffect(() => {
     if (!processId) {
@@ -97,25 +221,39 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, o
     }
   }
 
+  async function handleApproval(decision: 'approve' | 'reject' | 'always_approve') {
+    if (!onApprove || approvalDecision) return;
+    setApprovalDecision(decision);
+    try {
+      await onApprove(decision);
+    } catch {
+      setApprovalDecision(null);
+    }
+  }
+
   if (status === 'pending_approval' && onApprove) {
     return (
       <div className="tool-card tool-card--approval">
         <div className="tool-card__header">
-          <Terminal size={18} />
-          <span>{t('toolCard.approvalTitle')}</span>
+          <span className="tool-card__status-icon tool-card__status-icon--approval"><Terminal size={19} /></span>
+          <div className="tool-card__title">
+            <strong>{t('toolCard.approvalTitle')}</strong>
+            <small>{t('toolCard.approvalSubtitle')}</small>
+          </div>
+          <PermissionModeBadge permissionMode={permissionMode} t={t} />
         </div>
-        <pre className="tool-card__command">{command}</pre>
+        <TerminalContent content={command} tone="command" t={t} />
         <dl className="tool-card__approval-context">
           <div><dt>{t('toolCard.cwd')}</dt><dd>{String(args.cwd || t('toolCard.defaultCwd'))}</dd></div>
           <div><dt>{t('toolCard.runtime')}</dt><dd>{String(args.runtime || t('toolCard.runtimeUnknown'))}</dd></div>
-          <div><dt>{t('toolCard.network')}</dt><dd>{args.network_enabled ? t('toolCard.enabled') : t('toolCard.disabled')}</dd></div>
+          <div><dt>{t('toolCard.permission')}</dt><dd>{t('toolCard.fullAccessPermission')}</dd></div>
           <div><dt>{t('toolCard.background')}</dt><dd>{args.background ? t('toolCard.enabled') : t('toolCard.disabled')}</dd></div>
-          <div><dt>{t('toolCard.writeRoots')}</dt><dd>{Array.isArray(args.write_roots) && args.write_roots.length > 0 ? args.write_roots.join(', ') : t('toolCard.defaultCwd')}</dd></div>
+          {args.justification ? <div><dt>{t('toolCard.justification')}</dt><dd>{String(args.justification)}</dd></div> : null}
         </dl>
         <div className="tool-card__actions">
-          <button type="button" onClick={() => onApprove('approve')} className="btn-approve">{t('toolCard.allow')}</button>
-          <button type="button" onClick={() => onApprove('always_approve')} className="btn-always">{t('toolCard.alwaysAllow')}</button>
-          <button type="button" onClick={() => onApprove('reject')} className="btn-reject">{t('toolCard.reject')}</button>
+          <button type="button" onClick={() => handleApproval('approve')} className="btn-approve" disabled={approvalDecision !== null}><Check size={15} />{approvalDecision === 'approve' ? t('toolCard.approvalSubmitting') : t('toolCard.allow')}</button>
+          <button type="button" onClick={() => handleApproval('always_approve')} className="btn-always" disabled={approvalDecision !== null}><Clock3 size={15} />{approvalDecision === 'always_approve' ? t('toolCard.approvalSubmitting') : t('toolCard.alwaysAllow')}</button>
+          <button type="button" onClick={() => handleApproval('reject')} className="btn-reject" disabled={approvalDecision !== null}><X size={15} />{approvalDecision === 'reject' ? t('toolCard.approvalSubmitting') : t('toolCard.reject')}</button>
         </div>
       </div>
     );
@@ -124,21 +262,26 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, o
   if (processId) {
     const effectiveStatus = process?.status ?? 'running';
     const running = effectiveStatus === 'running';
+    const failed = effectiveStatus === 'failed' || (process?.exit_code !== undefined && process.exit_code !== 0);
     return (
       <div className={`tool-card ${running ? 'tool-card--running' : effectiveStatus === 'completed' ? 'tool-card--done' : 'tool-card--error'}`}>
         <div className="tool-card__header">
-          {running ? <Loader2 size={18} className="animate-spin" /> : effectiveStatus === 'completed' ? <CheckCircle size={18} /> : <AlertTriangle size={18} />}
-          <span>{running ? t('toolCard.backgroundRunning') : t(`toolCard.processStatus.${effectiveStatus}`)}</span>
-          <RuntimeBadge runtime={runtime} t={t} />
+          <span className="tool-card__status-icon">
+            {running ? <Loader2 size={18} className="animate-spin" /> : effectiveStatus === 'completed' ? <CheckCircle size={18} /> : <AlertTriangle size={18} />}
+          </span>
+          <div className="tool-card__title">
+            <strong>{running ? t('toolCard.backgroundRunning') : t(`toolCard.processStatus.${effectiveStatus}`)}</strong>
+          </div>
+          <PermissionModeBadge permissionMode={permissionMode} t={t} />
           {running ? (
             <button type="button" className="tool-process-action" onClick={handleStop} disabled={isStopping}>
               <Square size={14} /> {isStopping ? t('toolCard.stopping') : t('toolCard.stop')}
             </button>
           ) : null}
         </div>
-        <pre className="tool-card__command">{command}</pre>
-        {process?.stdout ? <pre className="tool-card__output">{process.stdout}</pre> : null}
-        {process?.stderr ? <pre className="tool-card__error">{process.stderr}</pre> : null}
+        <TerminalContent content={command} tone="command" t={t} />
+        {process?.stdout ? <TerminalContent content={process.stdout} tone="stdout" t={t} /> : null}
+        {process?.stderr ? <TerminalContent content={process.stderr} tone={failed ? 'stderr' : 'stdout'} t={t} /> : null}
         {process ? <p className="tool-card__reason">{t('toolCard.duration', { ms: process.duration_ms })}</p> : null}
         {processError ? <p className="tool-card__reason"><RefreshCw size={13} /> {processError}</p> : null}
       </div>
@@ -149,24 +292,29 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, o
     return (
       <div className="tool-card tool-card--running">
         <div className="tool-card__header">
-          <Loader2 size={18} className="animate-spin" />
-          <span>{t('toolCard.executing', { command })}</span>
-          <RuntimeBadge runtime={runtime} t={t} />
+          <span className="tool-card__status-icon"><Loader2 size={18} className="animate-spin" /></span>
+          <div className="tool-card__title"><strong>{t('toolCard.executingTitle')}</strong></div>
+          <PermissionModeBadge permissionMode={permissionMode} t={t} />
         </div>
+        <TerminalContent content={command} tone="command" t={t} />
       </div>
     );
   }
 
   if (status === 'completed' && result) {
+    const failed = (result.exit_code ?? 0) !== 0;
     return (
-      <div className="tool-card tool-card--done">
+      <div className={`tool-card ${failed ? 'tool-card--error' : 'tool-card--done'}`}>
         <div className="tool-card__header">
-          <CheckCircle size={18} />
-          <span>{t('toolCard.completed', { code: result.exit_code ?? 0 })}</span>
-          <RuntimeBadge runtime={result.runtime} t={t} />
+          <span className={`tool-card__status-icon ${failed ? '' : 'tool-card__status-icon--success'}`}>
+            {failed ? <AlertTriangle size={18} /> : <CheckCircle size={18} />}
+          </span>
+          <div className="tool-card__title"><strong>{t('toolCard.completed', { code: result.exit_code ?? 0 })}</strong></div>
+          <PermissionModeBadge permissionMode={permissionMode} t={t} />
         </div>
-        {result.stdout ? <pre className="tool-card__output">{result.stdout}</pre> : null}
-        {result.stderr ? <pre className="tool-card__error">{result.stderr}</pre> : null}
+        <TerminalContent content={command} tone="command" t={t} />
+        {result.stdout ? <TerminalContent content={result.stdout} tone="stdout" t={t} /> : null}
+        {result.stderr ? <TerminalContent content={result.stderr} tone={failed ? 'stderr' : 'stdout'} t={t} /> : null}
       </div>
     );
   }

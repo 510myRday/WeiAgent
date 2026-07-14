@@ -135,7 +135,7 @@ export type ToolResultData = {
   process_id?: string;
   message?: string;
   reason?: string;
-  /** Actual runtime used: docker / native_restricted */
+  /** Actual runtime used: os_sandbox / full_access */
   runtime?: string;
 };
 
@@ -162,12 +162,13 @@ export type StreamEvent =
       event: 'approval_required';
       data: {
         call_id: string;
+        agent_id: string;
         command: string;
         approval_id: string;
         cwd?: string;
         runtime: string;
-        network_enabled: boolean;
-        write_roots: string[];
+        permission: string;
+        justification?: string;
         background: boolean;
       };
     };

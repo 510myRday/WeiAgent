@@ -1,33 +1,38 @@
 use std::{
     path::{Path, PathBuf},
-    process::Stdio,
-    sync::{Arc, OnceLock},
-    time::{Duration, Instant},
+    sync::Arc,
+    time::Duration,
 };
 
+use serde::Deserialize;
 use tokio::process::Command;
 use uuid::Uuid;
 
 use crate::{
-    domain::{
-        CommandDecision, ProcessInfo, ProcessStatus, SandboxMode, TerminalToolConfig, ToolResult,
-    },
+    domain::{ProcessInfo, ProcessStatus, TerminalPermissionMode, TerminalToolConfig, ToolResult},
     tools::{
         process_manager::{ProcessManager, ProcessMetadata},
-        terminal::CommandChecker,
+        runtime::{SandboxExecutable, SandboxRuntimeManager},
     },
 };
 
 pub const MAX_TERMINAL_TIMEOUT_MS: u64 = 120_000;
 const MAX_LLM_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
-const DOCKER_AVAILABILITY_CACHE_TTL: Duration = Duration::from_secs(10);
-static DOCKER_AVAILABILITY: OnceLock<tokio::sync::Mutex<Option<(Instant, bool)>>> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxPermissions {
+    #[default]
+    UseDefault,
+    RequireEscalated,
+}
 
 pub struct ExecuteTerminalRequest {
     pub command: String,
     pub cwd: Option<String>,
     pub timeout_ms: Option<u64>,
     pub background: Option<bool>,
+    pub sandbox_permissions: SandboxPermissions,
     pub approved: bool,
     pub agent_id: Uuid,
     pub conversation_id: Uuid,
@@ -38,6 +43,7 @@ pub async fn execute_terminal(
     req: &ExecuteTerminalRequest,
     config: &TerminalToolConfig,
     process_manager: &Arc<ProcessManager>,
+    sandbox_runtime: &Arc<SandboxRuntimeManager>,
 ) -> ToolResult {
     if !config.enabled {
         return ToolResult::Blocked {
@@ -55,18 +61,10 @@ pub async fn execute_terminal(
         };
     }
 
-    let checker = CommandChecker::new(config);
-    let decision = checker.check(&req.command);
-    match &decision {
-        CommandDecision::Blocked(reason) => {
-            return ToolResult::Blocked {
-                reason: reason.clone(),
-            };
-        }
-        CommandDecision::NeedsApproval | CommandDecision::Allowed => {}
-    }
-
-    let workspace = match resolve_workspace(req.cwd.as_deref(), config) {
+    let escalation_requested = req.sandbox_permissions == SandboxPermissions::RequireEscalated;
+    let full_access_mode = config.permission_mode == TerminalPermissionMode::FullAccess;
+    let allow_outside_workspace = full_access_mode || escalation_requested;
+    let workspace = match resolve_workspace(req.cwd.as_deref(), config, allow_outside_workspace) {
         Ok(workspace) => workspace,
         Err(WorkspaceResolutionError::Invalid(message)) => {
             return ToolResult::Error { message };
@@ -75,55 +73,59 @@ pub async fn execute_terminal(
             return ToolResult::Blocked { reason };
         }
     };
-    let process_id = process_manager.new_process_id();
-    let docker_available = if config.sandbox.mode == SandboxMode::Docker {
-        docker_runtime_available().await
-    } else {
-        false
-    };
-    if config.sandbox.mode == SandboxMode::Docker && !docker_available {
-        return ToolResult::Blocked {
-            reason: "Docker sandbox is unavailable. Start Docker Desktop and wait for its engine \
-                     to report running; refusing to fall back to unsandboxed host execution"
-                .to_string(),
-        };
-    }
-    let context_granted = config.has_context_grant(&req.command, req.cwd.as_deref());
-    let needs_approval = !context_granted
-        && (matches!(decision, CommandDecision::NeedsApproval)
-            || config.sandbox.mode == SandboxMode::NativeRestricted);
-    if needs_approval && !req.approved {
+
+    let context_granted =
+        escalation_requested && config.has_context_grant(&req.command, req.cwd.as_deref());
+    if !full_access_mode && escalation_requested && !context_granted && !req.approved {
         return ToolResult::PendingApproval {
             command: req.command.clone(),
             approval_id: Uuid::new_v4().to_string(),
         };
     }
-    let launch = match build_sandbox_command(
-        &process_id,
+
+    let use_full_access = full_access_mode || escalation_requested;
+    let sandbox_executable = if use_full_access {
+        None
+    } else {
+        match sandbox_runtime.executable().await {
+            Some(executable) => Some(executable),
+            None => {
+                return ToolResult::Blocked {
+                    reason: "The managed OS sandbox is unavailable. Install or refresh the sandbox runtime in Terminal settings, or explicitly choose full-access mode."
+                        .to_string(),
+                };
+            }
+        }
+    };
+    let launch = match build_execution_command(
         &req.command,
         &workspace,
-        config,
-        docker_available,
+        use_full_access,
+        sandbox_executable.as_ref(),
     ) {
         Ok(command) => command,
         Err(message) => return ToolResult::Error { message },
     };
-
+    let process_id = process_manager.new_process_id();
     let metadata = ProcessMetadata {
         agent_id: req.agent_id,
         conversation_id: req.conversation_id,
         tool_call_id: req.tool_call_id.clone(),
         command: req.command.clone(),
         cwd: Some(workspace.cwd.to_string_lossy().to_string()),
-        docker_container_name: launch.docker_container_name,
         detached: req.background.unwrap_or(false),
     };
     if let Err(error) = process_manager
         .spawn(process_id.clone(), launch.command, metadata)
         .await
     {
+        let hint = if launch.runtime_label == "os_sandbox" {
+            " Install or refresh the managed sandbox runtime in WeiAgent Terminal settings."
+        } else {
+            ""
+        };
         return ToolResult::Error {
-            message: format!("Failed to start sandboxed command: {error}"),
+            message: format!("Failed to start terminal command: {error}.{hint}"),
         };
     }
     let mut process_lease = ProcessLease::new(process_manager.clone(), process_id.clone());
@@ -151,18 +153,25 @@ pub async fn execute_terminal(
         .wait_for_completion(&process_id, Duration::from_millis(timeout_ms))
         .await
     {
-        Some(info) if info.status == ProcessStatus::Running => ToolResult::Running {
-            process_id,
-            message: format!(
-                "Command exceeded {timeout_ms}ms and continues in background with output capture ({})",
-                launch.runtime_label
-            ),
-            stdout: truncate_for_llm(info.stdout),
-            stderr: truncate_for_llm(info.stderr),
-            duration_ms: info.duration_ms,
-            runtime: Some(launch.runtime_label),
-        },
-        Some(info) => process_info_to_result_with_runtime(info, Some(launch.runtime_label)),
+        Some(info) if info.status == ProcessStatus::Running => {
+            process_manager.promote_to_background(&process_id);
+            ToolResult::Running {
+                process_id,
+                message: format!(
+                    "Command exceeded {timeout_ms}ms and continues in background with output capture ({})",
+                    launch.runtime_label
+                ),
+                stdout: truncate_for_llm(info.stdout),
+                stderr: truncate_for_llm(info.stderr),
+                duration_ms: info.duration_ms,
+                runtime: Some(launch.runtime_label),
+            }
+        }
+        Some(info) => {
+            let result = process_info_to_result_with_runtime(info, Some(launch.runtime_label));
+            process_manager.remove(&process_id);
+            result
+        }
         None => ToolResult::Error {
             message: "Process disappeared before completion".to_string(),
         },
@@ -248,9 +257,9 @@ fn truncate_for_llm(value: String) -> String {
 struct ResolvedWorkspace {
     root: PathBuf,
     cwd: PathBuf,
-    container_cwd: String,
 }
 
+#[derive(Debug)]
 enum WorkspaceResolutionError {
     Invalid(String),
     Blocked(String),
@@ -258,13 +267,13 @@ enum WorkspaceResolutionError {
 
 struct PreparedLaunch {
     command: Command,
-    docker_container_name: Option<String>,
     runtime_label: String,
 }
 
 fn resolve_workspace(
     cwd: Option<&str>,
     config: &TerminalToolConfig,
+    allow_outside_workspace: bool,
 ) -> Result<ResolvedWorkspace, WorkspaceResolutionError> {
     let roots = if config.allowed_cwd_roots.is_empty() {
         vec![std::env::current_dir().map_err(|error| {
@@ -304,160 +313,91 @@ fn resolve_workspace(
     };
     let canonical_cwd = std::fs::canonicalize(&requested).map_err(|error| {
         WorkspaceResolutionError::Invalid(format!(
-            "Working directory '{}' does not exist or cannot be accessed: {error}. Omit cwd to use \
-             the default workspace '{}'.",
+            "Working directory '{}' does not exist or cannot be accessed: {error}. Retry without cwd to use the default workspace '{}'; do not substitute a guessed path such as /tmp.",
             requested.display(),
             roots[0].display()
         ))
     })?;
-    let root = roots
-        .into_iter()
+    let matching_root = roots
+        .iter()
         .find(|root| canonical_cwd.starts_with(root))
-        .ok_or_else(|| {
-            WorkspaceResolutionError::Blocked(format!(
-                "Working directory '{}' is outside the configured sandbox roots",
-                canonical_cwd.display()
-            ))
-        })?;
-    let relative = canonical_cwd.strip_prefix(&root).map_err(|_| {
-        WorkspaceResolutionError::Invalid(
-            "Failed to calculate sandbox working directory".to_string(),
-        )
-    })?;
-    let relative = path_to_container(relative);
-    let container_cwd = if relative.is_empty() {
-        "/workspace".to_string()
-    } else {
-        format!("/workspace/{relative}")
-    };
+        .cloned();
+    if matching_root.is_none() && !allow_outside_workspace {
+        return Err(WorkspaceResolutionError::Blocked(format!(
+            "Working directory '{}' is outside the configured OS sandbox roots. Retry with sandbox_permissions='require_escalated' if the user asked to work there.",
+            canonical_cwd.display()
+        )));
+    }
     Ok(ResolvedWorkspace {
-        root,
+        root: matching_root.unwrap_or_else(|| roots[0].clone()),
         cwd: canonical_cwd,
-        container_cwd,
     })
 }
 
-fn build_sandbox_command(
-    process_id: &str,
+fn build_execution_command(
     shell_command: &str,
     workspace: &ResolvedWorkspace,
-    config: &TerminalToolConfig,
-    docker_available: bool,
+    full_access: bool,
+    sandbox_executable: Option<&SandboxExecutable>,
 ) -> Result<PreparedLaunch, String> {
-    match config.sandbox.mode {
-        SandboxMode::Docker if docker_available => {
-            let (command, container_name) =
-                build_docker_command(process_id, shell_command, workspace, config)?;
-            Ok(PreparedLaunch {
-                command,
-                docker_container_name: container_name,
-                runtime_label: "docker".to_string(),
-            })
-        }
-        SandboxMode::Docker => Err(
-            "Docker sandbox is unavailable. Start Docker Desktop and wait for its engine to \
-                 report running; host execution fallback is disabled"
-                .to_string(),
-        ),
-        SandboxMode::NativeRestricted => Ok(PreparedLaunch {
-            command: build_native_restricted_command(shell_command, &workspace.cwd),
-            docker_container_name: None,
-            runtime_label: "native_restricted".to_string(),
-        }),
+    if full_access {
+        return Ok(PreparedLaunch {
+            command: build_host_command(shell_command, &workspace.cwd, "full_access"),
+            runtime_label: "full_access".to_string(),
+        });
     }
+    let sandbox_executable =
+        sandbox_executable.ok_or_else(|| "OS sandbox executable is unavailable".to_string())?;
+    Ok(PreparedLaunch {
+        command: build_os_sandbox_command(shell_command, workspace, sandbox_executable),
+        runtime_label: "os_sandbox".to_string(),
+    })
 }
 
-async fn docker_runtime_available() -> bool {
-    let cache = DOCKER_AVAILABILITY.get_or_init(|| tokio::sync::Mutex::new(None));
-    let mut cached = cache.lock().await;
-    if let Some((checked_at, true)) = *cached
-        && checked_at.elapsed() < DOCKER_AVAILABILITY_CACHE_TTL
-    {
-        return true;
-    }
-    let mut command = Command::new("docker");
-    command
-        .args(["info", "--format", "{{.ServerVersion}}"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let available = match tokio::time::timeout(Duration::from_secs(3), command.status()).await {
-        Ok(Ok(status)) => status.success(),
-        Ok(Err(_)) | Err(_) => false,
-    };
-    *cached = Some((Instant::now(), available));
-    available
-}
-
-fn build_docker_command(
-    process_id: &str,
+fn build_os_sandbox_command(
     shell_command: &str,
     workspace: &ResolvedWorkspace,
-    config: &TerminalToolConfig,
-) -> Result<(Command, Option<String>), String> {
-    let image = config.sandbox.docker_image.trim();
-    if image.is_empty() {
-        return Err("Docker sandbox image cannot be empty".to_string());
+    executable: &SandboxExecutable,
+) -> Command {
+    let mut command = Command::new(&executable.program);
+    if cfg!(windows) {
+        command.args(["-c", "windows.sandbox=\"unelevated\""]);
     }
-    if image.starts_with('-') || image.chars().any(char::is_whitespace) {
-        return Err("Docker sandbox image is not a valid image reference".to_string());
-    }
-    if config.sandbox.cpu_limit <= 0.0 || config.sandbox.memory_limit_mb == 0 {
-        return Err("Docker sandbox CPU and memory limits must be greater than zero".to_string());
-    }
+    command
+        .arg("sandbox")
+        .args(["--permissions-profile", ":workspace"])
+        .arg("-C")
+        .arg(os_command_path(&workspace.root));
 
-    let container_name = format!("weiagent-{}", process_id.replace('-', ""));
-    let mount_mode = if config.sandbox.workspace_read_only {
-        "ro"
+    if cfg!(windows) {
+        let shell_command = windows_utf8_command(shell_command);
+        command
+            .arg("powershell.exe")
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+            .arg(format!(
+                "$ErrorActionPreference = 'Stop'; $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $command = {}; Set-Location -LiteralPath {}; & cmd.exe /D /S /C $command; exit $LASTEXITCODE",
+                quote_powershell_literal(&shell_command),
+                quote_powershell_literal(&windows_command_path(&workspace.cwd))
+            ));
     } else {
-        "rw"
-    };
-    let mount_source = docker_mount_source(&workspace.root);
-    let mount = format!("{mount_source}:/workspace:{mount_mode}");
-    let mut command = Command::new("docker");
-    command.args([
-        "run",
-        "--rm",
-        "--init",
-        "--name",
-        &container_name,
-        "--network",
-        if config.sandbox.network_enabled {
-            "bridge"
-        } else {
-            "none"
-        },
-        "--memory",
-        &format!("{}m", config.sandbox.memory_limit_mb),
-        "--cpus",
-        &config.sandbox.cpu_limit.to_string(),
-        "--pids-limit",
-        &config.sandbox.pids_limit.max(1).to_string(),
-        "--ulimit",
-        "nofile=1024:1024",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--read-only",
-        "--tmpfs",
-        "/tmp:rw,noexec,nosuid,size=64m",
-        "-v",
-        &mount,
-        "-w",
-        &workspace.container_cwd,
-        image,
-        "sh",
-        "-c",
-        shell_command,
-    ]);
+        command.arg("sh").args(["-lc"]).arg(format!(
+            "cd -- {} && {}",
+            quote_unix_path(&workspace.cwd),
+            shell_command
+        ));
+    }
+    sanitize_environment(&mut command, "os_sandbox");
+    command.env("CODEX_HOME", &executable.codex_home);
     configure_process_group(&mut command);
-    Ok((command, Some(container_name)))
+    command
 }
 
-fn build_native_restricted_command(shell_command: &str, cwd: &Path) -> Command {
+fn build_host_command(shell_command: &str, cwd: &Path, runtime: &str) -> Command {
     let mut command = if cfg!(windows) {
-        let mut command = Command::new("cmd");
-        command.args(["/D", "/S", "/C", shell_command]);
+        let mut command = Command::new("cmd.exe");
+        command
+            .args(["/D", "/S", "/C"])
+            .arg(windows_utf8_command(shell_command));
         command
     } else {
         let mut command = Command::new("sh");
@@ -465,12 +405,51 @@ fn build_native_restricted_command(shell_command: &str, cwd: &Path) -> Command {
         command
     };
     command.current_dir(cwd);
-    sanitize_environment(&mut command);
+    sanitize_environment(&mut command, runtime);
     configure_process_group(&mut command);
     command
 }
 
-fn sanitize_environment(command: &mut Command) {
+#[cfg(test)]
+fn quote_windows_path(path: &Path) -> String {
+    format!("\"{}\"", windows_command_path(path).replace('"', "\"\""))
+}
+
+fn quote_powershell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn windows_utf8_command(command: &str) -> String {
+    format!("chcp 65001>nul & {command}")
+}
+
+fn quote_unix_path(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
+}
+
+#[cfg(windows)]
+fn os_command_path(path: &Path) -> std::ffi::OsString {
+    windows_command_path(path).into()
+}
+
+#[cfg(not(windows))]
+fn os_command_path(path: &Path) -> std::ffi::OsString {
+    path.as_os_str().to_os_string()
+}
+
+#[cfg(windows)]
+fn windows_command_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    value
+        .strip_prefix(r"\\?\")
+        .unwrap_or(value.as_ref())
+        .to_string()
+}
+
+fn sanitize_environment(command: &mut Command, runtime: &str) {
     let allowed = [
         "PATH",
         "SystemRoot",
@@ -492,7 +471,7 @@ fn sanitize_environment(command: &mut Command) {
     for (key, value) in preserved {
         command.env(key, value);
     }
-    command.env("WEIAGENT_SANDBOX", "native_restricted");
+    command.env("WEIAGENT_RUNTIME", runtime);
 }
 
 fn configure_process_group(command: &mut Command) {
@@ -507,133 +486,99 @@ fn configure_process_group(command: &mut Command) {
     }
 }
 
-fn path_to_container(path: &Path) -> String {
-    path.components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn docker_mount_source(path: &Path) -> String {
-    let source = path.to_string_lossy();
-    #[cfg(windows)]
-    {
-        if let Some(path) = source.strip_prefix(r"\\?\UNC\") {
-            return format!(r"\\{path}");
-        }
-        if let Some(path) = source.strip_prefix(r"\\?\") {
-            return path.to_string();
-        }
-    }
-    source.into_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn docker_sandbox_is_the_secure_default_and_has_hardening_flags() {
-        let root = tempfile::tempdir().unwrap();
-        let workspace = ResolvedWorkspace {
-            root: root.path().to_path_buf(),
-            cwd: root.path().to_path_buf(),
-            container_cwd: "/workspace".to_string(),
-        };
-        let config = TerminalToolConfig::default();
-        assert_eq!(config.sandbox.mode, SandboxMode::Docker);
-        let (command, container_name) =
-            build_docker_command("test-process", "echo sandbox", &workspace, &config).unwrap();
-        let args = command
-            .as_std()
-            .get_args()
-            .map(|arg| arg.to_string_lossy().to_string())
-            .collect::<Vec<_>>();
-        assert!(container_name.is_some());
-        assert!(args.windows(2).any(|pair| pair == ["--network", "none"]));
-        assert!(args.windows(2).any(|pair| pair == ["--cap-drop", "ALL"]));
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--security-opt", "no-new-privileges"])
-        );
-        assert!(args.iter().any(|arg| arg == "--read-only"));
-        assert!(args.windows(2).any(|pair| pair[0] == "--memory"));
-        assert!(args.windows(2).any(|pair| pair[0] == "--cpus"));
-        assert!(args.windows(2).any(|pair| pair[0] == "--pids-limit"));
-        assert!(
-            args.windows(3)
-                .any(|args| args == ["sh", "-c", "echo sandbox"])
+    fn request_approval_is_the_default_permission_mode() {
+        assert_eq!(
+            TerminalToolConfig::default().permission_mode,
+            TerminalPermissionMode::RequestApproval
         );
     }
 
     #[test]
-    fn workspace_resolution_rejects_paths_outside_allowed_roots() {
+    fn workspace_resolution_rejects_default_access_outside_roots() {
         let allowed = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let config = TerminalToolConfig {
             allowed_cwd_roots: vec![allowed.path().to_string_lossy().to_string()],
             ..TerminalToolConfig::default()
         };
-        let result = resolve_workspace(Some(&outside.path().to_string_lossy()), &config);
+        let result = resolve_workspace(Some(&outside.path().to_string_lossy()), &config, false);
         assert!(matches!(result, Err(WorkspaceResolutionError::Blocked(_))));
     }
 
     #[test]
-    fn workspace_resolution_reports_missing_cwd_as_invalid() {
+    fn elevated_access_accepts_existing_cwd_outside_roots() {
         let allowed = tempfile::tempdir().unwrap();
-        let missing = allowed.path().join("missing");
+        let outside = tempfile::tempdir().unwrap();
         let config = TerminalToolConfig {
             allowed_cwd_roots: vec![allowed.path().to_string_lossy().to_string()],
             ..TerminalToolConfig::default()
         };
-        let result = resolve_workspace(Some(&missing.to_string_lossy()), &config);
-        let Err(WorkspaceResolutionError::Invalid(message)) = result else {
-            panic!("missing cwd should be reported as invalid");
+        let resolved =
+            resolve_workspace(Some(&outside.path().to_string_lossy()), &config, true).unwrap();
+        assert_eq!(resolved.cwd, std::fs::canonicalize(outside.path()).unwrap());
+    }
+
+    #[test]
+    fn relative_dot_uses_the_default_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let config = TerminalToolConfig {
+            allowed_cwd_roots: vec![root.path().to_string_lossy().to_string()],
+            ..TerminalToolConfig::default()
         };
-        assert!(message.contains("Omit cwd to use the default workspace"));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn docker_mount_source_strips_windows_verbatim_prefixes() {
-        assert_eq!(
-            docker_mount_source(Path::new(r"\\?\D:\Code_Save\rust\WeiAgent")),
-            r"D:\Code_Save\rust\WeiAgent"
-        );
-        assert_eq!(
-            docker_mount_source(Path::new(r"\\?\UNC\server\share\workspace")),
-            r"\\server\share\workspace"
-        );
+        let resolved = resolve_workspace(Some("."), &config, false).unwrap();
+        assert_eq!(resolved.cwd, std::fs::canonicalize(root.path()).unwrap());
     }
 
     #[test]
-    fn docker_mode_fails_closed_when_docker_is_unavailable() {
+    fn os_sandbox_launch_uses_codex_workspace_profile() {
         let root = tempfile::tempdir().unwrap();
         let workspace = ResolvedWorkspace {
             root: root.path().to_path_buf(),
             cwd: root.path().to_path_buf(),
-            container_cwd: "/workspace".to_string(),
         };
-        let config = TerminalToolConfig::default();
-        let launch = build_sandbox_command(
-            "fallback-process",
-            "echo fallback",
-            &workspace,
-            &config,
-            false,
+        let executable = SandboxExecutable {
+            program: PathBuf::from(if cfg!(windows) { "codex.exe" } else { "codex" }),
+            codex_home: root.path().join("codex-home"),
+        };
+        let launch =
+            build_execution_command("echo sandbox", &workspace, false, Some(&executable)).unwrap();
+        let args = launch
+            .command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(launch.runtime_label, "os_sandbox");
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--permissions-profile", ":workspace"])
         );
-        assert!(launch.is_err());
+        assert!(
+            args.iter()
+                .any(|arg| arg == "echo sandbox" || arg.contains("echo sandbox"))
+        );
+    }
+
+    #[test]
+    fn windows_commands_switch_to_utf8_before_execution() {
+        assert_eq!(
+            windows_utf8_command("echo test"),
+            "chcp 65001>nul & echo test"
+        );
     }
 
     #[tokio::test]
-    async fn native_execution_requires_context_bound_approval() {
+    async fn escalated_execution_requires_approval() {
         let root = tempfile::tempdir().unwrap();
+        let sandbox_runtime = Arc::new(SandboxRuntimeManager::new_for_tests(root.path()).unwrap());
         let config = TerminalToolConfig {
+            enabled: true,
             allowed_cwd_roots: vec![root.path().to_string_lossy().to_string()],
-            sandbox: crate::domain::TerminalSandboxConfig {
-                mode: SandboxMode::NativeRestricted,
-                ..crate::domain::TerminalSandboxConfig::default()
-            },
             ..TerminalToolConfig::default()
         };
         let result = execute_terminal(
@@ -642,15 +587,129 @@ mod tests {
                 cwd: None,
                 timeout_ms: Some(100),
                 background: Some(false),
+                sandbox_permissions: SandboxPermissions::RequireEscalated,
                 approved: false,
                 agent_id: Uuid::new_v4(),
                 conversation_id: Uuid::new_v4(),
-                tool_call_id: "call-native".to_string(),
+                tool_call_id: "call-escalated".to_string(),
             },
             &config,
             &Arc::new(ProcessManager::new()),
+            &sandbox_runtime,
         )
         .await;
         assert!(matches!(result, ToolResult::PendingApproval { .. }));
+    }
+
+    #[tokio::test]
+    async fn full_access_runs_without_approval() {
+        let root = tempfile::tempdir().unwrap();
+        let process_manager = Arc::new(ProcessManager::new());
+        let sandbox_runtime = Arc::new(SandboxRuntimeManager::new_for_tests(root.path()).unwrap());
+        let config = TerminalToolConfig {
+            enabled: true,
+            permission_mode: TerminalPermissionMode::FullAccess,
+            allowed_cwd_roots: vec![root.path().to_string_lossy().to_string()],
+            ..TerminalToolConfig::default()
+        };
+        let result = execute_terminal(
+            &ExecuteTerminalRequest {
+                command: "echo full-access".to_string(),
+                cwd: None,
+                timeout_ms: Some(2_000),
+                background: Some(false),
+                sandbox_permissions: SandboxPermissions::UseDefault,
+                approved: false,
+                agent_id: Uuid::new_v4(),
+                conversation_id: Uuid::new_v4(),
+                tool_call_id: "call-full-access".to_string(),
+            },
+            &config,
+            &process_manager,
+            &sandbox_runtime,
+        )
+        .await;
+        assert!(matches!(result, ToolResult::Completed { exit_code: 0, .. }));
+        assert!(process_manager.list(None).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn os_sandbox_writes_workspace_and_blocks_external_write_when_available() {
+        let current = std::env::current_dir().unwrap();
+        let parent = current.parent().unwrap();
+        let root = tempfile::tempdir_in(&current).unwrap();
+        let sandbox_runtime = Arc::new(SandboxRuntimeManager::new(root.path()).unwrap());
+        if !sandbox_runtime.initialize().await.unwrap().available {
+            return;
+        }
+        let outside = tempfile::tempdir_in(parent).unwrap();
+        let inside_file = root.path().join("inside.txt");
+        let outside_file = outside.path().join("outside.txt");
+        let config = TerminalToolConfig {
+            enabled: true,
+            allowed_cwd_roots: vec![root.path().to_string_lossy().to_string()],
+            ..TerminalToolConfig::default()
+        };
+        let inside_command = if cfg!(windows) {
+            format!("echo inside> {}", quote_windows_path(&inside_file))
+        } else {
+            format!("printf inside > {}", quote_unix_path(&inside_file))
+        };
+        let inside = execute_terminal(
+            &ExecuteTerminalRequest {
+                command: inside_command,
+                cwd: None,
+                timeout_ms: Some(60_000),
+                background: Some(false),
+                sandbox_permissions: SandboxPermissions::UseDefault,
+                approved: false,
+                agent_id: Uuid::new_v4(),
+                conversation_id: Uuid::new_v4(),
+                tool_call_id: "call-sandbox-inside".to_string(),
+            },
+            &config,
+            &Arc::new(ProcessManager::new()),
+            &sandbox_runtime,
+        )
+        .await;
+        assert!(
+            matches!(inside, ToolResult::Completed { exit_code: 0, .. }),
+            "{inside:?}"
+        );
+        assert!(inside_file.exists());
+
+        let outside_command = if cfg!(windows) {
+            format!("echo outside> {}", quote_windows_path(&outside_file))
+        } else {
+            format!("printf outside > {}", quote_unix_path(&outside_file))
+        };
+        let outside_result = execute_terminal(
+            &ExecuteTerminalRequest {
+                command: outside_command,
+                cwd: None,
+                timeout_ms: Some(60_000),
+                background: Some(false),
+                sandbox_permissions: SandboxPermissions::UseDefault,
+                approved: false,
+                agent_id: Uuid::new_v4(),
+                conversation_id: Uuid::new_v4(),
+                tool_call_id: "call-sandbox-outside".to_string(),
+            },
+            &config,
+            &Arc::new(ProcessManager::new()),
+            &sandbox_runtime,
+        )
+        .await;
+        assert!(
+            matches!(
+                outside_result,
+                ToolResult::Completed {
+                    exit_code,
+                    ..
+                } if exit_code != 0
+            ),
+            "{outside_result:?}"
+        );
+        assert!(!outside_file.exists());
     }
 }

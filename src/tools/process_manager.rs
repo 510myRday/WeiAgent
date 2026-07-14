@@ -35,7 +35,6 @@ pub struct ProcessMetadata {
     pub tool_call_id: String,
     pub command: String,
     pub cwd: Option<String>,
-    pub docker_container_name: Option<String>,
     pub detached: bool,
 }
 
@@ -55,6 +54,7 @@ struct ProcessRecord {
     state: Mutex<ProcessState>,
     started_at: DateTime<Utc>,
     started_instant: Instant,
+    detached: AtomicBool,
     stop_requested: AtomicBool,
     changed: Notify,
 }
@@ -107,6 +107,7 @@ impl ProcessManager {
             .ok_or_else(|| AppError::Llm("spawned process has no process id".to_string()))?;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
+        let detached = metadata.detached;
         let record = Arc::new(ProcessRecord {
             process_id: process_id.clone(),
             pid,
@@ -121,6 +122,7 @@ impl ProcessManager {
             }),
             started_at: Utc::now(),
             started_instant: Instant::now(),
+            detached: AtomicBool::new(detached),
             stop_requested: AtomicBool::new(false),
             changed: Notify::new(),
         });
@@ -191,15 +193,30 @@ impl ProcessManager {
         let records: Vec<_> = self
             .processes
             .iter()
-            .filter(|entry| agent_id.is_none_or(|id| entry.metadata.agent_id == id))
+            .filter(|entry| {
+                entry.detached.load(Ordering::SeqCst)
+                    && agent_id.is_none_or(|id| entry.metadata.agent_id == id)
+            })
             .map(|entry| entry.value().clone())
             .collect();
         let mut result = Vec::with_capacity(records.len());
         for record in records {
             result.push(snapshot(&record).await);
         }
-        result.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        result.sort_by_key(|item| std::cmp::Reverse(item.started_at));
         result
+    }
+
+    pub fn promote_to_background(&self, id: &str) -> bool {
+        let Some(record) = self.record(id) else {
+            return false;
+        };
+        record.detached.store(true, Ordering::SeqCst);
+        true
+    }
+
+    pub fn remove(&self, id: &str) {
+        self.processes.remove(id);
     }
 
     pub async fn wait_for_completion(&self, id: &str, timeout: Duration) -> Option<ProcessInfo> {
@@ -277,7 +294,8 @@ impl ProcessManager {
             .processes
             .iter()
             .filter(|entry| {
-                entry.metadata.conversation_id == conversation_id && !entry.metadata.detached
+                entry.metadata.conversation_id == conversation_id
+                    && !entry.detached.load(Ordering::SeqCst)
             })
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>();
@@ -391,15 +409,6 @@ async fn terminate_record(
     record: &ProcessRecord,
     force: bool,
 ) -> std::io::Result<std::process::Output> {
-    if let Some(container_name) = &record.metadata.docker_container_name {
-        let mut command = Command::new("docker");
-        if force {
-            command.args(["kill", container_name]);
-        } else {
-            command.args(["stop", "--time", "1", container_name]);
-        }
-        return command.output().await;
-    }
     if cfg!(windows) {
         return Command::new("taskkill")
             .args(["/PID", &record.pid.to_string(), "/T", "/F"])

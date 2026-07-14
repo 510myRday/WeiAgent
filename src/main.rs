@@ -37,6 +37,16 @@ async fn main() -> AppResult<()> {
     let process_manager = Arc::new(tools::process_manager::ProcessManager::new());
     tokio::spawn(process_manager.clone().cleanup_loop());
     let approval_manager = Arc::new(tools::approval::ApprovalManager::new());
+    let sandbox_runtime = Arc::new(tools::runtime::SandboxRuntimeManager::new(
+        &config.data_dir,
+    )?);
+    let runtime_status = sandbox_runtime.initialize().await?;
+    tracing::info!(
+        available = runtime_status.available,
+        source = ?runtime_status.source,
+        version = ?runtime_status.detected_version,
+        "sandbox runtime status"
+    );
     let tool_registry = Arc::new(tools::registry::ToolRegistry::with_builtin_tools());
     let state = AppState {
         store,
@@ -44,6 +54,7 @@ async fn main() -> AppResult<()> {
         llm_logger,
         process_manager,
         approval_manager,
+        sandbox_runtime,
         tool_registry,
         run_manager: Arc::new(app::RunManager::new()),
     };

@@ -65,7 +65,14 @@ pub async fn prepare_chat(
             "agent system prompt exceeds {MAX_SYSTEM_PROMPT_BYTES} bytes"
         )));
     }
-    let tools_config = state.store.read_agent_tools_config(agent.id).await?;
+    let mut tools_config = state.store.read_agent_tools_config(agent.id).await?;
+    if tools_config.terminal.enabled
+        && tools_config.terminal.permission_mode
+            == crate::domain::TerminalPermissionMode::RequestApproval
+        && !state.sandbox_runtime.is_available_cached()
+    {
+        tools_config.terminal.enabled = false;
+    }
 
     Ok(PreparedChat {
         agent,

@@ -92,6 +92,18 @@ fn api_router() -> Router<AppState> {
             "/api/agents/{agent_id}/tools-config",
             get(tools::read_agent_tools_config).put(tools::update_agent_tools_config),
         )
+        .route(
+            "/api/tools/defaults",
+            get(tools::read_tool_defaults).put(tools::update_tool_defaults),
+        )
+        .route(
+            "/api/tools/sandbox-runtime",
+            get(tools::read_sandbox_runtime).post(tools::install_sandbox_runtime),
+        )
+        .route(
+            "/api/tools/sandbox-runtime/refresh",
+            post(tools::refresh_sandbox_runtime),
+        )
         .route("/api/tools/approve", post(tools::approve_tool_call))
         .route("/api/tools/processes", get(tools::list_tool_processes))
         .route(

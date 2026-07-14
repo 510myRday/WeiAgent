@@ -1,15 +1,14 @@
 import { useState } from 'react';
-import { Terminal, Wrench } from 'lucide-react';
+import { Terminal } from 'lucide-react';
 
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
-import { Button, EmptyState, ListItem, PaneHeader } from '../../components/ui';
+import { Button, ListItem, PaneHeader } from '../../components/ui';
 import { TerminalToolSettings } from '../settings/TerminalToolSettings';
 
 interface ToolsPanelProps {
   agents: Agent[];
-  activeAgentId: string;
   onOpenMain: () => void;
 }
 
@@ -19,12 +18,11 @@ const toolDefs: { key: ToolKey; icon: typeof Terminal; getLabel: (t: (p: string)
   { key: 'terminal', icon: Terminal, getLabel: (t) => t('tools.terminal.name'), getDesc: (t) => t('tools.terminal.description') },
 ];
 
-export function ToolsPanel({ agents, activeAgentId, onOpenMain }: ToolsPanelProps) {
+export function ToolsPanel({ agents, onOpenMain }: ToolsPanelProps) {
   const { t } = useI18n();
   const [activeTool, setActiveTool] = useState<ToolKey>('terminal');
   const [error, setError] = useState('');
 
-  const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeDef = toolDefs.find((d) => d.key === activeTool);
 
   return (
@@ -62,14 +60,8 @@ export function ToolsPanel({ agents, activeAgentId, onOpenMain }: ToolsPanelProp
             description={activeDef?.getDesc(t) ?? t('tools.description')}
           />
 
-          {!activeAgent ? (
-            <EmptyState
-              icon={<Wrench size={34} />}
-              title={t('tools.title')}
-              description={t('tools.selectHint')}
-            />
-          ) : activeTool === 'terminal' ? (
-            <TerminalToolSettings agentId={activeAgentId} onError={setError} />
+          {activeTool === 'terminal' ? (
+            <TerminalToolSettings scope="defaults" agents={agents} onError={setError} />
           ) : null}
 
           {error ? (

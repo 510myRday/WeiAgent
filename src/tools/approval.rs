@@ -10,8 +10,21 @@ struct PendingApprovalEntry {
     decision_tx: std::sync::Mutex<Option<oneshot::Sender<ApprovalDecision>>>,
 }
 
+struct ResolvedApprovalEntry {
+    agent_id: uuid::Uuid,
+    decision: ApprovalDecision,
+}
+
+pub enum ApprovalResolution {
+    Resolved(Box<PendingApproval>),
+    AlreadyResolved(ApprovalDecision),
+    AgentMismatch,
+    NotFound,
+}
+
 pub struct ApprovalManager {
     pending: DashMap<String, PendingApprovalEntry>,
+    resolved: DashMap<String, ResolvedApprovalEntry>,
     ttl: Duration,
 }
 
@@ -23,6 +36,7 @@ impl ApprovalManager {
     pub fn with_ttl(ttl: Duration) -> Self {
         Self {
             pending: DashMap::new(),
+            resolved: DashMap::new(),
             ttl,
         }
     }
@@ -57,17 +71,30 @@ impl ApprovalManager {
         approval_id: &str,
         agent_id: uuid::Uuid,
         decision: ApprovalDecision,
-    ) -> Option<PendingApproval> {
-        if self
-            .pending
-            .get(approval_id)
-            .is_none_or(|entry| entry.approval.agent_id != agent_id)
+    ) -> ApprovalResolution {
+        if let Some(entry) = self.pending.get(approval_id)
+            && entry.approval.agent_id != agent_id
         {
-            return None;
+            return ApprovalResolution::AgentMismatch;
         }
-        let (_, entry) = self.pending.remove(approval_id)?;
-        send_decision(&entry, decision);
-        Some(entry.approval)
+        if let Some((_, entry)) = self.pending.remove(approval_id) {
+            self.resolved.insert(
+                approval_id.to_string(),
+                ResolvedApprovalEntry {
+                    agent_id,
+                    decision: decision.clone(),
+                },
+            );
+            send_decision(&entry, decision);
+            return ApprovalResolution::Resolved(Box::new(entry.approval));
+        }
+        match self.resolved.get(approval_id) {
+            Some(entry) if entry.agent_id == agent_id => {
+                ApprovalResolution::AlreadyResolved(entry.decision.clone())
+            }
+            Some(_) => ApprovalResolution::AgentMismatch,
+            None => ApprovalResolution::NotFound,
+        }
     }
 
     pub fn cancel(&self, approval_id: &str) {
@@ -86,6 +113,7 @@ impl ApprovalManager {
         if let Some((_, entry)) = self.pending.remove(approval_id) {
             send_decision(&entry, ApprovalDecision::Reject);
         }
+        self.resolved.remove(approval_id);
     }
 }
 
@@ -111,9 +139,9 @@ mod tests {
             tool_call_id: "call-1".to_string(),
             command: "echo test".to_string(),
             cwd: None,
-            runtime: "docker".to_string(),
-            network_enabled: false,
-            write_roots: Vec::new(),
+            runtime: "full_access".to_string(),
+            permission: "full_access".to_string(),
+            justification: Some("test approval".to_string()),
             background: false,
         });
         assert_eq!(manager.pending_count(), 1);
@@ -132,25 +160,58 @@ mod tests {
             tool_call_id: "call-owned".to_string(),
             command: "echo owned".to_string(),
             cwd: None,
-            runtime: "docker".to_string(),
-            network_enabled: false,
-            write_roots: Vec::new(),
+            runtime: "full_access".to_string(),
+            permission: "full_access".to_string(),
+            justification: Some("owned approval".to_string()),
             background: false,
         });
-        assert!(
-            manager
-                .resolve(
-                    "approval-owned",
-                    uuid::Uuid::new_v4(),
-                    ApprovalDecision::Approve
-                )
-                .is_none()
-        );
-        assert!(
-            manager
-                .resolve("approval-owned", agent_id, ApprovalDecision::Approve)
-                .is_some()
-        );
+        assert!(matches!(
+            manager.resolve(
+                "approval-owned",
+                uuid::Uuid::new_v4(),
+                ApprovalDecision::Approve
+            ),
+            ApprovalResolution::AgentMismatch
+        ));
+        assert!(matches!(
+            manager.resolve("approval-owned", agent_id, ApprovalDecision::Approve),
+            ApprovalResolution::Resolved(_)
+        ));
         assert_eq!(receiver.await.unwrap(), ApprovalDecision::Approve);
+    }
+
+    #[tokio::test]
+    async fn duplicate_approval_requests_are_idempotent() {
+        let manager = Arc::new(ApprovalManager::new());
+        let agent_id = uuid::Uuid::new_v4();
+        let receiver = manager.register(PendingApproval {
+            approval_id: "approval-duplicate".to_string(),
+            agent_id,
+            conversation_id: uuid::Uuid::new_v4(),
+            tool_call_id: "call-duplicate".to_string(),
+            command: "echo duplicate".to_string(),
+            cwd: None,
+            runtime: "full_access".to_string(),
+            permission: "full_access".to_string(),
+            justification: Some("duplicate test".to_string()),
+            background: false,
+        });
+        assert!(matches!(
+            manager.resolve(
+                "approval-duplicate",
+                agent_id,
+                ApprovalDecision::AlwaysApprove
+            ),
+            ApprovalResolution::Resolved(_)
+        ));
+        assert_eq!(receiver.await.unwrap(), ApprovalDecision::AlwaysApprove);
+        assert!(matches!(
+            manager.resolve(
+                "approval-duplicate",
+                agent_id,
+                ApprovalDecision::AlwaysApprove
+            ),
+            ApprovalResolution::AlreadyResolved(ApprovalDecision::AlwaysApprove)
+        ));
     }
 }
