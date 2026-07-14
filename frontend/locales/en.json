@@ -333,10 +333,10 @@
       "completed": "Background process completed",
       "failed": "Background process failed",
       "stopped": "Background process stopped",
-      "running": "Background process is running"
-    }
+      "running": "Background process is running",
+      "notFound": "Background process not found",
+      "notFoundBadge": "Not found"
+    },
+    "processUnavailable": "Background process record is unavailable (lost after service restart)"
   }
 }
-
-
-

@@ -271,10 +271,13 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
   useEffect(() => {
     if (!processId) {
       setProcess(null);
+      setProcessError('');
       return;
     }
     let cancelled = false;
     let timer: number | undefined;
+    setProcess(null);
+    setProcessError('');
     const refresh = async () => {
       try {
         const next = await getToolProcess(processId, agentId);
@@ -285,7 +288,12 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
           timer = window.setTimeout(refresh, 1000);
         }
       } catch (error) {
-        if (!cancelled) setProcessError(error instanceof Error ? error.message : t('toolCard.refreshFailed'));
+        if (cancelled) return;
+        setProcess(null);
+        const message = error instanceof Error ? error.message : '';
+        // Backend uses a shared NotFound error ("agent not found" / "not found").
+        const notFound = /not found/i.test(message);
+        setProcessError(notFound ? t('toolCard.processUnavailable') : message || t('toolCard.refreshFailed'));
       }
     };
     void refresh();
@@ -302,7 +310,13 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
       setProcess(await stopToolProcess(processId, agentId));
       setProcessError('');
     } catch (error) {
-      setProcessError(error instanceof Error ? error.message : t('toolCard.stopFailed'));
+      const message = error instanceof Error ? error.message : '';
+      if (/not found/i.test(message)) {
+        setProcess(null);
+        setProcessError(t('toolCard.processUnavailable'));
+      } else {
+        setProcessError(message || t('toolCard.stopFailed'));
+      }
     } finally {
       setIsStopping(false);
     }
@@ -347,23 +361,45 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
   }
 
   if (processId) {
-    const effectiveStatus = process?.status ?? 'running';
-    const running = effectiveStatus === 'running';
+    // Only treat as running after the process manager confirms it. After restart the
+    // process_id remains in chat history but the in-memory process is gone.
+    const missing = !process && Boolean(processError);
+    const loading = !process && !processError;
+    const effectiveStatus = process?.status ?? (missing ? 'not_found' : 'running');
+    const running = process?.status === 'running';
     const failed = effectiveStatus === 'failed' || (process?.exit_code !== undefined && process.exit_code !== 0);
+    const title = missing
+      ? t('toolCard.processStatus.notFound')
+      : running || loading
+        ? t('toolCard.backgroundRunning')
+        : t(`toolCard.processStatus.${effectiveStatus}`);
+    const cardTone = running || loading
+      ? 'tool-card--running'
+      : effectiveStatus === 'completed'
+        ? 'tool-card--done'
+        : 'tool-card--error';
     return (
-      <div className={`tool-card ${running ? 'tool-card--running' : effectiveStatus === 'completed' ? 'tool-card--done' : 'tool-card--error'}`}>
+      <div className={`tool-card ${cardTone}`}>
         <div className="tool-card__header">
           <span className="tool-card__status-icon">
-            {running ? <Loader2 size={18} className="animate-spin" /> : effectiveStatus === 'completed' ? <CheckCircle size={18} /> : <AlertTriangle size={18} />}
+            {running || loading
+              ? <Loader2 size={18} className="animate-spin" />
+              : effectiveStatus === 'completed'
+                ? <CheckCircle size={18} />
+                : <AlertTriangle size={18} />}
           </span>
           <div className="tool-card__title">
-            <strong>{running ? t('toolCard.backgroundRunning') : t(`toolCard.processStatus.${effectiveStatus}`)}</strong>
+            <strong>{title}</strong>
           </div>
           <HeaderMeta name={name} permissionMode={permissionMode} t={t}>
             {running ? (
               <button type="button" className="tool-process-action" onClick={handleStop} disabled={isStopping}>
                 <Square size={14} /> {isStopping ? t('toolCard.stopping') : t('toolCard.stop')}
               </button>
+            ) : missing ? (
+              <span className="tool-card__status-badge tool-card__status-badge--missing" title={processError || title}>
+                {t('toolCard.processStatus.notFoundBadge')}
+              </span>
             ) : null}
           </HeaderMeta>
         </div>

@@ -9,7 +9,7 @@ use serde::Serialize;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    #[error("agent not found")]
+    #[error("not found")]
     NotFound,
     #[error("invalid request: {0}")]
     BadRequest(String),
