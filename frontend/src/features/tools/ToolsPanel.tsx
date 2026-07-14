@@ -21,7 +21,6 @@ const toolDefs: { key: ToolKey; icon: typeof Terminal; getLabel: (t: (p: string)
 export function ToolsPanel({ agents, onOpenMain }: ToolsPanelProps) {
   const { t } = useI18n();
   const [activeTool, setActiveTool] = useState<ToolKey>('terminal');
-  const [error, setError] = useState('');
 
   const activeDef = toolDefs.find((d) => d.key === activeTool);
 
@@ -44,7 +43,7 @@ export function ToolsPanel({ agents, onOpenMain }: ToolsPanelProps) {
                 title={def.getLabel(t)}
                 subtitle={def.getDesc(t)}
                 leading={<def.icon size={18} />}
-                onClick={() => { setActiveTool(def.key); setError(''); onOpenMain(); }}
+                onClick={() => { setActiveTool(def.key); onOpenMain(); }}
               />
             ))}
             <p className="muted" style={{ padding: '12px 16px', fontSize: '13px' }}>{t('tools.comingSoon')}</p>
@@ -61,14 +60,7 @@ export function ToolsPanel({ agents, onOpenMain }: ToolsPanelProps) {
           />
 
           {activeTool === 'terminal' ? (
-            <TerminalToolSettings scope="defaults" agents={agents} onError={setError} />
-          ) : null}
-
-          {error ? (
-            <div className="alert-banner error" style={{ margin: '0 24px 24px' }}>
-              <span>{error}</span>
-              <button type="button" onClick={() => setError('')}>{t('error.dismiss')}</button>
-            </div>
+            <TerminalToolSettings scope="defaults" agents={agents} />
           ) : null}
         </div>
       )}

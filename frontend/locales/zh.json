@@ -19,7 +19,14 @@
     "avatarPreview": "用户头像"
   },
   "common": {
-    "back": "返回"
+    "back": "返回",
+    "cancel": "取消",
+    "confirm": "确认",
+    "delete": "删除",
+    "close": "关闭"
+  },
+  "dialog": {
+    "confirmTitle": "请确认"
   },
   "agentConfig": {
     "title": "Agent 配置",
@@ -46,7 +53,9 @@
     "placeholder_provider": "选择模型提供商",
     "placeholder_model": "输入模型 ID",
     "openProviderSettings": "打开模型提供商设置",
+    "discardTitle": "放弃修改",
     "discardConfirm": "放弃未保存的修改？",
+    "discardAction": "放弃修改",
     "selectAgent": "选择一个智能体进行配置",
     "noAgents": "暂无智能体，创建一个开始使用。",
     "avatarChange": "选择头像样式",
@@ -104,6 +113,21 @@
   "tools": {
     "title": "工具管理",
     "description": "配置内置工具的全局默认值与运行状态。",
+    "agentToolsTitle": "可用工具",
+    "agentToolsDesc": "为这个智能体启用工具，或打开编辑设置单独的覆盖配置。",
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "editTool": "编辑工具配置",
+    "backToList": "返回工具列表",
+    "inheritsDefault": "继承全局默认",
+    "agentOverride": "智能体单独覆盖",
+    "autoSave": {
+      "idle": "自动保存",
+      "pending": "等待自动保存",
+      "saving": "正在保存",
+      "saved": "已自动保存",
+      "error": "自动保存失败，正在重试"
+    },
     "terminal": {
       "name": "终端命令执行",
       "description": "允许 Agent 在本机 OS 沙箱或完整访问模式下执行终端命令。",
@@ -130,14 +154,13 @@
         "environment": "环境变量",
         "system": "系统安装"
       },
+      "fullAccessTitle": "启用完全访问权限",
       "fullAccessConfirm": "完全访问权限会绕过 OS 沙箱并直接在本机执行命令。确定选择此模式吗？",
       "enabled": "启用",
       "on": "开",
       "off": "关",
       "defaultTimeout": "默认超时（毫秒）",
       "add": "添加",
-      "save": "保存",
-      "saving": "保存中...",
       "loading": "加载中...",
       "noConfig": "无配置",
       "loadFailed": "加载工具配置失败",
@@ -208,6 +231,7 @@
   "error": {
     "unknown": "未知错误",
     "dismiss": "关闭错误提示",
+    "invalidJson": "额外请求体不是有效的 JSON。",
     "validation": "名称、提供商和模型不能为空。",
     "providerValidation": "提供商名称、Base URL、API Key 和模型列表不能为空。",
     "avatarDuplicate": "不能和其他 Agent 使用完全相同的头像图标和颜色。"
@@ -239,8 +263,24 @@
     "status": "状态码",
     "view": "查看",
     "delete": "删除",
+    "deleteConfirm": "确定删除这条 LLM 调试日志吗？此操作不可撤销。",
     "close": "关闭",
     "refresh": "刷新"
+  },
+  "notification": {
+    "label": "通知",
+    "settingsSaved": "设置已保存。",
+    "agentCreated": "Agent 已创建。",
+    "agentSaved": "Agent 配置已保存。",
+    "agentDeleted": "Agent 已删除。",
+    "providerCreated": "模型提供商已创建。",
+    "providerSaved": "模型提供商已保存。",
+    "providerDeleted": "模型提供商已删除。",
+    "modelsLoaded": "已获取 {count} 个模型。",
+    "conversationDeleted": "会话已删除。",
+    "toolSettingsSaved": "工具配置已保存。",
+    "runtimeInstalled": "沙箱运行时已安装。",
+    "logDeleted": "调试日志已删除。"
   },
   "toolCard": {
     "approvalTitle": "请求执行终端命令",

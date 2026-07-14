@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   Check,
@@ -20,6 +19,7 @@ import {
 import { getToolProcess, stopToolProcess, type ToolProcessInfo } from '../api';
 import type { ToolCallStatus, ToolResultData } from '../types';
 import { useI18n } from '../i18n';
+import { Dialog, IconButton } from './ui';
 
 interface ToolCallCardProps {
   agentId: string;
@@ -87,20 +87,6 @@ function TerminalContent({
     return () => observer.disconnect();
   }, [content]);
 
-  useEffect(() => {
-    if (!isExpanded) return;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setIsExpanded(false);
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isExpanded]);
-
   async function handleCopy() {
     try {
       await navigator.clipboard.writeText(content);
@@ -110,45 +96,6 @@ function TerminalContent({
       setCopied(false);
     }
   }
-
-  const modal = isExpanded ? (
-    <div
-      className="modal-overlay terminal-output-overlay"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) setIsExpanded(false);
-      }}
-    >
-      <section
-        className="modal-container terminal-output-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-      >
-        <header className="terminal-output-modal__header">
-          <div className="terminal-output-modal__title">
-            <span className={`terminal-output-modal__icon terminal-output-modal__icon--${tone}`}>
-              <Terminal size={18} />
-            </span>
-            <div>
-              <h2>{title}</h2>
-              <p>{t(isCommand ? 'toolCard.commandModalHint' : 'toolCard.outputModalHint')}</p>
-            </div>
-          </div>
-          <div className="terminal-output-modal__actions">
-            <button type="button" className="terminal-output-modal__icon-button" onClick={handleCopy} aria-label={copyLabel} title={copyLabel}>
-              {copied ? <Check size={18} /> : <Copy size={18} />}
-            </button>
-            <button type="button" className="terminal-output-modal__icon-button" onClick={() => setIsExpanded(false)} aria-label={t('toolCard.closeOutput')} title={t('toolCard.closeOutput')} autoFocus>
-              <X size={20} />
-            </button>
-          </div>
-        </header>
-        <div className="terminal-output-modal__body">
-          <pre className={`terminal-output-modal__content terminal-output-modal__content--${tone}`}>{content}</pre>
-        </div>
-      </section>
-    </div>
-  ) : null;
 
   return (
     <>
@@ -163,7 +110,24 @@ function TerminalContent({
           </div>
         ) : null}
       </div>
-      {modal ? createPortal(modal, document.body) : null}
+      <Dialog
+        open={isExpanded}
+        title={title}
+        description={t(isCommand ? 'toolCard.commandModalHint' : 'toolCard.outputModalHint')}
+        icon={<Terminal size={18} />}
+        closeLabel={t('toolCard.closeOutput')}
+        onClose={() => setIsExpanded(false)}
+        size="lg"
+        className={`terminal-output-modal terminal-output-modal--${tone}`}
+        bodyClassName="terminal-output-modal__body"
+        headerActions={(
+          <IconButton variant="ghost" type="button" onClick={handleCopy} label={copyLabel}>
+            {copied ? <Check size={18} /> : <Copy size={18} />}
+          </IconButton>
+        )}
+      >
+        <pre className={`terminal-output-modal__content terminal-output-modal__content--${tone}`}>{content}</pre>
+      </Dialog>
     </>
   );
 }

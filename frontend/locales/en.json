@@ -19,7 +19,14 @@
     "avatarPreview": "User avatar"
   },
   "common": {
-    "back": "Back"
+    "back": "Back",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "close": "Close"
+  },
+  "dialog": {
+    "confirmTitle": "Please confirm"
   },
   "agentConfig": {
     "title": "Agent Config",
@@ -46,7 +53,9 @@
     "placeholder_provider": "Select provider",
     "placeholder_model": "Type a model id",
     "openProviderSettings": "Open model provider settings",
+    "discardTitle": "Discard changes",
     "discardConfirm": "Discard unsaved changes?",
+    "discardAction": "Discard changes",
     "selectAgent": "Select an agent to configure",
     "noAgents": "No agents yet. Create one to get started.",
     "avatarChange": "Choose Avatar Style",
@@ -137,6 +146,7 @@
   "error": {
     "unknown": "Unknown error",
     "dismiss": "Dismiss error",
+    "invalidJson": "Extra Body must be valid JSON.",
     "validation": "Name, provider and model are required.",
     "providerValidation": "Provider name, Base URL, API key and models are required.",
     "avatarDuplicate": "Another Agent already uses the same avatar icon and color."
@@ -148,6 +158,21 @@
   "tools": {
     "title": "Tool Management",
     "description": "Configure global defaults and runtime state for built-in tools.",
+    "agentToolsTitle": "Available tools",
+    "agentToolsDesc": "Enable tools for this agent or edit their per-agent overrides.",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "editTool": "Edit tool settings",
+    "backToList": "Back to tool list",
+    "inheritsDefault": "Inherits global default",
+    "agentOverride": "Agent override",
+    "autoSave": {
+      "idle": "Auto save",
+      "pending": "Waiting to save",
+      "saving": "Saving",
+      "saved": "Auto saved",
+      "error": "Auto save failed; retrying"
+    },
     "terminal": {
       "name": "Terminal Command Execution",
       "description": "Allow agents to execute local commands in an OS sandbox or full-access mode.",
@@ -174,14 +199,13 @@
         "environment": "Environment variable",
         "system": "System installation"
       },
+      "fullAccessTitle": "Enable full access",
       "fullAccessConfirm": "Full access bypasses the OS sandbox and executes commands directly on this computer. Select this mode?",
       "enabled": "Enabled",
       "on": "On",
       "off": "Off",
       "defaultTimeout": "Default Timeout (ms)",
       "add": "Add",
-      "save": "Save",
-      "saving": "Saving...",
       "loading": "Loading...",
       "noConfig": "No configuration",
       "loadFailed": "Failed to load tools config",
@@ -239,8 +263,24 @@
     "status": "Status",
     "view": "View",
     "delete": "Delete",
+    "deleteConfirm": "Delete this LLM debug log? This action cannot be undone.",
     "close": "Close",
     "refresh": "Refresh"
+  },
+  "notification": {
+    "label": "Notifications",
+    "settingsSaved": "Settings saved.",
+    "agentCreated": "Agent created.",
+    "agentSaved": "Agent configuration saved.",
+    "agentDeleted": "Agent deleted.",
+    "providerCreated": "Model provider created.",
+    "providerSaved": "Model provider saved.",
+    "providerDeleted": "Model provider deleted.",
+    "modelsLoaded": "Loaded {count} models.",
+    "conversationDeleted": "Conversation deleted.",
+    "toolSettingsSaved": "Tool settings saved.",
+    "runtimeInstalled": "Sandbox runtime installed.",
+    "logDeleted": "Debug log deleted."
   },
   "toolCard": {
     "approvalTitle": "Request to execute terminal command",

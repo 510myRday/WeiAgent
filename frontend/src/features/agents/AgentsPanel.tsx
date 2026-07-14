@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
-import { Plus, Save, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { Check, CircleAlert, Clock, LoaderCircle, Plus, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { Agent, AgentWorkspace, ModelProvider, CreateAgentPayload } from '../../types';
 import { readAgentWorkspace, updateAgentWorkspace } from '../../api';
@@ -7,7 +7,7 @@ import { useI18n } from '../../i18n';
 import { defaultAvatarColor } from '../../avatarPresets';
 import { AvatarBadge } from '../../components/AvatarPicker';
 import { PanelShell } from '../../components/layout';
-import { AlertBanner, AvatarPopover, Button, FormField, IconButton, ListItem, PaneHeader } from '../../components/ui';
+import { AvatarPopover, Button, FormField, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
 import { TerminalToolSettings } from '../settings/TerminalToolSettings';
 
 interface AgentsPanelProps {
@@ -38,8 +38,18 @@ const defaultWorkspaceForm: Pick<AgentWorkspace, 'personality' | 'memory' | 'ins
 };
 
 type WorkspaceField = keyof typeof defaultWorkspaceForm | 'tools';
+type AgentAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+type PendingAgentSave = {
+  agentId: string;
+  serialized: string;
+  payload: CreateAgentPayload;
+  workspace: typeof defaultWorkspaceForm;
+};
 
 const workspaceTabs: WorkspaceField[] = ['personality', 'memory', 'instructions', 'tools'];
+const AGENT_AUTO_SAVE_DELAY_MS = 600;
+const AGENT_AUTO_SAVE_RETRY_DELAY_MS = 1200;
+const AGENT_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
 
 export function AgentsPanel({
   agents,
@@ -54,15 +64,36 @@ export function AgentsPanel({
   onOpenMain,
 }: AgentsPanelProps) {
   const { t } = useI18n();
+  const { confirm, toast } = useFeedback();
   const [agentForm, setAgentForm] = useState<CreateAgentPayload>(defaultAgentForm);
   const [workspaceForm, setWorkspaceForm] = useState(defaultWorkspaceForm);
   const [activeWorkspaceField, setActiveWorkspaceField] = useState<WorkspaceField>('personality');
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(false);
   const [agentFormDirty, setAgentFormDirty] = useState(false);
   const [isSubmittingAgent, setIsSubmittingAgent] = useState(false);
-  const [error, setError] = useState('');
-  const agentFormDirtyRef = useRef(false);
-  agentFormDirtyRef.current = agentFormDirty;
+  const [autoSaveStatus, setAutoSaveStatus] = useState<AgentAutoSaveStatus>('idle');
+  const activeAgentIdRef = useRef(activeAgentId);
+  const loadedAgentIdRef = useRef('');
+  const loadedWorkspaceAgentIdRef = useRef('');
+  const latestSerializedRef = useRef('');
+  const persistedSerializedRef = useRef('');
+  const pendingSaveRef = useRef<PendingAgentSave | null>(null);
+  const saveInFlightRef = useRef(false);
+  const saveRetryCountRef = useRef(0);
+  const saveTimerRef = useRef<number | undefined>(undefined);
+  const retryTimerRef = useRef<number | undefined>(undefined);
+  const validationMessageRef = useRef('');
+  const isMountedRef = useRef(true);
+  activeAgentIdRef.current = activeAgentId;
+
+  useEffect(() => () => {
+    isMountedRef.current = false;
+    if (saveTimerRef.current !== undefined) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = undefined;
+    }
+    void flushAgentSaveQueue();
+  }, []);
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const selectedAgentProvider = providers.find((provider) => provider.id === agentForm.model_provider_id);
@@ -71,11 +102,17 @@ export function AgentsPanel({
 
   useEffect(() => {
     if (!activeAgent) {
-      if (agentFormDirtyRef.current) return;
+      loadedAgentIdRef.current = '';
+      loadedWorkspaceAgentIdRef.current = '';
       setAgentForm(defaultAgentForm);
       setWorkspaceForm(defaultWorkspaceForm);
+      setAgentFormDirty(false);
+      setAutoSaveStatus('idle');
       return;
     }
+    if (loadedAgentIdRef.current === activeAgent.id) return;
+    loadedAgentIdRef.current = activeAgent.id;
+    loadedWorkspaceAgentIdRef.current = '';
     setAgentForm({
       name: displayAgentName(activeAgent),
       model_provider_id: activeAgent.model_provider_id,
@@ -83,8 +120,10 @@ export function AgentsPanel({
       avatar_icon: activeAgent.avatar_icon,
       avatar_color: activeAgent.avatar_color,
     });
+    setWorkspaceForm(defaultWorkspaceForm);
     setAgentFormDirty(false);
-  }, [activeAgent, t]);
+    setAutoSaveStatus('idle');
+  }, [activeAgent?.id, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,24 +135,159 @@ export function AgentsPanel({
     readAgentWorkspace(activeAgent.id)
       .then((workspace) => {
         if (cancelled) return;
-        setWorkspaceForm({
+        const nextWorkspace = {
           personality: workspace.personality,
           memory: workspace.memory,
           instructions: workspace.instructions,
-        });
+        };
+        const initialPayload = agentPayloadFromAgent(activeAgent);
+        const serialized = serializeAgentSnapshot(initialPayload, nextWorkspace);
+        loadedWorkspaceAgentIdRef.current = activeAgent.id;
+        persistedSerializedRef.current = serialized;
+        latestSerializedRef.current = serialized;
+        pendingSaveRef.current = null;
+        saveRetryCountRef.current = 0;
+        setWorkspaceForm(nextWorkspace);
+        setAgentFormDirty(false);
+        setAutoSaveStatus('saved');
       })
-      .catch((cause) => setError(cause instanceof Error ? cause.message : 'Error'))
+      .catch((cause) => toast.error(cause instanceof Error ? cause.message : t('error.unknown')))
       .finally(() => {
         if (!cancelled) setIsLoadingWorkspace(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [activeAgent]);
+  }, [activeAgent?.id, t, toast]);
+
+  useEffect(() => {
+    if (
+      !activeAgent
+      || !agentFormDirty
+      || isLoadingWorkspace
+      || loadedWorkspaceAgentIdRef.current !== activeAgent.id
+    ) {
+      return;
+    }
+
+    const payload = agentPayloadFromForm(activeAgent, agentForm);
+    if ((!payload.name && !activeAgent.is_builtin) || !payload.model_provider_id || !payload.model_id) {
+      setAutoSaveStatus('pending');
+      return;
+    }
+    if (agents.some((agent) =>
+      agent.id !== activeAgent.id
+      && agent.avatar_icon === payload.avatar_icon
+      && agent.avatar_color.toLowerCase() === payload.avatar_color.toLowerCase()
+    )) {
+      setAutoSaveStatus('error');
+      if (validationMessageRef.current !== 'avatarDuplicate') {
+        validationMessageRef.current = 'avatarDuplicate';
+        toast.warning(t('error.avatarDuplicate'));
+      }
+      return;
+    }
+    validationMessageRef.current = '';
+
+    const serialized = serializeAgentSnapshot(payload, workspaceForm);
+    if (latestSerializedRef.current !== serialized) {
+      saveRetryCountRef.current = 0;
+    }
+    latestSerializedRef.current = serialized;
+    if (persistedSerializedRef.current === serialized) {
+      pendingSaveRef.current = null;
+      setAgentFormDirty(false);
+      setAutoSaveStatus('saved');
+      return;
+    }
+
+    pendingSaveRef.current = {
+      agentId: activeAgent.id,
+      serialized,
+      payload,
+      workspace: { ...workspaceForm },
+    };
+    setAutoSaveStatus('pending');
+    if (saveTimerRef.current !== undefined) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = undefined;
+      void flushAgentSaveQueue();
+    }, AGENT_AUTO_SAVE_DELAY_MS);
+  }, [activeAgent, agentForm, agentFormDirty, agents, isLoadingWorkspace, t, toast, workspaceForm]);
+
+  async function flushAgentSaveQueue() {
+    if (saveInFlightRef.current || !pendingSaveRef.current) return;
+    const pending = pendingSaveRef.current;
+    pendingSaveRef.current = null;
+    saveInFlightRef.current = true;
+    if (isMountedRef.current && activeAgentIdRef.current === pending.agentId) {
+      setAutoSaveStatus('saving');
+    }
+
+    let retryDelay = 0;
+    try {
+      await onAgentEdit(pending.agentId, pending.payload);
+      await updateAgentWorkspace(pending.agentId, pending.workspace);
+      persistedSerializedRef.current = pending.serialized;
+      saveRetryCountRef.current = 0;
+      if (
+        isMountedRef.current
+        && activeAgentIdRef.current === pending.agentId
+        && latestSerializedRef.current === pending.serialized
+      ) {
+        const queuedSave = pendingSaveRef.current as PendingAgentSave | null;
+        if (queuedSave?.serialized === pending.serialized) {
+          pendingSaveRef.current = null;
+        }
+        if (saveTimerRef.current !== undefined) {
+          window.clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = undefined;
+        }
+        setAgentFormDirty(false);
+        setAutoSaveStatus('saved');
+      }
+    } catch (cause) {
+      const attempt = saveRetryCountRef.current + 1;
+      saveRetryCountRef.current = attempt;
+      if (latestSerializedRef.current === pending.serialized) {
+        pendingSaveRef.current = pending;
+        retryDelay = Math.min(
+          AGENT_AUTO_SAVE_MAX_RETRY_DELAY_MS,
+          AGENT_AUTO_SAVE_RETRY_DELAY_MS * (2 ** Math.min(attempt - 1, 5)),
+        );
+      }
+      if (isMountedRef.current && activeAgentIdRef.current === pending.agentId) {
+        setAutoSaveStatus('error');
+        if (attempt === 1) {
+          toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+        }
+      }
+    } finally {
+      saveInFlightRef.current = false;
+      if (pendingSaveRef.current) {
+        if (retryTimerRef.current !== undefined) {
+          window.clearTimeout(retryTimerRef.current);
+        }
+        retryTimerRef.current = window.setTimeout(() => {
+          retryTimerRef.current = undefined;
+          void flushAgentSaveQueue();
+        }, retryDelay);
+      }
+    }
+  }
+
+  function flushAgentSaveNow() {
+    if (saveTimerRef.current !== undefined) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = undefined;
+    }
+    void flushAgentSaveQueue();
+  }
 
   function switchAgent(id: string) {
-    if (agentFormDirty && !window.confirm(t('agentConfig.discardConfirm'))) return;
-    setError('');
+    flushAgentSaveNow();
     onAgentChange(id);
     onOpenMain();
   }
@@ -125,37 +299,35 @@ export function AgentsPanel({
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (activeAgent) {
+      flushAgentSaveNow();
+      return;
+    }
     const payload = {
-      name: activeAgent?.is_builtin ? activeAgent.name : agentForm.name.trim(),
+      name: agentForm.name.trim(),
       model_provider_id: agentForm.model_provider_id,
       model_id: agentForm.model_id.trim(),
       avatar_icon: agentForm.avatar_icon,
       avatar_color: agentForm.avatar_color,
     };
-    if ((!payload.name && !activeAgent?.is_builtin) || !payload.model_provider_id || !payload.model_id) {
-      setError(t('error.validation'));
+    if (!payload.name || !payload.model_provider_id || !payload.model_id) {
+      toast.warning(t('error.validation'));
       return;
     }
     if (agents.some((agent) =>
-      agent.id !== activeAgent?.id
-      && agent.avatar_icon === payload.avatar_icon
+      agent.avatar_icon === payload.avatar_icon
       && agent.avatar_color.toLowerCase() === payload.avatar_color.toLowerCase()
     )) {
-      setError(t('error.avatarDuplicate'));
+      toast.warning(t('error.avatarDuplicate'));
       return;
     }
     setIsSubmittingAgent(true);
-    setError('');
     try {
-      if (activeAgent) {
-        await onAgentEdit(activeAgent.id, payload);
-        await updateAgentWorkspace(activeAgent.id, workspaceForm);
-      } else {
-        await onAgentAdd(payload);
-      }
+      await onAgentAdd(payload);
+      toast.success(t('notification.agentCreated'));
       setAgentFormDirty(false);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Error');
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     } finally {
       setIsSubmittingAgent(false);
     }
@@ -163,12 +335,24 @@ export function AgentsPanel({
 
   async function handleDelete() {
     if (!activeAgent || activeAgent.is_builtin) return;
-    if (!window.confirm(t('deleteConfirm.message').replace('{name}', displayAgentName(activeAgent)))) return;
+    const confirmed = await confirm({
+      title: t('deleteConfirm.title'),
+      message: t('deleteConfirm.message', { name: displayAgentName(activeAgent) }),
+      confirmLabel: t('common.delete'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    pendingSaveRef.current = null;
+    if (saveTimerRef.current !== undefined) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = undefined;
+    }
     try {
       await onAgentRemove(activeAgent.id);
       setAgentFormDirty(false);
+      toast.success(t('notification.agentDeleted'));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Error');
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     }
   }
 
@@ -185,7 +369,7 @@ export function AgentsPanel({
               <IconButton
                 variant="ghost"
                 type="button"
-                onClick={() => { onAgentChange(''); setAgentFormDirty(false); onOpenMain(); }}
+                onClick={() => { flushAgentSaveNow(); onAgentChange(''); setAgentFormDirty(false); onOpenMain(); }}
                 label={t('agentConfig.create')}
               >
                 <Plus size={17} />
@@ -223,6 +407,7 @@ export function AgentsPanel({
             description={activeAgent ? agentModelLabel(activeAgent) : t('agentConfig.selectAgent')}
             actions={(
               <>
+                {activeAgent ? <AgentAutoSaveIndicator status={autoSaveStatus} t={t} /> : null}
                 {activeAgent?.is_builtin ? <span className="model-note-badge">{t('agentConfig.coreAgentModelHint')}</span> : null}
                 {!activeAgent ? <span className="model-note-badge">{t('agentConfig.workspaceCreateHint')}</span> : null}
                 {activeAgent && !activeAgent.is_builtin ? (
@@ -233,8 +418,6 @@ export function AgentsPanel({
               </>
             )}
           />
-
-          {error ? <AlertBanner message={error} onDismiss={() => setError('')} dismissLabel={t('error.dismiss')} /> : null}
 
           <form className="form-card entity-form" onSubmit={handleSubmit}>
             <div className="form-grid two-column">
@@ -316,7 +499,7 @@ export function AgentsPanel({
                   ))}
                 </div>
                 {activeWorkspaceField === 'tools' && activeAgent ? (
-                  <TerminalToolSettings scope="agent" agentId={activeAgent.id} onError={setError} />
+                  <TerminalToolSettings scope="agent" agentId={activeAgent.id} />
                 ) : (
                   <FormField label={activeWorkspaceLabel} htmlFor="agent-workspace-field">
                     <textarea
@@ -331,14 +514,62 @@ export function AgentsPanel({
                 )}
               </div>
             ) : null}
-            <div className="form-actions">
-              <Button variant="primary" type="submit" disabled={isSubmittingAgent} icon={<Save size={17} />}>
-                {activeAgent ? t('agentConfig.save') : t('agentConfig.create')}
-              </Button>
-            </div>
+            {!activeAgent ? (
+              <div className="form-actions">
+                <Button variant="primary" type="submit" disabled={isSubmittingAgent} icon={<Plus size={17} />}>
+                  {t('agentConfig.create')}
+                </Button>
+              </div>
+            ) : null}
           </form>
         </div>
       )}
     />
   );
+}
+
+function AgentAutoSaveIndicator({ status, t }: {
+  status: AgentAutoSaveStatus;
+  t: (path: string) => string;
+}) {
+  const icon = status === 'saving'
+    ? <LoaderCircle size={15} className="is-spinning" />
+    : status === 'error'
+      ? <CircleAlert size={15} />
+      : status === 'saved'
+        ? <Check size={15} />
+        : <Clock size={15} />;
+  return (
+    <span className={`auto-save-status is-${status}`} role="status" aria-live="polite">
+      {icon}
+      {t(`tools.autoSave.${status}`)}
+    </span>
+  );
+}
+
+function agentPayloadFromAgent(agent: Agent): CreateAgentPayload {
+  return {
+    name: agent.name,
+    model_provider_id: agent.model_provider_id,
+    model_id: agent.model_id,
+    avatar_icon: agent.avatar_icon,
+    avatar_color: agent.avatar_color,
+  };
+}
+
+function agentPayloadFromForm(agent: Agent, form: CreateAgentPayload): CreateAgentPayload {
+  return {
+    name: agent.is_builtin ? agent.name : form.name.trim(),
+    model_provider_id: form.model_provider_id,
+    model_id: form.model_id.trim(),
+    avatar_icon: form.avatar_icon,
+    avatar_color: form.avatar_color,
+  };
+}
+
+function serializeAgentSnapshot(
+  payload: CreateAgentPayload,
+  workspace: typeof defaultWorkspaceForm,
+): string {
+  return JSON.stringify({ payload, workspace });
 }

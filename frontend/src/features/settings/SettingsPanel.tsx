@@ -5,7 +5,7 @@ import type { AppSettings, ModelProvider, ModelProviderPayload } from '../../typ
 import { fetchModels, fetchModelsForProvider } from '../../api';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
-import { AlertBanner, Button, FormField, IconButton, ListItem, PaneHeader } from '../../components/ui';
+import { Button, FormField, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
 import { LlmLogsModal } from './LlmLogsModal';
 
 interface SettingsPanelProps {
@@ -50,11 +50,11 @@ export function SettingsPanel({
   onOpenMain,
 }: SettingsPanelProps) {
   const { t } = useI18n();
+  const { confirm, toast } = useFeedback();
   const [activeSection, setActiveSection] = useState<SettingsSection>('runtime');
   const [providerForm, setProviderForm] = useState(defaultProviderForm);
   const [isSubmittingProvider, setIsSubmittingProvider] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
-  const [error, setError] = useState('');
   const [showLlmLogs, setShowLlmLogs] = useState(false);
 
   const activeProvider = providers.find((provider) => provider.id === activeProviderId);
@@ -83,9 +83,9 @@ export function SettingsPanel({
     e.preventDefault();
     try {
       await onSettingsSave(settingsForm);
-      setError('');
+      toast.success(t('notification.settingsSaved'));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Error');
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     }
   }
 
@@ -96,7 +96,7 @@ export function SettingsPanel({
       try {
         extraBody = JSON.parse(providerForm.extraBodyText);
       } catch {
-        setError('Extra body is not valid JSON');
+        toast.warning(t('error.invalidJson'));
         return;
       }
     }
@@ -109,20 +109,21 @@ export function SettingsPanel({
       extra_body: extraBody,
     };
     if (!payload.name || !payload.base_url || (!activeProvider && !payload.api_key) || payload.models.length === 0) {
-      setError(t('error.providerValidation'));
+      toast.warning(t('error.providerValidation'));
       return;
     }
     setIsSubmittingProvider(true);
-    setError('');
     try {
       if (activeProvider) {
         await onProviderEdit(activeProvider.id, payload);
+        toast.success(t('notification.providerSaved'));
       } else {
         await onProviderAdd(payload);
+        toast.success(t('notification.providerCreated'));
       }
       setProviderForm((current) => ({ ...current, api_key: '' }));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Error');
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     } finally {
       setIsSubmittingProvider(false);
     }
@@ -130,11 +131,18 @@ export function SettingsPanel({
 
   async function handleDeleteProvider() {
     if (!activeProvider) return;
-    if (!window.confirm(t('provider.deleteConfirm').replace('{name}', activeProvider.name))) return;
+    const confirmed = await confirm({
+      title: t('provider.delete'),
+      message: t('provider.deleteConfirm', { name: activeProvider.name }),
+      confirmLabel: t('common.delete'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     try {
       await onProviderRemove(activeProvider.id);
+      toast.success(t('notification.providerDeleted'));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Error');
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     }
   }
 
@@ -144,18 +152,17 @@ export function SettingsPanel({
       try {
         extraBody = JSON.parse(providerForm.extraBodyText);
       } catch {
-        setError('Extra body is not valid JSON');
+        toast.warning(t('error.invalidJson'));
         return;
       }
     }
     const baseUrl = providerForm.base_url.trim();
     const apiKey = providerForm.api_key.trim();
     if (!baseUrl || (!activeProvider?.has_api_key && !apiKey)) {
-      setError(t('provider.fetchModelsMissingConfig'));
+      toast.warning(t('provider.fetchModelsMissingConfig'));
       return;
     }
     setFetchingModels(true);
-    setError('');
     try {
       const models = activeProvider && !apiKey && baseUrl === activeProvider.base_url && !extraBody
         ? await fetchModels(activeProvider.id)
@@ -166,8 +173,9 @@ export function SettingsPanel({
           extra_body: extraBody,
         });
       setProviderForm((current) => ({ ...current, modelsText: models.join('\n') }));
+      toast.success(t('notification.modelsLoaded', { count: models.length }));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Error');
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     } finally {
       setFetchingModels(false);
     }
@@ -217,8 +225,6 @@ export function SettingsPanel({
               </Button>
             ) : null}
           />
-
-          {error ? <AlertBanner message={error} onDismiss={() => setError('')} dismissLabel={t('error.dismiss')} /> : null}
 
           {activeSection === 'runtime' ? (
             <form className="form-card entity-form narrow-form" onSubmit={handleSettingsSubmit}>

@@ -7,17 +7,17 @@ import { ChatPanel } from './features/chat/ChatPanel';
 import { AgentsPanel } from './features/agents/AgentsPanel';
 import { ToolsPanel } from './features/tools/ToolsPanel';
 import { SettingsPanel } from './features/settings/SettingsPanel';
-import { AlertBanner, Button, EmptyState, ListItem, PaneHeader } from './components/ui';
+import { Button, EmptyState, ListItem, PaneHeader, useFeedback } from './components/ui';
 import { isLocale, useI18n } from './i18n';
 
 type SettingsSection = 'runtime' | 'providers';
 
 export function App() {
   const { t, locale, setLocaleStateOnly } = useI18n();
+  const { toast } = useFeedback();
   const [activeNav, setActiveNav] = useState<NavKey>('chat');
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('runtime');
   const [mobileView, setMobileView] = useState<MobileView>('list');
-  const [error, setError] = useState('');
 
   useEffect(() => {
     const mq = window.matchMedia('(min-width: 921px)');
@@ -63,14 +63,13 @@ export function App() {
   }, []);
 
   async function refreshAll() {
-    setError('');
     try {
       const [settings] = await Promise.all([refreshSettings(), refreshProviders(), refreshAgents()]);
       if (isLocale(settings.language)) {
         setLocaleStateOnly(settings.language);
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Error');
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     }
   }
 
@@ -85,14 +84,12 @@ export function App() {
 
   function handleNavChange(nav: NavKey) {
     setActiveNav(nav);
-    setError('');
     setMobileView('list');
   }
 
   function openProviderSettings() {
     setSettingsSection('providers');
     setActiveNav('settings');
-    setError('');
     setMobileView('main');
   }
 
@@ -112,13 +109,11 @@ export function App() {
         onNavChange={handleNavChange}
         onSettingsSave={saveSettingsWithLocale}
       />
-      {error ? <AlertBanner message={error} onDismiss={() => setError('')} dismissLabel={t('error.dismiss')} global /> : null}
       {activeNav === 'chat' && (
         <ChatPanel
           agents={agents}
           activeAgentId={activeAgentId}
           onAgentChange={setActiveAgentId}
-          onError={setError}
           onOpenMain={openMainPane}
           onBackToList={openListPane}
           settings={settingsForm}

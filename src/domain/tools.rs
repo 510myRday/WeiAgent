@@ -52,7 +52,7 @@ fn default_max_llm_iterations() -> u32 {
 impl Default for TerminalToolConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             permission_mode: TerminalPermissionMode::RequestApproval,
             approval_grants: Vec::new(),
             default_timeout_ms: default_timeout_ms(),

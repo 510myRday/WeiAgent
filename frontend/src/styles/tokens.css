@@ -15,6 +15,9 @@
   --color-danger: #dc2626;
   --color-danger-soft: #fff1f2;
   --color-danger-border: #fecaca;
+  --color-success: #15803d;
+  --color-success-soft: #ecfdf3;
+  --color-success-border: #bbf7d0;
   --color-warning: #92400e;
   --color-warning-soft: #fffbeb;
   --color-warning-border: #fde68a;
@@ -62,4 +65,5 @@
   --z-banner: 50;
   --z-backdrop: 90;
   --z-popover: 100;
+  --z-toast: 120;
 }

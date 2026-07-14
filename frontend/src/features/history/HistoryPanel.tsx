@@ -4,7 +4,7 @@ import { MessageSquare, Trash2, X } from 'lucide-react';
 import type { Agent, Conversation, UiMessage } from '../../types';
 import { useI18n } from '../../i18n';
 import { listConversations, readConversationMessages, deleteConversation } from '../../api';
-import { Button, IconButton, ListItem, PaneHeader } from '../../components/ui';
+import { Button, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
 
 function genClientId(): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -19,6 +19,7 @@ interface HistoryPanelProps {
 
 export function HistoryPanel({ agents }: HistoryPanelProps) {
   const { t, locale } = useI18n();
+  const { confirm, toast } = useFeedback();
   const [historyConversations, setHistoryConversations] = useState<Record<string, Conversation[]>>({});
   const [historyConversationId, setHistoryConversationId] = useState('');
   const [historyMessages, setHistoryMessages] = useState<UiMessage[]>([]);
@@ -39,13 +40,20 @@ export function HistoryPanel({ agents }: HistoryPanelProps) {
     try {
       const raw = await readConversationMessages(id);
       setHistoryMessages(raw.map((msg) => ({ ...msg, clientId: msg.id ?? genClientId() })));
-    } catch {
+    } catch (cause) {
       setHistoryMessages([]);
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     }
   }
 
   async function handleDeleteConversation(id: string) {
-    if (!window.confirm(t('conversation.deleteConfirm'))) return;
+    const confirmed = await confirm({
+      title: t('conversation.delete'),
+      message: t('conversation.deleteConfirm'),
+      confirmLabel: t('common.delete'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     try {
       await deleteConversation(id);
       if (id === historyConversationId) {
@@ -53,8 +61,9 @@ export function HistoryPanel({ agents }: HistoryPanelProps) {
         setHistoryMessages([]);
       }
       await refreshHistory();
-    } catch {
-      // History is secondary UI; keep the current view if deletion fails.
+      toast.success(t('notification.conversationDeleted'));
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     }
   }
 

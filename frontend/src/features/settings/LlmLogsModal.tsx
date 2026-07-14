@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Copy, FileText, RefreshCw, Trash2, X } from 'lucide-react';
+import { Copy, FileText, RefreshCw, Trash2 } from 'lucide-react';
 import type { LlmLogDetail, LlmLogEntry } from '../../types';
 import { listLlmLogs, getLlmLog, deleteLlmLog } from '../../api';
 import { useI18n } from '../../i18n';
-import { AlertBanner, Button, IconButton } from '../../components/ui';
+import { Button, Dialog, IconButton, useFeedback } from '../../components/ui';
 
 interface LlmLogsModalProps {
   onClose: () => void;
@@ -11,51 +11,56 @@ interface LlmLogsModalProps {
 
 export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
   const { t } = useI18n();
+  const { confirm, toast } = useFeedback();
   const [logs, setLogs] = useState<LlmLogEntry[]>([]);
   const [selectedLog, setSelectedLog] = useState<LlmLogDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState<'request' | 'response'>('request');
   const [copied, setCopied] = useState(false);
 
   const loadLogs = useCallback(async () => {
     setIsLoading(true);
-    setError('');
     try {
       const list = await listLlmLogs();
       setLogs(list);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Failed to load logs');
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [t, toast]);
 
   useEffect(() => {
     void loadLogs();
   }, [loadLogs]);
 
   async function handleViewLog(logId: string) {
-    setError('');
     try {
       const detail = await getLlmLog(logId);
       setSelectedLog(detail);
       setActiveTab('request');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Failed to load log detail');
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     }
   }
 
   async function handleDeleteLog(logId: string) {
-    setError('');
+    const confirmed = await confirm({
+      title: t('llmLogs.delete'),
+      message: t('llmLogs.deleteConfirm'),
+      confirmLabel: t('common.delete'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     try {
       await deleteLlmLog(logId);
       setLogs((current) => current.filter((log) => log.id !== logId));
       if (selectedLog?.id === logId) {
         setSelectedLog(null);
       }
+      toast.success(t('notification.logDeleted'));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Failed to delete log');
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     }
   }
 
@@ -80,27 +85,22 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
   }
 
   return (
-    <div className="modal-overlay llm-logs-overlay" onClick={onClose}>
-      <div className="modal-container llm-logs-modal llm-logs-modal-large" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header llm-logs-modal-header">
-          <div className="modal-header-content">
-            <h2>{t('llmLogs.title')}</h2>
-            <p className="muted modal-description">{t('llmLogs.description')}</p>
-          </div>
-          <div className="modal-header-actions">
-            <Button variant="ghost" type="button" onClick={loadLogs} icon={<RefreshCw size={16} />}>
-              {t('llmLogs.refresh')}
-            </Button>
-            <IconButton onClick={onClose} label={t('llmLogs.close')}>
-              <X size={20} />
-            </IconButton>
-          </div>
-        </div>
-
-        {error ? <AlertBanner message={error} onDismiss={() => setError('')} dismissLabel={t('error.dismiss')} /> : null}
-
-        <div className="modal-body">
-          <div className="llm-logs-layout">
+    <Dialog
+      open
+      title={t('llmLogs.title')}
+      description={t('llmLogs.description')}
+      closeLabel={t('llmLogs.close')}
+      onClose={onClose}
+      size="xl"
+      className="llm-logs-modal"
+      bodyClassName="llm-logs-modal-body"
+      headerActions={(
+        <Button variant="ghost" type="button" onClick={loadLogs} icon={<RefreshCw size={16} />}>
+          {t('llmLogs.refresh')}
+        </Button>
+      )}
+    >
+      <div className="llm-logs-layout">
             <aside className="llm-logs-list">
               {isLoading ? (
                 <div className="llm-logs-empty-state">
@@ -129,7 +129,7 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
                       <span className="list-item-trailing">
                         <IconButton
                           variant="danger"
-                          onClick={(e) => { e.stopPropagation(); handleDeleteLog(log.id); }}
+                          onClick={(e) => { e.stopPropagation(); void handleDeleteLog(log.id); }}
                           label={t('llmLogs.delete')}
                         >
                           <Trash2 size={14} />
@@ -170,7 +170,7 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
                   </div>
 
                   {selectedLog.error ? (
-                    <div className="alert-banner error">
+                    <div className="inline-error">
                       <strong>{t('llmLogs.error')}:</strong> {selectedLog.error}
                     </div>
                   ) : null}
@@ -209,8 +209,6 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
               )}
             </div>
           </div>
-        </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

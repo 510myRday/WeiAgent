@@ -124,6 +124,26 @@
   .panel-header {
     align-items: stretch;
   }
+
+  .config-page-header {
+    flex-wrap: wrap;
+  }
+
+  .config-page-header .pane-actions {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    max-width: none;
+    flex-wrap: wrap;
+  }
+
+  .config-page-header .model-note-badge {
+    max-width: 100%;
+    min-height: 34px;
+    padding-block: 7px;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
 }
 
 @media (min-width: 921px) {

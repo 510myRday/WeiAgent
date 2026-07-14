@@ -31,13 +31,12 @@ import { approveToolCall, readAgentToolsConfig, type AgentToolsConfig } from '..
 import { useI18n } from '../../i18n';
 import { useConversations } from '../../hooks';
 import { AvatarBadge } from '../../components/AvatarPicker';
-import { Button, EmptyState, IconButton, ListItem, PaneHeader, SearchInput } from '../../components/ui';
+import { Button, EmptyState, IconButton, ListItem, PaneHeader, SearchInput, useFeedback } from '../../components/ui';
 
 interface ChatPanelProps {
   agents: Agent[];
   activeAgentId: string;
   onAgentChange: (id: string) => void;
-  onError: (message: string) => void;
   onOpenMain: () => void;
   onBackToList: () => void;
   settings: AppSettings;
@@ -47,12 +46,12 @@ export function ChatPanel({
   agents,
   activeAgentId,
   onAgentChange,
-  onError,
   onOpenMain,
   onBackToList,
   settings,
 }: ChatPanelProps) {
   const { t, locale } = useI18n();
+  const { confirm, toast } = useFeedback();
   const {
     conversations,
     activeConversationId,
@@ -70,7 +69,7 @@ export function ChatPanel({
   } = useConversations({
     newConversationTitle: t('conversation.newTitle'),
     approvalDisconnectedMessage: t('toolCard.approvalDisconnected'),
-    onError,
+    onError: toast.error,
     timeoutSeconds: settings.request_timeout_seconds,
   });
 
@@ -169,12 +168,10 @@ export function ChatPanel({
   }, [messages, updateScrollButtonVisibility]);
 
   function handleAgentSelect(agentId: string) {
-    onError('');
     onAgentChange(agentId);
   }
 
   function handleConversationSelect(conversationId: string) {
-    onError('');
     setActiveConversationId(conversationId);
     onOpenMain();
   }
@@ -188,7 +185,6 @@ export function ChatPanel({
     const content = draft.trim();
     if (!activeAgent || !content) return;
     setDraft('');
-    onError('');
     void send(content, activeAgent.id, isStreamMode);
     scrollToBottom(true);
   }
@@ -206,21 +202,27 @@ export function ChatPanel({
       onOpenMain();
       return;
     }
-    onError('');
     void createNewConversation(activeAgent.id)
       .then(() => onOpenMain())
       .catch((cause) => {
-        onError(cause instanceof Error ? cause.message : 'Failed to create conversation');
+        toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
       });
   }
 
   async function handleDeleteConversation(conversationId: string) {
     if (!activeAgent) return;
-    if (!window.confirm(t('conversation.deleteConfirm'))) return;
+    const confirmed = await confirm({
+      title: t('conversation.delete'),
+      message: t('conversation.deleteConfirm'),
+      confirmLabel: t('common.delete'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     try {
       await removeConversation(conversationId, activeAgent.id);
+      toast.success(t('notification.conversationDeleted'));
     } catch (cause) {
-      onError(cause instanceof Error ? cause.message : 'Failed to delete conversation');
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     }
   }
 
@@ -361,7 +363,7 @@ export function ChatPanel({
                             if (!approvalAgentId) return;
                             await approveToolCall(approvalId, approvalAgentId, decision);
                           } catch (e) {
-                            onError(e instanceof Error ? e.message : 'Approval failed');
+                            toast.error(e instanceof Error ? e.message : t('error.unknown'));
                             throw e;
                           }
                         }}

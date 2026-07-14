@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { BadgeCheck, CircleAlert, CircleCheck, Clock, Download, FolderLock, Hand, Plus, RefreshCw, Save, Shield, ShieldAlert, Square, Trash2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, BadgeCheck, Check, CircleAlert, CircleCheck, Clock, Download, FolderLock, Hand, LoaderCircle, Pencil, Plus, RefreshCw, Shield, ShieldAlert, Square, Terminal, Trash2 } from 'lucide-react';
 
 import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, SandboxRuntimeStatus, ToolProcessInfo } from '../../api';
 import {
@@ -15,40 +15,98 @@ import {
 } from '../../api';
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
-import { Button } from '../../components/ui';
+import { Button, IconButton, useFeedback } from '../../components/ui';
 
 interface TerminalToolSettingsProps {
   scope: 'defaults' | 'agent';
   agentId?: string;
   agents?: Agent[];
-  onError: (message: string) => void;
 }
 
 type OverrideField = 'enabled' | 'permission_mode' | 'default_timeout_ms' | 'allowed_cwd_roots';
+type AutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+type AgentToolView = 'list' | 'terminal';
+type PendingSave =
+  | {
+    contextKey: string;
+    serialized: string;
+    scope: 'defaults';
+    config: AgentToolsConfig;
+  }
+  | {
+    contextKey: string;
+    serialized: string;
+    scope: 'agent';
+    agentId: string;
+    overrides: AgentToolsOverrides;
+  };
 
-export function TerminalToolSettings({ scope, agentId, agents = [], onError }: TerminalToolSettingsProps) {
+const AUTO_SAVE_DELAY_MS = 600;
+const AUTO_SAVE_RETRY_DELAY_MS = 1200;
+const AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
+
+export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalToolSettingsProps) {
   const { t } = useI18n();
+  const { confirm, toast } = useFeedback();
+  const contextKey = scope === 'defaults' ? 'defaults' : `agent:${agentId ?? ''}`;
   const [defaults, setDefaults] = useState<AgentToolsConfig | null>(null);
   const [agentSettings, setAgentSettings] = useState<AgentToolsSettings | null>(null);
   const [runtime, setRuntime] = useState<SandboxRuntimeStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
+  const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>('idle');
+  const [agentToolView, setAgentToolView] = useState<AgentToolView>('list');
   const [isInstallingRuntime, setIsInstallingRuntime] = useState(false);
   const [isRefreshingRuntime, setIsRefreshingRuntime] = useState(false);
   const [processes, setProcesses] = useState<ToolProcessInfo[]>([]);
   const [isStoppingProcess, setIsStoppingProcess] = useState('');
   const [rootInput, setRootInput] = useState('');
+  const activeContextRef = useRef(contextKey);
+  const loadedContextRef = useRef('');
+  const latestSerializedRef = useRef(new Map<string, string>());
+  const persistedSerializedRef = useRef(new Map<string, string>());
+  const pendingSavesRef = useRef(new Map<string, PendingSave>());
+  const retryCountsRef = useRef(new Map<string, number>());
+  const saveInFlightRef = useRef(false);
+  const debounceTimerRef = useRef<number | undefined>(undefined);
+  const debounceContextRef = useRef('');
+  const retryTimerRef = useRef<number | undefined>(undefined);
+  const isMountedRef = useRef(true);
+
+  activeContextRef.current = contextKey;
+
+  useEffect(() => () => {
+    isMountedRef.current = false;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
+    loadedContextRef.current = '';
     setIsLoading(true);
+    setAutoSaveStatus('idle');
+    setAgentToolView('list');
     const configRequest = scope === 'defaults'
       ? readToolDefaults().then((next) => {
-        if (!cancelled) setDefaults(next);
+        if (!cancelled) {
+          const serialized = serializeDefaultConfig(next);
+          persistedSerializedRef.current.set(contextKey, serialized);
+          latestSerializedRef.current.set(contextKey, serialized);
+          pendingSavesRef.current.delete(contextKey);
+          loadedContextRef.current = contextKey;
+          setDefaults(next);
+          setAutoSaveStatus('saved');
+        }
       })
       : agentId
         ? readAgentToolsConfig(agentId).then((next) => {
-          if (!cancelled) setAgentSettings(next);
+          if (!cancelled) {
+            const serialized = JSON.stringify(next.overrides);
+            persistedSerializedRef.current.set(contextKey, serialized);
+            latestSerializedRef.current.set(contextKey, serialized);
+            pendingSavesRef.current.delete(contextKey);
+            loadedContextRef.current = contextKey;
+            setAgentSettings(next);
+            setAutoSaveStatus('saved');
+          }
         })
         : Promise.reject(new Error(t('tools.terminal.agentRequired')));
     const load = Promise.all([
@@ -59,7 +117,7 @@ export function TerminalToolSettings({ scope, agentId, agents = [], onError }: T
     ]);
     load
       .catch((error) => {
-        if (!cancelled) onError(error instanceof Error ? error.message : t('tools.terminal.loadFailed'));
+        if (!cancelled) toast.error(error instanceof Error ? error.message : t('tools.terminal.loadFailed'));
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
@@ -67,7 +125,16 @@ export function TerminalToolSettings({ scope, agentId, agents = [], onError }: T
     return () => {
       cancelled = true;
     };
-  }, [agentId, onError, scope, t]);
+  }, [agentId, contextKey, scope, t, toast]);
+
+  useEffect(() => () => {
+    if (debounceContextRef.current === contextKey && debounceTimerRef.current !== undefined) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = undefined;
+      debounceContextRef.current = '';
+    }
+    void flushSaveQueue();
+  }, [contextKey]);
 
   useEffect(() => {
     if (scope !== 'defaults') {
@@ -83,7 +150,7 @@ export function TerminalToolSettings({ scope, agentId, agents = [], onError }: T
         setProcesses(next);
         timer = window.setTimeout(refresh, next.some((process) => process.status === 'running') ? 1500 : 4000);
       } catch (error) {
-        if (!cancelled) onError(error instanceof Error ? error.message : t('tools.terminal.processLoadFailed'));
+        if (!cancelled) toast.error(error instanceof Error ? error.message : t('tools.terminal.processLoadFailed'));
       }
     };
     void refresh();
@@ -91,10 +158,118 @@ export function TerminalToolSettings({ scope, agentId, agents = [], onError }: T
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [onError, scope, t]);
+  }, [scope, t, toast]);
 
   const config = scope === 'defaults' ? defaults : agentSettings?.effective ?? null;
   const overrides = agentSettings?.overrides;
+
+  useEffect(() => {
+    if (isLoading || !config || loadedContextRef.current !== contextKey) return;
+
+    const pendingSave: PendingSave | null = scope === 'defaults'
+      ? {
+        contextKey,
+        serialized: serializeDefaultConfig(config),
+        scope: 'defaults',
+        config: configWithClearedGrants(config),
+      }
+      : agentId && overrides
+        ? {
+          contextKey,
+          serialized: JSON.stringify(overrides),
+          scope: 'agent',
+          agentId,
+          overrides,
+        }
+        : null;
+    if (!pendingSave) return;
+
+    const previousSerialized = latestSerializedRef.current.get(contextKey);
+    latestSerializedRef.current.set(contextKey, pendingSave.serialized);
+    if (previousSerialized !== pendingSave.serialized) {
+      retryCountsRef.current.delete(contextKey);
+    }
+
+    if (persistedSerializedRef.current.get(contextKey) === pendingSave.serialized) {
+      pendingSavesRef.current.delete(contextKey);
+      setAutoSaveStatus('saved');
+      return;
+    }
+
+    pendingSavesRef.current.set(contextKey, pendingSave);
+    setAutoSaveStatus('pending');
+    if (debounceTimerRef.current !== undefined) {
+      window.clearTimeout(debounceTimerRef.current);
+    }
+    debounceContextRef.current = contextKey;
+    debounceTimerRef.current = window.setTimeout(() => {
+      debounceTimerRef.current = undefined;
+      debounceContextRef.current = '';
+      void flushSaveQueue();
+    }, AUTO_SAVE_DELAY_MS);
+  }, [agentId, config, contextKey, isLoading, overrides, scope]);
+
+  async function flushSaveQueue() {
+    if (saveInFlightRef.current) return;
+    const nextSave = pendingSavesRef.current.values().next().value as PendingSave | undefined;
+    if (!nextSave) return;
+
+    pendingSavesRef.current.delete(nextSave.contextKey);
+    saveInFlightRef.current = true;
+    if (isMountedRef.current && activeContextRef.current === nextSave.contextKey) {
+      setAutoSaveStatus('saving');
+    }
+
+    let retryDelay = 0;
+    try {
+      if (nextSave.scope === 'defaults') {
+        await updateToolDefaults(nextSave.config);
+      } else {
+        await updateAgentToolsConfig(nextSave.agentId, nextSave.overrides);
+      }
+      persistedSerializedRef.current.set(nextSave.contextKey, nextSave.serialized);
+      retryCountsRef.current.delete(nextSave.contextKey);
+      if (
+        isMountedRef.current
+        && activeContextRef.current === nextSave.contextKey
+        && latestSerializedRef.current.get(nextSave.contextKey) === nextSave.serialized
+      ) {
+        setAutoSaveStatus('saved');
+      }
+    } catch (error) {
+      const attempt = (retryCountsRef.current.get(nextSave.contextKey) ?? 0) + 1;
+      retryCountsRef.current.set(nextSave.contextKey, attempt);
+      const isLatest = latestSerializedRef.current.get(nextSave.contextKey) === nextSave.serialized;
+      if (isLatest) {
+        pendingSavesRef.current.set(nextSave.contextKey, nextSave);
+        retryDelay = Math.min(
+          AUTO_SAVE_MAX_RETRY_DELAY_MS,
+          AUTO_SAVE_RETRY_DELAY_MS * (2 ** Math.min(attempt - 1, 5)),
+        );
+      }
+      if (isMountedRef.current && activeContextRef.current === nextSave.contextKey) {
+        setAutoSaveStatus('error');
+        if (attempt === 1) {
+          toast.error(error instanceof Error ? error.message : t('tools.terminal.saveFailed'));
+        }
+      }
+    } finally {
+      saveInFlightRef.current = false;
+      if (pendingSavesRef.current.size > 0) {
+        const queuedContext = (pendingSavesRef.current.values().next().value as PendingSave).contextKey;
+        if (queuedContext !== nextSave.contextKey) {
+          retryDelay = 0;
+        }
+        if (retryTimerRef.current !== undefined) {
+          window.clearTimeout(retryTimerRef.current);
+        }
+        retryTimerRef.current = window.setTimeout(() => {
+          retryTimerRef.current = undefined;
+          void flushSaveQueue();
+        }, retryDelay);
+      }
+    }
+  }
 
   async function handleStopProcess(process: ToolProcessInfo) {
     setIsStoppingProcess(process.process_id);
@@ -102,25 +277,9 @@ export function TerminalToolSettings({ scope, agentId, agents = [], onError }: T
       const stopped = await stopToolProcess(process.process_id, process.agent_id);
       setProcesses((current) => current.map((item) => item.process_id === process.process_id ? stopped : item));
     } catch (error) {
-      onError(error instanceof Error ? error.message : t('tools.terminal.processStopFailed'));
+      toast.error(error instanceof Error ? error.message : t('tools.terminal.processStopFailed'));
     } finally {
       setIsStoppingProcess('');
-    }
-  }
-
-  async function handleSave() {
-    if (!config) return;
-    setIsSaving(true);
-    try {
-      if (scope === 'defaults') {
-        setDefaults(await updateToolDefaults({ ...config, terminal: { ...config.terminal, approval_grants: [] } }));
-      } else if (agentId && overrides) {
-        setAgentSettings(await updateAgentToolsConfig(agentId, overrides));
-      }
-    } catch (error) {
-      onError(error instanceof Error ? error.message : t('tools.terminal.saveFailed'));
-    } finally {
-      setIsSaving(false);
     }
   }
 
@@ -128,8 +287,9 @@ export function TerminalToolSettings({ scope, agentId, agents = [], onError }: T
     setIsInstallingRuntime(true);
     try {
       setRuntime(await installSandboxRuntime());
+      toast.success(t('notification.runtimeInstalled'));
     } catch (error) {
-      onError(error instanceof Error ? error.message : t('tools.terminal.runtimeInstallFailed'));
+      toast.error(error instanceof Error ? error.message : t('tools.terminal.runtimeInstallFailed'));
       try {
         setRuntime(await readSandboxRuntime());
       } catch {
@@ -145,14 +305,20 @@ export function TerminalToolSettings({ scope, agentId, agents = [], onError }: T
     try {
       setRuntime(await refreshSandboxRuntime());
     } catch (error) {
-      onError(error instanceof Error ? error.message : t('tools.terminal.runtimeRefreshFailed'));
+      toast.error(error instanceof Error ? error.message : t('tools.terminal.runtimeRefreshFailed'));
     } finally {
       setIsRefreshingRuntime(false);
     }
   }
 
-  function selectFullAccess() {
-    if (!window.confirm(t('tools.terminal.fullAccessConfirm'))) return;
+  async function selectFullAccess() {
+    const confirmed = await confirm({
+      title: t('tools.terminal.fullAccessTitle'),
+      message: t('tools.terminal.fullAccessConfirm'),
+      confirmLabel: t('tools.terminal.fullAccess'),
+      tone: 'warning',
+    });
+    if (!confirmed) return;
     updateTerminal({ permission_mode: 'full_access' });
   }
 
@@ -257,19 +423,76 @@ export function TerminalToolSettings({ scope, agentId, agents = [], onError }: T
   const sandboxAvailable = runtime?.available === true;
   const terminalUnavailable = terminal.permission_mode === 'request_approval' && !sandboxAvailable;
 
+  if (isAgentScope && agentToolView === 'list') {
+    return (
+      <div className="terminal-tool-settings-v2 agent-tools-overview">
+        <div className="agent-tools-overview__header">
+          <div>
+            <h3>{t('tools.agentToolsTitle')}</h3>
+            <p>{t('tools.agentToolsDesc')}</p>
+          </div>
+          <AutoSaveIndicator status={autoSaveStatus} t={t} />
+        </div>
+        <div className="agent-tool-list">
+          <div className="agent-tool-row">
+            <div className="agent-tool-row__icon"><Terminal size={20} /></div>
+            <div className="agent-tool-row__body">
+              <strong>{t('tools.terminal.name')}</strong>
+              <small>{t('tools.terminal.description')}</small>
+              <span className="agent-tool-row__source">
+                {overrides?.terminal.enabled === undefined
+                  ? t('tools.inheritsDefault')
+                  : t('tools.agentOverride')}
+              </span>
+            </div>
+            <div className="agent-tool-row__actions">
+              <label className="toggle-switch" title={terminal.enabled ? t('tools.enabled') : t('tools.disabled')}>
+                <input
+                  type="checkbox"
+                  checked={terminal.enabled}
+                  disabled={terminalUnavailable}
+                  onChange={(event) => updateTerminal({ enabled: event.target.checked })}
+                />
+                <span className="toggle-slider" />
+              </label>
+              <IconButton
+                type="button"
+                variant="ghost"
+                className="agent-tool-edit"
+                onClick={() => setAgentToolView('terminal')}
+                label={t('tools.editTool')}
+              >
+                <Pencil size={17} />
+              </IconButton>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="terminal-tool-settings-v2">
       <div className="settings-hero">
         <div className="hero-content">
+          {isAgentScope ? (
+            <IconButton
+              type="button"
+              variant="ghost"
+              className="tool-config-back"
+              onClick={() => setAgentToolView('list')}
+              label={t('tools.backToList')}
+            >
+              <ArrowLeft size={18} />
+            </IconButton>
+          ) : null}
           <div className="hero-icon"><Shield size={32} /></div>
           <div className="hero-text">
             <h2>{isAgentScope ? t('tools.terminal.agentConfigTitle') : t('tools.terminal.defaultsTitle')}</h2>
             <p>{isAgentScope ? t('tools.terminal.agentConfigDesc') : t('tools.terminal.defaultsDesc')}</p>
           </div>
         </div>
-        <Button variant="primary" onClick={handleSave} disabled={isSaving} icon={<Save size={18} />} className="save-button">
-          {isSaving ? t('tools.terminal.saving') : t('tools.terminal.save')}
-        </Button>
+        <AutoSaveIndicator status={autoSaveStatus} t={t} />
       </div>
 
       {scope === 'defaults' ? <div className={`settings-card runtime-card ${sandboxAvailable ? 'runtime-card--ready' : 'warning-card'}`}>
@@ -291,16 +514,15 @@ export function TerminalToolSettings({ scope, agentId, agents = [], onError }: T
             {runtime?.error ? <code className="runtime-card__error">{runtime.error}</code> : null}
           </div>
           <div className="runtime-card__actions">
-            <button
+            <IconButton
               type="button"
-              className="terminal-output-modal__icon-button"
+              variant="ghost"
               onClick={handleRefreshRuntime}
               disabled={isRefreshingRuntime || isInstallingRuntime}
-              aria-label={t('tools.terminal.runtimeRefresh')}
-              title={t('tools.terminal.runtimeRefresh')}
+              label={t('tools.terminal.runtimeRefresh')}
             >
               <RefreshCw size={17} className={isRefreshingRuntime ? 'is-spinning' : ''} />
-            </button>
+            </IconButton>
             {!sandboxAvailable ? (
               <Button
                 variant="primary"
@@ -450,6 +672,39 @@ export function TerminalToolSettings({ scope, agentId, agents = [], onError }: T
       ) : null}
     </div>
   );
+}
+
+function AutoSaveIndicator({ status, t }: {
+  status: AutoSaveStatus;
+  t: (path: string) => string;
+}) {
+  const icon = status === 'saving'
+    ? <LoaderCircle size={15} className="is-spinning" />
+    : status === 'error'
+      ? <CircleAlert size={15} />
+      : status === 'saved'
+        ? <Check size={15} />
+        : <Clock size={15} />;
+  return (
+    <span className={`auto-save-status is-${status}`} role="status" aria-live="polite">
+      {icon}
+      {t(`tools.autoSave.${status}`)}
+    </span>
+  );
+}
+
+function configWithClearedGrants(config: AgentToolsConfig): AgentToolsConfig {
+  return {
+    ...config,
+    terminal: {
+      ...config.terminal,
+      approval_grants: [],
+    },
+  };
+}
+
+function serializeDefaultConfig(config: AgentToolsConfig): string {
+  return JSON.stringify(configWithClearedGrants(config));
 }
 
 function InheritanceControl({ inherited, onChange, t }: {
