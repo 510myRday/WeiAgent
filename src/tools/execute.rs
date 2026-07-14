@@ -296,9 +296,12 @@ fn resolve_workspace(
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .and_then(|path| std::fs::canonicalize(path).ok());
-    if roots
-        .iter()
-        .any(|root| root.parent().is_none() || home.as_ref().is_some_and(|home| home == root))
+    if roots.iter().any(|root| {
+        root.parent().is_none()
+            || home
+                .as_ref()
+                .is_some_and(|home| crate::fsutil::paths_equal(home, root))
+    })
     {
         return Err(WorkspaceResolutionError::Blocked(
             "Filesystem roots and the entire user home directory cannot be terminal workspace roots"
@@ -320,7 +323,7 @@ fn resolve_workspace(
     })?;
     let matching_root = roots
         .iter()
-        .find(|root| canonical_cwd.starts_with(root))
+        .find(|root| crate::fsutil::path_is_within(&canonical_cwd, root))
         .cloned();
     if matching_root.is_none() && !allow_outside_workspace {
         return Err(WorkspaceResolutionError::Blocked(format!(
@@ -450,18 +453,75 @@ fn windows_command_path(path: &Path) -> String {
 }
 
 fn sanitize_environment(command: &mut Command, runtime: &str) {
+    // Keep a minimal, cross-platform host environment. env_clear() removes
+    // values tools commonly need (especially TMPDIR on macOS/Linux).
     let allowed = [
+        // Paths and identity
         "PATH",
+        "HOME",
+        "USER",
+        "USERNAME",
+        "LOGNAME",
+        "USERPROFILE",
+        "SHELL",
+        "TERM",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        // Temp dirs (Windows uses TEMP/TMP; Unix/macOS uses TMPDIR)
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        // Proxy / TLS
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+        // Windows host process essentials
         "SystemRoot",
         "WINDIR",
         "COMSPEC",
         "PATHEXT",
-        "TEMP",
-        "TMP",
-        "HOME",
-        "USERPROFILE",
-        "LANG",
-        "LC_ALL",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramW6432",
+        "SystemDrive",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "OS",
+        // Linux desktop conventions
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        // Common tool roots
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        "GOPATH",
+        "GOROOT",
+        "JAVA_HOME",
+        "NODE_PATH",
+        "NVM_DIR",
+        "PYENV_ROOT",
+        "VIRTUAL_ENV",
+        "CONDA_PREFIX",
+        "HOMEBREW_PREFIX",
+        "HOMEBREW_CELLAR",
+        "HOMEBREW_REPOSITORY",
     ];
     let preserved: Vec<_> = allowed
         .iter()
@@ -470,6 +530,13 @@ fn sanitize_environment(command: &mut Command, runtime: &str) {
     command.env_clear();
     for (key, value) in preserved {
         command.env(key, value);
+    }
+    // Ensure temp resolution works even when the host did not export TMPDIR.
+    if std::env::var_os("TMPDIR").is_none() {
+        let fallback = std::env::temp_dir();
+        if !fallback.as_os_str().is_empty() {
+            command.env("TMPDIR", fallback);
+        }
     }
     command.env("WEIAGENT_RUNTIME", runtime);
 }

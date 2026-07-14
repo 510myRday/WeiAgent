@@ -1,11 +1,11 @@
-import { useState, useEffect, FormEvent } from 'react';
+import { useState, useEffect, useRef, FormEvent } from 'react';
 import { Download, FileText, KeyRound, Plus, Save, Server, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { AppSettings, ModelProvider, ModelProviderPayload } from '../../types';
 import { fetchModels, fetchModelsForProvider } from '../../api';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
-import { Button, FormField, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
+import { AutoSaveIndicator, Button, FormField, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
 import { LlmLogsModal } from './LlmLogsModal';
 
 interface SettingsPanelProps {
@@ -23,6 +23,11 @@ interface SettingsPanelProps {
 }
 
 type SettingsSection = 'runtime' | 'providers';
+type RuntimeAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+type PendingRuntimeSave = {
+  serialized: string;
+  payload: AppSettings;
+};
 
 const defaultProviderForm = {
   name: '',
@@ -32,8 +37,51 @@ const defaultProviderForm = {
   extraBodyText: '',
 };
 
+const VALID_HOSTS = new Set(['127.0.0.1', '::1']);
+const VALID_LOG_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error']);
+const RUNTIME_AUTO_SAVE_DELAY_MS = 600;
+const RUNTIME_AUTO_SAVE_RETRY_DELAY_MS = 1200;
+const RUNTIME_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
+
 function parseModels(value: string): string[] {
   return Array.from(new Set(value.split(/\r?\n|,/).map((model) => model.trim()).filter(Boolean))).sort();
+}
+
+function isValidRuntimeSettings(settings: AppSettings): boolean {
+  if (!VALID_HOSTS.has(settings.host)) return false;
+  if (!Number.isInteger(settings.port) || settings.port < 1 || settings.port > 65535) return false;
+  if (!VALID_LOG_LEVELS.has(settings.log_level)) return false;
+  if (
+    !Number.isInteger(settings.request_timeout_seconds)
+    || settings.request_timeout_seconds < 1
+    || settings.request_timeout_seconds > 600
+  ) {
+    return false;
+  }
+  if (
+    !Number.isInteger(settings.request_retry_attempts)
+    || settings.request_retry_attempts < 1
+    || settings.request_retry_attempts > 10
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function serializeRuntimeSettings(settings: AppSettings): string {
+  return JSON.stringify({
+    host: settings.host,
+    port: settings.port,
+    log_level: settings.log_level,
+    request_timeout_seconds: settings.request_timeout_seconds,
+    request_retry_attempts: settings.request_retry_attempts,
+    llm_log_enabled: settings.llm_log_enabled,
+    // Keep avatar/language in the payload for saves, but treat them as owned elsewhere
+    // so external Sidebar updates do not thrash auto-save status.
+    avatar_icon: settings.avatar_icon,
+    avatar_color: settings.avatar_color,
+    language: settings.language,
+  });
 }
 
 export function SettingsPanel({
@@ -56,8 +104,35 @@ export function SettingsPanel({
   const [isSubmittingProvider, setIsSubmittingProvider] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [showLlmLogs, setShowLlmLogs] = useState(false);
+  const [runtimeDirty, setRuntimeDirty] = useState(false);
+  const [autoSaveStatus, setAutoSaveStatus] = useState<RuntimeAutoSaveStatus>('idle');
+
+  const latestSerializedRef = useRef('');
+  const persistedSerializedRef = useRef('');
+  const pendingSaveRef = useRef<PendingRuntimeSave | null>(null);
+  const saveInFlightRef = useRef(false);
+  const saveRetryCountRef = useRef(0);
+  const saveTimerRef = useRef<number | undefined>(undefined);
+  const retryTimerRef = useRef<number | undefined>(undefined);
+  const isMountedRef = useRef(true);
+  const onSettingsSaveRef = useRef(onSettingsSave);
+
+  onSettingsSaveRef.current = onSettingsSave;
 
   const activeProvider = providers.find((provider) => provider.id === activeProviderId);
+
+  useEffect(() => () => {
+    isMountedRef.current = false;
+    if (saveTimerRef.current !== undefined) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = undefined;
+    }
+    if (retryTimerRef.current !== undefined) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = undefined;
+    }
+    void flushRuntimeSaveQueue();
+  }, []);
 
   useEffect(() => {
     setActiveSection(initialSection);
@@ -79,14 +154,125 @@ export function SettingsPanel({
     });
   }, [activeProvider]);
 
-  async function handleSettingsSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    try {
-      await onSettingsSave(settingsForm);
-      toast.success(t('notification.settingsSaved'));
-    } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+  // Seed persisted snapshot once settings become valid (initial load / external refresh).
+  useEffect(() => {
+    if (!isValidRuntimeSettings(settingsForm)) return;
+    const serialized = serializeRuntimeSettings(settingsForm);
+    if (!persistedSerializedRef.current) {
+      persistedSerializedRef.current = serialized;
+      latestSerializedRef.current = serialized;
+      setAutoSaveStatus('idle');
+      return;
     }
+    // External updates (avatar/language via Sidebar, successful save response) keep snapshot in sync
+    // when the user is not actively editing runtime fields.
+    if (!runtimeDirty && pendingSaveRef.current === null && !saveInFlightRef.current) {
+      persistedSerializedRef.current = serialized;
+      latestSerializedRef.current = serialized;
+    }
+  }, [runtimeDirty, settingsForm]);
+
+  useEffect(() => {
+    if (!runtimeDirty) return;
+
+    if (!isValidRuntimeSettings(settingsForm)) {
+      setAutoSaveStatus('pending');
+      if (saveTimerRef.current !== undefined) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = undefined;
+      }
+      pendingSaveRef.current = null;
+      return;
+    }
+
+    const serialized = serializeRuntimeSettings(settingsForm);
+    if (latestSerializedRef.current !== serialized) {
+      saveRetryCountRef.current = 0;
+    }
+    latestSerializedRef.current = serialized;
+
+    if (persistedSerializedRef.current === serialized) {
+      pendingSaveRef.current = null;
+      setRuntimeDirty(false);
+      setAutoSaveStatus('saved');
+      return;
+    }
+
+    pendingSaveRef.current = {
+      serialized,
+      payload: { ...settingsForm },
+    };
+    setAutoSaveStatus('pending');
+    if (saveTimerRef.current !== undefined) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = undefined;
+      void flushRuntimeSaveQueue();
+    }, RUNTIME_AUTO_SAVE_DELAY_MS);
+  }, [runtimeDirty, settingsForm]);
+
+  async function flushRuntimeSaveQueue() {
+    if (saveInFlightRef.current || !pendingSaveRef.current) return;
+    const pending = pendingSaveRef.current;
+    pendingSaveRef.current = null;
+    saveInFlightRef.current = true;
+    if (isMountedRef.current) {
+      setAutoSaveStatus('saving');
+    }
+
+    let retryDelay = 0;
+    try {
+      const updated = await onSettingsSaveRef.current(pending.payload);
+      const updatedSerialized = serializeRuntimeSettings(updated);
+      persistedSerializedRef.current = updatedSerialized;
+      saveRetryCountRef.current = 0;
+      if (isMountedRef.current && latestSerializedRef.current === pending.serialized) {
+        latestSerializedRef.current = updatedSerialized;
+        const queuedSave = pendingSaveRef.current as PendingRuntimeSave | null;
+        if (queuedSave?.serialized === pending.serialized) {
+          pendingSaveRef.current = null;
+        }
+        if (saveTimerRef.current !== undefined) {
+          window.clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = undefined;
+        }
+        setRuntimeDirty(false);
+        setAutoSaveStatus('saved');
+      }
+    } catch (cause) {
+      const attempt = saveRetryCountRef.current + 1;
+      saveRetryCountRef.current = attempt;
+      if (latestSerializedRef.current === pending.serialized) {
+        pendingSaveRef.current = pending;
+        retryDelay = Math.min(
+          RUNTIME_AUTO_SAVE_MAX_RETRY_DELAY_MS,
+          RUNTIME_AUTO_SAVE_RETRY_DELAY_MS * (2 ** Math.min(attempt - 1, 5)),
+        );
+      }
+      if (isMountedRef.current) {
+        setAutoSaveStatus('error');
+        if (attempt === 1) {
+          toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+        }
+      }
+    } finally {
+      saveInFlightRef.current = false;
+      if (pendingSaveRef.current) {
+        if (retryTimerRef.current !== undefined) {
+          window.clearTimeout(retryTimerRef.current);
+        }
+        retryTimerRef.current = window.setTimeout(() => {
+          retryTimerRef.current = undefined;
+          void flushRuntimeSaveQueue();
+        }, retryDelay);
+      }
+    }
+  }
+
+  function patchRuntimeSettings(patch: Partial<AppSettings>) {
+    onSettingsFormChange({ ...settingsForm, ...patch });
+    setRuntimeDirty(true);
   }
 
   async function handleProviderSubmit(e: FormEvent<HTMLFormElement>) {
@@ -219,27 +405,44 @@ export function SettingsPanel({
             eyebrow={t('nav.settings')}
             title={activeSection === 'runtime' ? t('settings.title') : t('provider.title')}
             description={activeSection === 'runtime' ? t('settings.description') : t('provider.description')}
-            actions={activeSection === 'providers' ? (
+            actions={activeSection === 'runtime' ? (
+              <AutoSaveIndicator status={autoSaveStatus} t={t} />
+            ) : (
               <Button variant="secondary" type="button" onClick={() => { onProviderChange(''); onOpenMain(); }} icon={<Plus size={17} />}>
                 {t('provider.create')}
               </Button>
-            ) : null}
+            )}
           />
 
           {activeSection === 'runtime' ? (
-            <form className="form-card entity-form narrow-form" onSubmit={handleSettingsSubmit}>
+            <div className="form-card entity-form narrow-form">
               <div className="form-grid two-column">
                 <FormField label={t('settings.host')} htmlFor="settings-host" required>
-                  <select id="settings-host" value={settingsForm.host} onChange={(e) => onSettingsFormChange({ ...settingsForm, host: e.target.value })}>
+                  <select
+                    id="settings-host"
+                    value={settingsForm.host}
+                    onChange={(e) => patchRuntimeSettings({ host: e.target.value })}
+                  >
                     <option value="127.0.0.1">127.0.0.1</option>
                     <option value="::1">::1</option>
                   </select>
                 </FormField>
                 <FormField label={t('settings.port')} htmlFor="settings-port" required>
-                  <input id="settings-port" type="number" min={1} max={65535} value={settingsForm.port} onChange={(e) => onSettingsFormChange({ ...settingsForm, port: Number(e.target.value) })} />
+                  <input
+                    id="settings-port"
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={settingsForm.port}
+                    onChange={(e) => patchRuntimeSettings({ port: Number(e.target.value) })}
+                  />
                 </FormField>
                 <FormField label={t('settings.logLevel')} htmlFor="settings-log" required>
-                  <select id="settings-log" value={settingsForm.log_level} onChange={(e) => onSettingsFormChange({ ...settingsForm, log_level: e.target.value })}>
+                  <select
+                    id="settings-log"
+                    value={settingsForm.log_level}
+                    onChange={(e) => patchRuntimeSettings({ log_level: e.target.value })}
+                  >
                     {['trace', 'debug', 'info', 'warn', 'error'].map((level) => <option key={level} value={level}>{level}</option>)}
                   </select>
                 </FormField>
@@ -250,7 +453,7 @@ export function SettingsPanel({
                     min={1}
                     max={600}
                     value={settingsForm.request_timeout_seconds}
-                    onChange={(e) => onSettingsFormChange({ ...settingsForm, request_timeout_seconds: Number(e.target.value) })}
+                    onChange={(e) => patchRuntimeSettings({ request_timeout_seconds: Number(e.target.value) })}
                   />
                 </FormField>
                 <FormField label={t('settings.requestRetries')} htmlFor="settings-retries" required>
@@ -260,7 +463,7 @@ export function SettingsPanel({
                     min={1}
                     max={10}
                     value={settingsForm.request_retry_attempts}
-                    onChange={(e) => onSettingsFormChange({ ...settingsForm, request_retry_attempts: Number(e.target.value) })}
+                    onChange={(e) => patchRuntimeSettings({ request_retry_attempts: Number(e.target.value) })}
                   />
                 </FormField>
               </div>
@@ -270,7 +473,7 @@ export function SettingsPanel({
                     id="settings-llm-log"
                     type="checkbox"
                     checked={settingsForm.llm_log_enabled}
-                    onChange={(e) => onSettingsFormChange({ ...settingsForm, llm_log_enabled: e.target.checked })}
+                    onChange={(e) => patchRuntimeSettings({ llm_log_enabled: e.target.checked })}
                   />
                   <span className="toggle-text">{t('settings.llmLogEnabled')}</span>
                 </label>
@@ -280,10 +483,7 @@ export function SettingsPanel({
               </div>
               <p className="hint-text small-hint">{t('settings.llmLogHint')}</p>
               <p className="hint-text">{t('settings.restartHint')}</p>
-              <div className="form-actions">
-                <Button variant="primary" type="submit" icon={<Save size={17} />}>{t('settings.save')}</Button>
-              </div>
-            </form>
+            </div>
           ) : (
             <div className="provider-layout">
               <aside className="provider-list-panel">
@@ -377,3 +577,4 @@ export function SettingsPanel({
   </>
   );
 }
+

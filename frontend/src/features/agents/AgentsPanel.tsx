@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
-import { Check, CircleAlert, Clock, LoaderCircle, Plus, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { Plus, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { Agent, AgentWorkspace, ModelProvider, CreateAgentPayload } from '../../types';
 import { readAgentWorkspace, updateAgentWorkspace } from '../../api';
@@ -7,7 +7,7 @@ import { useI18n } from '../../i18n';
 import { defaultAvatarColor } from '../../avatarPresets';
 import { AvatarBadge } from '../../components/AvatarPicker';
 import { PanelShell } from '../../components/layout';
-import { AvatarPopover, Button, FormField, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
+import { AutoSaveIndicator, AvatarPopover, Button, FormField, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
 import { TerminalToolSettings } from '../settings/TerminalToolSettings';
 
 interface AgentsPanelProps {
@@ -149,7 +149,7 @@ export function AgentsPanel({
         saveRetryCountRef.current = 0;
         setWorkspaceForm(nextWorkspace);
         setAgentFormDirty(false);
-        setAutoSaveStatus('saved');
+        setAutoSaveStatus('idle');
       })
       .catch((cause) => toast.error(cause instanceof Error ? cause.message : t('error.unknown')))
       .finally(() => {
@@ -407,7 +407,7 @@ export function AgentsPanel({
             description={activeAgent ? agentModelLabel(activeAgent) : t('agentConfig.selectAgent')}
             actions={(
               <>
-                {activeAgent ? <AgentAutoSaveIndicator status={autoSaveStatus} t={t} /> : null}
+                {activeAgent ? <AutoSaveIndicator status={autoSaveStatus} t={t} /> : null}
                 {activeAgent?.is_builtin ? <span className="model-note-badge">{t('agentConfig.coreAgentModelHint')}</span> : null}
                 {!activeAgent ? <span className="model-note-badge">{t('agentConfig.workspaceCreateHint')}</span> : null}
                 {activeAgent && !activeAgent.is_builtin ? (
@@ -528,24 +528,6 @@ export function AgentsPanel({
   );
 }
 
-function AgentAutoSaveIndicator({ status, t }: {
-  status: AgentAutoSaveStatus;
-  t: (path: string) => string;
-}) {
-  const icon = status === 'saving'
-    ? <LoaderCircle size={15} className="is-spinning" />
-    : status === 'error'
-      ? <CircleAlert size={15} />
-      : status === 'saved'
-        ? <Check size={15} />
-        : <Clock size={15} />;
-  return (
-    <span className={`auto-save-status is-${status}`} role="status" aria-live="polite">
-      {icon}
-      {t(`tools.autoSave.${status}`)}
-    </span>
-  );
-}
 
 function agentPayloadFromAgent(agent: Agent): CreateAgentPayload {
   return {

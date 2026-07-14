@@ -94,7 +94,7 @@ impl LlmLogger {
             error: error.map(truncate_log_field),
         };
         let content = serde_json::to_string_pretty(&detail)?;
-        fs::write(self.logs_dir.join(format!("{id}.json")), content).await?;
+        crate::fsutil::write_atomic(&self.logs_dir.join(format!("{id}.json")), content).await?;
         Ok(id)
     }
 

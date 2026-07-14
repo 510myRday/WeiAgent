@@ -8,6 +8,7 @@ use tokio::fs;
 use crate::{
     domain::AppSettings,
     error::{AppError, AppResult},
+    fsutil,
 };
 
 #[derive(Debug, Clone)]
@@ -18,7 +19,7 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub async fn load(is_dev: bool) -> AppResult<Self> {
-        let data_dir = data_dir(is_dev)?;
+        let data_dir = resolve_data_dir(is_dev)?;
         fs::create_dir_all(&data_dir).await?;
         let settings = load_or_init_settings(&data_dir.join("settings.json")).await?;
         Ok(Self { settings, data_dir })
@@ -33,16 +34,77 @@ impl AppConfig {
     }
 }
 
-fn data_dir(is_dev: bool) -> AppResult<PathBuf> {
+/// Resolve the persistent data directory.
+///
+/// Priority:
+/// 1. `WEIAGENT_DATA_DIR` absolute/relative override
+/// 2. dev mode -> `./data`
+/// 3. `WEIAGENT_PORTABLE=1` -> `<exe_dir>/data`
+/// 4. user home folder (easy to find):
+///    - Windows: `%USERPROFILE%\WeiAgent` (e.g. `C:\Users\Administrator\WeiAgent`)
+///    - macOS/Linux: `$HOME/WeiAgent` (e.g. `/Users/name/WeiAgent`, `/home/name/WeiAgent`)
+pub fn resolve_data_dir(is_dev: bool) -> AppResult<PathBuf> {
+    if let Ok(override_dir) = std::env::var("WEIAGENT_DATA_DIR") {
+        let path = PathBuf::from(override_dir.trim());
+        if path.as_os_str().is_empty() {
+            return Err(AppError::BadRequest(
+                "WEIAGENT_DATA_DIR cannot be empty".to_string(),
+            ));
+        }
+        return Ok(path);
+    }
+
     if is_dev {
         return Ok(PathBuf::from("data"));
     }
 
+    if env_flag_enabled("WEIAGENT_PORTABLE") {
+        return portable_data_dir();
+    }
+
+    platform_user_data_dir()
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn portable_data_dir() -> AppResult<PathBuf> {
     let exe_path = std::env::current_exe()?;
-    let exe_dir = exe_path
-        .parent()
-        .ok_or_else(|| AppError::BadRequest("failed to locate executable directory".to_string()))?;
+    let exe_dir = exe_path.parent().ok_or_else(|| {
+        AppError::BadRequest("failed to locate executable directory".to_string())
+    })?;
     Ok(exe_dir.join("data"))
+}
+
+fn platform_user_data_dir() -> AppResult<PathBuf> {
+    Ok(user_home_dir()?.join("WeiAgent"))
+}
+
+fn user_home_dir() -> AppResult<PathBuf> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .ok_or_else(|| {
+            AppError::BadRequest(
+                "user home directory is unset; set WEIAGENT_DATA_DIR or WEIAGENT_PORTABLE=1"
+                    .to_string(),
+            )
+        })?;
+    let home = PathBuf::from(home);
+    if home.as_os_str().is_empty() {
+        return Err(AppError::BadRequest(
+            "user home directory is empty; set WEIAGENT_DATA_DIR or WEIAGENT_PORTABLE=1"
+                .to_string(),
+        ));
+    }
+    Ok(home)
 }
 
 pub async fn load_or_init_settings(path: &std::path::Path) -> AppResult<AppSettings> {
@@ -61,7 +123,7 @@ pub async fn load_or_init_settings(path: &std::path::Path) -> AppResult<AppSetti
 pub async fn write_settings(path: &std::path::Path, settings: &AppSettings) -> AppResult<()> {
     validate_settings(settings)?;
     let content = serde_json::to_string_pretty(settings)?;
-    fs::write(path, content).await?;
+    fsutil::write_atomic(path, content).await?;
     Ok(())
 }
 
@@ -125,6 +187,12 @@ pub fn log_level_filter(value: &str) -> tracing_subscriber::filter::LevelFilter 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn settings_reject_non_loopback_hosts() {
@@ -144,5 +212,59 @@ mod tests {
             };
             assert!(validate_settings(&settings).is_ok());
         }
+    }
+
+    #[test]
+    fn data_dir_override_wins() {
+        let _guard = env_lock().lock().unwrap();
+        let previous = std::env::var_os("WEIAGENT_DATA_DIR");
+        // SAFETY: test-only process-global env mutation.
+        unsafe {
+            std::env::set_var("WEIAGENT_DATA_DIR", r"D:\custom\weiagent-data");
+        }
+        let resolved = resolve_data_dir(false).unwrap();
+        match previous {
+            Some(value) => unsafe { std::env::set_var("WEIAGENT_DATA_DIR", value) },
+            None => unsafe { std::env::remove_var("WEIAGENT_DATA_DIR") },
+        }
+        assert_eq!(resolved, PathBuf::from(r"D:\custom\weiagent-data"));
+    }
+
+    #[test]
+    fn dev_data_dir_is_local_data_folder() {
+        let _guard = env_lock().lock().unwrap();
+        let previous = std::env::var_os("WEIAGENT_DATA_DIR");
+        unsafe {
+            std::env::remove_var("WEIAGENT_DATA_DIR");
+        }
+        let resolved = resolve_data_dir(true).unwrap();
+        match previous {
+            Some(value) => unsafe { std::env::set_var("WEIAGENT_DATA_DIR", value) },
+            None => unsafe { std::env::remove_var("WEIAGENT_DATA_DIR") },
+        }
+        assert_eq!(resolved, PathBuf::from("data"));
+    }
+
+    #[test]
+    fn production_data_dir_lives_under_user_home() {
+        let _guard = env_lock().lock().unwrap();
+        let previous_data = std::env::var_os("WEIAGENT_DATA_DIR");
+        let previous_portable = std::env::var_os("WEIAGENT_PORTABLE");
+        unsafe {
+            std::env::remove_var("WEIAGENT_DATA_DIR");
+            std::env::remove_var("WEIAGENT_PORTABLE");
+        }
+        let resolved = resolve_data_dir(false).unwrap();
+        match previous_data {
+            Some(value) => unsafe { std::env::set_var("WEIAGENT_DATA_DIR", value) },
+            None => unsafe { std::env::remove_var("WEIAGENT_DATA_DIR") },
+        }
+        match previous_portable {
+            Some(value) => unsafe { std::env::set_var("WEIAGENT_PORTABLE", value) },
+            None => unsafe { std::env::remove_var("WEIAGENT_PORTABLE") },
+        }
+        let home = user_home_dir().unwrap();
+        assert_eq!(resolved, home.join("WeiAgent"));
+        assert_eq!(resolved.file_name().and_then(|name| name.to_str()), Some("WeiAgent"));
     }
 }

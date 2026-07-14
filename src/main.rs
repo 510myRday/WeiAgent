@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod domain;
 mod error;
+mod fsutil;
 mod llm;
 mod storage;
 mod tools;
@@ -76,6 +77,7 @@ async fn main() -> AppResult<()> {
         None
     };
 
+    tracing::info!(data_dir = %config.data_dir.display(), "WeiAgent data directory");
     tracing::info!("WeiAgent listening on http://{addr}");
     if is_dev {
         tracing::info!("WeiAgent dev frontend listening on http://127.0.0.1:5173");

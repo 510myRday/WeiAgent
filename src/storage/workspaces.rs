@@ -120,7 +120,7 @@ impl JsonStore {
         let _guard = self.lock.lock().await;
         let content = serde_json::to_string_pretty(&config)
             .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
-        fs::write(&self.tool_defaults_file, content).await?;
+        crate::fsutil::write_atomic(&self.tool_defaults_file, content).await?;
         Ok(config)
     }
 
@@ -329,7 +329,7 @@ impl JsonStore {
     ) -> AppResult<()> {
         let workspace = self.agent_workspace_dir(id);
         fs::create_dir_all(&workspace).await?;
-        fs::write(workspace.join(file_name), content).await?;
+        crate::fsutil::write_atomic(&workspace.join(file_name), content).await?;
         Ok(())
     }
 }
@@ -403,13 +403,16 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
                 "filesystem roots cannot be used as terminal workspace roots".to_string(),
             ));
         }
-        if home.as_ref().is_some_and(|home| home == &path) {
+        if home
+            .as_ref()
+            .is_some_and(|home| crate::fsutil::paths_equal(home, &path))
+        {
             return Err(crate::error::AppError::BadRequest(
                 "the entire user home directory cannot be used as a terminal workspace root"
                     .to_string(),
             ));
         }
-        if !canonical_roots.insert(path) {
+        if !canonical_roots.insert(crate::fsutil::path_identity_key(&path)) {
             return Err(crate::error::AppError::BadRequest(
                 "terminal workspace roots must be unique".to_string(),
             ));

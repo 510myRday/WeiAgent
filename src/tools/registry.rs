@@ -163,7 +163,7 @@ impl AgentTool for ExecuteTerminalTool {
                     },
                     "background": {
                         "type": "boolean",
-                        "description": "If true, start immediately as a managed background process and return process_id without waiting. Use for servers/watchers. Default false."
+                        "description": "If true, start immediately as a managed background process and return process_id without waiting. Use only for long-lived servers/watchers/dev services. Leave false (default) for ordinary short commands."
                     },
                     "sandbox_permissions": {
                         "type": "string",
@@ -362,7 +362,7 @@ impl AgentTool for GetTerminalProcessTool {
     fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
         tool_definition(
             "get_terminal_process",
-            "Read status and captured stdout/stderr for a terminal process started by this agent in this conversation. Use after execute_terminal returns process_id (background=true or foreground timeout promotion). Returns running/completed/failed/stopped state, exit_code when finished, duration_ms, and truncated output tails. Only processes owned by the current agent and conversation are visible.",
+            "Read status and captured stdout/stderr for a managed terminal process owned by this agent in this conversation. Call only with a process_id returned by execute_terminal (background=true or foreground timeout promotion). Returns running/completed/failed/stopped, exit_code when finished, duration_ms, and truncated output tails. Do not call for ordinary completed foreground results that never returned a process_id. Do not spam empty polls: if still running, do other work or wait before retrying; if completed/failed/stopped, read the result and stop polling. Only processes owned by the current agent and conversation are visible.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -417,7 +417,7 @@ impl AgentTool for StopTerminalProcessTool {
     fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
         tool_definition(
             "stop_terminal_process",
-            "Stop a running background terminal process owned by this agent in this conversation. Use when a long-running command should end early. If the process already finished, returns its final captured status instead of failing. Only processes owned by the current agent and conversation can be stopped.",
+            "Stop a running background terminal process owned by this agent in this conversation. Use with a process_id from execute_terminal when a long-running command or service should end early (for example after a dev server is no longer needed). Do not use stop to check success; use get_terminal_process for status/output. If the process already finished, returns its final captured status instead of failing. Only processes owned by the current agent and conversation can be stopped.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -523,8 +523,9 @@ fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
     format!(
         "Execute a local terminal command and return stdout/stderr/exit_code (or process_id if still running). {shell} {permission} \
 For the default workspace, omit cwd, pass an empty value, or use '.'. Set cwd only to a directory known to exist; never substitute a guessed path. \
-Foreground commands wait up to timeout_ms (default {default_timeout}, max 120000) and then continue in background with a process_id. Set background=true for services/watchers. \
-Ordinary completed foreground commands do not stay listed as background processes. Use get_terminal_process / stop_terminal_process with returned process_ids. \
+Usage decision: default to foreground for short commands (list files, git, builds/tests that usually finish soon). Set background=true only for long-lived services/watchers/dev servers that must keep running. If runtime is uncertain, stay foreground and raise timeout_ms; unfinished work is promoted to background with a process_id. \
+Foreground commands wait up to timeout_ms (default {default_timeout}, max 120000) and then continue in background with a process_id. Ordinary completed foreground commands do not stay listed as background processes and need no get/stop. \
+Only after a process_id is returned, use get_terminal_process to poll status/output and stop_terminal_process to end the process when done. Do not re-run the same long command instead of polling, and do not call get/stop without a process_id. \
 Returned stdout/stderr tails are limited to the last 64KB. Commands are non-interactive. If a sandboxed attempt is denied, report the failure and escalate only when user intent requires it; never invent success. {examples}"
     )
 }
@@ -583,20 +584,35 @@ mod tests {
         assert!(terminal.function.description.contains(expected_shell));
         assert!(terminal.function.description.contains("omit cwd"));
         assert!(terminal.function.description.contains("background=true"));
+        assert!(terminal.function.description.contains("Usage decision"));
+        assert!(terminal
+            .function
+            .description
+            .contains("Only after a process_id is returned"));
         assert!(terminal.function.parameters["properties"]["timeout_ms"]["description"]
             .as_str()
             .unwrap()
             .contains("30000"));
-        assert!(
-            definitions
-                .iter()
-                .any(|definition| definition.function.name == "get_terminal_process")
-        );
-        assert!(
-            definitions
-                .iter()
-                .any(|definition| definition.function.name == "stop_terminal_process")
-        );
+        assert!(terminal.function.parameters["properties"]["background"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("only for long-lived"));
+        let get_tool = definitions
+            .iter()
+            .find(|definition| definition.function.name == "get_terminal_process")
+            .unwrap();
+        assert!(get_tool
+            .function
+            .description
+            .contains("Do not spam empty polls"));
+        let stop_tool = definitions
+            .iter()
+            .find(|definition| definition.function.name == "stop_terminal_process")
+            .unwrap();
+        assert!(stop_tool
+            .function
+            .description
+            .contains("Do not use stop to check success"));
     }
 
     #[test]
@@ -617,5 +633,26 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("45000"));
+    }
+
+    #[test]
+    fn terminal_enabled_switch_controls_all_three_terminal_tools() {
+        let mut config = AgentToolsConfig::default();
+        config.terminal.enabled = true;
+        let enabled = ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .unwrap();
+        let names: Vec<_> = enabled
+            .iter()
+            .map(|definition| definition.function.name.as_str())
+            .collect();
+        assert!(names.contains(&"execute_terminal"));
+        assert!(names.contains(&"get_terminal_process"));
+        assert!(names.contains(&"stop_terminal_process"));
+
+        config.terminal.enabled = false;
+        assert!(ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .is_none());
     }
 }

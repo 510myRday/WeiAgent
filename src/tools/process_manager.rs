@@ -248,19 +248,11 @@ impl ProcessManager {
         }
         record.stop_requested.store(true, Ordering::SeqCst);
 
-        let output = match terminate_record(&record, false).await {
-            Ok(output) => output,
-            Err(error) => {
-                record.stop_requested.store(false, Ordering::SeqCst);
-                return Err(AppError::Storage(error));
-            }
-        };
-        if !output.status.success() {
+        // Soft stop first. Failure is tolerated because the process may already
+        // have exited, or a console app may ignore a non-forced taskkill.
+        if let Err(error) = terminate_record(&record, false).await {
             record.stop_requested.store(false, Ordering::SeqCst);
-            return Err(AppError::Process(format!(
-                "failed to terminate process: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
+            return Err(AppError::Storage(error));
         }
 
         if let Some(info) = self.wait_for_completion(id, Duration::from_secs(3)).await
@@ -269,24 +261,22 @@ impl ProcessManager {
             return Ok(Some(info));
         }
 
-        #[cfg(unix)]
-        {
-            let output = Command::new("kill")
-                .args(["-KILL", &format!("-{}", record.pid)])
-                .output()
-                .await?;
-            if !output.status.success() {
-                return Err(AppError::Process(format!(
-                    "failed to force-kill process: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                )));
-            }
+        // Force-kill process tree/group on every platform.
+        if let Err(error) = terminate_record(&record, true).await {
+            return Err(AppError::Storage(error));
         }
 
-        Ok(self
-            .wait_for_completion(id, Duration::from_secs(2))
-            .await
-            .or(Some(current)))
+        if let Some(info) = self.wait_for_completion(id, Duration::from_secs(2)).await {
+            if info.status == ProcessStatus::Running {
+                return Err(AppError::Process(format!(
+                    "failed to force-kill process {}",
+                    record.pid
+                )));
+            }
+            return Ok(Some(info));
+        }
+
+        Ok(Some(current))
     }
 
     pub async fn stop_for_conversation(&self, conversation_id: Uuid) {
@@ -410,18 +400,37 @@ async fn terminate_record(
     force: bool,
 ) -> std::io::Result<std::process::Output> {
     if cfg!(windows) {
-        return Command::new("taskkill")
-            .args(["/PID", &record.pid.to_string(), "/T", "/F"])
-            .output()
-            .await;
+        let pid = record.pid.to_string();
+        let mut args = vec!["/PID".to_string(), pid, "/T".to_string()];
+        if force {
+            args.push("/F".to_string());
+        }
+        return Command::new("taskkill").args(args).output().await;
     }
-    Command::new("kill")
-        .args([
-            if force { "-KILL" } else { "-TERM" },
-            &format!("-{}", record.pid),
-        ])
+
+    // Prefer the process group created by configure_process_group (negative PID).
+    let signal = if force { "-KILL" } else { "-TERM" };
+    let group_target = format!("-{}", record.pid);
+    let group_output = Command::new("kill")
+        .args([signal, &group_target])
         .output()
-        .await
+        .await?;
+
+    // Also signal the leader PID in case it is no longer the group leader.
+    let _ = Command::new("kill")
+        .args([signal, &record.pid.to_string()])
+        .output()
+        .await;
+
+    // Best-effort direct children that started a new process group (common with
+    // sandboxed launchers). pkill is available on macOS and most Linux distros.
+    let child_signal = if force { "-9" } else { "-15" };
+    let _ = Command::new("pkill")
+        .args([child_signal, "-P", &record.pid.to_string()])
+        .output()
+        .await;
+
+    Ok(group_output)
 }
 
 async fn snapshot(record: &ProcessRecord) -> ProcessInfo {

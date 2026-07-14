@@ -65,7 +65,9 @@ fn build_terminal_policy_section(tools_config: &AgentToolsConfig) -> String {
 - Escalated commands require user approval unless this agent already has a matching always-allow grant.\n\
 - If a sandboxed command is denied or fails due to permissions, report the real error. Retry with escalation only when the user intent requires it; never invent success.\n\
 - Commands are non-interactive: stdin is closed. Do not rely on prompts, PTY sessions, or interactive pagers.\n\
-- For long-running services use `background=true` or let the foreground wait timeout promote the process, then poll with `get_terminal_process`."
+- Prefer foreground `execute_terminal` for short commands. Use `background=true` only for long-lived services/watchers/dev servers; do not background ordinary one-shot work.\n\
+- Long-running workflow: start with `background=true` (or let a foreground timeout promote the process) -> poll with `get_terminal_process` until ready/finished -> do the work -> call `stop_terminal_process` when the process is no longer needed.\n\
+- Call `get_terminal_process` / `stop_terminal_process` only with a returned `process_id`. Do not spam empty polls; if still running, wait and retry later."
                 .to_string()
         }
         TerminalPermissionMode::FullAccess => {
@@ -73,7 +75,9 @@ fn build_terminal_policy_section(tools_config: &AgentToolsConfig) -> String {
 - Terminal commands run with full host access and no approval prompts.\n\
 - Prefer staying inside the configured workspace roots unless the user explicitly asks otherwise.\n\
 - Commands are non-interactive: stdin is closed. Do not rely on prompts, PTY sessions, or interactive pagers.\n\
-- For long-running services use `background=true` or let the foreground wait timeout promote the process, then poll with `get_terminal_process`.\n\
+- Prefer foreground `execute_terminal` for short commands. Use `background=true` only for long-lived services/watchers/dev servers; do not background ordinary one-shot work.\n\
+- Long-running workflow: start with `background=true` (or let a foreground timeout promote the process) -> poll with `get_terminal_process` until ready/finished -> do the work -> call `stop_terminal_process` when the process is no longer needed.\n\
+- Call `get_terminal_process` / `stop_terminal_process` only with a returned `process_id`. Do not spam empty polls; if still running, wait and retry later.\n\
 - Be careful with destructive operations (delete, overwrite, recursive remove). Prefer targeted, reversible steps."
                 .to_string()
         }
@@ -155,6 +159,9 @@ mod tests {
         assert!(first.contains("## Environment"));
         assert!(first.contains("## Terminal Policy"));
         assert!(first.contains("WeiAgent"));
+        assert!(first.contains("Long-running workflow"));
+        assert!(first.contains("stop_terminal_process"));
+        assert!(first.contains("Do not spam empty polls"));
         assert!(!first.to_lowercase().contains("2026-"));
         assert!(!first.contains("expires_at"));
         assert!(!first.contains("created_at"));
@@ -172,6 +179,8 @@ mod tests {
         };
         let prefix = build_environment_prefix(&config);
         assert!(prefix.contains("full host access"));
+        assert!(prefix.contains("Long-running workflow"));
+        assert!(prefix.contains("stop_terminal_process"));
         assert!(!prefix.contains("require_escalated"));
     }
 

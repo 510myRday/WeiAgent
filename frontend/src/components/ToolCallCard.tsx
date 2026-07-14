@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Check,
@@ -12,6 +12,7 @@ import {
   ShieldAlert,
   Square,
   Terminal,
+  Wrench,
   X,
   XCircle,
 } from 'lucide-react';
@@ -36,6 +37,47 @@ function hasText(value?: string | null): boolean {
   return Boolean(value && value.trim().length > 0);
 }
 
+function isTerminalTool(name: string): boolean {
+  return (
+    name === 'execute_terminal' ||
+    name === 'get_terminal_process' ||
+    name === 'stop_terminal_process'
+  );
+}
+
+function formatToolArguments(args: Record<string, any>): string | null {
+  const display: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (
+      key === 'approval_id' ||
+      key === 'agent_id' ||
+      key === 'runtime' ||
+      key === 'permission' ||
+      value === undefined ||
+      value === null ||
+      value === ''
+    ) {
+      continue;
+    }
+    display[key] = value;
+  }
+  if (Object.keys(display).length === 0) return null;
+  try {
+    return JSON.stringify(display, null, 2);
+  } catch {
+    return String(display);
+  }
+}
+
+function ToolNameBadge({ name }: { name: string }) {
+  return (
+    <span className="tool-card__tool-badge" title={name}>
+      <Wrench size={12} aria-hidden />
+      <code>{name}</code>
+    </span>
+  );
+}
+
 function PermissionModeBadge({
   permissionMode,
   t,
@@ -55,13 +97,33 @@ function PermissionModeBadge({
   );
 }
 
+function HeaderMeta({
+  name,
+  permissionMode,
+  t,
+  children,
+}: {
+  name: string;
+  permissionMode?: 'request_approval' | 'full_access' | null;
+  t: (path: string, vars?: Record<string, string | number>) => string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="tool-card__meta">
+      <ToolNameBadge name={name} />
+      {isTerminalTool(name) ? <PermissionModeBadge permissionMode={permissionMode} t={t} /> : null}
+      {children}
+    </div>
+  );
+}
+
 function TerminalContent({
   content,
   tone,
   t,
 }: {
   content: string;
-  tone: 'command' | 'stdout' | 'stderr';
+  tone: 'command' | 'stdout' | 'stderr' | 'args';
   t: (path: string, vars?: Record<string, string | number>) => string;
 }) {
   const previewRef = useRef<HTMLPreElement>(null);
@@ -69,13 +131,16 @@ function TerminalContent({
   const [isExpanded, setIsExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const isCommand = tone === 'command';
+  const isArgs = tone === 'args';
   const title = isCommand
     ? t('toolCard.commandTitle')
-    : tone === 'stderr'
-      ? t('toolCard.stderrTitle')
-      : t('toolCard.stdoutTitle');
-  const showAllLabel = t(isCommand ? 'toolCard.showAllCommand' : 'toolCard.showAllOutput');
-  const copyLabel = t(isCommand ? 'toolCard.copyCommand' : 'toolCard.copyOutput');
+    : isArgs
+      ? t('toolCard.argumentsTitle')
+      : tone === 'stderr'
+        ? t('toolCard.stderrTitle')
+        : t('toolCard.stdoutTitle');
+  const showAllLabel = t(isCommand || isArgs ? 'toolCard.showAllCommand' : 'toolCard.showAllOutput');
+  const copyLabel = t(isCommand || isArgs ? 'toolCard.copyCommand' : 'toolCard.copyOutput');
 
   useLayoutEffect(() => {
     const preview = previewRef.current;
@@ -101,10 +166,12 @@ function TerminalContent({
     }
   }
 
+  const shellTone = tone === 'args' ? 'command' : tone;
+
   return (
     <>
-      <div className={`tool-card__output-shell tool-card__output-shell--${tone}`}>
-        <pre ref={previewRef} className={`tool-card__output tool-card__output--${tone}`}>{content}</pre>
+      <div className={`tool-card__output-shell tool-card__output-shell--${shellTone}`}>
+        <pre ref={previewRef} className={`tool-card__output tool-card__output--${shellTone}`}>{content}</pre>
         {isOverflowing ? (
           <div className="tool-card__output-footer">
             <button type="button" onClick={() => setIsExpanded(true)} aria-label={showAllLabel}>
@@ -117,12 +184,12 @@ function TerminalContent({
       <Dialog
         open={isExpanded}
         title={title}
-        description={t(isCommand ? 'toolCard.commandModalHint' : 'toolCard.outputModalHint')}
+        description={t(isCommand || isArgs ? 'toolCard.commandModalHint' : 'toolCard.outputModalHint')}
         icon={<Terminal size={18} />}
         closeLabel={t('toolCard.closeOutput')}
         onClose={() => setIsExpanded(false)}
         size="lg"
-        className={`terminal-output-modal terminal-output-modal--${tone}`}
+        className={`terminal-output-modal terminal-output-modal--${shellTone}`}
         bodyClassName="terminal-output-modal__body"
         headerActions={(
           <IconButton variant="ghost" type="button" onClick={handleCopy} label={copyLabel}>
@@ -130,10 +197,29 @@ function TerminalContent({
           </IconButton>
         )}
       >
-        <pre className={`terminal-output-modal__content terminal-output-modal__content--${tone}`}>{content}</pre>
+        <pre className={`terminal-output-modal__content terminal-output-modal__content--${shellTone}`}>{content}</pre>
       </Dialog>
     </>
   );
+}
+
+function ToolPayload({
+  name,
+  args,
+  t,
+}: {
+  name: string;
+  args: Record<string, any>;
+  t: (path: string, vars?: Record<string, string | number>) => string;
+}) {
+  if (typeof args.command === 'string' && args.command.trim()) {
+    return <TerminalContent content={args.command} tone="command" t={t} />;
+  }
+  const formatted = formatToolArguments(args);
+  if (!formatted) return null;
+  // For non-execute tools, show structured args so the bubble is still useful.
+  void name;
+  return <TerminalContent content={formatted} tone="args" t={t} />;
 }
 
 function TerminalOutputs({
@@ -172,7 +258,6 @@ function TerminalOutputs({
 
 export function ToolCallCard({ agentId, name, arguments: args, status, result, permissionMode, onApprove }: ToolCallCardProps) {
   const { t } = useI18n();
-  const command = typeof args.command === 'string' ? args.command : name;
   const processId = result?.process_id;
   const [process, setProcess] = useState<ToolProcessInfo | null>(null);
   const [processError, setProcessError] = useState('');
@@ -242,9 +327,9 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
             <strong>{t('toolCard.approvalTitle')}</strong>
             <small>{t('toolCard.approvalSubtitle')}</small>
           </div>
-          <PermissionModeBadge permissionMode={permissionMode} t={t} />
+          <HeaderMeta name={name} permissionMode={permissionMode} t={t} />
         </div>
-        <TerminalContent content={command} tone="command" t={t} />
+        <ToolPayload name={name} args={args} t={t} />
         <dl className="tool-card__approval-context">
           <div><dt>{t('toolCard.cwd')}</dt><dd>{String(args.cwd || t('toolCard.defaultCwd'))}</dd></div>
           <div><dt>{t('toolCard.runtime')}</dt><dd>{String(args.runtime || t('toolCard.runtimeUnknown'))}</dd></div>
@@ -274,14 +359,15 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
           <div className="tool-card__title">
             <strong>{running ? t('toolCard.backgroundRunning') : t(`toolCard.processStatus.${effectiveStatus}`)}</strong>
           </div>
-          <PermissionModeBadge permissionMode={permissionMode} t={t} />
-          {running ? (
-            <button type="button" className="tool-process-action" onClick={handleStop} disabled={isStopping}>
-              <Square size={14} /> {isStopping ? t('toolCard.stopping') : t('toolCard.stop')}
-            </button>
-          ) : null}
+          <HeaderMeta name={name} permissionMode={permissionMode} t={t}>
+            {running ? (
+              <button type="button" className="tool-process-action" onClick={handleStop} disabled={isStopping}>
+                <Square size={14} /> {isStopping ? t('toolCard.stopping') : t('toolCard.stop')}
+              </button>
+            ) : null}
+          </HeaderMeta>
         </div>
-        <TerminalContent content={command} tone="command" t={t} />
+        <ToolPayload name={name} args={args} t={t} />
         {process ? (
           running && !hasText(process.stdout) && !hasText(process.stderr) ? null : (
             <TerminalOutputs
@@ -303,26 +389,31 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
       <div className="tool-card tool-card--running">
         <div className="tool-card__header">
           <span className="tool-card__status-icon"><Loader2 size={18} className="animate-spin" /></span>
-          <div className="tool-card__title"><strong>{t('toolCard.executingTitle')}</strong></div>
-          <PermissionModeBadge permissionMode={permissionMode} t={t} />
+          <div className="tool-card__title">
+            <strong>{isTerminalTool(name) ? t('toolCard.executingTitle') : t('toolCard.executingGeneric')}</strong>
+          </div>
+          <HeaderMeta name={name} permissionMode={permissionMode} t={t} />
         </div>
-        <TerminalContent content={command} tone="command" t={t} />
+        <ToolPayload name={name} args={args} t={t} />
       </div>
     );
   }
 
   if (status === 'completed' && result) {
     const failed = (result.exit_code ?? 0) !== 0;
+    const title = result.exit_code !== undefined && result.exit_code !== null
+      ? t('toolCard.completed', { code: result.exit_code })
+      : t('toolCard.completedGeneric');
     return (
       <div className={`tool-card ${failed ? 'tool-card--error' : 'tool-card--done'}`}>
         <div className="tool-card__header">
           <span className={`tool-card__status-icon ${failed ? '' : 'tool-card__status-icon--success'}`}>
             {failed ? <AlertTriangle size={18} /> : <CheckCircle size={18} />}
           </span>
-          <div className="tool-card__title"><strong>{t('toolCard.completed', { code: result.exit_code ?? 0 })}</strong></div>
-          <PermissionModeBadge permissionMode={permissionMode} t={t} />
+          <div className="tool-card__title"><strong>{title}</strong></div>
+          <HeaderMeta name={name} permissionMode={permissionMode} t={t} />
         </div>
-        <TerminalContent content={command} tone="command" t={t} />
+        <ToolPayload name={name} args={args} t={t} />
         <TerminalOutputs
           stdout={result.stdout}
           stderr={result.stderr}
@@ -336,8 +427,14 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
   if (status === 'blocked' || status === 'rejected') {
     return (
       <div className="tool-card tool-card--blocked">
-        <XCircle size={18} />
-        <span>{status === 'blocked' ? t('toolCard.blocked') : t('toolCard.rejected')}</span>
+        <div className="tool-card__header">
+          <span className="tool-card__status-icon"><XCircle size={18} /></span>
+          <div className="tool-card__title">
+            <strong>{status === 'blocked' ? t('toolCard.blocked') : t('toolCard.rejected')}</strong>
+          </div>
+          <HeaderMeta name={name} permissionMode={permissionMode} t={t} />
+        </div>
+        <ToolPayload name={name} args={args} t={t} />
         {result?.reason ? <p className="tool-card__reason">{result.reason}</p> : null}
       </div>
     );
@@ -346,8 +443,12 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
   if (status === 'error') {
     return (
       <div className="tool-card tool-card--error">
-        <AlertTriangle size={18} />
-        <span>{t('toolCard.executionError')}</span>
+        <div className="tool-card__header">
+          <span className="tool-card__status-icon"><AlertTriangle size={18} /></span>
+          <div className="tool-card__title"><strong>{t('toolCard.executionError')}</strong></div>
+          <HeaderMeta name={name} permissionMode={permissionMode} t={t} />
+        </div>
+        <ToolPayload name={name} args={args} t={t} />
         {result?.message ? <p className="tool-card__reason">{result.message}</p> : null}
       </div>
     );
@@ -355,3 +456,4 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
 
   return null;
 }
+

@@ -1,4 +1,5 @@
 export { AvatarPopover } from './AvatarPopover';
+export { AutoSaveIndicator, type AutoSaveStatus } from './AutoSaveIndicator';
 export { Button, IconButton } from './Button';
 export { Dialog, type DialogSize } from './Dialog';
 export { EmptyState } from './EmptyState';

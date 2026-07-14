@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, BadgeCheck, Check, CircleAlert, CircleCheck, Clock, Download, FolderLock, Hand, LoaderCircle, Pencil, Plus, RefreshCw, Shield, ShieldAlert, Square, Terminal, Trash2 } from 'lucide-react';
+import { ArrowLeft, BadgeCheck, CircleAlert, CircleCheck, Clock, Download, FolderLock, Hand, Pencil, Plus, RefreshCw, Shield, ShieldAlert, Square, Terminal, Trash2 } from 'lucide-react';
 
 import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, SandboxRuntimeStatus, ToolProcessInfo } from '../../api';
 import {
@@ -15,7 +15,7 @@ import {
 } from '../../api';
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
-import { Button, IconButton, useFeedback } from '../../components/ui';
+import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../components/ui';
 
 interface TerminalToolSettingsProps {
   scope: 'defaults' | 'agent';
@@ -23,7 +23,7 @@ interface TerminalToolSettingsProps {
   agents?: Agent[];
 }
 
-type OverrideField = 'enabled' | 'permission_mode' | 'default_timeout_ms' | 'allowed_cwd_roots';
+type OverrideField = 'permission_mode' | 'default_timeout_ms' | 'allowed_cwd_roots';
 type AutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type AgentToolView = 'list' | 'terminal';
 type PendingSave =
@@ -93,7 +93,7 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
           pendingSavesRef.current.delete(contextKey);
           loadedContextRef.current = contextKey;
           setDefaults(next);
-          setAutoSaveStatus('saved');
+          setAutoSaveStatus('idle');
         }
       })
       : agentId
@@ -105,7 +105,7 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
             pendingSavesRef.current.delete(contextKey);
             loadedContextRef.current = contextKey;
             setAgentSettings(next);
-            setAutoSaveStatus('saved');
+            setAutoSaveStatus('idle');
           }
         })
         : Promise.reject(new Error(t('tools.terminal.agentRequired')));
@@ -375,7 +375,6 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
       delete terminal[field];
     } else {
       if (field === 'allowed_cwd_roots') terminal.allowed_cwd_roots = [...config.terminal.allowed_cwd_roots];
-      if (field === 'enabled') terminal.enabled = config.terminal.enabled;
       if (field === 'permission_mode') terminal.permission_mode = config.terminal.permission_mode;
       if (field === 'default_timeout_ms') terminal.default_timeout_ms = config.terminal.default_timeout_ms;
     }
@@ -540,14 +539,15 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
       <div className="settings-card">
         <div className="card-header"><Clock size={20} /><h3>{t('tools.terminal.basicSettings')}</h3></div>
         <div className="card-body">
-          <div className="setting-row">
-            <div className="setting-info"><label>{t('tools.terminal.enabled')}</label><p className="setting-desc">{t('tools.terminal.enabledDesc')}</p></div>
-            {isAgentScope ? <InheritanceControl inherited={fieldInherited('enabled')} onChange={(value) => setTerminalInherited('enabled', value)} t={t} /> : null}
-            <label className="toggle-switch">
-              <input type="checkbox" checked={terminal.enabled} disabled={fieldInherited('enabled') || terminalUnavailable} onChange={(event) => updateTerminal({ enabled: event.target.checked })} />
-              <span className="toggle-slider" />
-            </label>
-          </div>
+          {!isAgentScope ? (
+            <div className="setting-row">
+              <div className="setting-info"><label>{t('tools.terminal.enabled')}</label><p className="setting-desc">{t('tools.terminal.enabledDesc')}</p></div>
+              <label className="toggle-switch">
+                <input type="checkbox" checked={terminal.enabled} disabled={terminalUnavailable} onChange={(event) => updateTerminal({ enabled: event.target.checked })} />
+                <span className="toggle-slider" />
+              </label>
+            </div>
+          ) : null}
           <div className="setting-row">
             <div className="setting-info"><label>{t('tools.terminal.defaultTimeout')}</label><p className="setting-desc">{t('tools.terminal.timeoutDesc')}</p></div>
             {isAgentScope ? <InheritanceControl inherited={fieldInherited('default_timeout_ms')} onChange={(value) => setTerminalInherited('default_timeout_ms', value)} t={t} /> : null}
@@ -674,24 +674,6 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
   );
 }
 
-function AutoSaveIndicator({ status, t }: {
-  status: AutoSaveStatus;
-  t: (path: string) => string;
-}) {
-  const icon = status === 'saving'
-    ? <LoaderCircle size={15} className="is-spinning" />
-    : status === 'error'
-      ? <CircleAlert size={15} />
-      : status === 'saved'
-        ? <Check size={15} />
-        : <Clock size={15} />;
-  return (
-    <span className={`auto-save-status is-${status}`} role="status" aria-live="polite">
-      {icon}
-      {t(`tools.autoSave.${status}`)}
-    </span>
-  );
-}
 
 function configWithClearedGrants(config: AgentToolsConfig): AgentToolsConfig {
   return {

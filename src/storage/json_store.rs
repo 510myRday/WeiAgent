@@ -41,7 +41,7 @@ impl JsonStore {
         if fs::metadata(&tool_defaults_file).await.is_err() {
             let content =
                 serde_json::to_string_pretty(&crate::domain::AgentToolsConfig::default())?;
-            fs::write(&tool_defaults_file, content).await?;
+            crate::fsutil::write_atomic(&tool_defaults_file, content).await?;
         }
 
         let store = Self {
