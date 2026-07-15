@@ -350,7 +350,7 @@ export async function streamMessage(
   streamOutput: boolean,
   signal?: AbortSignal,
 ): Promise<void> {
-  const timeoutSignal = AbortSignal.timeout(Math.max(1, timeoutSeconds, 900) * 1000);
+  const timeoutSignal = AbortSignal.timeout(Math.max(1, timeoutSeconds, 3600) * 1000);
   const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   const response = await fetch(`/api/conversations/${conversationId}/messages/stream`, {
     method: 'POST',

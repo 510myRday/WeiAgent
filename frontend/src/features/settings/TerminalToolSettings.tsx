@@ -44,6 +44,7 @@ type PendingSave =
 const AUTO_SAVE_DELAY_MS = 600;
 const AUTO_SAVE_RETRY_DELAY_MS = 1200;
 const AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
+const MAX_LLM_ITERATIONS = 999;
 
 export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalToolSettingsProps) {
   const { t } = useI18n();
@@ -563,10 +564,10 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
               <input
                 type="number"
                 min={1}
-                max={50}
+                max={MAX_LLM_ITERATIONS}
                 disabled={maxIterationsInherited}
-                value={Math.min(50, Math.max(1, config.max_llm_iterations || 1))}
-                onChange={(event) => updateMaxIterations(Math.min(50, Math.max(1, Number(event.target.value) || 1)))}
+                value={Math.min(MAX_LLM_ITERATIONS, Math.max(1, config.max_llm_iterations || 1))}
+                onChange={(event) => updateMaxIterations(Math.min(MAX_LLM_ITERATIONS, Math.max(1, Number(event.target.value) || 1)))}
               />
             </div>
           </div>

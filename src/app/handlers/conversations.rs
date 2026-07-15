@@ -23,7 +23,7 @@ use crate::{
     llm::client::RequestOptions,
 };
 
-const MAX_AGENT_RUN_DURATION: Duration = Duration::from_secs(15 * 60);
+const MAX_AGENT_RUN_DURATION: Duration = Duration::from_secs(60 * 60);
 
 struct ProcessCleanupGuard {
     terminal_manager: std::sync::Arc<crate::tools::terminal::TerminalManager>,
@@ -135,7 +135,7 @@ pub async fn send_message_complete(
                 .await;
             cleanup_guard.disarm();
             Err(crate::error::AppError::Llm(
-                "agent run exceeded the 15 minute deadline".to_string(),
+                "agent run exceeded the 60 minute deadline".to_string(),
             ))
         }
     }
@@ -174,7 +174,7 @@ pub async fn send_message_stream(
                     .await;
                 let _ = error_sender
                     .send(AgentRunEvent::Error(
-                        "agent run exceeded the 15 minute deadline".to_string(),
+                        "agent run exceeded the 60 minute deadline".to_string(),
                     ))
                     .await;
             }

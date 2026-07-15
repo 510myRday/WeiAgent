@@ -45,8 +45,11 @@ fn default_timeout_ms() -> u64 {
     30_000
 }
 
+pub const DEFAULT_MAX_LLM_ITERATIONS: u32 = 99;
+pub const MAX_LLM_ITERATIONS: u32 = 999;
+
 fn default_max_llm_iterations() -> u32 {
-    20
+    DEFAULT_MAX_LLM_ITERATIONS
 }
 
 impl Default for TerminalToolConfig {
@@ -84,7 +87,7 @@ impl Default for AgentToolsConfig {
 
 impl AgentToolsConfig {
     pub fn max_llm_iterations(&self) -> usize {
-        self.max_llm_iterations.clamp(1, 50) as usize
+        self.max_llm_iterations.clamp(1, MAX_LLM_ITERATIONS) as usize
     }
 }
 
@@ -213,6 +216,29 @@ impl TerminalToolConfig {
                     .expires_at
                     .is_some_and(|expires_at| expires_at > chrono::Utc::now())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_loop_defaults_to_ninety_nine_iterations() {
+        assert_eq!(
+            AgentToolsConfig::default().max_llm_iterations,
+            DEFAULT_MAX_LLM_ITERATIONS
+        );
+        assert_eq!(DEFAULT_MAX_LLM_ITERATIONS, 99);
+    }
+
+    #[test]
+    fn runtime_iteration_count_is_bounded_by_the_supported_maximum() {
+        let config = AgentToolsConfig {
+            max_llm_iterations: MAX_LLM_ITERATIONS + 1,
+            ..AgentToolsConfig::default()
+        };
+        assert_eq!(config.max_llm_iterations(), MAX_LLM_ITERATIONS as usize);
     }
 }
 

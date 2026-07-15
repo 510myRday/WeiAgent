@@ -23,7 +23,7 @@ use crate::{
 const STREAM_SAVE_INTERVAL: Duration = Duration::from_millis(500);
 const STREAM_SAVE_CHARS: usize = 240;
 const MAX_TOOL_CALLS_PER_ITERATION: usize = 8;
-const MAX_TOTAL_TOOL_CALLS: usize = 32;
+const MAX_TOTAL_TOOL_CALLS: usize = 256;
 const MAX_TOOL_CALL_ID_BYTES: usize = 256;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_STREAM_CONTENT_BYTES: usize = 2 * 1024 * 1024;
@@ -112,6 +112,7 @@ pub async fn run_agent(
                         .stop_for_conversation(user_message.conversation_id)
                         .await;
                 }
+                persist_run_failure(&runtime, &error).await;
                 return Err(error);
             }
         };
@@ -147,7 +148,7 @@ pub async fn run_agent(
             emit(&events, AgentRunEvent::Assistant(assistant_message.clone()))?;
         }
         messages.push(assistant_message);
-        execute_tool_calls(
+        if let Err(error) = execute_tool_calls(
             &state,
             &prepared,
             &mut messages,
@@ -155,7 +156,11 @@ pub async fn run_agent(
             &mut tool_budget,
             &events,
         )
-        .await?;
+        .await
+        {
+            persist_run_failure(&runtime, &error).await;
+            return Err(error);
+        }
 
         // Final reserved turn after the last tool-capable iteration.
         if iteration + 1 == max_llm_iterations {
@@ -163,13 +168,39 @@ pub async fn run_agent(
         }
     }
 
-    let summary = finalize_after_budget(&runtime, &mut messages, max_llm_iterations).await?;
+    let summary = match finalize_after_budget(&runtime, &mut messages, max_llm_iterations).await {
+        Ok(summary) => summary,
+        Err(error) => {
+            persist_run_failure(&runtime, &error).await;
+            return Err(error);
+        }
+    };
     emit(&events, AgentRunEvent::Assistant(summary.clone()))?;
     emit(&events, AgentRunEvent::Done)?;
     Ok(SendMessageResponse {
         user: user_message,
         assistant: summary,
     })
+}
+
+async fn persist_run_failure(runtime: &AgentRuntime<'_>, error: &AppError) {
+    let assistant_message = ChatMessage {
+        id: Uuid::new_v4(),
+        agent_id: runtime.prepared.agent.id,
+        conversation_id: runtime.prepared.user_message.conversation_id,
+        role: ChatRole::Assistant,
+        content: format!("Agent run stopped: {error}"),
+        status: ChatMessageStatus::Failed,
+        created_at: Utc::now(),
+        tool_calls: None,
+        tool_call_id: None,
+    };
+    let _ = runtime
+        .state
+        .store
+        .upsert_conversation_message(assistant_message.conversation_id, assistant_message.clone())
+        .await;
+    let _ = emit(runtime.events, AgentRunEvent::Assistant(assistant_message));
 }
 
 async fn finalize_after_budget(

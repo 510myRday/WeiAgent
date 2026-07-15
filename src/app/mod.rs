@@ -478,6 +478,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn llm_error_after_tool_result_is_persisted_as_failed_assistant_message() {
+        let outputs = vec![ChatCompletionOutput {
+            content: String::new(),
+            tool_calls: vec![scripted_tool_call(
+                "call-before-error",
+                "execute_terminal",
+                json!({"command": "echo before-error"}),
+            )],
+        }];
+        let (app, state, conversation_id, _, _) = scripted_test_app(outputs).await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/conversations/{conversation_id}/messages/stream"
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"content": "run then fail", "stream": false}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("event: assistant"));
+        assert!(text.contains("\"status\":\"failed\""));
+        assert!(text.contains("Agent run stopped"));
+        assert!(text.contains("event: error"));
+
+        let messages = state
+            .store
+            .read_conversation_messages(conversation_id)
+            .await
+            .unwrap();
+        let failure = messages.last().unwrap();
+        assert_eq!(failure.role, crate::domain::ChatRole::Assistant);
+        assert_eq!(failure.status, crate::domain::ChatMessageStatus::Failed);
+        assert!(failure.content.contains("script exhausted"));
+    }
+
+    #[tokio::test]
     async fn timeout_moves_process_to_background_and_captures_output() {
         let outputs = vec![
             ChatCompletionOutput {

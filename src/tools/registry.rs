@@ -108,6 +108,8 @@ impl ToolRegistry {
 
 struct ExecuteTerminalTool;
 
+const MAX_TERMINAL_COMMAND_BYTES: usize = 8_000;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecuteTerminalArgs {
@@ -214,6 +216,23 @@ impl AgentTool for ExecuteTerminalTool {
             };
         }
         let command = args.command;
+        if command.trim().is_empty() {
+            return ToolResult::Error {
+                message: "command cannot be empty".to_string(),
+            };
+        }
+        if command.len() > MAX_TERMINAL_COMMAND_BYTES {
+            return ToolResult::Error {
+                message: format!(
+                    "command exceeds the {MAX_TERMINAL_COMMAND_BYTES} byte limit; split it into smaller focused commands"
+                ),
+            };
+        }
+        if let Some(message) = unsupported_host_shell_syntax(&command) {
+            return ToolResult::Error {
+                message: message.to_string(),
+            };
+        }
         let timeout_ms = args.timeout_ms;
         let background = args.background;
         let tty = args.tty;
@@ -572,6 +591,23 @@ fn normalize_optional_cwd(cwd: Option<String>) -> Result<Option<String>, String>
     Ok(Some(cwd.to_string()))
 }
 
+fn unsupported_host_shell_syntax(command: &str) -> Option<&'static str> {
+    #[cfg(windows)]
+    {
+        let lower = command.to_ascii_lowercase();
+        if lower.contains("python - <<")
+            || lower.contains("python3 - <<")
+            || command.contains("<<'")
+            || command.contains("<<\"")
+        {
+            return Some(
+                "Windows commands are interpreted by cmd.exe, which does not support POSIX heredoc syntax (`<<EOF` or `python - <<'PY'`). Use `python -c`, a PowerShell here-string, or split the file generation into smaller Windows-compatible commands.",
+            );
+        }
+    }
+    None
+}
+
 fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
     let shell = crate::tools::prompt::host_shell_guidance();
     let default_timeout = config.terminal.default_timeout_ms;
@@ -584,7 +620,7 @@ fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
         }
     };
     let examples = if cfg!(windows) {
-        "Examples of valid command strings: `dir`, `type README.md`, `where python`, `cd /d C:\\path\\to\\project && cargo test -q`, `echo hello> out.txt`."
+        "Examples of valid command strings: `dir`, `type README.md`, `where python`, `cd /d C:\\path\\to\\project && cargo test -q`, `echo hello> out.txt`. Never use POSIX heredocs such as `<<EOF` or `python - <<'PY'`; cmd.exe does not support them. For multiline content, use a PowerShell here-string, `python -c`, or several focused commands."
     } else {
         "Examples of valid command strings: `ls -la`, `sed -n '1,40p' README.md`, `rg --files`, `cd /path/to/project && cargo test -q`, `printf 'hello\\n' > out.txt`."
     };
@@ -617,7 +653,10 @@ impl Drop for ApprovalRegistrationGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{ToolRegistry, normalize_optional_cwd};
+    use super::{
+        MAX_TERMINAL_COMMAND_BYTES, ToolRegistry, normalize_optional_cwd,
+        unsupported_host_shell_syntax,
+    };
     use crate::domain::AgentToolsConfig;
 
     #[test]
@@ -640,6 +679,20 @@ mod tests {
     }
 
     #[test]
+    fn terminal_command_limit_matches_the_tool_contract() {
+        assert_eq!(MAX_TERMINAL_COMMAND_BYTES, 8_000);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_rejects_posix_python_heredocs_with_actionable_guidance() {
+        let message = unsupported_host_shell_syntax("python - <<'PY'\nprint('ok')\nPY")
+            .expect("POSIX heredoc should be rejected on Windows");
+        assert!(message.contains("cmd.exe"));
+        assert!(message.contains("python -c"));
+    }
+
+    #[test]
     fn terminal_definition_describes_the_host_shell() {
         let mut config = AgentToolsConfig::default();
         config.terminal.enabled = true;
@@ -659,6 +712,14 @@ mod tests {
         assert!(terminal.function.description.contains("omit cwd"));
         assert!(terminal.function.description.contains("background=true"));
         assert!(terminal.function.description.contains("Usage decision"));
+        if cfg!(windows) {
+            assert!(
+                terminal
+                    .function
+                    .description
+                    .contains("Never use POSIX heredocs")
+            );
+        }
         assert!(
             terminal
                 .function

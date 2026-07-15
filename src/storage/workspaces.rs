@@ -384,11 +384,13 @@ fn join_prompt_sections<'a>(sections: impl IntoIterator<Item = (&'a str, &'a str
 }
 
 fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<()> {
-    const MAX_LLM_ITERATIONS: u32 = 50;
     const MAX_ALLOWED_ROOTS: usize = 8;
-    if config.max_llm_iterations == 0 || config.max_llm_iterations > MAX_LLM_ITERATIONS {
+    if config.max_llm_iterations == 0
+        || config.max_llm_iterations > crate::domain::tools::MAX_LLM_ITERATIONS
+    {
         return Err(crate::error::AppError::BadRequest(format!(
-            "max_llm_iterations must be between 1 and {MAX_LLM_ITERATIONS}"
+            "max_llm_iterations must be between 1 and {}",
+            crate::domain::tools::MAX_LLM_ITERATIONS
         )));
     }
     if config.terminal.default_timeout_ms == 0

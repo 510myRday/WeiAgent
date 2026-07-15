@@ -248,7 +248,7 @@
       "enabledDesc": "Enable or disable Codex terminal execution and managed session control",
       "timeoutDesc": "Default timeout for command execution (seconds)",
       "maxLlmIterations": "Max tool iterations",
-      "maxLlmIterationsDesc": "Maximum tool-capable LLM iterations per user turn. After the limit, one final no-tools summary is generated.",
+      "maxLlmIterationsDesc": "Maximum tool-capable LLM iterations per user turn, default 99 and maximum 999. After the limit, one final no-tools summary is generated.",
       "remove": "Remove",
       "allowedRootsLabel": "OS Sandbox Workspace Roots",
       "allowedRootsDesc": "In request-approval mode, routine commands can write only inside these workspaces. Empty uses the server working directory.",

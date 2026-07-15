@@ -327,7 +327,7 @@ Agent 响应会额外返回后端保存的内置身份信息：
 
 ```json
 {
-  "max_llm_iterations": 20,
+  "max_llm_iterations": 99,
   "terminal": {
     "enabled": true,
     "permission_mode": "request_approval",
@@ -372,8 +372,8 @@ User Message
 - stdout/stderr 各保留最后 1MB，返回模型时限制为最后 64KB
 - 真正的后台进程最长运行 1 小时，完成记录保留 24 小时
 - 全局最多 32 个运行进程，每个 Agent 最多 8 个
-- 单轮最多 8 个工具调用，单次 Agent run 最多 32 个，最长运行 15 分钟
-- LLM 工具循环默认 20 轮，最大 50 轮；耗尽后执行一次无工具总结
+- 单轮最多 8 个工具调用，单次 Agent run 最多 256 个，最长运行 60 分钟
+- LLM 工具循环默认 99 轮，可配置最大 999 轮；耗尽后执行一次无工具总结
 - 同一会话只允许一个活跃 Agent run
 - 完整权限和非 Windows 沙箱会话支持交互续写；Windows 沙箱保持非交互，以避免 Codex 上游不支持的伪会话
 
