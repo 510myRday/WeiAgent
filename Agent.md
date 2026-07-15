@@ -148,7 +148,7 @@ WeiAgent/
 - `data/settings.json`：保存应用监听地址、端口、日志级别、用户头像图标和颜色、语言、请求超时秒数、超时重试次数。默认值：`127.0.0.1:18283`、`info`、`bot/#22c55e`、`zh`、`60`、`3`
 - `data/model_providers.json`：保存 OpenAI 兼容模型提供商、Base URL、API Key、模型列表和 extra_body（额外请求体 JSON）。API Key 本地明文保存，但 API 响应通过 `has_api_key` 布尔值和 `masked_api_key`（如 `****cret`）脱敏返回
 - `data/tool_defaults.json`：保存所有 Agent 默认继承的工具配置，不保存任何 Agent 上下文授权
-- `data/agents.json`：保存 Agent 配置，包含 `id`、`name`、`model_provider_id`、`model_id`、`is_builtin`、`avatar_icon`、`avatar_color`、`created_at`、`updated_at`
+- `data/agents.json`：保存 Agent 配置，包含 `id`、`name`、`description`、`model_provider_id`、`model_id`、`is_builtin`、`avatar_icon`、`avatar_color`、`created_at`、`updated_at`
 - `data/conversations.json` 与 `data/conversations/{conversation_id}.json`：保存多会话元数据和消息。会话标题自动从第一条用户消息截取（最多 80 字符）；`message_count` 在列表查询时自动修正
 
 旧版 `model` 字段和 `data/chats/{agent_id}.json` 会在启动时迁移到 Provider 与 Conversation 结构。
@@ -206,7 +206,7 @@ WeiAgent/
 - 角色定位：帮助用户澄清目标、拆解任务、判断优先级、识别风险，并在未来建议创建或调用其他 Agent
 - 模型建议：建议配置能力强、上下文长、推理稳定的模型；当前只做文案提醒，不强制限制模型选择
 
-内置 Agent 在后端启动时自动补齐。内置身份直接写入 `data/agents.json` 的 `is_builtin` 字段。内置 Agent 可以修改模型、头像和 Markdown 文档，但不能重命名、不能删除。
+内置 Agent 在后端启动时自动补齐。内置身份直接写入 `data/agents.json` 的 `is_builtin` 字段。Agent 简介为必填字段；旧数据缺少简介时会在启动时迁移补齐。内置 Agent 可以修改模型、头像和 Markdown 文档，但不能修改名称和简介，也不能删除。
 
 如果启动时没有任何模型提供商，后端会初始化一个本地默认 OpenAI 兼容 Provider，用于让内置 Agent 能够落库。用户后续需要在设置里补充 API Key、模型列表和实际可用模型。
 

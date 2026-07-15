@@ -620,6 +620,7 @@ mod tests {
         let agent = Agent {
             id: Uuid::new_v4(),
             name: "Coder".to_string(),
+            description: "Writes and reviews code.".to_string(),
             model_provider_id: provider_id,
             model_id: "gpt-4o-mini".to_string(),
             is_builtin: false,

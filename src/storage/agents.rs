@@ -29,7 +29,7 @@ impl JsonStore {
     }
 
     pub async fn create_agent(&self, request: CreateAgentRequest) -> AppResult<AgentResponse> {
-        validate_agent_text(&request.name, &request.model_id)?;
+        validate_agent_text(&request.name, &request.description, &request.model_id)?;
         let avatar_icon = normalize_avatar_icon(request.avatar_icon.as_deref())?;
         let avatar_color = normalize_avatar_color(request.avatar_color.as_deref())?;
 
@@ -43,6 +43,7 @@ impl JsonStore {
         let agent = Agent {
             id: Uuid::new_v4(),
             name: request.name.trim().to_string(),
+            description: request.description.trim().to_string(),
             model_provider_id: request.model_provider_id,
             model_id: request.model_id.trim().to_string(),
             is_builtin: false,
@@ -86,6 +87,10 @@ impl JsonStore {
 
         if let Some(name) = request.name.filter(|_| !agent.is_builtin) {
             agent.name = crate::storage::validation::validate_non_empty("agent name", &name)?;
+        }
+        if let Some(description) = request.description.filter(|_| !agent.is_builtin) {
+            agent.description =
+                crate::storage::validation::validate_non_empty("agent description", &description)?;
         }
 
         let next_provider_id = request.model_provider_id.unwrap_or(agent.model_provider_id);

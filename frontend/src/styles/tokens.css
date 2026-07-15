@@ -1,41 +1,47 @@
 :root {
-  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color-scheme: light;
 
-  --color-text: #111827;
-  --color-text-soft: #374151;
-  --color-muted: #6b7280;
-  --color-disabled: #9ca3af;
+  --font-sans: Inter, "SF Pro Text", "Segoe UI Variable Text", "PingFang SC", "Microsoft YaHei UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  --color-text: #17201c;
+  --color-text-soft: #3f4b45;
+  --color-muted: #738078;
+  --color-disabled: #a4ada8;
   --color-on-primary: #ffffff;
-  --color-danger-text: #991b1b;
-  --color-swatch-ring: #cbd5e1;
+  --color-danger-text: #9f2424;
+  --color-swatch-ring: #cbd4cf;
   --color-primary: #07c160;
-  --color-primary-strong: #05964b;
-  --color-primary-soft: #e8f8ef;
-  --color-primary-border: #b7e8ca;
-  --color-danger: #dc2626;
-  --color-danger-soft: #fff1f2;
-  --color-danger-border: #fecaca;
-  --color-success: #15803d;
-  --color-success-soft: #ecfdf3;
-  --color-success-border: #bbf7d0;
-  --color-warning: #92400e;
-  --color-warning-soft: #fffbeb;
-  --color-warning-border: #fde68a;
-  --color-info: #1d4ed8;
-  --color-info-soft: #eff6ff;
-  --color-info-border: #bfdbfe;
+  --color-primary-strong: #059b4d;
+  --color-primary-deep: #047b3e;
+  --color-primary-soft: #eaf8f0;
+  --color-primary-border: #bde8cf;
+  --color-danger: #d64040;
+  --color-danger-soft: #fff2f2;
+  --color-danger-border: #f1caca;
+  --color-success: #168447;
+  --color-success-soft: #ecf9f1;
+  --color-success-border: #bce7cd;
+  --color-warning: #9a5b12;
+  --color-warning-soft: #fff8e8;
+  --color-warning-border: #efd8a7;
+  --color-info: #2e69c7;
+  --color-info-soft: #eef5ff;
+  --color-info-border: #c8daf5;
 
-  --surface-app: #e9edf1;
-  --surface-rail: #f7f8fa;
+  --surface-app: #edf1ef;
+  --surface-rail: #f7f9f8;
   --surface-pane: #ffffff;
-  --surface-main: #f5f6f8;
-  --surface-subtle: #f8fafc;
-  --surface-hover: #f1f8f4;
-  --surface-active: #eaf7ef;
+  --surface-main: #f5f7f6;
+  --surface-subtle: #f7f9f8;
+  --surface-hover: #f1f7f3;
+  --surface-active: #e9f7ef;
   --surface-input: #ffffff;
+  --surface-elevated: rgba(255, 255, 255, 0.94);
 
-  --border-subtle: #e5e7eb;
-  --border-strong: #d8dee8;
+  --border-subtle: #e6ebe8;
+  --border-strong: #d8e0dc;
+  --border-focus: #79d8a4;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -43,24 +49,31 @@
   --space-4: 16px;
   --space-5: 20px;
   --space-6: 24px;
+  --space-7: 28px;
   --space-8: 32px;
+  --space-10: 40px;
 
-  --radius-xs: 6px;
-  --radius-sm: 8px;
-  --radius-md: 10px;
+  --radius-xs: 7px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
   --radius-round: 999px;
 
-  --shadow-popover: 0 12px 32px rgba(15, 23, 42, 0.14);
-  --shadow-message: 0 8px 20px rgba(15, 23, 42, 0.04);
+  --shadow-xs: 0 1px 2px rgba(22, 34, 28, 0.04);
+  --shadow-sm: 0 8px 24px rgba(22, 34, 28, 0.06);
+  --shadow-popover: 0 18px 48px rgba(18, 30, 24, 0.16);
+  --shadow-message: 0 2px 8px rgba(18, 30, 24, 0.045);
 
-  --rail-width: 72px;
-  --list-width: 320px;
-  --header-height: 64px;
-  --control-height: 44px;
-  --list-row-height: 64px;
+  --rail-width: 78px;
+  --list-width: 316px;
+  --header-height: 68px;
+  --control-height: 42px;
+  --list-row-height: 66px;
+  --content-max-width: 1080px;
 
-  --duration-fast: 160ms;
-  --ease-standard: ease;
+  --duration-fast: 140ms;
+  --duration-normal: 220ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
 
   --z-banner: 50;
   --z-backdrop: 90;

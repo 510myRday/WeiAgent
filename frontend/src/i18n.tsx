@@ -57,6 +57,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
+    document.title = locale === 'zh' ? 'Wei Agent · 智能体工作台' : 'Wei Agent · Agent Workspace';
   }, [locale]);
 
   const t = useCallback(

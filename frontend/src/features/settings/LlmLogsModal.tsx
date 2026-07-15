@@ -117,15 +117,16 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
                   {logs.map((log) => (
                     <div
                       key={log.id}
-                      className={`list-item llm-log-item${selectedLog?.id === log.id ? ' is-active' : ''}`}
-                      onClick={() => handleViewLog(log.id)}
+                      className={`llm-log-item-row${selectedLog?.id === log.id ? ' is-active' : ''}`}
                     >
-                      <span className="list-item-leading"><FileText size={16} /></span>
-                      <div className="list-item-body">
-                        <span className="list-item-title">{log.agent_name}</span>
-                        <span className="list-item-subtitle">{log.model_id} · {log.provider_name}</span>
-                        <span className="list-item-time">{new Date(log.created_at).toLocaleString()}</span>
-                      </div>
+                      <button className="list-item llm-log-item" type="button" onClick={() => handleViewLog(log.id)}>
+                        <span className="list-item-leading"><FileText size={16} /></span>
+                        <span className="list-item-body">
+                          <span className="list-item-title">{log.agent_name}</span>
+                          <span className="list-item-subtitle">{log.model_id} · {log.provider_name}</span>
+                          <span className="list-item-time">{new Date(log.created_at).toLocaleString()}</span>
+                        </span>
+                      </button>
                       <span className="list-item-trailing">
                         <IconButton
                           variant="danger"
@@ -204,7 +205,7 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
                 </>
               ) : (
                 <p className="muted" style={{ alignSelf: 'center', margin: 'auto' }}>
-                  {logs.length > 0 ? t('agentConfig.selectAgent') : ''}
+                  {logs.length > 0 ? t('llmLogs.selectHint') : ''}
                 </p>
               )}
             </div>

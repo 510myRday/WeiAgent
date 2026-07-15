@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Terminal } from 'lucide-react';
+import { ArrowLeft, Terminal } from 'lucide-react';
 
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
@@ -10,6 +10,7 @@ import { TerminalToolSettings } from '../settings/TerminalToolSettings';
 interface ToolsPanelProps {
   agents: Agent[];
   onOpenMain: () => void;
+  onBackToList: () => void;
 }
 
 type ToolKey = 'terminal';
@@ -18,7 +19,7 @@ const toolDefs: { key: ToolKey; icon: typeof Terminal; getLabel: (t: (p: string)
   { key: 'terminal', icon: Terminal, getLabel: (t) => t('tools.terminal.name'), getDesc: (t) => t('tools.terminal.description') },
 ];
 
-export function ToolsPanel({ agents, onOpenMain }: ToolsPanelProps) {
+export function ToolsPanel({ agents, onOpenMain, onBackToList }: ToolsPanelProps) {
   const { t } = useI18n();
   const [activeTool, setActiveTool] = useState<ToolKey>('terminal');
 
@@ -32,7 +33,6 @@ export function ToolsPanel({ agents, onOpenMain }: ToolsPanelProps) {
           <PaneHeader
             className="mobile-pane-header"
             title={t('nav.tools')}
-            leading={<Button className="back-button" type="button" onClick={onOpenMain}>{t('common.back')}</Button>}
           />
           <div className="list-stack">
             {toolDefs.map((def) => (
@@ -54,6 +54,7 @@ export function ToolsPanel({ agents, onOpenMain }: ToolsPanelProps) {
         <div className="main-pane config-main">
           <PaneHeader
             className="config-page-header"
+            leading={<Button className="main-back-button" variant="ghost" type="button" onClick={onBackToList} icon={<ArrowLeft size={17} />}>{t('common.back')}</Button>}
             eyebrow={t('nav.tools')}
             title={activeDef?.getLabel(t) ?? t('tools.title')}
             description={activeDef?.getDesc(t) ?? t('tools.description')}

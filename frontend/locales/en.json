@@ -32,6 +32,7 @@
     "title": "Agent Config",
     "newTitle": "New Agent",
     "name": "Name",
+    "description": "Description",
     "provider": "Provider",
     "model": "Model",
     "avatar": "Avatar",
@@ -39,6 +40,7 @@
     "workspaceHint": "personality, memory, and instructions are merged into the system prompt at chat time.",
     "workspaceCreateHint": "After creation, the agent initializes its workspace and inherits the global tool defaults.",
     "builtinMasterName": "Master",
+    "builtinMasterDescription": "Coordinates tasks, delegates work, and drives complex jobs to completion.",
     "personality": "Personality",
     "memory": "Memory",
     "instructions": "Instructions",
@@ -50,6 +52,7 @@
     "save": "Save Agent",
     "delete": "Delete current Agent",
     "placeholder_name": "",
+    "placeholder_description": "Briefly describe what this agent is responsible for",
     "placeholder_provider": "Select provider",
     "placeholder_model": "Type a model id",
     "openProviderSettings": "Open model provider settings",
@@ -63,6 +66,7 @@
   },
   "chat": {
     "selectAgent": "Select Agent",
+    "selectModel": "Select model",
     "noAgent": "No Agent Selected",
     "noAgentHint": "Create an agent in the Agents tab, then come back here to chat.",
     "stream": "Stream",
@@ -84,7 +88,8 @@
     "copied": "Copied",
     "copyCode": "Copy code",
     "ariaLabel": "Conversation",
-    "scrollToBottom": "Scroll to latest message"
+    "scrollToBottom": "Scroll to latest message",
+    "timeline": "Message timeline"
   },
   "history": {
     "title": "Conversation History",
@@ -265,7 +270,8 @@
     "delete": "Delete",
     "deleteConfirm": "Delete this LLM debug log? This action cannot be undone.",
     "close": "Close",
-    "refresh": "Refresh"
+    "refresh": "Refresh",
+    "selectHint": "Select a log to inspect its request and response."
   },
   "notification": {
     "label": "Notifications",

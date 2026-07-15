@@ -115,6 +115,7 @@ mod tests {
         let agent = store
             .create_agent(CreateAgentRequest {
                 name: "Test Agent".to_string(),
+                description: "Handles test conversations.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "test-model".to_string(),
                 avatar_icon: Some("bot".to_string()),
@@ -364,6 +365,7 @@ mod tests {
         let agent = store
             .create_agent(CreateAgentRequest {
                 name: "Tool Agent".to_string(),
+                description: "Runs tools in tests.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "test-model".to_string(),
                 avatar_icon: Some("bot".to_string()),
@@ -990,6 +992,7 @@ mod tests {
         let agent = store
             .create_agent(CreateAgentRequest {
                 name: "Streaming Tool Agent".to_string(),
+                description: "Runs streaming tool tests.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "test-model".to_string(),
                 avatar_icon: Some("bot".to_string()),

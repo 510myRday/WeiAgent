@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
-import { Download, FileText, KeyRound, Plus, Save, Server, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { ArrowLeft, Download, FileText, KeyRound, Plus, Save, Server, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { AppSettings, ModelProvider, ModelProviderPayload } from '../../types';
 import { fetchModels, fetchModelsForProvider } from '../../api';
@@ -20,6 +20,7 @@ interface SettingsPanelProps {
   onProviderEdit: (id: string, payload: Partial<ModelProviderPayload>) => Promise<ModelProvider>;
   onProviderRemove: (id: string) => Promise<void>;
   onOpenMain: () => void;
+  onBackToList: () => void;
 }
 
 type SettingsSection = 'runtime' | 'providers';
@@ -96,6 +97,7 @@ export function SettingsPanel({
   onProviderEdit,
   onProviderRemove,
   onOpenMain,
+  onBackToList,
 }: SettingsPanelProps) {
   const { t } = useI18n();
   const { confirm, toast } = useFeedback();
@@ -376,7 +378,6 @@ export function SettingsPanel({
           <PaneHeader
             className="mobile-pane-header"
             title={t('nav.settings')}
-            leading={<Button className="back-button" type="button" onClick={onOpenMain}>{t('common.back')}</Button>}
           />
           <div className="list-stack">
             <ListItem
@@ -402,6 +403,7 @@ export function SettingsPanel({
         <div className="main-pane config-main">
           <PaneHeader
             className="config-page-header"
+            leading={<Button className="main-back-button" variant="ghost" type="button" onClick={onBackToList} icon={<ArrowLeft size={17} />}>{t('common.back')}</Button>}
             eyebrow={t('nav.settings')}
             title={activeSection === 'runtime' ? t('settings.title') : t('provider.title')}
             description={activeSection === 'runtime' ? t('settings.description') : t('provider.description')}
@@ -577,4 +579,3 @@ export function SettingsPanel({
   </>
   );
 }
-

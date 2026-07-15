@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
-import { Plus, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { ArrowLeft, Plus, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { Agent, AgentWorkspace, ModelProvider, CreateAgentPayload } from '../../types';
 import { readAgentWorkspace, updateAgentWorkspace } from '../../api';
 import { useI18n } from '../../i18n';
 import { defaultAvatarColor } from '../../avatarPresets';
 import { AvatarBadge } from '../../components/AvatarPicker';
+import { AgentListItem, agentDisplayDescription, agentDisplayName } from '../../components/AgentListItem';
 import { PanelShell } from '../../components/layout';
-import { AutoSaveIndicator, AvatarPopover, Button, FormField, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
+import { AutoSaveIndicator, AvatarPopover, Button, FormField, IconButton, PaneHeader, useFeedback } from '../../components/ui';
 import { TerminalToolSettings } from '../settings/TerminalToolSettings';
 
 interface AgentsPanelProps {
@@ -21,10 +22,12 @@ interface AgentsPanelProps {
   onAgentRemove: (id: string) => Promise<void>;
   onOpenProviderSettings: () => void;
   onOpenMain: () => void;
+  onBackToList: () => void;
 }
 
 const defaultAgentForm: CreateAgentPayload = {
   name: '',
+  description: '',
   model_provider_id: '',
   model_id: '',
   avatar_icon: 'bot',
@@ -62,6 +65,7 @@ export function AgentsPanel({
   onAgentRemove,
   onOpenProviderSettings,
   onOpenMain,
+  onBackToList,
 }: AgentsPanelProps) {
   const { t } = useI18n();
   const { confirm, toast } = useFeedback();
@@ -98,7 +102,6 @@ export function AgentsPanel({
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const selectedAgentProvider = providers.find((provider) => provider.id === agentForm.model_provider_id);
   const activeWorkspaceLabel = t(`agentConfig.${activeWorkspaceField}`);
-  const displayAgentName = (agent: Agent) => agent.is_builtin ? t('agentConfig.builtinMasterName') : agent.name;
 
   useEffect(() => {
     if (!activeAgent) {
@@ -114,7 +117,8 @@ export function AgentsPanel({
     loadedAgentIdRef.current = activeAgent.id;
     loadedWorkspaceAgentIdRef.current = '';
     setAgentForm({
-      name: displayAgentName(activeAgent),
+      name: agentDisplayName(activeAgent, t),
+      description: agentDisplayDescription(activeAgent, t),
       model_provider_id: activeAgent.model_provider_id,
       model_id: activeAgent.model_id,
       avatar_icon: activeAgent.avatar_icon,
@@ -171,7 +175,12 @@ export function AgentsPanel({
     }
 
     const payload = agentPayloadFromForm(activeAgent, agentForm);
-    if ((!payload.name && !activeAgent.is_builtin) || !payload.model_provider_id || !payload.model_id) {
+    if (
+      (!payload.name && !activeAgent.is_builtin)
+      || (!payload.description && !activeAgent.is_builtin)
+      || !payload.model_provider_id
+      || !payload.model_id
+    ) {
       setAutoSaveStatus('pending');
       return;
     }
@@ -292,11 +301,6 @@ export function AgentsPanel({
     onOpenMain();
   }
 
-  function agentModelLabel(agent: Agent) {
-    const provider = providers.find((p) => p.id === agent.model_provider_id);
-    return provider ? `${provider.name} / ${agent.model_id}` : agent.model_id;
-  }
-
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (activeAgent) {
@@ -305,12 +309,13 @@ export function AgentsPanel({
     }
     const payload = {
       name: agentForm.name.trim(),
+      description: agentForm.description.trim(),
       model_provider_id: agentForm.model_provider_id,
       model_id: agentForm.model_id.trim(),
       avatar_icon: agentForm.avatar_icon,
       avatar_color: agentForm.avatar_color,
     };
-    if (!payload.name || !payload.model_provider_id || !payload.model_id) {
+    if (!payload.name || !payload.description || !payload.model_provider_id || !payload.model_id) {
       toast.warning(t('error.validation'));
       return;
     }
@@ -337,7 +342,7 @@ export function AgentsPanel({
     if (!activeAgent || activeAgent.is_builtin) return;
     const confirmed = await confirm({
       title: t('deleteConfirm.title'),
-      message: t('deleteConfirm.message', { name: displayAgentName(activeAgent) }),
+      message: t('deleteConfirm.message', { name: agentDisplayName(activeAgent, t) }),
       confirmLabel: t('common.delete'),
       tone: 'danger',
     });
@@ -364,7 +369,6 @@ export function AgentsPanel({
           <PaneHeader
             className="mobile-pane-header"
             title={t('nav.agents')}
-            leading={<Button className="back-button" type="button" onClick={onOpenMain}>{t('common.back')}</Button>}
             actions={(
               <IconButton
                 variant="ghost"
@@ -380,18 +384,10 @@ export function AgentsPanel({
             {isLoadingAgents && agents.length === 0 ? <p className="muted">{t('chat.loading')}</p> : null}
             {!isLoadingAgents && agents.length === 0 ? <p className="muted">{t('agentConfig.noAgents')}</p> : null}
             {agents.map((agent) => (
-              <ListItem
+              <AgentListItem
                 key={agent.id}
-                type="button"
+                agent={agent}
                 active={agent.id === activeAgentId}
-                title={(
-                  <span className="agent-list-title">
-                    <span>{displayAgentName(agent)}</span>
-                    {agent.is_builtin ? <span className="mini-status-badge"><ShieldCheck size={12} />{t('agentConfig.builtinBadge')}</span> : null}
-                  </span>
-                )}
-                subtitle={agentModelLabel(agent)}
-                leading={<AvatarBadge icon={agent.avatar_icon} color={agent.avatar_color} />}
                 onClick={() => switchAgent(agent.id)}
               />
             ))}
@@ -402,9 +398,10 @@ export function AgentsPanel({
         <div className="main-pane config-main">
           <PaneHeader
             className="config-page-header"
+            leading={<Button className="main-back-button" variant="ghost" type="button" onClick={onBackToList} icon={<ArrowLeft size={17} />}>{t('common.back')}</Button>}
             eyebrow={t('agentConfig.title')}
-            title={activeAgent ? displayAgentName(activeAgent) : t('agentConfig.newTitle')}
-            description={activeAgent ? agentModelLabel(activeAgent) : t('agentConfig.selectAgent')}
+            title={activeAgent ? agentDisplayName(activeAgent, t) : t('agentConfig.newTitle')}
+            description={activeAgent ? agentDisplayDescription(activeAgent, t) : t('agentConfig.selectAgent')}
             actions={(
               <>
                 {activeAgent ? <AutoSaveIndicator status={autoSaveStatus} t={t} /> : null}
@@ -446,8 +443,21 @@ export function AgentsPanel({
                       <span>{t('agentConfig.avatarChange')}</span>
                     </button>
                   )}
-                />
+                  />
               </FormField>
+              <div className="agent-description-field">
+                <FormField label={t('agentConfig.description')} htmlFor="agent-description" required>
+                  <textarea
+                    id="agent-description"
+                    value={agentForm.description}
+                    onChange={(e) => { setAgentForm({ ...agentForm, description: e.target.value }); setAgentFormDirty(true); }}
+                    placeholder={t('agentConfig.placeholder_description')}
+                    disabled={isSubmittingAgent || activeAgent?.is_builtin}
+                    rows={3}
+                    required
+                  />
+                </FormField>
+              </div>
               <FormField label={t('agentConfig.provider')} htmlFor="agent-provider" required>
                 <div className="field-with-action">
                   <select
@@ -532,6 +542,7 @@ export function AgentsPanel({
 function agentPayloadFromAgent(agent: Agent): CreateAgentPayload {
   return {
     name: agent.name,
+    description: agent.description,
     model_provider_id: agent.model_provider_id,
     model_id: agent.model_id,
     avatar_icon: agent.avatar_icon,
@@ -542,6 +553,7 @@ function agentPayloadFromAgent(agent: Agent): CreateAgentPayload {
 function agentPayloadFromForm(agent: Agent, form: CreateAgentPayload): CreateAgentPayload {
   return {
     name: agent.is_builtin ? agent.name : form.name.trim(),
+    description: agent.is_builtin ? agent.description : form.description.trim(),
     model_provider_id: form.model_provider_id,
     model_id: form.model_id.trim(),
     avatar_icon: form.avatar_icon,

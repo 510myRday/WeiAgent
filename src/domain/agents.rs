@@ -6,6 +6,8 @@ use uuid::Uuid;
 pub struct Agent {
     pub id: Uuid,
     pub name: String,
+    #[serde(default)]
+    pub description: String,
     pub model_provider_id: Uuid,
     pub model_id: String,
     #[serde(default)]
@@ -30,6 +32,7 @@ fn default_avatar_color() -> String {
 pub struct AgentResponse {
     pub id: Uuid,
     pub name: String,
+    pub description: String,
     pub model_provider_id: Uuid,
     pub model_id: String,
     pub avatar_icon: String,
@@ -44,6 +47,7 @@ impl AgentResponse {
         Self {
             id: agent.id,
             name: agent.name.clone(),
+            description: agent.description.clone(),
             model_provider_id: agent.model_provider_id,
             model_id: agent.model_id.clone(),
             avatar_icon: agent.avatar_icon.clone(),
@@ -58,6 +62,7 @@ impl AgentResponse {
 #[derive(Debug, Deserialize)]
 pub struct CreateAgentRequest {
     pub name: String,
+    pub description: String,
     pub model_provider_id: Uuid,
     pub model_id: String,
     pub avatar_icon: Option<String>,
@@ -67,6 +72,7 @@ pub struct CreateAgentRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateAgentRequest {
     pub name: Option<String>,
+    pub description: Option<String>,
     pub model_provider_id: Option<Uuid>,
     pub model_id: Option<String>,
     pub avatar_icon: Option<String>,

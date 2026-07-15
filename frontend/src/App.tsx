@@ -1,14 +1,15 @@
-import { useState, useEffect } from 'react';
+import { lazy, Suspense, useState, useEffect } from 'react';
 import { Bot, MessageCircle } from 'lucide-react';
 import type { AppSettings, MobileView, NavKey } from './types';
 import { useSettings, useProviders, useAgents } from './hooks';
 import { Sidebar } from './components/layout';
 import { ChatPanel } from './features/chat/ChatPanel';
-import { AgentsPanel } from './features/agents/AgentsPanel';
-import { ToolsPanel } from './features/tools/ToolsPanel';
-import { SettingsPanel } from './features/settings/SettingsPanel';
 import { Button, EmptyState, ListItem, PaneHeader, useFeedback } from './components/ui';
 import { isLocale, useI18n } from './i18n';
+
+const AgentsPanel = lazy(() => import('./features/agents/AgentsPanel').then((module) => ({ default: module.AgentsPanel })));
+const ToolsPanel = lazy(() => import('./features/tools/ToolsPanel').then((module) => ({ default: module.ToolsPanel })));
+const SettingsPanel = lazy(() => import('./features/settings/SettingsPanel').then((module) => ({ default: module.SettingsPanel })));
 
 type SettingsSection = 'runtime' | 'providers';
 
@@ -112,13 +113,16 @@ export function App() {
       {activeNav === 'chat' && (
         <ChatPanel
           agents={agents}
+          providers={providers}
           activeAgentId={activeAgentId}
           onAgentChange={setActiveAgentId}
+          onAgentEdit={editAgent}
           onOpenMain={openMainPane}
           onBackToList={openListPane}
           settings={settingsForm}
         />
       )}
+      <Suspense fallback={<PanelLoading label={t('sidebar.loading')} />}>
       {activeNav === 'agents' && (
         <AgentsPanel
           agents={agents}
@@ -131,17 +135,20 @@ export function App() {
           onAgentRemove={removeAgent}
           onOpenProviderSettings={openProviderSettings}
           onOpenMain={openMainPane}
+          onBackToList={openListPane}
         />
       )}
       {activeNav === 'groups' && (
         <GroupsPlaceholder
           onOpenMain={openMainPane}
+          onBackToList={openListPane}
         />
       )}
       {activeNav === 'tools' && (
         <ToolsPanel
           agents={agents}
           onOpenMain={openMainPane}
+          onBackToList={openListPane}
         />
       )}
       {activeNav === 'settings' && (
@@ -168,16 +175,29 @@ export function App() {
             await refreshAgents();
           }}
           onOpenMain={openMainPane}
+          onBackToList={openListPane}
         />
       )}
+      </Suspense>
     </main>
+  );
+}
+
+function PanelLoading({ label }: { label: string }) {
+  return (
+    <section className="main-pane panel-loading" role="status" aria-live="polite">
+      <span className="panel-loading-spinner" aria-hidden="true" />
+      <span>{label}</span>
+    </section>
   );
 }
 
 function GroupsPlaceholder({
   onOpenMain,
+  onBackToList,
 }: {
   onOpenMain: () => void;
+  onBackToList: () => void;
 }) {
   const { t } = useI18n();
 
@@ -187,8 +207,6 @@ function GroupsPlaceholder({
         <PaneHeader
           className="mobile-pane-header"
           title={t('groups.title')}
-          description={t('groups.description')}
-          leading={<Button className="back-button" type="button" onClick={onOpenMain}>{t('common.back')}</Button>}
         />
         <div className="list-stack">
           <ListItem
@@ -202,6 +220,7 @@ function GroupsPlaceholder({
         </div>
       </section>
       <section className="main-pane placeholder-pane">
+        <Button className="main-back-button placeholder-back-button" variant="ghost" type="button" onClick={onBackToList}>{t('common.back')}</Button>
         <EmptyState icon={<MessageCircle size={34} />} title={t('groups.emptyTitle')} description={t('groups.emptyHint')} />
       </section>
     </>

@@ -30,8 +30,9 @@ pub(super) fn normalize_models(models: Vec<String>) -> AppResult<Vec<String>> {
     Ok(models)
 }
 
-pub(super) fn validate_agent_text(name: &str, model_id: &str) -> AppResult<()> {
+pub(super) fn validate_agent_text(name: &str, description: &str, model_id: &str) -> AppResult<()> {
     validate_non_empty("agent name", name)?;
+    validate_non_empty("agent description", description)?;
     validate_non_empty("model_id", model_id)?;
     Ok(())
 }

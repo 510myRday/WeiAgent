@@ -32,6 +32,7 @@
     "title": "Agent 配置",
     "newTitle": "新建 Agent",
     "name": "名称",
+    "description": "简介",
     "provider": "提供商",
     "model": "模型",
     "avatar": "头像",
@@ -39,6 +40,7 @@
     "workspaceHint": "personality、memory、instructions 会在聊天时合并进系统提示。",
     "workspaceCreateHint": "创建后会自动初始化工作空间，并继承全局工具默认配置。",
     "builtinMasterName": "总管",
+    "builtinMasterDescription": "负责统筹任务、协调各智能体并推进复杂工作。",
     "personality": "个性 / 人设",
     "memory": "记忆",
     "instructions": "指令",
@@ -50,6 +52,7 @@
     "save": "保存 Agent",
     "delete": "删除当前 Agent",
     "placeholder_name": "",
+    "placeholder_description": "简要说明这个智能体负责什么",
     "placeholder_provider": "选择模型提供商",
     "placeholder_model": "输入模型 ID",
     "openProviderSettings": "打开模型提供商设置",
@@ -63,6 +66,7 @@
   },
   "chat": {
     "selectAgent": "选择智能体",
+    "selectModel": "选择模型",
     "noAgent": "未选择智能体",
     "noAgentHint": "在「智能体」页面创建 Agent，再回到这里对话。",
     "stream": "流式",
@@ -84,7 +88,8 @@
     "copied": "已复制",
     "copyCode": "复制代码",
     "ariaLabel": "对话",
-    "scrollToBottom": "滚动到最新消息"
+    "scrollToBottom": "滚动到最新消息",
+    "timeline": "时间定位"
   },
   "history": {
     "title": "对话历史",
@@ -265,7 +270,8 @@
     "delete": "删除",
     "deleteConfirm": "确定删除这条 LLM 调试日志吗？此操作不可撤销。",
     "close": "关闭",
-    "refresh": "刷新"
+    "refresh": "刷新",
+    "selectHint": "选择一条日志查看请求与响应详情。"
   },
   "notification": {
     "label": "通知",

@@ -12,6 +12,9 @@ use crate::{
 };
 
 const BUILTIN_MASTER_NAME: &str = "Master";
+const BUILTIN_MASTER_DESCRIPTION: &str =
+    "Coordinates tasks, delegates work, and drives complex jobs to completion.";
+const LEGACY_AGENT_DESCRIPTION: &str = "Custom AI agent";
 
 impl JsonStore {
     pub async fn read_agent_workspace(&self, id: Uuid) -> AppResult<AgentWorkspace> {
@@ -61,15 +64,27 @@ impl JsonStore {
         let mut agents = self.read_agents_unlocked().await?;
         let now = Utc::now();
 
+        for agent in &mut agents {
+            if agent.description.trim().is_empty() {
+                agent.description = if agent.is_builtin {
+                    BUILTIN_MASTER_DESCRIPTION.to_string()
+                } else {
+                    LEGACY_AGENT_DESCRIPTION.to_string()
+                };
+            }
+        }
+
         let existing_builtin = agents.iter().position(|agent| agent.is_builtin);
 
         if let Some(index) = existing_builtin {
             agents[index].name = BUILTIN_MASTER_NAME.to_string();
+            agents[index].description = BUILTIN_MASTER_DESCRIPTION.to_string();
             self.ensure_agent_workspace_unlocked(&agents[index]).await?;
         } else {
             let agent = Agent {
                 id: Uuid::new_v4(),
                 name: BUILTIN_MASTER_NAME.to_string(),
+                description: BUILTIN_MASTER_DESCRIPTION.to_string(),
                 model_provider_id: Uuid::nil(),
                 model_id: String::new(),
                 is_builtin: true,

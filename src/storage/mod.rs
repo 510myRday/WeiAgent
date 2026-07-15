@@ -27,7 +27,7 @@ mod tests {
     use super::*;
     use crate::domain::{
         ChatMessage, ChatMessageStatus, ChatRole, CreateAgentRequest, CreateConversationRequest,
-        CreateModelProviderRequest, ProviderType, UpdateAgentWorkspaceRequest,
+        CreateModelProviderRequest, ProviderType, UpdateAgentRequest, UpdateAgentWorkspaceRequest,
         UpdateModelProviderRequest,
     };
 
@@ -161,6 +161,7 @@ mod tests {
         let agent = store
             .create_agent(CreateAgentRequest {
                 name: "Planner".to_string(),
+                description: "Plans the work.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "gpt-4o-mini".to_string(),
                 avatar_icon: Some("sparkles".to_string()),
@@ -208,6 +209,7 @@ mod tests {
         let agent = store
             .create_agent(CreateAgentRequest {
                 name: "Planner".to_string(),
+                description: "Plans conversations.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "gpt-4o-mini".to_string(),
                 avatar_icon: Some("sparkles".to_string()),
@@ -259,6 +261,10 @@ mod tests {
         let builtin = agents.iter().find(|agent| agent.is_builtin).unwrap();
 
         assert_eq!(builtin.name, "Master");
+        assert_eq!(
+            builtin.description,
+            "Coordinates tasks, delegates work, and drives complex jobs to completion."
+        );
         assert!(builtin.is_builtin);
         assert!(
             temp_dir
@@ -268,6 +274,66 @@ mod tests {
                 .exists()
         );
         assert!(store.delete_agent(builtin.id).await.is_err());
+
+        let provider = store
+            .create_model_provider(provider_request("Core", "core-model"))
+            .await
+            .unwrap();
+        let updated = store
+            .update_agent(
+                builtin.id,
+                UpdateAgentRequest {
+                    name: Some("Renamed".to_string()),
+                    description: Some("Changed description".to_string()),
+                    model_provider_id: Some(provider.id),
+                    model_id: Some("core-model".to_string()),
+                    avatar_icon: None,
+                    avatar_color: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.name, "Master");
+        assert_eq!(
+            updated.description,
+            "Coordinates tasks, delegates work, and drives complex jobs to completion."
+        );
+    }
+
+    #[tokio::test]
+    async fn migrates_missing_agent_descriptions() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let legacy_id = Uuid::new_v4();
+        let now = Utc::now();
+        let legacy_agents = serde_json::json!([{
+            "id": legacy_id,
+            "name": "Legacy",
+            "model_provider_id": Uuid::nil(),
+            "model_id": "legacy-model",
+            "is_builtin": false,
+            "avatar_icon": "bot",
+            "avatar_color": "#22c55e",
+            "created_at": now,
+            "updated_at": now
+        }]);
+        tokio::fs::write(
+            temp_dir.path().join("agents.json"),
+            serde_json::to_string_pretty(&legacy_agents).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let migrated = store.get_agent(legacy_id).await.unwrap();
+        assert_eq!(migrated.description, "Custom AI agent");
+
+        let persisted: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(temp_dir.path().join("agents.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted[0]["description"], "Custom AI agent");
     }
 
     #[tokio::test]
@@ -281,6 +347,7 @@ mod tests {
         let agent = store
             .create_agent(CreateAgentRequest {
                 name: "Operator".to_string(),
+                description: "Operates local tools.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "local-model".to_string(),
                 avatar_icon: Some("brain".to_string()),
@@ -332,6 +399,7 @@ mod tests {
         store
             .create_agent(CreateAgentRequest {
                 name: "One".to_string(),
+                description: "First avatar test agent.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "avatar-model".to_string(),
                 avatar_icon: Some("compass".to_string()),
@@ -342,6 +410,7 @@ mod tests {
         let duplicate = store
             .create_agent(CreateAgentRequest {
                 name: "Two".to_string(),
+                description: "Second avatar test agent.".to_string(),
                 model_provider_id: provider.id,
                 model_id: "avatar-model".to_string(),
                 avatar_icon: Some("compass".to_string()),

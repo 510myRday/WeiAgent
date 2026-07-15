@@ -42,6 +42,10 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
             </button>
           )}
         />
+        <div className="rail-brand-copy" aria-hidden="true">
+          <strong>{t('brand.name')}</strong>
+          <span>{t('brand.tagline')}</span>
+        </div>
       </div>
 
       <nav className="sidebar-nav">
@@ -71,8 +75,9 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
 
 function NavButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: ReactNode; label: string }) {
   return (
-    <IconButton variant="rail" active={active} type="button" onClick={onClick} label={label}>
+    <IconButton variant="rail" active={active} type="button" onClick={onClick} label={label} aria-current={active ? 'page' : undefined}>
       {icon}
+      <span className="rail-nav-label">{label}</span>
     </IconButton>
   );
 }

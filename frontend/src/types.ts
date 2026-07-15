@@ -44,6 +44,7 @@ export type FetchProviderModelsPayload = {
 export type Agent = {
   id: string;
   name: string;
+  description: string;
   model_provider_id: string;
   model_id: string;
   avatar_icon: AvatarIcon;
@@ -106,6 +107,7 @@ export type UiMessage = ChatMessage & { clientId: string };
 
 export type CreateAgentPayload = {
   name: string;
+  description: string;
   model_provider_id: string;
   model_id: string;
   avatar_icon: AvatarIcon;
