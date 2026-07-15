@@ -4,17 +4,6 @@
     --list-width: 292px;
   }
 
-  .provider-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .provider-list-panel {
-    position: static;
-  }
-
-  .provider-list-panel .list-stack.flush {
-    max-height: 260px;
-  }
 }
 
 @media (max-width: 920px) {
@@ -190,17 +179,8 @@
     padding: 16px 14px 28px;
   }
 
-  .form-grid.two-column,
-  .provider-layout {
+  .form-grid.two-column {
     grid-template-columns: 1fr;
-  }
-
-  .provider-list-panel {
-    position: static;
-  }
-
-  .provider-list-panel .list-stack.flush {
-    max-height: 240px;
   }
 
   .config-page-header {
@@ -316,6 +296,20 @@
   .llm-log-toggle-row,
   .form-actions {
     align-items: stretch;
+    flex-direction: column;
+  }
+
+  .provider-picker-bar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .provider-picker-bar select {
+    width: 100%;
+  }
+
+  .provider-field-actions {
+    align-items: flex-end;
     flex-direction: column;
   }
 

@@ -2,15 +2,23 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProviderType {
+    #[default]
     #[serde(rename = "openai_compatible")]
     OpenAiCompatible,
+    #[serde(rename = "openai_responses")]
+    OpenAiResponses,
+    #[serde(rename = "anthropic_messages")]
+    AnthropicMessages,
+    #[serde(rename = "google_gemini")]
+    GoogleGemini,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelProvider {
     pub id: Uuid,
+    #[serde(default)]
     pub provider_type: ProviderType,
     pub name: String,
     pub base_url: String,
@@ -71,6 +79,7 @@ fn mask_api_key(api_key: &str) -> String {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateModelProviderRequest {
+    #[serde(default)]
     pub provider_type: ProviderType,
     pub name: String,
     pub base_url: String,
@@ -82,6 +91,7 @@ pub struct CreateModelProviderRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct FetchProviderModelsRequest {
+    #[serde(default)]
     pub provider_type: ProviderType,
     pub base_url: String,
     pub api_key: String,

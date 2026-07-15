@@ -31,6 +31,7 @@ impl JsonStore {
         let base_url = validate_non_empty("base_url", &request.base_url)?;
         let api_key = validate_non_empty("api_key", &request.api_key)?;
         let models = normalize_models(request.models)?;
+        validate_extra_body(&request.extra_body)?;
 
         let _guard = self.lock.lock().await;
         let mut providers = self.read_providers_unlocked().await?;
@@ -98,6 +99,7 @@ impl JsonStore {
             }
         }
         if let Some(extra_body) = request.extra_body {
+            validate_extra_body(&extra_body)?;
             provider.extra_body = extra_body;
         }
 
@@ -132,5 +134,30 @@ impl JsonStore {
             .into_iter()
             .find(|provider| provider.id == id)
             .ok_or(AppError::NotFound)
+    }
+}
+
+fn validate_extra_body(extra_body: &serde_json::Value) -> AppResult<()> {
+    if extra_body.is_null() || extra_body.is_object() {
+        return Ok(());
+    }
+    Err(AppError::BadRequest(
+        "extra_body must be a JSON object".to_string(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_extra_body;
+
+    #[test]
+    fn extra_body_accepts_objects_and_null() {
+        assert!(validate_extra_body(&serde_json::Value::Null).is_ok());
+        assert!(validate_extra_body(&serde_json::json!({"temperature": 0.2})).is_ok());
+    }
+
+    #[test]
+    fn extra_body_rejects_non_objects() {
+        assert!(validate_extra_body(&serde_json::json!(["invalid"])).is_err());
     }
 }

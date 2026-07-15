@@ -23,7 +23,11 @@ export type ModelProvider = {
   updated_at: string;
 };
 
-export type ProviderType = 'openai_compatible';
+export type ProviderType =
+  | 'openai_compatible'
+  | 'openai_responses'
+  | 'anthropic_messages'
+  | 'google_gemini';
 
 export type ModelProviderPayload = {
   provider_type: ProviderType;

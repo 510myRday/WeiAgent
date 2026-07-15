@@ -3,7 +3,13 @@ use std::sync::Arc;
 use crate::{
     domain::{ModelProvider, ProviderType},
     error::AppResult,
-    llm::{client::DynChatClient, providers::openai_compatible::OpenAiCompatibleChatClient},
+    llm::{
+        client::DynChatClient,
+        providers::{
+            native::{NativeChatClient, NativeProtocol},
+            openai_compatible::OpenAiCompatibleChatClient,
+        },
+    },
     storage::LlmLogger,
 };
 
@@ -15,12 +21,28 @@ pub type DynLlmRegistry = Arc<dyn LlmRegistry>;
 
 pub struct DefaultLlmRegistry {
     openai_compatible: DynChatClient,
+    openai_responses: DynChatClient,
+    anthropic_messages: DynChatClient,
+    google_gemini: DynChatClient,
 }
 
 impl DefaultLlmRegistry {
     pub fn new(llm_logger: Arc<LlmLogger>) -> Self {
         Self {
-            openai_compatible: Arc::new(OpenAiCompatibleChatClient::new().with_logger(llm_logger)),
+            openai_compatible: Arc::new(
+                OpenAiCompatibleChatClient::new().with_logger(llm_logger.clone()),
+            ),
+            openai_responses: Arc::new(
+                NativeChatClient::new(NativeProtocol::OpenAiResponses)
+                    .with_logger(llm_logger.clone()),
+            ),
+            anthropic_messages: Arc::new(
+                NativeChatClient::new(NativeProtocol::AnthropicMessages)
+                    .with_logger(llm_logger.clone()),
+            ),
+            google_gemini: Arc::new(
+                NativeChatClient::new(NativeProtocol::GoogleGemini).with_logger(llm_logger),
+            ),
         }
     }
 }
@@ -29,6 +51,9 @@ impl LlmRegistry for DefaultLlmRegistry {
     fn client_for(&self, provider: &ModelProvider) -> AppResult<DynChatClient> {
         match provider.provider_type {
             ProviderType::OpenAiCompatible => Ok(self.openai_compatible.clone()),
+            ProviderType::OpenAiResponses => Ok(self.openai_responses.clone()),
+            ProviderType::AnthropicMessages => Ok(self.anthropic_messages.clone()),
+            ProviderType::GoogleGemini => Ok(self.google_gemini.clone()),
         }
     }
 }
@@ -42,22 +67,28 @@ mod tests {
     use crate::domain::ModelProvider;
 
     #[test]
-    fn resolves_openai_compatible_client() {
+    fn resolves_every_provider_client() {
         let temp = tempfile::tempdir().unwrap();
         let logger = Arc::new(LlmLogger::new(temp.path(), false));
         let registry = DefaultLlmRegistry::new(logger);
-        let provider = ModelProvider {
-            id: Uuid::new_v4(),
-            provider_type: ProviderType::OpenAiCompatible,
-            name: "OpenAI Compatible".to_string(),
-            base_url: "https://example.test/v1".to_string(),
-            api_key: "test-key".to_string(),
-            models: vec!["test-model".to_string()],
-            extra_body: serde_json::Value::Null,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-
-        assert!(registry.client_for(&provider).is_ok());
+        for provider_type in [
+            ProviderType::OpenAiCompatible,
+            ProviderType::OpenAiResponses,
+            ProviderType::AnthropicMessages,
+            ProviderType::GoogleGemini,
+        ] {
+            let provider = ModelProvider {
+                id: Uuid::new_v4(),
+                provider_type,
+                name: "Provider".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["test-model".to_string()],
+                extra_body: serde_json::Value::Null,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            };
+            assert!(registry.client_for(&provider).is_ok());
+        }
     }
 }

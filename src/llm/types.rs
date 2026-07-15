@@ -121,7 +121,7 @@ pub fn build_chat_request(
     }
 }
 
-fn select_context_messages(messages: &[ChatMessage]) -> Vec<&ChatMessage> {
+pub(crate) fn select_context_messages(messages: &[ChatMessage]) -> Vec<&ChatMessage> {
     let mut selected = Vec::new();
     let mut bytes = 0_usize;
     for message in messages.iter().rev() {

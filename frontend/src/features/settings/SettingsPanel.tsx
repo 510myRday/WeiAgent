@@ -1,7 +1,25 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
-import { ArrowLeft, Download, FileText, KeyRound, Plus, Save, Server, SlidersHorizontal, Trash2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  ChevronDown,
+  Code2,
+  Download,
+  Eye,
+  EyeOff,
+  FileText,
+  KeyRound,
+  Plus,
+  Save,
+  Server,
+  Trash2,
+} from 'lucide-react';
 
-import type { AppSettings, ModelProvider, ModelProviderPayload } from '../../types';
+import type {
+  AppSettings,
+  ModelProvider,
+  ModelProviderPayload,
+  ProviderType,
+} from '../../types';
 import { fetchModels, fetchModelsForProvider } from '../../api';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
@@ -30,9 +48,62 @@ type PendingRuntimeSave = {
   payload: AppSettings;
 };
 
-const defaultProviderForm = {
+type ProviderForm = {
+  provider_type: ProviderType;
+  name: string;
+  base_url: string;
+  api_key: string;
+  modelsText: string;
+  extraBodyText: string;
+};
+
+type ProtocolPreset = {
+  type: ProviderType;
+  labelKey: string;
+  shortKey: string;
+  endpoint: string;
+  defaultBaseUrl: string;
+};
+
+const PROTOCOL_PRESETS: ProtocolPreset[] = [
+  {
+    type: 'openai_compatible',
+    labelKey: 'provider.protocol.openaiChat',
+    shortKey: 'provider.protocol.openaiChatShort',
+    endpoint: 'Chat Completions',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+  },
+  {
+    type: 'openai_responses',
+    labelKey: 'provider.protocol.openaiResponses',
+    shortKey: 'provider.protocol.openaiResponsesShort',
+    endpoint: 'Responses API',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+  },
+  {
+    type: 'anthropic_messages',
+    labelKey: 'provider.protocol.anthropic',
+    shortKey: 'provider.protocol.anthropicShort',
+    endpoint: 'Messages API',
+    defaultBaseUrl: 'https://api.anthropic.com/v1',
+  },
+  {
+    type: 'google_gemini',
+    labelKey: 'provider.protocol.gemini',
+    shortKey: 'provider.protocol.geminiShort',
+    endpoint: 'Gemini generateContent',
+    defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+  },
+];
+
+const protocolPresetByType = Object.fromEntries(
+  PROTOCOL_PRESETS.map((preset) => [preset.type, preset]),
+) as Record<ProviderType, ProtocolPreset>;
+
+const defaultProviderForm: ProviderForm = {
+  provider_type: 'openai_compatible',
   name: '',
-  base_url: '',
+  base_url: protocolPresetByType.openai_compatible.defaultBaseUrl,
   api_key: '',
   modelsText: '',
   extraBodyText: '',
@@ -105,6 +176,7 @@ export function SettingsPanel({
   const [providerForm, setProviderForm] = useState(defaultProviderForm);
   const [isSubmittingProvider, setIsSubmittingProvider] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
   const [showLlmLogs, setShowLlmLogs] = useState(false);
   const [runtimeDirty, setRuntimeDirty] = useState(false);
   const [autoSaveStatus, setAutoSaveStatus] = useState<RuntimeAutoSaveStatus>('idle');
@@ -122,6 +194,7 @@ export function SettingsPanel({
   onSettingsSaveRef.current = onSettingsSave;
 
   const activeProvider = providers.find((provider) => provider.id === activeProviderId);
+  const modelCount = parseModels(providerForm.modelsText).length;
 
   useEffect(() => () => {
     isMountedRef.current = false;
@@ -143,9 +216,11 @@ export function SettingsPanel({
   useEffect(() => {
     if (!activeProvider) {
       setProviderForm(defaultProviderForm);
+      setShowApiKey(false);
       return;
     }
     setProviderForm({
+      provider_type: activeProvider.provider_type,
       name: activeProvider.name,
       base_url: activeProvider.base_url,
       api_key: '',
@@ -154,6 +229,7 @@ export function SettingsPanel({
         ? JSON.stringify(activeProvider.extra_body, null, 2)
         : '',
     });
+    setShowApiKey(false);
   }, [activeProvider]);
 
   // Seed persisted snapshot once settings become valid (initial load / external refresh).
@@ -289,7 +365,7 @@ export function SettingsPanel({
       }
     }
     const payload = {
-      provider_type: activeProvider?.provider_type ?? 'openai_compatible',
+      provider_type: providerForm.provider_type,
       name: providerForm.name.trim(),
       base_url: providerForm.base_url.trim(),
       api_key: providerForm.api_key.trim(),
@@ -346,16 +422,23 @@ export function SettingsPanel({
     }
     const baseUrl = providerForm.base_url.trim();
     const apiKey = providerForm.api_key.trim();
-    if (!baseUrl || (!activeProvider?.has_api_key && !apiKey)) {
+    const canUseStoredKey = Boolean(
+      activeProvider
+      && activeProvider.has_api_key
+      && !apiKey
+      && baseUrl === activeProvider.base_url
+      && providerForm.provider_type === activeProvider.provider_type,
+    );
+    if (!baseUrl || (!apiKey && !canUseStoredKey)) {
       toast.warning(t('provider.fetchModelsMissingConfig'));
       return;
     }
     setFetchingModels(true);
     try {
-      const models = activeProvider && !apiKey && baseUrl === activeProvider.base_url && !extraBody
+      const models = canUseStoredKey && activeProvider
         ? await fetchModels(activeProvider.id)
         : await fetchModelsForProvider({
-          provider_type: activeProvider?.provider_type ?? 'openai_compatible',
+          provider_type: providerForm.provider_type,
           base_url: baseUrl,
           api_key: apiKey,
           extra_body: extraBody,
@@ -369,51 +452,68 @@ export function SettingsPanel({
     }
   }
 
+  function handleProtocolChange(providerType: ProviderType) {
+    setProviderForm((current) => {
+      const currentDefault = protocolPresetByType[current.provider_type].defaultBaseUrl;
+      const nextDefault = protocolPresetByType[providerType].defaultBaseUrl;
+      return {
+        ...current,
+        provider_type: providerType,
+        base_url: !current.base_url.trim() || current.base_url === currentDefault
+          ? nextDefault
+          : current.base_url,
+      };
+    });
+  }
+
   return (
     <>
-    <PanelShell
-      className="settings-panel"
-      sidebar={(
-        <div className="context-pane settings-nav">
-          <PaneHeader
-            className="mobile-pane-header"
-            title={t('nav.settings')}
-          />
-          <div className="list-stack">
-            <ListItem
-              type="button"
-              active={activeSection === 'runtime'}
-              title={t('settings.title')}
-              subtitle={t('settings.description')}
-              leading={<Server size={18} />}
-              onClick={() => { setActiveSection('runtime'); onOpenMain(); }}
+      <PanelShell
+        className="settings-panel"
+        sidebar={(
+          <div className="context-pane settings-nav">
+            <PaneHeader
+              className="mobile-pane-header"
+              title={t('nav.settings')}
             />
-            <ListItem
-              type="button"
-              active={activeSection === 'providers'}
-              title={t('provider.title')}
-              subtitle={t('provider.description')}
-              leading={<KeyRound size={18} />}
-              onClick={() => { setActiveSection('providers'); onOpenMain(); }}
-            />
+            <div className="list-stack">
+              <ListItem
+                type="button"
+                active={activeSection === 'runtime'}
+                title={t('settings.title')}
+                subtitle={t('settings.description')}
+                leading={<Server size={18} />}
+                onClick={() => { setActiveSection('runtime'); onOpenMain(); }}
+              />
+              <ListItem
+                type="button"
+                active={activeSection === 'providers'}
+                title={t('provider.title')}
+                subtitle={t('provider.description')}
+                leading={<KeyRound size={18} />}
+                onClick={() => { setActiveSection('providers'); onOpenMain(); }}
+              />
+            </div>
           </div>
-        </div>
-      )}
-      main={(
-        <div className="main-pane config-main">
+        )}
+        main={(
+          <div className="main-pane config-main">
           <PaneHeader
             className="config-page-header"
             leading={<Button className="main-back-button" variant="ghost" type="button" onClick={onBackToList} icon={<ArrowLeft size={17} />}>{t('common.back')}</Button>}
             eyebrow={t('nav.settings')}
-            title={activeSection === 'runtime' ? t('settings.title') : t('provider.title')}
-            description={activeSection === 'runtime' ? t('settings.description') : t('provider.description')}
-            actions={activeSection === 'runtime' ? (
-              <AutoSaveIndicator status={autoSaveStatus} t={t} />
-            ) : (
-              <Button variant="secondary" type="button" onClick={() => { onProviderChange(''); onOpenMain(); }} icon={<Plus size={17} />}>
-                {t('provider.create')}
-              </Button>
+            title={activeSection === 'runtime' ? t('settings.title') : (
+              <span className="provider-page-title">
+                {t('provider.title')}
+                <span className="mini-status-badge provider-title-count">
+                  {t('provider.configuredCount', { count: providers.length })}
+                </span>
+              </span>
             )}
+            description={activeSection === 'runtime' ? t('settings.description') : t('provider.description')}
+            actions={activeSection === 'runtime'
+              ? <AutoSaveIndicator status={autoSaveStatus} t={t} />
+              : null}
           />
 
           {activeSection === 'runtime' ? (
@@ -487,84 +587,167 @@ export function SettingsPanel({
               <p className="hint-text">{t('settings.restartHint')}</p>
             </div>
           ) : (
-            <div className="provider-layout">
-              <aside className="provider-list-panel">
-                <PaneHeader compact title={t('provider.title')} />
-                <div className="list-stack flush">
-                  {providers.length === 0 ? <p className="muted">{t('provider.empty')}</p> : null}
-                  {providers.map((provider) => (
-                    <ListItem
-                      key={provider.id}
-                      className="provider-list-item"
-                      type="button"
-                      active={provider.id === activeProviderId}
-                      title={provider.name}
-                      subtitle={`${provider.models.length} ${t('provider.modelsCount')}`}
-                      leading={<SlidersHorizontal size={17} />}
-                      onClick={() => { onProviderChange(provider.id); onOpenMain(); }}
+            <div className="provider-page">
+              <div className="form-card provider-picker-bar">
+                <FormField label={t('provider.currentProvider')} htmlFor="provider-picker">
+                  <select
+                    id="provider-picker"
+                    value={activeProviderId}
+                    onChange={(event) => onProviderChange(event.target.value)}
+                  >
+                    {!activeProvider ? (
+                      <option value="">{t('provider.newTitle')}</option>
+                    ) : null}
+                    {providers.map((provider) => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.name}
+                      </option>
+                    ))}
+                  </select>
+                </FormField>
+                <Button variant="secondary" type="button" onClick={() => onProviderChange('')} icon={<Plus size={16} />}>
+                  {t('provider.create')}
+                </Button>
+              </div>
+
+              <form className="form-card entity-form provider-editor" onSubmit={handleProviderSubmit}>
+                <p className="provider-editor-kicker">
+                  {activeProvider ? t('provider.editing') : t('provider.creating')}
+                </p>
+
+                <section className="provider-form-section">
+                  <PaneHeader
+                    compact
+                    title={t('provider.connection')}
+                    actions={(
+                      <span className={`mini-status-badge${
+                        activeProvider?.has_api_key || providerForm.api_key ? '' : ' is-required'
+                      }`}>
+                        {activeProvider?.has_api_key || providerForm.api_key
+                          ? t('provider.keyConfigured')
+                          : t('provider.keyRequired')}
+                      </span>
+                    )}
+                  />
+                  <div className="form-grid two-column provider-connection-grid">
+                    <FormField label={t('provider.name')} htmlFor="provider-name" required>
+                      <input id="provider-name" value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} disabled={isSubmittingProvider} />
+                    </FormField>
+                    <FormField label={t('provider.apiMode')} htmlFor="provider-api-mode" required>
+                      <select
+                        id="provider-api-mode"
+                        value={providerForm.provider_type}
+                        onChange={(event) => handleProtocolChange(event.target.value as ProviderType)}
+                        disabled={isSubmittingProvider}
+                      >
+                        {PROTOCOL_PRESETS.map((preset) => (
+                          <option key={preset.type} value={preset.type}>
+                            {t(preset.labelKey)}
+                          </option>
+                        ))}
+                      </select>
+                    </FormField>
+                    <FormField label={t('provider.baseUrl')} htmlFor="provider-base-url" required>
+                      <input id="provider-base-url" value={providerForm.base_url} onChange={(e) => setProviderForm({ ...providerForm, base_url: e.target.value })} disabled={isSubmittingProvider} />
+                    </FormField>
+                    <FormField label={t('provider.apiKey')} htmlFor="provider-api-key" required={!activeProvider}>
+                      <div className="provider-secret-input">
+                        <input
+                          id="provider-api-key"
+                          type={showApiKey ? 'text' : 'password'}
+                          value={providerForm.api_key}
+                          onChange={(e) => setProviderForm({ ...providerForm, api_key: e.target.value })}
+                          placeholder={activeProvider?.has_api_key ? activeProvider.masked_api_key : ''}
+                          disabled={isSubmittingProvider}
+                        />
+                        <IconButton
+                          className="provider-secret-toggle"
+                          variant="ghost"
+                          type="button"
+                          onClick={() => setShowApiKey((visible) => !visible)}
+                          label={showApiKey ? t('provider.hideKey') : t('provider.showKey')}
+                        >
+                          {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                        </IconButton>
+                      </div>
+                    </FormField>
+                  </div>
+                </section>
+
+                <section className="provider-form-section">
+                  <FormField
+                    label={t('provider.models')}
+                    htmlFor="provider-models"
+                    required
+                    action={(
+                      <div className="provider-field-actions">
+                        <span className={`mini-status-badge${modelCount === 0 ? ' is-required' : ''}`}>
+                          {modelCount === 0
+                            ? t('provider.modelsRequired')
+                            : t('provider.modelCount', { count: modelCount })}
+                        </span>
+                        <Button
+                          className="inline-action"
+                          variant="ghost"
+                          type="button"
+                          disabled={fetchingModels}
+                          onClick={handleFetchModels}
+                          icon={<Download size={14} />}
+                        >
+                          {fetchingModels ? t('provider.fetchingModels') : t('provider.fetchModels')}
+                        </Button>
+                      </div>
+                    )}
+                  >
+                    <textarea
+                      id="provider-models"
+                      value={providerForm.modelsText}
+                      onChange={(e) => setProviderForm({ ...providerForm, modelsText: e.target.value })}
+                      rows={6}
+                      required
+                      aria-required="true"
+                      placeholder={t('provider.modelsPlaceholder')}
+                      disabled={isSubmittingProvider || fetchingModels}
                     />
-                  ))}
-                </div>
-              </aside>
-              <form className="form-card entity-form" onSubmit={handleProviderSubmit}>
-                <PaneHeader
-                  title={activeProvider ? activeProvider.name : t('provider.newTitle')}
-                  description={activeProvider ? activeProvider.base_url : t('provider.selectHint')}
-                  actions={activeProvider ? (
-                    <IconButton variant="danger" type="button" onClick={handleDeleteProvider} label={t('provider.delete')}>
-                      <Trash2 size={17} />
-                    </IconButton>
-                  ) : null}
-                  compact
-                />
-                <div className="form-grid two-column">
-                  <FormField label={t('provider.name')} htmlFor="provider-name" required>
-                    <input id="provider-name" value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} disabled={isSubmittingProvider} />
                   </FormField>
-                  <FormField label={t('provider.baseUrl')} htmlFor="provider-base-url" required>
-                    <input id="provider-base-url" value={providerForm.base_url} onChange={(e) => setProviderForm({ ...providerForm, base_url: e.target.value })} disabled={isSubmittingProvider} />
-                  </FormField>
-                  <FormField label={t('provider.apiKey')} htmlFor="provider-api-key" required={!activeProvider}>
-                    <input
-                      id="provider-api-key"
-                      type="password"
-                      value={providerForm.api_key}
-                      onChange={(e) => setProviderForm({ ...providerForm, api_key: e.target.value })}
-                      placeholder={activeProvider?.has_api_key ? activeProvider.masked_api_key : ''}
+                </section>
+
+                <details
+                  key={`${activeProvider?.id ?? 'new'}-${providerForm.provider_type}`}
+                  className="provider-advanced"
+                  open={Boolean(providerForm.extraBodyText)}
+                >
+                  <summary>
+                    <span className="provider-advanced__icon" aria-hidden="true">
+                      <Code2 size={17} />
+                    </span>
+                    <span className="provider-advanced__content">
+                      <strong>{t('provider.advanced')}</strong>
+                      <small>{t('provider.extraBody')}</small>
+                    </span>
+                    {providerForm.extraBodyText.trim() ? (
+                      <span className="mini-status-badge">{t('provider.advancedConfigured')}</span>
+                    ) : null}
+                    <ChevronDown className="provider-advanced__chevron" size={17} aria-hidden="true" />
+                  </summary>
+                  <FormField label={t('provider.extraBody')} htmlFor="provider-extra-body">
+                    <textarea
+                      id="provider-extra-body"
+                      value={providerForm.extraBodyText}
+                      onChange={(e) => setProviderForm({ ...providerForm, extraBodyText: e.target.value })}
+                      rows={5}
+                      placeholder='{"temperature": 0.7}'
                       disabled={isSubmittingProvider}
                     />
                   </FormField>
-                </div>
-                <FormField label={t('provider.extraBody')} htmlFor="provider-extra-body">
-                  <textarea
-                    id="provider-extra-body"
-                    value={providerForm.extraBodyText}
-                    onChange={(e) => setProviderForm({ ...providerForm, extraBodyText: e.target.value })}
-                    rows={4}
-                    placeholder='{"enable_thinking": true, "reasoning_effort": "high"}'
-                    disabled={isSubmittingProvider}
-                  />
-                </FormField>
-                <FormField
-                  label={t('provider.models')}
-                  htmlFor="provider-models"
-                  required
-                  action={(
-                    <Button
-                      className="inline-action"
-                      variant="ghost"
-                      type="button"
-                      disabled={fetchingModels}
-                      onClick={handleFetchModels}
-                      icon={<Download size={14} />}
-                    >
-                      {fetchingModels ? t('provider.fetchingModels') : t('provider.fetchModels')}
+                </details>
+
+                <div className="form-actions provider-form-actions">
+                  {activeProvider ? (
+                    <Button variant="danger" type="button" onClick={handleDeleteProvider} icon={<Trash2 size={16} />}>
+                      {t('common.delete')}
                     </Button>
-                  )}
-                >
-                  <textarea id="provider-models" value={providerForm.modelsText} onChange={(e) => setProviderForm({ ...providerForm, modelsText: e.target.value })} rows={10} disabled={isSubmittingProvider || fetchingModels} />
-                </FormField>
-                <div className="form-actions">
+                  ) : null}
                   <Button variant="primary" type="submit" disabled={isSubmittingProvider} icon={<Save size={17} />}>
                     {activeProvider ? t('provider.save') : t('provider.create')}
                   </Button>
@@ -572,10 +755,10 @@ export function SettingsPanel({
               </form>
             </div>
           )}
-        </div>
-      )}
-    />
-    {showLlmLogs ? <LlmLogsModal onClose={() => setShowLlmLogs(false)} /> : null}
-  </>
+          </div>
+        )}
+      />
+      {showLlmLogs ? <LlmLogsModal onClose={() => setShowLlmLogs(false)} /> : null}
+    </>
   );
 }

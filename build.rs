@@ -7,6 +7,7 @@ use std::{
 
 fn main() {
     println!("cargo:rerun-if-changed=frontend/src");
+    println!("cargo:rerun-if-changed=frontend/public");
     println!("cargo:rerun-if-changed=frontend/locales");
     println!("cargo:rerun-if-changed=frontend/index.html");
     println!("cargo:rerun-if-changed=frontend/package.json");
@@ -72,6 +73,7 @@ fn frontend_dist_is_fresh(dist_index: &Path) -> bool {
     let mut newest_source = SystemTime::UNIX_EPOCH;
     for path in [
         PathBuf::from("frontend/src"),
+        PathBuf::from("frontend/public"),
         PathBuf::from("frontend/locales"),
         PathBuf::from("frontend/index.html"),
         PathBuf::from("frontend/package.json"),
