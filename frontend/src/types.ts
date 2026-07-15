@@ -133,9 +133,10 @@ export type ToolResultData = {
   exit_code?: number;
   duration_ms?: number;
   process_id?: string;
+  output_cursor?: number;
   message?: string;
   reason?: string;
-  /** Actual runtime used: os_sandbox / full_access */
+  /** Actual runtime used: codex_sandbox / codex_full_access */
   runtime?: string;
 };
 

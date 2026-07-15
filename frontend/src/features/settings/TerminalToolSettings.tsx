@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, BadgeCheck, CircleAlert, CircleCheck, Clock, Download, FolderLock, Hand, Pencil, Plus, RefreshCw, Shield, ShieldAlert, Square, Terminal, Trash2 } from 'lucide-react';
 
-import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, SandboxRuntimeStatus, ToolProcessInfo } from '../../api';
+import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, CodexRuntimeStatus, ToolProcessInfo } from '../../api';
 import {
-  installSandboxRuntime,
+  installCodexRuntime,
   listToolProcesses,
   readAgentToolsConfig,
-  readSandboxRuntime,
+  readCodexRuntime,
   readToolDefaults,
-  refreshSandboxRuntime,
+  refreshCodexRuntime,
   stopToolProcess,
   updateAgentToolsConfig,
   updateToolDefaults,
@@ -51,7 +51,7 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
   const contextKey = scope === 'defaults' ? 'defaults' : `agent:${agentId ?? ''}`;
   const [defaults, setDefaults] = useState<AgentToolsConfig | null>(null);
   const [agentSettings, setAgentSettings] = useState<AgentToolsSettings | null>(null);
-  const [runtime, setRuntime] = useState<SandboxRuntimeStatus | null>(null);
+  const [runtime, setRuntime] = useState<CodexRuntimeStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>('idle');
   const [agentToolView, setAgentToolView] = useState<AgentToolView>('list');
@@ -111,7 +111,7 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
         : Promise.reject(new Error(t('tools.terminal.agentRequired')));
     const load = Promise.all([
       configRequest,
-      readSandboxRuntime().then((next) => {
+      readCodexRuntime().then((next) => {
         if (!cancelled) setRuntime(next);
       }),
     ]);
@@ -286,12 +286,12 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
   async function handleInstallRuntime() {
     setIsInstallingRuntime(true);
     try {
-      setRuntime(await installSandboxRuntime());
+      setRuntime(await installCodexRuntime());
       toast.success(t('notification.runtimeInstalled'));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('tools.terminal.runtimeInstallFailed'));
       try {
-        setRuntime(await readSandboxRuntime());
+        setRuntime(await readCodexRuntime());
       } catch {
         // Keep the original installation failure as the visible error.
       }
@@ -303,7 +303,7 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
   async function handleRefreshRuntime() {
     setIsRefreshingRuntime(true);
     try {
-      setRuntime(await refreshSandboxRuntime());
+      setRuntime(await refreshCodexRuntime());
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('tools.terminal.runtimeRefreshFailed'));
     } finally {
@@ -420,7 +420,7 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
   const maxIterationsInherited = isAgentScope && overrides?.max_llm_iterations === undefined;
   const fieldInherited = (field: OverrideField) => isAgentScope && overrides?.terminal[field] === undefined;
   const sandboxAvailable = runtime?.available === true;
-  const terminalUnavailable = terminal.permission_mode === 'request_approval' && !sandboxAvailable;
+  const terminalUnavailable = !sandboxAvailable;
 
   if (isAgentScope && agentToolView === 'list') {
     return (

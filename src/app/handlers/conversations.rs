@@ -26,18 +26,18 @@ use crate::{
 const MAX_AGENT_RUN_DURATION: Duration = Duration::from_secs(15 * 60);
 
 struct ProcessCleanupGuard {
-    process_manager: std::sync::Arc<crate::tools::process_manager::ProcessManager>,
+    terminal_manager: std::sync::Arc<crate::tools::terminal::TerminalManager>,
     conversation_id: Uuid,
     armed: bool,
 }
 
 impl ProcessCleanupGuard {
     fn new(
-        process_manager: std::sync::Arc<crate::tools::process_manager::ProcessManager>,
+        terminal_manager: std::sync::Arc<crate::tools::terminal::TerminalManager>,
         conversation_id: Uuid,
     ) -> Self {
         Self {
-            process_manager,
+            terminal_manager,
             conversation_id,
             armed: true,
         }
@@ -53,11 +53,13 @@ impl Drop for ProcessCleanupGuard {
         if !self.armed {
             return;
         }
-        let process_manager = self.process_manager.clone();
+        let terminal_manager = self.terminal_manager.clone();
         let conversation_id = self.conversation_id;
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                process_manager.stop_for_conversation(conversation_id).await;
+                terminal_manager
+                    .stop_for_conversation(conversation_id)
+                    .await;
             });
         }
     }
@@ -114,8 +116,8 @@ pub async fn send_message_complete(
     let _run_guard = state.run_manager.try_start(conversation_id)?;
     let prepared = prepare_chat(&state, conversation_id, &request.content).await?;
     let settings = state.store.read_settings().await?;
-    let process_manager = state.process_manager.clone();
-    let mut cleanup_guard = ProcessCleanupGuard::new(process_manager.clone(), conversation_id);
+    let terminal_manager = state.terminal_manager.clone();
+    let mut cleanup_guard = ProcessCleanupGuard::new(terminal_manager.clone(), conversation_id);
     let result = tokio::time::timeout(
         MAX_AGENT_RUN_DURATION,
         run_agent(state, prepared, request_options(&settings), false, None),
@@ -128,7 +130,9 @@ pub async fn send_message_complete(
         }
         Ok(Err(error)) => Err(error),
         Err(_) => {
-            process_manager.stop_for_conversation(conversation_id).await;
+            terminal_manager
+                .stop_for_conversation(conversation_id)
+                .await;
             cleanup_guard.disarm();
             Err(crate::error::AppError::Llm(
                 "agent run exceeded the 15 minute deadline".to_string(),
@@ -149,7 +153,7 @@ pub async fn send_message_stream(
     let use_streaming_llm = request.stream;
     let (sender, mut receiver) = mpsc::channel(256);
     let error_sender = sender.clone();
-    let process_manager = state.process_manager.clone();
+    let terminal_manager = state.terminal_manager.clone();
     tokio::spawn(async move {
         let _run_guard = run_guard;
         match tokio::time::timeout(
@@ -165,7 +169,9 @@ pub async fn send_message_stream(
                     .await;
             }
             Err(_) => {
-                process_manager.stop_for_conversation(conversation_id).await;
+                terminal_manager
+                    .stop_for_conversation(conversation_id)
+                    .await;
                 let _ = error_sender
                     .send(AgentRunEvent::Error(
                         "agent run exceeded the 15 minute deadline".to_string(),

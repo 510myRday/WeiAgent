@@ -25,7 +25,7 @@ pub enum TerminalPermissionMode {
     /// Routine work runs in the local OS sandbox. Full host access requires user approval.
     #[default]
     RequestApproval,
-    /// Commands run directly on the host without sandboxing or approval prompts.
+    /// Codex runs commands with full host access and no approval prompts.
     FullAccess,
 }
 
@@ -263,6 +263,8 @@ pub enum ToolResult {
         /// Execution runtime actually used for this command.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         runtime: Option<String>,
+        #[serde(default)]
+        output_cursor: u64,
     },
     Running {
         process_id: String,
@@ -276,6 +278,8 @@ pub enum ToolResult {
         /// Execution runtime actually used for this command.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         runtime: Option<String>,
+        #[serde(default)]
+        output_cursor: u64,
     },
     Blocked {
         reason: String,
@@ -316,4 +320,7 @@ pub struct ProcessInfo {
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     pub duration_ms: u64,
+    pub runtime: String,
+    pub tty: bool,
+    pub output_cursor: u64,
 }

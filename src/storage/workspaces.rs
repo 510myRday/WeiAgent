@@ -42,7 +42,8 @@ impl JsonStore {
         tools_config: &crate::domain::AgentToolsConfig,
     ) -> AppResult<String> {
         let workspace = self.read_agent_workspace(agent.id).await?;
-        let environment = crate::tools::prompt::build_environment_prefix(tools_config, &self.data_dir);
+        let environment =
+            crate::tools::prompt::build_environment_prefix(tools_config, &self.data_dir);
         let agent_sections = join_prompt_sections([
             ("Personality", workspace.personality.as_str()),
             ("Memory", workspace.memory.as_str()),
@@ -376,11 +377,11 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
         )));
     }
     if config.terminal.default_timeout_ms == 0
-        || config.terminal.default_timeout_ms > crate::tools::execute::MAX_TERMINAL_TIMEOUT_MS
+        || config.terminal.default_timeout_ms > crate::tools::terminal::MAX_TERMINAL_TIMEOUT_MS
     {
         return Err(crate::error::AppError::BadRequest(format!(
             "terminal default_timeout_ms must be between 1 and {}",
-            crate::tools::execute::MAX_TERMINAL_TIMEOUT_MS
+            crate::tools::terminal::MAX_TERMINAL_TIMEOUT_MS
         )));
     }
     if config.terminal.allowed_cwd_roots.len() > MAX_ALLOWED_ROOTS {

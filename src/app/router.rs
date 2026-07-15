@@ -97,12 +97,12 @@ fn api_router() -> Router<AppState> {
             get(tools::read_tool_defaults).put(tools::update_tool_defaults),
         )
         .route(
-            "/api/tools/sandbox-runtime",
-            get(tools::read_sandbox_runtime).post(tools::install_sandbox_runtime),
+            "/api/tools/codex-runtime",
+            get(tools::read_codex_runtime).post(tools::install_codex_runtime),
         )
         .route(
-            "/api/tools/sandbox-runtime/refresh",
-            post(tools::refresh_sandbox_runtime),
+            "/api/tools/codex-runtime/refresh",
+            post(tools::refresh_codex_runtime),
         )
         .route("/api/tools/approve", post(tools::approve_tool_call))
         .route("/api/tools/processes", get(tools::list_tool_processes))

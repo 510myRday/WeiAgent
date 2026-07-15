@@ -68,20 +68,21 @@ fn build_terminal_policy_section(tools_config: &AgentToolsConfig) -> String {
 - Use `sandbox_permissions=\"require_escalated\"` only when the user explicitly needs internet access, writes outside the workspace, or other full host access. Always include a short `justification`.\n\
 - Escalated commands require user approval unless this agent already has a matching always-allow grant.\n\
 - If a sandboxed command is denied or fails due to permissions, report the real error. Retry with escalation only when the user intent requires it; never invent success.\n\
-- Commands are non-interactive: stdin is closed. Do not rely on prompts, PTY sessions, or interactive pagers.\n\
+- Terminal execution is provided by Codex. Use `tty=true` only for programs that require a real terminal.\n\
 - Prefer foreground `execute_terminal` for short commands. Use `background=true` only for long-lived services/watchers/dev servers; do not background ordinary one-shot work.\n\
-- Long-running workflow: start with `background=true` (or let a foreground timeout promote the process) -> poll with `get_terminal_process` until ready/finished -> do the work -> call `stop_terminal_process` when the process is no longer needed.\n\
-- Call `get_terminal_process` / `stop_terminal_process` only with a returned `process_id`. Do not spam empty polls; if still running, wait and retry later."
+- Long-running or interactive workflow: start with `execute_terminal`, then continue only with `terminal_session` using the returned `process_id` and `output_cursor`.\n\
+- On Windows, the Codex sandbox supports only short non-interactive foreground commands. It cannot provide PTY, stdin continuation, observable background sessions, or timeout promotion. Request full access with a justification for interactive or long-lived work.\n\
+- Do not spam polls or re-run a command that already returned a process_id. Use incremental cursors and wait between checks."
                 .to_string()
         }
         TerminalPermissionMode::FullAccess => {
             "## Terminal Policy\n\
 - Terminal commands run with full host access and no approval prompts.\n\
 - Prefer staying inside the configured workspace roots unless the user explicitly asks otherwise.\n\
-- Commands are non-interactive: stdin is closed. Do not rely on prompts, PTY sessions, or interactive pagers.\n\
+- Terminal execution is provided by Codex, including PTY sessions and stdin continuation. Use `tty=true` only for programs that require a real terminal.\n\
 - Prefer foreground `execute_terminal` for short commands. Use `background=true` only for long-lived services/watchers/dev servers; do not background ordinary one-shot work.\n\
-- Long-running workflow: start with `background=true` (or let a foreground timeout promote the process) -> poll with `get_terminal_process` until ready/finished -> do the work -> call `stop_terminal_process` when the process is no longer needed.\n\
-- Call `get_terminal_process` / `stop_terminal_process` only with a returned `process_id`. Do not spam empty polls; if still running, wait and retry later.\n\
+- Long-running or interactive workflow: start with `execute_terminal`, then continue only with `terminal_session` using the returned `process_id` and `output_cursor`.\n\
+- Do not spam polls or re-run a command that already returned a process_id. Use incremental cursors and wait between checks.\n\
 - Be careful with destructive operations (delete, overwrite, recursive remove). Prefer targeted, reversible steps."
                 .to_string()
         }
@@ -115,7 +116,6 @@ pub fn host_shell_guidance() -> &'static str {
         "The host is Unix-like. The `command` string is interpreted by a POSIX shell (`sh -lc`). Prefer standard shell utilities and absolute or workspace-relative paths."
     }
 }
-
 
 fn resolve_data_dir_for_prompt(data_dir: &Path) -> String {
     let absolute = std::fs::canonicalize(data_dir).unwrap_or_else(|_| {
@@ -187,9 +187,9 @@ mod tests {
         assert!(first.contains("## Terminal Policy"));
         assert!(first.contains("WeiAgent"));
         assert!(first.contains("App data directory:"));
-        assert!(first.contains("Long-running workflow"));
-        assert!(first.contains("stop_terminal_process"));
-        assert!(first.contains("Do not spam empty polls"));
+        assert!(first.contains("Long-running or interactive workflow"));
+        assert!(first.contains("terminal_session"));
+        assert!(first.contains("incremental cursors"));
         assert!(!first.to_lowercase().contains("2026-"));
         assert!(!first.contains("expires_at"));
         assert!(!first.contains("created_at"));
@@ -207,8 +207,8 @@ mod tests {
         };
         let prefix = build_environment_prefix(&config, Path::new("data"));
         assert!(prefix.contains("full host access"));
-        assert!(prefix.contains("Long-running workflow"));
-        assert!(prefix.contains("stop_terminal_process"));
+        assert!(prefix.contains("Long-running or interactive workflow"));
+        assert!(prefix.contains("terminal_session"));
         assert!(!prefix.contains("require_escalated"));
     }
 

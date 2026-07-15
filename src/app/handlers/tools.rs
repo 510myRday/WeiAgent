@@ -9,7 +9,7 @@ use crate::{
     app::AppState,
     domain::{
         AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision,
-        ApprovalRequest, ApprovalResponse, ProcessInfo, SandboxRuntimeStatus,
+        ApprovalRequest, ApprovalResponse, CodexRuntimeStatus, ProcessInfo,
     },
     error::{AppError, AppResult},
     tools::approval::ApprovalResolution,
@@ -48,22 +48,22 @@ pub async fn update_tool_defaults(
     Ok(Json(state.store.update_tool_defaults(config).await?))
 }
 
-pub async fn read_sandbox_runtime(
+pub async fn read_codex_runtime(
     State(state): State<AppState>,
-) -> AppResult<Json<SandboxRuntimeStatus>> {
-    Ok(Json(state.sandbox_runtime.status().await))
+) -> AppResult<Json<CodexRuntimeStatus>> {
+    Ok(Json(state.codex_runtime.status().await))
 }
 
-pub async fn refresh_sandbox_runtime(
+pub async fn refresh_codex_runtime(
     State(state): State<AppState>,
-) -> AppResult<Json<SandboxRuntimeStatus>> {
-    Ok(Json(state.sandbox_runtime.refresh().await?))
+) -> AppResult<Json<CodexRuntimeStatus>> {
+    Ok(Json(state.codex_runtime.refresh().await?))
 }
 
-pub async fn install_sandbox_runtime(
+pub async fn install_codex_runtime(
     State(state): State<AppState>,
-) -> AppResult<Json<SandboxRuntimeStatus>> {
-    Ok(Json(state.sandbox_runtime.install().await?))
+) -> AppResult<Json<CodexRuntimeStatus>> {
+    Ok(Json(state.codex_runtime.install().await?))
 }
 
 pub async fn approve_tool_call(
@@ -144,7 +144,7 @@ pub async fn list_tool_processes(
     State(state): State<AppState>,
     Query(query): Query<ProcessListQuery>,
 ) -> AppResult<Json<Vec<ProcessInfo>>> {
-    Ok(Json(state.process_manager.list(query.agent_id).await))
+    Ok(Json(state.terminal_manager.list(query.agent_id).await))
 }
 
 pub async fn get_tool_process(
@@ -153,7 +153,7 @@ pub async fn get_tool_process(
     Query(query): Query<ProcessOwnerQuery>,
 ) -> AppResult<Json<ProcessInfo>> {
     let info = state
-        .process_manager
+        .terminal_manager
         .get(&process_id)
         .await
         .ok_or(AppError::NotFound)?;
@@ -169,7 +169,7 @@ pub async fn stop_tool_process(
     Query(query): Query<ProcessOwnerQuery>,
 ) -> AppResult<Json<ProcessInfo>> {
     let info = state
-        .process_manager
+        .terminal_manager
         .get(&process_id)
         .await
         .ok_or(AppError::NotFound)?;
@@ -177,8 +177,8 @@ pub async fn stop_tool_process(
         return Err(AppError::NotFound);
     }
     state
-        .process_manager
-        .stop(&process_id)
+        .terminal_manager
+        .terminate(&process_id)
         .await?
         .map(Json)
         .ok_or(AppError::NotFound)

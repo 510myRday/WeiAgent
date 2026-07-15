@@ -102,10 +102,11 @@ WeiAgent/
 │   │       └── openai_compatible.rs  # OpenAI 兼容客户端实现（含重试）
 │   ├── tools/
 │   │   ├── registry.rs       # ToolRegistry、AgentTool、内置工具注册
-│   │   ├── execute.rs        # OS 沙箱/完整访问执行、超时转后台
-│   │   ├── process_manager.rs# 后台进程、输出、停止和状态管理
+│   │   ├── terminal.rs       # Codex 终端执行、会话、输出和后台进程管理
+│   │   ├── codex_app_server.rs # Codex app-server JSON-RPC 连接
+│   │   ├── runtime.rs        # Codex CLI 发现、下载、校验和隔离环境
 │   │   ├── approval.rs       # 审批管理和自动 TTL 过期
-│   │   └── terminal.rs       # 命令策略检查
+│   │   └── prompt.rs         # 终端环境和权限策略提示
 │   └── storage/
 │       ├── mod.rs            # 常量、测试
 │       ├── json_store.rs     # JsonStore 结构体与文件管理
@@ -136,7 +137,7 @@ WeiAgent/
     │   ├── memory.md
     │   ├── instructions.md
     │   └── tools.json         # Agent 工具覆盖项和上下文授权
-    ├── runtimes/              # WeiAgent 托管的 OS 沙箱运行时
+    ├── runtimes/              # WeiAgent 托管的 Codex 运行时和隔离 CODEX_HOME
     └── conversations/{conversation_id}.json
 ```
 
@@ -308,12 +309,12 @@ Agent 响应会额外返回后端保存的内置身份信息：
 - Agent 模板：继续增加更多内置 Agent 或可导入模板
 ## 第三阶段：终端工具系统
 
-终端工具采用本机 OS 沙箱和人工审批，不使用 Docker，也不提供自动审批。
+终端工具复用 Codex CLI 的 OS 沙箱与 app-server 终端能力，并由 WeiAgent 管理人工审批、后台记录和会话续写；不使用 Docker，也不提供自动审批。
 
 ### 权限模式
 
-- `request_approval`：普通命令通过 Codex OS sandbox helper 的 `:workspace` 权限配置执行。工作区内写入自动完成，网络和工作区外写入被沙箱拒绝。
-- `full_access`：命令直接在宿主机执行，不使用沙箱，也不产生审批提示。
+- `request_approval`：普通命令通过 Codex OS sandbox helper 的 `:workspace`/`workspaceWrite` 策略执行。工作区内写入自动完成，网络和工作区外写入被沙箱拒绝。
+- `full_access`：命令通过 Codex app-server 的 `command/exec` 以完整宿主权限执行，不产生审批提示。
 - 模型只有显式设置 `sandbox_permissions = "require_escalated"` 并提供 `justification` 时，才会在 `request_approval` 模式下请求人工批准。
 - 用户可允许一次、记住 24 小时或拒绝。记忆授权精确绑定命令和工作目录。
 
@@ -349,19 +350,23 @@ User Message
   -> require_escalated
        -> approval_required SSE
        -> user approve
-       -> direct host execution
+       -> Codex app-server full-access session
   -> tool_result
   -> role=tool message
   -> follow-up LLM response
 ```
 
+生产环境中，WeiAgent 只负责启动 Codex CLI/app-server 并发送结构化执行请求，不直接启动 PowerShell、CMD 或 `sh` 来执行模型命令。Codex 会根据宿主系统在其控制的执行链路中启动本机 Shell：Windows 使用 PowerShell/CMD，macOS 和 Linux 使用 POSIX `sh`。Shell 是命令解释器，但沙箱策略、进程生命周期、stdin/stdout 和终止控制均由 Codex 路径承载。
+
 ### 终端能力
 
-- 内置工具：`execute_terminal`、`get_terminal_process`、`stop_terminal_process`
-- 工具参数：`command`、`cwd`、`timeout_ms`、`background`、`sandbox_permissions`、`justification`
+- 内置工具：`execute_terminal`、`terminal_session`
+- `execute_terminal` 参数：`command`、`cwd`、`timeout_ms`、`background`、`tty`、`sandbox_permissions`、`justification`
+- `terminal_session` 操作：`poll`、`write`、`submit`、`interrupt`、`eof`、`terminate`、`resize`，通过 `output_cursor` 增量读取输出
 - `cwd` 省略、空字符串或 `.` 都使用配置的默认工作区；非空 `cwd` 必须是已存在目录，不允许失败后静默切换到猜测路径
 - 终端工具定义会明确告知模型当前宿主 OS 和命令解释器，避免在 Windows 上默认生成 `/tmp`、heredoc、`python3` 等 Unix 假设
-- 前台等待超时后自动转为后台进程并返回 `process_id`
+- 支持 Codex PTY、stdin 续写、Ctrl+C/EOF、终止和尺寸调整；后台或超时转后台后返回 `process_id`
+- Windows 的 Codex unelevated 沙箱是上游例外：只允许短时、非交互、前台命令；后台、stdin 续写、PTY 和超时转后台必须请求完整权限
 - 普通前台命令只在执行期间由进程管理器捕获输出，完成后立即移除，不出现在后台进程列表
 - 只有显式 `background: true` 或超过前台等待时间的任务会进入后台进程列表
 - stdout/stderr 各保留最后 1MB，返回模型时限制为最后 64KB
@@ -370,17 +375,18 @@ User Message
 - 单轮最多 8 个工具调用，单次 Agent run 最多 32 个，最长运行 15 分钟
 - LLM 工具循环默认 20 轮，最大 50 轮；耗尽后执行一次无工具总结
 - 同一会话只允许一个活跃 Agent run
-- 当前终端保持非交互执行，stdin 关闭，不提供 PTY/session/write_stdin
+- 完整权限和非 Windows 沙箱会话支持交互续写；Windows 沙箱保持非交互，以避免 Codex 上游不支持的伪会话
 
-### OS 沙箱运行时
+### Codex 终端运行时
 
-- WeiAgent 会依次发现 `WEIAGENT_OS_SANDBOX_BIN`、托管安装版本和系统 Codex。
-- 全局工具页可以查看、刷新或安装固定版本的托管沙箱运行时。
+- WeiAgent 会依次发现 `WEIAGENT_CODEX_BIN`、托管安装版本和系统 Codex。
+- 全局工具页可以查看、刷新或安装固定版本的托管 Codex 运行时。
 - 当前托管版本为 Codex CLI `0.137.0`，按 OS/CPU 从 npm Registry 下载平台原生包，不要求用户安装 Node.js 或 npm。
+- 托管包覆盖 Windows x64/ARM64、Linux x64/ARM64、macOS x64/Apple Silicon；三系统 CI 持续执行前端构建、Rust 测试和 Clippy。
 - 下载过程流式写入临时文件，限制最大体积，使用 Registry 提供的 SHA-512 integrity 校验后安全解包。
 - 托管运行时安装到 `data/runtimes/codex/{version}/{platform}`，独立 `CODEX_HOME` 保存到 `data/runtimes/codex-home`。
-- OS sandbox helper 不可用时，请求批准模式不会向模型暴露终端工具，也不会自动降级为完全访问。
-- 完全访问模式必须由用户显式选择，不依赖 helper。
+- Codex 运行时不可用时不会向模型暴露终端工具，也不会自动降级为直接宿主执行。
+- Windows 沙箱命令复用用户 Codex 的默认 `CODEX_HOME` 沙箱设置；app-server 使用 WeiAgent 隔离的 `CODEX_HOME`，且启动环境会移除无关敏感变量。
 - Codex CLI 采用 Apache-2.0 许可证，第三方归属信息见 `THIRD_PARTY_NOTICES.md`。
 
 ### 验证

@@ -16,7 +16,7 @@ pub use providers::{
     CreateModelProviderRequest, FetchProviderModelsRequest, ModelProvider, ModelProviderResponse,
     ProviderType, UpdateModelProviderRequest,
 };
-pub use runtime::{SandboxRuntimeSource, SandboxRuntimeStatus};
+pub use runtime::{CodexRuntimeSource, CodexRuntimeStatus};
 pub use settings::AppSettings;
 pub use tools::{
     AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision, ApprovalRequest,

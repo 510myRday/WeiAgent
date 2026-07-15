@@ -214,7 +214,7 @@ export type AgentToolsSettings = {
   effective: AgentToolsConfig;
 };
 
-export type SandboxRuntimeStatus = {
+export type CodexRuntimeStatus = {
   supported: boolean;
   available: boolean;
   managed_installed: boolean;
@@ -243,6 +243,9 @@ export type ToolProcessInfo = {
   started_at: string;
   finished_at?: string;
   duration_ms: number;
+  runtime: 'codex_sandbox' | 'codex_full_access';
+  tty: boolean;
+  output_cursor: number;
 };
 export function readToolDefaults(): Promise<AgentToolsConfig> {
   return request<AgentToolsConfig>('/api/tools/defaults');
@@ -269,18 +272,18 @@ export function updateAgentToolsConfig(
   });
 }
 
-export function readSandboxRuntime(): Promise<SandboxRuntimeStatus> {
-  return request<SandboxRuntimeStatus>('/api/tools/sandbox-runtime');
+export function readCodexRuntime(): Promise<CodexRuntimeStatus> {
+  return request<CodexRuntimeStatus>('/api/tools/codex-runtime');
 }
 
-export function refreshSandboxRuntime(): Promise<SandboxRuntimeStatus> {
-  return request<SandboxRuntimeStatus>('/api/tools/sandbox-runtime/refresh', {
+export function refreshCodexRuntime(): Promise<CodexRuntimeStatus> {
+  return request<CodexRuntimeStatus>('/api/tools/codex-runtime/refresh', {
     method: 'POST',
   });
 }
 
-export async function installSandboxRuntime(): Promise<SandboxRuntimeStatus> {
-  const response = await fetch('/api/tools/sandbox-runtime', {
+export async function installCodexRuntime(): Promise<CodexRuntimeStatus> {
+  const response = await fetch('/api/tools/codex-runtime', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     signal: AbortSignal.timeout(15 * 60 * 1000),
@@ -288,7 +291,7 @@ export async function installSandboxRuntime(): Promise<SandboxRuntimeStatus> {
   if (!response.ok) {
     throw new Error(await readError(response));
   }
-  return response.json() as Promise<SandboxRuntimeStatus>;
+  return response.json() as Promise<CodexRuntimeStatus>;
 }
 
 

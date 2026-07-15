@@ -23,7 +23,7 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    domain::{SandboxRuntimeSource, SandboxRuntimeStatus},
+    domain::{CodexRuntimeSource, CodexRuntimeStatus},
     error::{AppError, AppResult},
 };
 
@@ -32,7 +32,7 @@ const MAX_RUNTIME_DOWNLOAD_BYTES: u64 = 600 * 1024 * 1024;
 const RUNTIME_MANIFEST_FILE: &str = "weiagent-runtime.json";
 
 #[derive(Debug, Clone)]
-pub struct SandboxExecutable {
+pub struct CodexExecutable {
     pub program: PathBuf,
     pub codex_home: PathBuf,
 }
@@ -62,48 +62,37 @@ struct NpmPackageDist {
 #[derive(Debug, Clone)]
 struct RuntimeCandidate {
     program: PathBuf,
-    source: SandboxRuntimeSource,
+    source: CodexRuntimeSource,
     managed_installed: bool,
 }
 
-pub struct SandboxRuntimeManager {
+pub struct CodexRuntimeManager {
     runtime_root: PathBuf,
     codex_home: PathBuf,
     client: reqwest::Client,
-    status: RwLock<SandboxRuntimeStatus>,
+    status: RwLock<CodexRuntimeStatus>,
     install_lock: Mutex<()>,
     installing: AtomicBool,
     allow_system_discovery: bool,
 }
 
-impl SandboxRuntimeManager {
+impl CodexRuntimeManager {
     pub fn new(data_dir: impl AsRef<Path>) -> AppResult<Self> {
         Self::with_system_discovery(data_dir, true)
-    }
-
-    #[cfg(test)]
-    pub fn new_for_tests(data_dir: impl AsRef<Path>) -> AppResult<Self> {
-        let mut manager = Self::with_system_discovery(data_dir, false)?;
-        let status = manager.status.get_mut();
-        status.available = true;
-        status.source = Some(SandboxRuntimeSource::System);
-        status.detected_version = Some(MANAGED_CODEX_VERSION.to_string());
-        status.executable = Some(if cfg!(windows) { "codex.exe" } else { "codex" }.to_string());
-        Ok(manager)
     }
 
     #[cfg(test)]
     pub fn new_available_for_tests(data_dir: impl AsRef<Path>) -> AppResult<Self> {
         let mut manager = Self::with_system_discovery(data_dir, false)?;
         let program = if cfg!(windows) { "codex.exe" } else { "codex" };
-        manager.status = RwLock::new(SandboxRuntimeStatus {
+        manager.status = RwLock::new(CodexRuntimeStatus {
             supported: true,
             available: true,
             managed_installed: false,
             installing: false,
             target_version: MANAGED_CODEX_VERSION.to_string(),
             platform: platform_package_suffix().map(str::to_string),
-            source: Some(SandboxRuntimeSource::Environment),
+            source: Some(CodexRuntimeSource::Environment),
             detected_version: Some("codex-cli test".to_string()),
             executable: Some(program.to_string()),
             error: None,
@@ -130,7 +119,7 @@ impl SandboxRuntimeManager {
             runtime_root,
             codex_home,
             client,
-            status: RwLock::new(SandboxRuntimeStatus {
+            status: RwLock::new(CodexRuntimeStatus {
                 supported: platform.is_some(),
                 available: false,
                 managed_installed: false,
@@ -148,13 +137,13 @@ impl SandboxRuntimeManager {
         })
     }
 
-    pub async fn initialize(&self) -> AppResult<SandboxRuntimeStatus> {
+    pub async fn initialize(&self) -> AppResult<CodexRuntimeStatus> {
         fs::create_dir_all(&self.runtime_root).await?;
         fs::create_dir_all(&self.codex_home).await?;
         self.refresh().await
     }
 
-    pub async fn status(&self) -> SandboxRuntimeStatus {
+    pub async fn status(&self) -> CodexRuntimeStatus {
         self.status.read().await.clone()
     }
 
@@ -165,27 +154,29 @@ impl SandboxRuntimeManager {
             .unwrap_or(false)
     }
 
-    pub async fn executable(&self) -> Option<SandboxExecutable> {
+    pub async fn executable(&self) -> Option<CodexExecutable> {
         let status = self.status.read().await;
         if !status.available {
             return None;
         }
         let executable = status.executable.as_ref()?;
-        Some(SandboxExecutable {
+        Some(CodexExecutable {
             program: PathBuf::from(executable),
             codex_home: self.codex_home.clone(),
         })
     }
 
-    pub async fn refresh(&self) -> AppResult<SandboxRuntimeStatus> {
+    pub async fn refresh(&self) -> AppResult<CodexRuntimeStatus> {
         let platform = platform_package_suffix().map(str::to_string);
         let managed_installed = self.managed_manifest().await.is_some();
         let mut last_error = None;
 
         for candidate in self.candidates(managed_installed).await {
-            match probe_codex(&candidate.program, &self.codex_home).await {
+            let program = preferred_native_program(&candidate.program)
+                .unwrap_or_else(|| candidate.program.clone());
+            match probe_codex(&program, &self.codex_home).await {
                 Ok(version) => {
-                    let status = SandboxRuntimeStatus {
+                    let status = CodexRuntimeStatus {
                         supported: platform.is_some(),
                         available: true,
                         managed_installed: candidate.managed_installed,
@@ -194,7 +185,7 @@ impl SandboxRuntimeManager {
                         platform,
                         source: Some(candidate.source),
                         detected_version: Some(version),
-                        executable: Some(candidate.program.to_string_lossy().to_string()),
+                        executable: Some(program.to_string_lossy().to_string()),
                         error: None,
                     };
                     *self.status.write().await = status.clone();
@@ -204,7 +195,7 @@ impl SandboxRuntimeManager {
             }
         }
 
-        let status = SandboxRuntimeStatus {
+        let status = CodexRuntimeStatus {
             supported: platform.is_some(),
             available: false,
             managed_installed,
@@ -220,13 +211,13 @@ impl SandboxRuntimeManager {
         Ok(status)
     }
 
-    pub async fn install(self: &Arc<Self>) -> AppResult<SandboxRuntimeStatus> {
+    pub async fn install(self: &Arc<Self>) -> AppResult<CodexRuntimeStatus> {
         let _guard = self.install_lock.try_lock().map_err(|_| {
-            AppError::Conflict("sandbox runtime installation is already in progress".to_string())
+            AppError::Conflict("Codex runtime installation is already in progress".to_string())
         })?;
         let package_suffix = platform_package_suffix().ok_or_else(|| {
             AppError::BadRequest(
-                "managed sandbox runtime is not available for this platform".to_string(),
+                "managed Codex runtime is not available for this platform".to_string(),
             )
         })?;
         self.installing.store(true, Ordering::SeqCst);
@@ -401,17 +392,17 @@ impl SandboxRuntimeManager {
 
     async fn candidates(&self, managed_installed: bool) -> Vec<RuntimeCandidate> {
         let mut candidates = Vec::new();
-        if let Some(path) = std::env::var_os("WEIAGENT_OS_SANDBOX_BIN") {
+        if let Some(path) = std::env::var_os("WEIAGENT_CODEX_BIN") {
             candidates.push(RuntimeCandidate {
                 program: PathBuf::from(path),
-                source: SandboxRuntimeSource::Environment,
+                source: CodexRuntimeSource::Environment,
                 managed_installed,
             });
         }
         if let Some(manifest) = self.managed_manifest().await {
             candidates.push(RuntimeCandidate {
                 program: self.managed_version_dir().join(manifest.executable),
-                source: SandboxRuntimeSource::Managed,
+                source: CodexRuntimeSource::Managed,
                 managed_installed: true,
             });
         }
@@ -419,7 +410,7 @@ impl SandboxRuntimeManager {
             for program in system_codex_programs() {
                 candidates.push(RuntimeCandidate {
                     program: PathBuf::from(program),
-                    source: SandboxRuntimeSource::System,
+                    source: CodexRuntimeSource::System,
                     managed_installed,
                 });
             }
@@ -441,7 +432,7 @@ impl SandboxRuntimeManager {
 }
 
 fn runtime_download_error(error: reqwest::Error) -> AppError {
-    AppError::Process(format!("sandbox runtime download failed: {error}"))
+    AppError::Process(format!("Codex runtime download failed: {error}"))
 }
 
 async fn probe_codex(program: &Path, codex_home: &Path) -> Result<String, String> {
@@ -555,6 +546,43 @@ fn find_runtime_executable(root: &Path) -> Option<PathBuf> {
     None
 }
 
+#[cfg(windows)]
+fn preferred_native_program(program: &Path) -> Option<PathBuf> {
+    if program
+        .extension()
+        .is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("exe"))
+    {
+        return Some(program.to_path_buf());
+    }
+    let resolved = resolve_windows_program(program)?;
+    let package_root = resolved
+        .parent()?
+        .join("node_modules")
+        .join("@openai")
+        .join("codex");
+    find_runtime_executable(&package_root)
+}
+
+#[cfg(not(windows))]
+fn preferred_native_program(program: &Path) -> Option<PathBuf> {
+    Some(program.to_path_buf())
+}
+
+#[cfg(windows)]
+fn resolve_windows_program(program: &Path) -> Option<PathBuf> {
+    if program.is_absolute() {
+        return program.is_file().then(|| program.to_path_buf());
+    }
+    let path = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join(program);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn ensure_child_path(root: &Path, path: &Path) -> AppResult<()> {
     let root = absolute_lexical(root)?;
     let path = absolute_lexical(path)?;
@@ -588,7 +616,11 @@ fn absolute_lexical(path: &Path) -> AppResult<PathBuf> {
 }
 
 fn platform_package_suffix() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
+    platform_package_suffix_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn platform_package_suffix_for(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
         ("windows", "x86_64") => Some("win32-x64"),
         ("windows", "aarch64") => Some("win32-arm64"),
         ("linux", "x86_64") => Some("linux-x64"),
@@ -605,6 +637,106 @@ fn system_codex_programs() -> &'static [&'static str] {
     } else {
         &["codex"]
     }
+}
+
+const ALLOWED_RUNTIME_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "USERNAME",
+    "LOGNAME",
+    "USERPROFILE",
+    "SHELL",
+    "TERM",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "SystemRoot",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "SystemDrive",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "GOPATH",
+    "GOROOT",
+    "JAVA_HOME",
+    "NODE_PATH",
+    "NVM_DIR",
+    "PYENV_ROOT",
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+    "HOMEBREW_PREFIX",
+    "HOMEBREW_CELLAR",
+    "HOMEBREW_REPOSITORY",
+];
+
+pub(crate) fn sanitize_runtime_environment(command: &mut Command, runtime: &str) {
+    let preserved = ALLOWED_RUNTIME_ENV
+        .iter()
+        .filter_map(|key| std::env::var_os(key).map(|value| ((*key).to_string(), value)))
+        .collect::<Vec<_>>();
+    command.env_clear();
+    for (key, value) in preserved {
+        command.env(key, value);
+    }
+    if std::env::var_os("TMPDIR").is_none() {
+        let fallback = std::env::temp_dir();
+        if !fallback.as_os_str().is_empty() {
+            command.env("TMPDIR", fallback);
+        }
+    }
+    command.env("WEIAGENT_RUNTIME", runtime);
+}
+
+pub(crate) fn sanitized_environment_overrides(
+    runtime: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut overrides = serde_json::Map::new();
+    for (key, _) in std::env::vars() {
+        if !ALLOWED_RUNTIME_ENV
+            .iter()
+            .any(|allowed| key.eq_ignore_ascii_case(allowed))
+        {
+            overrides.insert(key, serde_json::Value::Null);
+        }
+    }
+    overrides.insert(
+        "WEIAGENT_RUNTIME".to_string(),
+        serde_json::Value::String(runtime.to_string()),
+    );
+    overrides
 }
 
 #[cfg(test)]
@@ -625,5 +757,34 @@ mod tests {
         let root = PathBuf::from("runtime");
         assert!(ensure_child_path(&root, &root.join("version")).is_ok());
         assert!(ensure_child_path(&root, &root.join("..").join("outside")).is_err());
+    }
+
+    #[test]
+    fn managed_runtime_supports_mainstream_windows_linux_and_macos_targets() {
+        assert_eq!(
+            platform_package_suffix_for("windows", "x86_64"),
+            Some("win32-x64")
+        );
+        assert_eq!(
+            platform_package_suffix_for("windows", "aarch64"),
+            Some("win32-arm64")
+        );
+        assert_eq!(
+            platform_package_suffix_for("linux", "x86_64"),
+            Some("linux-x64")
+        );
+        assert_eq!(
+            platform_package_suffix_for("linux", "aarch64"),
+            Some("linux-arm64")
+        );
+        assert_eq!(
+            platform_package_suffix_for("macos", "x86_64"),
+            Some("darwin-x64")
+        );
+        assert_eq!(
+            platform_package_suffix_for("macos", "aarch64"),
+            Some("darwin-arm64")
+        );
+        assert_eq!(platform_package_suffix_for("freebsd", "x86_64"), None);
     }
 }

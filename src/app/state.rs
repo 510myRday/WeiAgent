@@ -5,8 +5,8 @@ use crate::{
     llm::registry::DynLlmRegistry,
     storage::{JsonStore, LlmLogger},
     tools::{
-        approval::ApprovalManager, process_manager::ProcessManager, registry::ToolRegistry,
-        runtime::SandboxRuntimeManager,
+        approval::ApprovalManager, registry::ToolRegistry, runtime::CodexRuntimeManager,
+        terminal::TerminalManager,
     },
 };
 
@@ -15,9 +15,9 @@ pub struct AppState {
     pub store: Arc<JsonStore>,
     pub llm_registry: DynLlmRegistry,
     pub llm_logger: Arc<LlmLogger>,
-    pub process_manager: Arc<ProcessManager>,
+    pub terminal_manager: Arc<TerminalManager>,
     pub approval_manager: Arc<ApprovalManager>,
-    pub sandbox_runtime: Arc<SandboxRuntimeManager>,
+    pub codex_runtime: Arc<CodexRuntimeManager>,
     pub tool_registry: Arc<ToolRegistry>,
     pub run_manager: Arc<RunManager>,
 }

@@ -60,11 +60,7 @@ pub async fn prepare_chat(
     let mut messages_for_llm = history;
     messages_for_llm.push(user_message.clone());
     let mut tools_config = state.store.read_agent_tools_config(agent.id).await?;
-    if tools_config.terminal.enabled
-        && tools_config.terminal.permission_mode
-            == crate::domain::TerminalPermissionMode::RequestApproval
-        && !state.sandbox_runtime.is_available_cached()
-    {
+    if tools_config.terminal.enabled && !state.codex_runtime.is_available_cached() {
         tools_config.terminal.enabled = false;
     }
     let system_prompt = state

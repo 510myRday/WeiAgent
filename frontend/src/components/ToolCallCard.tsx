@@ -40,8 +40,7 @@ function hasText(value?: string | null): boolean {
 function isTerminalTool(name: string): boolean {
   return (
     name === 'execute_terminal' ||
-    name === 'get_terminal_process' ||
-    name === 'stop_terminal_process'
+    name === 'terminal_session'
   );
 }
 

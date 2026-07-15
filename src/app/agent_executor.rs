@@ -108,7 +108,7 @@ pub async fn run_agent(
             Err(error) => {
                 if events.as_ref().is_some_and(|sender| sender.is_closed()) {
                     state
-                        .process_manager
+                        .terminal_manager
                         .stop_for_conversation(user_message.conversation_id)
                         .await;
                 }
@@ -311,9 +311,8 @@ async fn execute_tool_calls(
             call_id: call.id.clone(),
             tools_config: prepared.tools_config.clone(),
             store: state.store.clone(),
-            process_manager: state.process_manager.clone(),
+            terminal_manager: state.terminal_manager.clone(),
             approval_manager: state.approval_manager.clone(),
-            sandbox_runtime: state.sandbox_runtime.clone(),
             event_sender: None,
         };
         let result =
@@ -511,7 +510,7 @@ async fn execute_tool_with_events(
         return state.tool_registry.execute(name, arguments, context).await;
     };
     let (tool_sender, mut tool_receiver) = mpsc::channel(16);
-    let process_manager = context.process_manager.clone();
+    let terminal_manager = context.terminal_manager.clone();
     let conversation_id = context.conversation_id;
     context.event_sender = Some(tool_sender);
     let execution = state.tool_registry.execute(name, arguments, context);
@@ -520,7 +519,7 @@ async fn execute_tool_with_events(
         tokio::select! {
             result = &mut execution => return result,
             _ = run_sender.closed() => {
-                process_manager.stop_for_conversation(conversation_id).await;
+                terminal_manager.stop_for_conversation(conversation_id).await;
                 return ToolResult::Rejected {
                     reason: "Approval client disconnected".to_string(),
                 };

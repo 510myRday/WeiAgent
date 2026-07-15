@@ -7,16 +7,15 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
-    domain::{AgentToolsConfig, ApprovalDecision, PendingApproval, ProcessStatus, ToolResult},
+    domain::{AgentToolsConfig, ApprovalDecision, PendingApproval, ToolResult},
     llm::types::{FunctionDefinition, ToolDefinition},
     storage::JsonStore,
     tools::{
         approval::ApprovalManager,
-        execute::{
-            ExecuteTerminalRequest, SandboxPermissions, execute_terminal, process_info_to_result,
+        terminal::{
+            ExecuteTerminalRequest, MAX_SESSION_WAIT_MS, SandboxPermissions, TerminalManager,
+            TerminalSessionAction, execute_terminal, process_read_to_result,
         },
-        process_manager::ProcessManager,
-        runtime::SandboxRuntimeManager,
     },
 };
 
@@ -42,9 +41,8 @@ pub struct ToolExecutionContext {
     pub call_id: String,
     pub tools_config: AgentToolsConfig,
     pub store: Arc<JsonStore>,
-    pub process_manager: Arc<ProcessManager>,
+    pub terminal_manager: Arc<TerminalManager>,
     pub approval_manager: Arc<ApprovalManager>,
-    pub sandbox_runtime: Arc<SandboxRuntimeManager>,
     pub event_sender: Option<mpsc::Sender<ToolExecutionEvent>>,
 }
 
@@ -65,8 +63,7 @@ impl ToolRegistry {
             tools: HashMap::new(),
         };
         registry.register(ExecuteTerminalTool);
-        registry.register(GetTerminalProcessTool);
-        registry.register(StopTerminalProcessTool);
+        registry.register(TerminalSessionTool);
         registry
     }
 
@@ -122,6 +119,8 @@ struct ExecuteTerminalArgs {
     #[serde(default)]
     background: Option<bool>,
     #[serde(default)]
+    tty: Option<bool>,
+    #[serde(default)]
     sandbox_permissions: SandboxPermissions,
     #[serde(default)]
     justification: Option<String>,
@@ -145,7 +144,7 @@ impl AgentTool for ExecuteTerminalTool {
                     "command": {
                         "type": "string",
                         "description": format!(
-                            "Shell script to run in the host default shell. {}. Max length 8000 bytes. Non-interactive only (stdin closed). Prefer short focused commands; chain with shell operators when needed.",
+                            "Shell script to run through a Codex-managed terminal session. {}. Max length 8000 bytes. Prefer short focused commands; chain with shell operators when needed.",
                             crate::tools::prompt::host_shell_label()
                         )
                     },
@@ -163,13 +162,17 @@ impl AgentTool for ExecuteTerminalTool {
                     },
                     "background": {
                         "type": "boolean",
-                        "description": "If true, start immediately as a managed background process and return process_id without waiting. Use only for long-lived servers/watchers/dev services. Leave false (default) for ordinary short commands."
+                        "description": "If true, start immediately as a managed background process and return process_id without waiting. Use only for long-lived servers/watchers/dev services. Leave false (default) for ordinary short commands. Windows sandbox mode blocks background sessions; request approved full access for long-lived work there."
+                    },
+                    "tty": {
+                        "type": "boolean",
+                        "description": "Allocate a Codex PTY for a genuinely interactive command. Use for REPLs, interactive CLIs, or software that requires a terminal. Leave false for ordinary commands. Windows sandbox sessions are non-interactive and cannot use PTY or continued stdin; request full access when either is required."
                     },
                     "sandbox_permissions": {
                         "type": "string",
                         "enum": ["use_default", "require_escalated"],
                         "description": format!(
-                            "Execution privilege request. Current agent mode is {permission}. use_default follows that mode (OS sandbox in request_approval, direct host in full_access). require_escalated asks for full host access and, in request_approval mode, needs user approval plus justification."
+                            "Execution privilege request. Current agent mode is {permission}. use_default follows that mode (Codex sandbox in request_approval, Codex-managed full host access in full_access). require_escalated asks for full host access and, in request_approval mode, needs user approval plus justification."
                         )
                     },
                     "justification": {
@@ -201,18 +204,19 @@ impl AgentTool for ExecuteTerminalTool {
             Err(message) => return ToolResult::Error { message },
         };
         if args.timeout_ms.is_some_and(|timeout| {
-            timeout == 0 || timeout > crate::tools::execute::MAX_TERMINAL_TIMEOUT_MS
+            timeout == 0 || timeout > crate::tools::terminal::MAX_TERMINAL_TIMEOUT_MS
         }) {
             return ToolResult::Error {
                 message: format!(
                     "timeout_ms must be between 1 and {}",
-                    crate::tools::execute::MAX_TERMINAL_TIMEOUT_MS
+                    crate::tools::terminal::MAX_TERMINAL_TIMEOUT_MS
                 ),
             };
         }
         let command = args.command;
         let timeout_ms = args.timeout_ms;
         let background = args.background;
+        let tty = args.tty;
         let sandbox_permissions = args.sandbox_permissions;
         let justification = args.justification;
         if context.tools_config.terminal.permission_mode
@@ -234,6 +238,7 @@ impl AgentTool for ExecuteTerminalTool {
                 cwd: cwd.clone(),
                 timeout_ms,
                 background,
+                tty,
                 sandbox_permissions,
                 approved: false,
                 agent_id: context.agent_id,
@@ -241,8 +246,7 @@ impl AgentTool for ExecuteTerminalTool {
                 tool_call_id: context.call_id.clone(),
             },
             &context.tools_config.terminal,
-            &context.process_manager,
-            &context.sandbox_runtime,
+            &context.terminal_manager,
         )
         .await;
 
@@ -270,7 +274,7 @@ impl AgentTool for ExecuteTerminalTool {
                     .first()
                     .cloned()
             }),
-            runtime: "full_access".to_string(),
+            runtime: "codex_full_access".to_string(),
             permission: "full_access".to_string(),
             justification: justification.clone(),
             background: background.unwrap_or(false),
@@ -286,7 +290,7 @@ impl AgentTool for ExecuteTerminalTool {
                 command: command.clone(),
                 approval_id,
                 cwd: cwd.clone(),
-                runtime: "full_access".to_string(),
+                runtime: "codex_full_access".to_string(),
                 permission: "full_access".to_string(),
                 justification: justification.clone(),
                 background: background.unwrap_or(false),
@@ -334,6 +338,7 @@ impl AgentTool for ExecuteTerminalTool {
                 cwd,
                 timeout_ms,
                 background,
+                tty,
                 sandbox_permissions,
                 approved: true,
                 agent_id: context.agent_id,
@@ -341,37 +346,79 @@ impl AgentTool for ExecuteTerminalTool {
                 tool_call_id: context.call_id,
             },
             &context.tools_config.terminal,
-            &context.process_manager,
-            &context.sandbox_runtime,
+            &context.terminal_manager,
         )
         .await;
         result
     }
 }
 
-struct GetTerminalProcessTool;
+struct TerminalSessionTool;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProcessToolArgs {
+struct TerminalSessionArgs {
     process_id: String,
+    action: TerminalSessionAction,
+    #[serde(default)]
+    input: Option<String>,
+    #[serde(default)]
+    cursor: Option<u64>,
+    #[serde(default)]
+    wait_ms: Option<u64>,
+    #[serde(default)]
+    rows: Option<u16>,
+    #[serde(default)]
+    cols: Option<u16>,
 }
 
 #[async_trait]
-impl AgentTool for GetTerminalProcessTool {
+impl AgentTool for TerminalSessionTool {
     fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
         tool_definition(
-            "get_terminal_process",
-            "Read status and captured stdout/stderr for a managed terminal process owned by this agent in this conversation. Call only with a process_id returned by execute_terminal (background=true or foreground timeout promotion). Returns running/completed/failed/stopped, exit_code when finished, duration_ms, and truncated output tails. Do not call for ordinary completed foreground results that never returned a process_id. Do not spam empty polls: if still running, do other work or wait before retrying; if completed/failed/stopped, read the result and stop polling. Only processes owned by the current agent and conversation are visible.",
+            "terminal_session",
+            "Continue a Codex-managed terminal session returned by execute_terminal. Use action=poll to wait for incremental output, write to send raw input without Enter, submit to send input plus Enter, interrupt for Ctrl+C semantics, eof to close stdin, terminate to stop reliably, or resize for a PTY. Pass the output_cursor returned by the previous call as cursor to avoid repeated output. Only sessions owned by the current agent and conversation are accessible.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "process_id": {
                         "type": "string",
-                        "description": "UUID process_id returned by execute_terminal when the command is still managed in the background."
+                        "description": "UUID process_id returned by execute_terminal."
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["poll", "write", "submit", "interrupt", "eof", "terminate", "resize"],
+                        "description": "Session operation. poll only reads; write sends raw input; submit appends Enter; interrupt sends Ctrl+C in a PTY and terminates a pipe session; eof closes stdin; terminate reliably stops the process; resize changes PTY rows/columns."
+                    },
+                    "input": {
+                        "type": "string",
+                        "description": "Input for write or submit. submit may use an empty string to press Enter."
+                    },
+                    "cursor": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Previous output_cursor. The response contains only output after this cursor. Omit or use 0 to read retained output from the beginning."
+                    },
+                    "wait_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 30000,
+                        "description": "Long-poll wait for new output or process completion. Default 5000 for poll and 250 after input/control actions."
+                    },
+                    "rows": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "description": "PTY row count for resize."
+                    },
+                    "cols": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000,
+                        "description": "PTY column count for resize."
                     }
                 },
-                "required": ["process_id"],
+                "required": ["process_id", "action"],
                 "additionalProperties": false
             }),
         )
@@ -382,11 +429,11 @@ impl AgentTool for GetTerminalProcessTool {
     }
 
     async fn execute(&self, arguments: Value, context: ToolExecutionContext) -> ToolResult {
-        let args = match serde_json::from_value::<ProcessToolArgs>(arguments) {
+        let args = match serde_json::from_value::<TerminalSessionArgs>(arguments) {
             Ok(args) => args,
             Err(error) => {
                 return ToolResult::Error {
-                    message: format!("Invalid get_terminal_process arguments: {error}"),
+                    message: format!("Invalid terminal_session arguments: {error}"),
                 };
             }
         };
@@ -396,62 +443,7 @@ impl AgentTool for GetTerminalProcessTool {
                 message: "process_id must be a UUID".to_string(),
             };
         }
-        let Some(info) = context.process_manager.get(&process_id).await else {
-            return ToolResult::Error {
-                message: format!("Terminal process '{process_id}' was not found"),
-            };
-        };
-        if info.agent_id != context.agent_id || info.conversation_id != context.conversation_id {
-            return ToolResult::Blocked {
-                reason: "The process belongs to another agent run".to_string(),
-            };
-        }
-        process_info_to_result(info)
-    }
-}
-
-struct StopTerminalProcessTool;
-
-#[async_trait]
-impl AgentTool for StopTerminalProcessTool {
-    fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
-        tool_definition(
-            "stop_terminal_process",
-            "Stop a running background terminal process owned by this agent in this conversation. Use with a process_id from execute_terminal when a long-running command or service should end early (for example after a dev server is no longer needed). Do not use stop to check success; use get_terminal_process for status/output. If the process already finished, returns its final captured status instead of failing. Only processes owned by the current agent and conversation can be stopped.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "process_id": {
-                        "type": "string",
-                        "description": "UUID process_id returned by execute_terminal for a managed background process."
-                    }
-                },
-                "required": ["process_id"],
-                "additionalProperties": false
-            }),
-        )
-    }
-
-    fn is_enabled(&self, config: &AgentToolsConfig) -> bool {
-        config.terminal.enabled
-    }
-
-    async fn execute(&self, arguments: Value, context: ToolExecutionContext) -> ToolResult {
-        let args = match serde_json::from_value::<ProcessToolArgs>(arguments) {
-            Ok(args) => args,
-            Err(error) => {
-                return ToolResult::Error {
-                    message: format!("Invalid stop_terminal_process arguments: {error}"),
-                };
-            }
-        };
-        let process_id = args.process_id;
-        if Uuid::parse_str(&process_id).is_err() {
-            return ToolResult::Error {
-                message: "process_id must be a UUID".to_string(),
-            };
-        }
-        let Some(existing) = context.process_manager.get(&process_id).await else {
+        let Some(existing) = context.terminal_manager.get(&process_id).await else {
             return ToolResult::Error {
                 message: format!("Terminal process '{process_id}' was not found"),
             };
@@ -463,16 +455,93 @@ impl AgentTool for StopTerminalProcessTool {
                 reason: "The process belongs to another agent run".to_string(),
             };
         }
-        if existing.status != ProcessStatus::Running {
-            return process_info_to_result(existing);
+        let cursor = args.cursor.unwrap_or(0);
+        let wait_ms = args
+            .wait_ms
+            .unwrap_or(if args.action == TerminalSessionAction::Poll {
+                5_000
+            } else {
+                250
+            });
+        if wait_ms > MAX_SESSION_WAIT_MS {
+            return ToolResult::Error {
+                message: format!("wait_ms must be at most {MAX_SESSION_WAIT_MS}"),
+            };
         }
-        match context.process_manager.stop(&process_id).await {
-            Ok(Some(info)) => process_info_to_result(info),
-            Ok(None) => ToolResult::Error {
+        let operation = match args.action {
+            TerminalSessionAction::Poll => Ok(()),
+            TerminalSessionAction::Write => {
+                let Some(input) = args.input.as_deref() else {
+                    return ToolResult::Error {
+                        message: "input is required for action=write".to_string(),
+                    };
+                };
+                context
+                    .terminal_manager
+                    .write(&process_id, input.as_bytes(), false)
+                    .await
+                    .map(|_| ())
+            }
+            TerminalSessionAction::Submit => {
+                let mut input = args.input.unwrap_or_default();
+                input.push_str(if cfg!(windows) && existing.tty {
+                    "\r"
+                } else {
+                    "\n"
+                });
+                context
+                    .terminal_manager
+                    .write(&process_id, input.as_bytes(), false)
+                    .await
+                    .map(|_| ())
+            }
+            TerminalSessionAction::Interrupt => context
+                .terminal_manager
+                .interrupt(&process_id)
+                .await
+                .map(|_| ()),
+            TerminalSessionAction::Eof => context
+                .terminal_manager
+                .write(&process_id, &[], true)
+                .await
+                .map(|_| ()),
+            TerminalSessionAction::Terminate => context
+                .terminal_manager
+                .terminate(&process_id)
+                .await
+                .map(|_| ()),
+            TerminalSessionAction::Resize => {
+                let (Some(rows), Some(cols)) = (args.rows, args.cols) else {
+                    return ToolResult::Error {
+                        message: "rows and cols are required for action=resize".to_string(),
+                    };
+                };
+                context
+                    .terminal_manager
+                    .resize(&process_id, rows, cols)
+                    .await
+                    .map(|_| ())
+            }
+        };
+        if let Err(error) = operation {
+            return ToolResult::Error {
+                message: error.to_string(),
+            };
+        }
+        match context
+            .terminal_manager
+            .read_since(
+                &process_id,
+                cursor,
+                std::time::Duration::from_millis(wait_ms),
+            )
+            .await
+        {
+            Some((info, stdout, stderr, next_cursor)) => {
+                process_read_to_result(info, stdout, stderr, next_cursor)
+            }
+            None => ToolResult::Error {
                 message: format!("Terminal process '{process_id}' was not found"),
-            },
-            Err(error) => ToolResult::Error {
-                message: format!("Failed to stop process: {error}"),
             },
         }
     }
@@ -511,7 +580,7 @@ fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
             "Current permission mode is request_approval: default runs use the OS workspace sandbox (network denied; outside-workspace writes denied). Request sandbox_permissions=\"require_escalated\" only for explicit full-host needs and include justification; the user must approve unless an always-allow grant already matches."
         }
         crate::domain::TerminalPermissionMode::FullAccess => {
-            "Current permission mode is full_access: commands run directly on the host without sandboxing or approval prompts. Still prefer the configured workspace unless the user asked for another path."
+            "Current permission mode is full_access: Codex runs commands with full host access and no approval prompts. Still prefer the configured workspace unless the user asked for another path."
         }
     };
     let examples = if cfg!(windows) {
@@ -519,14 +588,19 @@ fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
     } else {
         "Examples of valid command strings: `ls -la`, `sed -n '1,40p' README.md`, `rg --files`, `cd /path/to/project && cargo test -q`, `printf 'hello\\n' > out.txt`."
     };
+    let platform_limits = if cfg!(windows) {
+        "On Windows, default sandbox execution is limited to short non-interactive foreground commands: background=true is blocked, a timeout is stopped instead of promoted, and terminal_session/PTY/stdin continuation require approved full access."
+    } else {
+        "Sandboxed and full-access commands can continue as managed sessions when explicitly backgrounded or when the foreground timeout is reached."
+    };
 
     format!(
         "Execute a local terminal command and return stdout/stderr/exit_code (or process_id if still running). {shell} {permission} \
 For the default workspace, omit cwd, pass an empty value, or use '.'. Set cwd only to a directory known to exist; never substitute a guessed path. \
-Usage decision: default to foreground for short commands (list files, git, builds/tests that usually finish soon). Set background=true only for long-lived services/watchers/dev servers that must keep running. If runtime is uncertain, stay foreground and raise timeout_ms; unfinished work is promoted to background with a process_id. \
-Foreground commands wait up to timeout_ms (default {default_timeout}, max 120000) and then continue in background with a process_id. Ordinary completed foreground commands do not stay listed as background processes and need no get/stop. \
-Only after a process_id is returned, use get_terminal_process to poll status/output and stop_terminal_process to end the process when done. Do not re-run the same long command instead of polling, and do not call get/stop without a process_id. \
-Returned stdout/stderr tails are limited to the last 64KB. Commands are non-interactive. If a sandboxed attempt is denied, report the failure and escalate only when user intent requires it; never invent success. {examples}"
+Usage decision: default to foreground for short commands (list files, git, builds/tests that usually finish soon). Set background=true only for long-lived services/watchers/dev servers that must keep running. If runtime is uncertain, stay foreground and raise timeout_ms. {platform_limits} \
+Foreground commands wait up to timeout_ms (default {default_timeout}, max 120000). Ordinary completed foreground commands do not stay listed as background processes and need no get/stop. \
+Only after a process_id is returned, use terminal_session with the returned output_cursor to poll incremental output, answer prompts, send Ctrl+C/EOF, resize a PTY, or terminate the session. Do not re-run the same long command instead of continuing its session. \
+Set tty=true only for software that requires a real terminal. Returned output per tool call is limited to the last 64KB. If a sandboxed attempt is denied, report the failure and escalate only when user intent requires it; never invent success. {examples}"
     )
 }
 
@@ -585,34 +659,35 @@ mod tests {
         assert!(terminal.function.description.contains("omit cwd"));
         assert!(terminal.function.description.contains("background=true"));
         assert!(terminal.function.description.contains("Usage decision"));
-        assert!(terminal
-            .function
-            .description
-            .contains("Only after a process_id is returned"));
-        assert!(terminal.function.parameters["properties"]["timeout_ms"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("30000"));
-        assert!(terminal.function.parameters["properties"]["background"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("only for long-lived"));
-        let get_tool = definitions
+        assert!(
+            terminal
+                .function
+                .description
+                .contains("Only after a process_id is returned")
+        );
+        assert!(
+            terminal.function.parameters["properties"]["timeout_ms"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("30000")
+        );
+        assert!(
+            terminal.function.parameters["properties"]["background"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("only for long-lived")
+        );
+        let session_tool = definitions
             .iter()
-            .find(|definition| definition.function.name == "get_terminal_process")
+            .find(|definition| definition.function.name == "terminal_session")
             .unwrap();
-        assert!(get_tool
-            .function
-            .description
-            .contains("Do not spam empty polls"));
-        let stop_tool = definitions
-            .iter()
-            .find(|definition| definition.function.name == "stop_terminal_process")
-            .unwrap();
-        assert!(stop_tool
-            .function
-            .description
-            .contains("Do not use stop to check success"));
+        assert!(session_tool.function.description.contains("output_cursor"));
+        assert!(
+            terminal.function.parameters["properties"]["tty"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("Codex PTY")
+        );
     }
 
     #[test]
@@ -629,14 +704,16 @@ mod tests {
             .find(|definition| definition.function.name == "execute_terminal")
             .unwrap();
         assert!(terminal.function.description.contains("full_access"));
-        assert!(terminal.function.parameters["properties"]["timeout_ms"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("45000"));
+        assert!(
+            terminal.function.parameters["properties"]["timeout_ms"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("45000")
+        );
     }
 
     #[test]
-    fn terminal_enabled_switch_controls_all_three_terminal_tools() {
+    fn terminal_enabled_switch_controls_both_terminal_tools() {
         let mut config = AgentToolsConfig::default();
         config.terminal.enabled = true;
         let enabled = ToolRegistry::with_builtin_tools()
@@ -647,12 +724,14 @@ mod tests {
             .map(|definition| definition.function.name.as_str())
             .collect();
         assert!(names.contains(&"execute_terminal"));
-        assert!(names.contains(&"get_terminal_process"));
-        assert!(names.contains(&"stop_terminal_process"));
+        assert!(names.contains(&"terminal_session"));
+        assert_eq!(names.len(), 2);
 
         config.terminal.enabled = false;
-        assert!(ToolRegistry::with_builtin_tools()
-            .definitions(&config)
-            .is_none());
+        assert!(
+            ToolRegistry::with_builtin_tools()
+                .definitions(&config)
+                .is_none()
+        );
     }
 }

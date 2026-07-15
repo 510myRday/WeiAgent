@@ -39,13 +39,13 @@ mod tests {
         },
         storage::{JsonStore, LlmLogger},
         tools::{
-            approval::ApprovalManager, process_manager::ProcessManager, registry::ToolRegistry,
-            runtime::SandboxRuntimeManager,
+            approval::ApprovalManager, registry::ToolRegistry, runtime::CodexRuntimeManager,
+            terminal::TerminalManager,
         },
     };
 
-    fn test_sandbox_runtime(root: &std::path::Path) -> Arc<SandboxRuntimeManager> {
-        Arc::new(SandboxRuntimeManager::new_available_for_tests(root).unwrap())
+    fn test_codex_runtime(root: &std::path::Path) -> Arc<CodexRuntimeManager> {
+        Arc::new(CodexRuntimeManager::new_available_for_tests(root).unwrap())
     }
 
     struct MockChatClient;
@@ -132,9 +132,9 @@ mod tests {
                 client: Arc::new(MockChatClient),
             }),
             llm_logger: Arc::new(LlmLogger::new(tempfile::tempdir().unwrap().path(), false)),
-            process_manager: Arc::new(ProcessManager::new()),
+            terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
-            sandbox_runtime: test_sandbox_runtime(&temp_dir),
+            codex_runtime: test_codex_runtime(&temp_dir),
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         });
@@ -296,7 +296,7 @@ mod tests {
             tools: Option<Vec<ToolDefinition>>,
         ) -> AppResult<ChatCompletionOutput> {
             if let Some(list) = &tools {
-                assert_eq!(list.len(), 3);
+                assert_eq!(list.len(), 2);
             }
             self.complete_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -391,9 +391,9 @@ mod tests {
                 client: client.clone(),
             }),
             llm_logger: Arc::new(LlmLogger::new(&root, false)),
-            process_manager: Arc::new(ProcessManager::new()),
+            terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
-            sandbox_runtime: test_sandbox_runtime(&root),
+            codex_runtime: test_codex_runtime(&root),
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         };
@@ -779,7 +779,7 @@ mod tests {
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(text.contains("event: tool_result"));
         assert!(text.contains("justification is required"));
-        assert!(state.process_manager.list(None).await.is_empty());
+        assert!(state.terminal_manager.list(None).await.is_empty());
     }
 
     #[tokio::test]
@@ -885,7 +885,7 @@ mod tests {
             _options: crate::llm::client::RequestOptions,
             tools: Option<Vec<ToolDefinition>>,
         ) -> AppResult<ChatStream> {
-            assert_eq!(tools.as_ref().map(Vec::len), Some(3));
+            assert_eq!(tools.as_ref().map(Vec::len), Some(2));
             let events = self.streams.lock().unwrap().pop_front().ok_or_else(|| {
                 crate::error::AppError::Llm("stream script exhausted".to_string())
             })?;
@@ -1038,9 +1038,9 @@ mod tests {
             store: store.clone(),
             llm_registry: Arc::new(MockLlmRegistry { client }),
             llm_logger: Arc::new(LlmLogger::new(&root, false)),
-            process_manager: Arc::new(ProcessManager::new()),
+            terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
-            sandbox_runtime: test_sandbox_runtime(&root),
+            codex_runtime: test_codex_runtime(&root),
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         };
