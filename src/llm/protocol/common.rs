@@ -1,0 +1,412 @@
+use std::sync::Arc;
+
+use reqwest::RequestBuilder;
+use serde_json::{Map, Value};
+
+use crate::{
+    domain::{Agent, ChatMessage, ModelProvider},
+    error::{AppError, AppResult},
+    llm::{
+        client::{ChatStream, RequestOptions},
+        http::{
+            DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, StreamLineParser, StreamLogContext,
+            read_response_body_limited, stream_response,
+        },
+        types::{ChatCompletionOutput, ToolCall, ToolDefinition},
+    },
+    storage::LlmLogger,
+};
+
+pub(crate) trait ProtocolAdapter: Clone + Send + Sync + 'static {
+    fn completion_url(&self, provider: &ModelProvider, agent: &Agent, stream: bool) -> String;
+
+    fn models_url(&self, provider: &ModelProvider) -> String {
+        format!("{}/models", provider.base_url.trim_end_matches('/'))
+    }
+
+    fn build_request(
+        &self,
+        agent: &Agent,
+        messages: &[ChatMessage],
+        stream: bool,
+        system_prompt: &str,
+        extra_body: &Value,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> AppResult<Value>;
+
+    fn authenticated_post(
+        &self,
+        http: &reqwest::Client,
+        url: &str,
+        api_key: &str,
+        body: &Value,
+    ) -> RequestBuilder;
+
+    fn authenticated_get(&self, http: &reqwest::Client, url: &str, api_key: &str)
+    -> RequestBuilder;
+
+    fn parse_response(&self, value: &Value) -> AppResult<ChatCompletionOutput>;
+
+    fn stream_parser(&self) -> Box<dyn StreamLineParser>;
+
+    fn append_models(&self, value: &Value, models: &mut Vec<String>);
+
+    fn next_models_url(
+        &self,
+        _provider: &ModelProvider,
+        _value: &Value,
+        _pages: u8,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ProtocolClient<A> {
+    adapter: A,
+    http: LlmHttp,
+}
+
+impl<A: ProtocolAdapter> ProtocolClient<A> {
+    pub(crate) fn new(adapter: A) -> Self {
+        Self {
+            adapter,
+            http: LlmHttp::new(),
+        }
+    }
+
+    pub(crate) fn with_logger(mut self, logger: Arc<LlmLogger>) -> Self {
+        self.http = self.http.with_logger(logger);
+        self
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn complete(
+        &self,
+        agent: &Agent,
+        provider: &ModelProvider,
+        messages: &[ChatMessage],
+        system_prompt: &str,
+        options: RequestOptions,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> AppResult<ChatCompletionOutput> {
+        let request = self.adapter.build_request(
+            agent,
+            messages,
+            false,
+            system_prompt,
+            &provider.extra_body,
+            tools,
+        )?;
+        let request_json =
+            serde_json::to_string_pretty(&request).unwrap_or_else(|_| request.to_string());
+        let api_key = self.http.api_key(&provider.api_key)?.to_string();
+        let url = self.adapter.completion_url(provider, agent, false);
+        let log_enabled = self.http.log_enabled();
+
+        let response = match self
+            .http
+            .retry_send(options, || {
+                self.adapter
+                    .authenticated_post(self.http.client(), &url, &api_key, &request)
+            })
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.http.spawn_log(
+                    log_enabled,
+                    &agent.name,
+                    &agent.model_id,
+                    &provider.name,
+                    &request_json,
+                    None,
+                    None,
+                    Some(&error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+
+        let status = response.status();
+        let body = read_response_body_limited(response).await?;
+        if !status.is_success() {
+            let error = format!("upstream returned {status}: {body}");
+            self.http.spawn_log(
+                log_enabled,
+                &agent.name,
+                &agent.model_id,
+                &provider.name,
+                &request_json,
+                Some(&body),
+                Some(status.as_u16()),
+                Some(&error),
+            );
+            return Err(AppError::Llm(error));
+        }
+
+        let parsed = serde_json::from_str::<Value>(&body)
+            .map_err(|error| AppError::Llm(format!("invalid upstream JSON: {error}")))
+            .and_then(|value| self.adapter.parse_response(&value));
+        match parsed {
+            Ok(output) if !output.content.is_empty() || !output.tool_calls.is_empty() => {
+                self.http.spawn_log(
+                    log_enabled,
+                    &agent.name,
+                    &agent.model_id,
+                    &provider.name,
+                    &request_json,
+                    Some(&body),
+                    Some(status.as_u16()),
+                    None,
+                );
+                Ok(output)
+            }
+            Ok(_) => {
+                let error = AppError::Llm("empty model response".to_string());
+                self.http.spawn_log(
+                    log_enabled,
+                    &agent.name,
+                    &agent.model_id,
+                    &provider.name,
+                    &request_json,
+                    Some(&body),
+                    Some(status.as_u16()),
+                    Some(&error.to_string()),
+                );
+                Err(error)
+            }
+            Err(error) => {
+                self.http.spawn_log(
+                    log_enabled,
+                    &agent.name,
+                    &agent.model_id,
+                    &provider.name,
+                    &request_json,
+                    Some(&body),
+                    Some(status.as_u16()),
+                    Some(&error.to_string()),
+                );
+                Err(error)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn stream(
+        &self,
+        agent: &Agent,
+        provider: &ModelProvider,
+        messages: &[ChatMessage],
+        system_prompt: &str,
+        options: RequestOptions,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> AppResult<ChatStream> {
+        let request = self.adapter.build_request(
+            agent,
+            messages,
+            true,
+            system_prompt,
+            &provider.extra_body,
+            tools,
+        )?;
+        let request_json =
+            serde_json::to_string_pretty(&request).unwrap_or_else(|_| request.to_string());
+        let api_key = self.http.api_key(&provider.api_key)?.to_string();
+        let url = self.adapter.completion_url(provider, agent, true);
+        let log_enabled = self.http.log_enabled();
+        let response = match self
+            .http
+            .retry_send(options, || {
+                self.adapter
+                    .authenticated_post(self.http.client(), &url, &api_key, &request)
+            })
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.http.spawn_log(
+                    log_enabled,
+                    &agent.name,
+                    &agent.model_id,
+                    &provider.name,
+                    &request_json,
+                    None,
+                    None,
+                    Some(&error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = read_response_body_limited(response)
+                .await
+                .unwrap_or_else(|_| "failed to read error body".to_string());
+            let error = format!("upstream returned {status}: {body}");
+            self.http.spawn_log(
+                log_enabled,
+                &agent.name,
+                &agent.model_id,
+                &provider.name,
+                &request_json,
+                Some(&body),
+                Some(status.as_u16()),
+                Some(&error),
+            );
+            return Err(AppError::Llm(error));
+        }
+
+        Ok(stream_response(
+            response,
+            self.adapter.stream_parser(),
+            options,
+            StreamLogContext {
+                logger: self.http.logger(),
+                enabled: log_enabled,
+                agent_name: agent.name.clone(),
+                model_id: agent.model_id.clone(),
+                provider_name: provider.name.clone(),
+                request_json,
+                status: status.as_u16(),
+            },
+        ))
+    }
+
+    pub(crate) async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {
+        let api_key = self.http.api_key(&provider.api_key)?.to_string();
+        let mut url = self.adapter.models_url(provider);
+        let mut models = Vec::new();
+        let mut pages = 0_u8;
+
+        loop {
+            pages += 1;
+            let response = tokio::time::timeout(
+                DEFAULT_MODEL_LIST_TIMEOUT,
+                self.adapter
+                    .authenticated_get(self.http.client(), &url, &api_key)
+                    .send(),
+            )
+            .await
+            .map_err(|_| AppError::Llm("model list request timed out after 30s".to_string()))?
+            .map_err(|error| AppError::Llm(error.to_string()))?;
+            let status = response.status();
+            let body = read_response_body_limited(response).await?;
+            if !status.is_success() {
+                return Err(AppError::Llm(format!("upstream returned {status}: {body}")));
+            }
+            let value: Value = serde_json::from_str(&body)
+                .map_err(|error| AppError::Llm(format!("invalid model list JSON: {error}")))?;
+            self.adapter.append_models(&value, &mut models);
+
+            let Some(next_url) = self.adapter.next_models_url(provider, &value, pages)? else {
+                break;
+            };
+            url = next_url;
+        }
+
+        models.sort();
+        models.dedup();
+        Ok(models)
+    }
+}
+
+pub(crate) fn message_tool_calls(message: &ChatMessage) -> AppResult<Vec<ToolCall>> {
+    message
+        .tool_calls
+        .as_ref()
+        .map(|calls| {
+            serde_json::from_value(calls.clone())
+                .map_err(|error| AppError::Llm(format!("stored tool calls are invalid: {error}")))
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+pub(crate) fn parse_json_object(value: &str, label: &str) -> AppResult<Value> {
+    match serde_json::from_str::<Value>(value) {
+        Ok(Value::Object(map)) => Ok(Value::Object(map)),
+        Ok(_) => Err(AppError::Llm(format!("{label} must be a JSON object"))),
+        Err(error) => Err(AppError::Llm(format!("{label} are invalid: {error}"))),
+    }
+}
+
+pub(crate) fn validate_tool_calls(tool_calls: Vec<ToolCall>) -> AppResult<Vec<ToolCall>> {
+    if let Some(call) = tool_calls
+        .iter()
+        .find(|call| call.id.is_empty() || call.function.name.is_empty())
+    {
+        return Err(AppError::Llm(format!(
+            "upstream returned an invalid tool call: id={:?}, name={:?}",
+            call.id, call.function.name
+        )));
+    }
+    Ok(tool_calls)
+}
+
+pub(crate) fn merge_extra_body(
+    mut body: Map<String, Value>,
+    extra_body: &Value,
+    reserved: &[&str],
+) -> AppResult<Value> {
+    match extra_body {
+        Value::Null => {}
+        Value::Object(extra) => {
+            for (key, value) in extra {
+                if !reserved.contains(&key.as_str()) {
+                    body.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        _ => {
+            return Err(AppError::BadRequest(
+                "extra_body must be a JSON object".to_string(),
+            ));
+        }
+    }
+    Ok(Value::Object(body))
+}
+
+pub(crate) fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+pub(crate) fn add_query_parameter(base: &str, key: &str, value: &str) -> AppResult<String> {
+    let mut url = reqwest::Url::parse(base).map_err(|error| AppError::Llm(error.to_string()))?;
+    url.query_pairs_mut().append_pair(key, value);
+    Ok(url.to_string())
+}
+
+pub(crate) fn default_models(value: &Value, models: &mut Vec<String>) {
+    models.extend(
+        value["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry["id"].as_str())
+            .filter(|id| !id.trim().is_empty())
+            .map(ToString::to_string),
+    );
+}
+
+pub(crate) fn bearer_post(
+    http: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    body: &Value,
+) -> RequestBuilder {
+    http.post(url).bearer_auth(api_key).json(body)
+}
+
+pub(crate) fn bearer_get(http: &reqwest::Client, url: &str, api_key: &str) -> RequestBuilder {
+    http.get(url).bearer_auth(api_key)
+}

@@ -1,0 +1,471 @@
+use std::{collections::HashSet, sync::Arc};
+
+use async_trait::async_trait;
+use reqwest::RequestBuilder;
+use serde_json::{Map, Value, json};
+
+use crate::{
+    domain::{Agent, ChatMessage, ChatRole, ModelProvider},
+    error::{AppError, AppResult},
+    llm::{
+        client::{ChatClient, ChatStream, RequestOptions},
+        http::StreamLineParser,
+        protocol::common::{
+            ProtocolAdapter, ProtocolClient, bearer_get, bearer_post, default_models,
+            merge_extra_body, message_tool_calls, validate_tool_calls,
+        },
+        types::{
+            ChatCompletionOutput, StreamEvent, ToolCall, ToolCallFunction, ToolDefinition,
+            select_context_messages,
+        },
+    },
+    storage::LlmLogger,
+};
+
+#[derive(Clone)]
+pub struct OpenAiResponsesClient {
+    inner: ProtocolClient<OpenAiResponsesAdapter>,
+}
+
+impl OpenAiResponsesClient {
+    pub fn new() -> Self {
+        Self {
+            inner: ProtocolClient::new(OpenAiResponsesAdapter),
+        }
+    }
+
+    pub fn with_logger(mut self, logger: Arc<LlmLogger>) -> Self {
+        self.inner = self.inner.with_logger(logger);
+        self
+    }
+}
+
+impl Default for OpenAiResponsesClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl ChatClient for OpenAiResponsesClient {
+    async fn complete(
+        &self,
+        agent: &Agent,
+        provider: &ModelProvider,
+        messages: &[ChatMessage],
+        system_prompt: &str,
+        options: RequestOptions,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> AppResult<ChatCompletionOutput> {
+        self.inner
+            .complete(agent, provider, messages, system_prompt, options, tools)
+            .await
+    }
+
+    async fn stream(
+        &self,
+        agent: &Agent,
+        provider: &ModelProvider,
+        messages: &[ChatMessage],
+        system_prompt: &str,
+        options: RequestOptions,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> AppResult<ChatStream> {
+        self.inner
+            .stream(agent, provider, messages, system_prompt, options, tools)
+            .await
+    }
+
+    async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {
+        self.inner.list_models(provider).await
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OpenAiResponsesAdapter;
+
+impl ProtocolAdapter for OpenAiResponsesAdapter {
+    fn completion_url(&self, provider: &ModelProvider, _agent: &Agent, _stream: bool) -> String {
+        format!("{}/responses", provider.base_url.trim_end_matches('/'))
+    }
+
+    fn build_request(
+        &self,
+        agent: &Agent,
+        messages: &[ChatMessage],
+        stream: bool,
+        system_prompt: &str,
+        extra_body: &Value,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> AppResult<Value> {
+        build_openai_responses_request(agent, messages, stream, system_prompt, extra_body, tools)
+    }
+
+    fn authenticated_post(
+        &self,
+        http: &reqwest::Client,
+        url: &str,
+        api_key: &str,
+        body: &Value,
+    ) -> RequestBuilder {
+        bearer_post(http, url, api_key, body)
+    }
+
+    fn authenticated_get(
+        &self,
+        http: &reqwest::Client,
+        url: &str,
+        api_key: &str,
+    ) -> RequestBuilder {
+        bearer_get(http, url, api_key)
+    }
+
+    fn parse_response(&self, value: &Value) -> AppResult<ChatCompletionOutput> {
+        parse_openai_responses_output(value)
+    }
+
+    fn stream_parser(&self) -> Box<dyn StreamLineParser> {
+        Box::new(OpenAiResponsesStreamParser::new())
+    }
+
+    fn append_models(&self, value: &Value, models: &mut Vec<String>) {
+        default_models(value, models);
+    }
+}
+
+fn build_openai_responses_request(
+    agent: &Agent,
+    messages: &[ChatMessage],
+    stream: bool,
+    system_prompt: &str,
+    extra_body: &Value,
+    tools: Option<Vec<ToolDefinition>>,
+) -> AppResult<Value> {
+    let mut input = Vec::new();
+    for message in select_context_messages(messages) {
+        match message.role {
+            ChatRole::User => input.push(json!({
+                "role": "user",
+                "content": message.content,
+            })),
+            ChatRole::Assistant => {
+                if !message.content.is_empty() {
+                    input.push(json!({
+                        "role": "assistant",
+                        "content": message.content,
+                    }));
+                }
+                for call in message_tool_calls(message)? {
+                    input.push(json!({
+                        "type": "function_call",
+                        "call_id": call.id,
+                        "name": call.function.name,
+                        "arguments": call.function.arguments,
+                    }));
+                }
+            }
+            ChatRole::Tool => {
+                let call_id = message.tool_call_id.as_deref().ok_or_else(|| {
+                    AppError::Llm("stored tool message is missing tool_call_id".to_string())
+                })?;
+                input.push(json!({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": message.content,
+                }));
+            }
+        }
+    }
+
+    let mut body = Map::new();
+    body.insert("model".to_string(), json!(agent.model_id));
+    body.insert("instructions".to_string(), json!(system_prompt));
+    body.insert("input".to_string(), Value::Array(input));
+    body.insert("stream".to_string(), Value::Bool(stream));
+    if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
+        body.insert(
+            "tools".to_string(),
+            Value::Array(
+                tools
+                    .into_iter()
+                    .map(|tool| {
+                        json!({
+                            "type": "function",
+                            "name": tool.function.name,
+                            "description": tool.function.description,
+                            "parameters": tool.function.parameters,
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    merge_extra_body(
+        body,
+        extra_body,
+        &["model", "instructions", "input", "stream", "tools"],
+    )
+}
+
+fn parse_openai_responses_output(value: &Value) -> AppResult<ChatCompletionOutput> {
+    let mut content = String::new();
+    let mut tool_calls = Vec::new();
+    for item in value["output"].as_array().into_iter().flatten() {
+        match item["type"].as_str() {
+            Some("message") => {
+                for block in item["content"].as_array().into_iter().flatten() {
+                    if block["type"] == "output_text"
+                        && let Some(text) = block["text"].as_str()
+                    {
+                        content.push_str(text);
+                    }
+                }
+            }
+            Some("function_call") => {
+                tool_calls.push(ToolCall {
+                    id: item["call_id"]
+                        .as_str()
+                        .or_else(|| item["id"].as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    kind: "function".to_string(),
+                    function: ToolCallFunction {
+                        name: item["name"].as_str().unwrap_or_default().to_string(),
+                        arguments: item["arguments"].as_str().unwrap_or("{}").to_string(),
+                    },
+                });
+            }
+            _ => {}
+        }
+    }
+    if content.is_empty()
+        && let Some(output_text) = value["output_text"].as_str()
+    {
+        content.push_str(output_text);
+    }
+    validate_tool_calls(tool_calls).map(|tool_calls| ChatCompletionOutput {
+        content,
+        tool_calls,
+    })
+}
+
+struct OpenAiResponsesStreamParser {
+    saw_tool_calls: bool,
+    finished: bool,
+    started_calls: HashSet<usize>,
+    calls_with_arg_deltas: HashSet<usize>,
+}
+
+impl OpenAiResponsesStreamParser {
+    fn new() -> Self {
+        Self {
+            saw_tool_calls: false,
+            finished: false,
+            started_calls: HashSet::new(),
+            calls_with_arg_deltas: HashSet::new(),
+        }
+    }
+
+    fn parse_event(&mut self, value: &Value) -> Vec<AppResult<StreamEvent>> {
+        match value["type"].as_str() {
+            Some("response.output_text.delta") => value["delta"]
+                .as_str()
+                .filter(|delta| !delta.is_empty())
+                .map(|delta| vec![Ok(StreamEvent::TextDelta(delta.to_string()))])
+                .unwrap_or_default(),
+            Some("response.output_item.added") => self.function_item(value, false),
+            Some("response.output_item.done") => self.function_item(value, true),
+            Some("response.function_call_arguments.delta") => {
+                let index = value["output_index"].as_u64().unwrap_or(0) as usize;
+                let Some(arguments) = value["delta"].as_str().filter(|value| !value.is_empty())
+                else {
+                    return Vec::new();
+                };
+                self.saw_tool_calls = true;
+                self.calls_with_arg_deltas.insert(index);
+                vec![Ok(StreamEvent::ToolCallArgsDelta {
+                    index,
+                    arguments: arguments.to_string(),
+                })]
+            }
+            Some("response.completed") => self.finish(),
+            Some("response.failed" | "response.incomplete" | "error") => {
+                let message = value["error"]["message"]
+                    .as_str()
+                    .or_else(|| value["message"].as_str())
+                    .unwrap_or("OpenAI Responses stream failed");
+                vec![Err(AppError::Llm(message.to_string()))]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn function_item(
+        &mut self,
+        value: &Value,
+        include_arguments_if_missing: bool,
+    ) -> Vec<AppResult<StreamEvent>> {
+        let item = &value["item"];
+        if item["type"] != "function_call" {
+            return Vec::new();
+        }
+        let index = value["output_index"].as_u64().unwrap_or(0) as usize;
+        let mut events = Vec::new();
+        self.saw_tool_calls = true;
+        if self.started_calls.insert(index) {
+            events.push(Ok(StreamEvent::ToolCallStart {
+                index,
+                id: item["call_id"]
+                    .as_str()
+                    .or_else(|| item["id"].as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                name: item["name"].as_str().unwrap_or_default().to_string(),
+            }));
+        }
+        if include_arguments_if_missing
+            && !self.calls_with_arg_deltas.contains(&index)
+            && let Some(arguments) = item["arguments"].as_str().filter(|value| !value.is_empty())
+        {
+            events.push(Ok(StreamEvent::ToolCallArgsDelta {
+                index,
+                arguments: arguments.to_string(),
+            }));
+        }
+        events
+    }
+
+    fn finish(&mut self) -> Vec<AppResult<StreamEvent>> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.finished = true;
+        vec![Ok(if self.saw_tool_calls {
+            StreamEvent::FinishedWithToolCalls
+        } else {
+            StreamEvent::Finished
+        })]
+    }
+}
+
+impl StreamLineParser for OpenAiResponsesStreamParser {
+    fn parse_line(&mut self, line: &str) -> Vec<AppResult<StreamEvent>> {
+        let Some(data) = line.strip_prefix("data:") else {
+            return Vec::new();
+        };
+        let data = data.strip_prefix(' ').unwrap_or(data).trim();
+        if data.is_empty() {
+            return Vec::new();
+        }
+        if data == "[DONE]" {
+            return self.finish();
+        }
+        let value: Value = match serde_json::from_str(data) {
+            Ok(value) => value,
+            Err(error) => return vec![Err(AppError::Llm(format!("invalid SSE JSON: {error}")))],
+        };
+        self.parse_event(&value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::domain::ChatMessageStatus;
+
+    fn fixture() -> (Agent, Vec<ChatMessage>) {
+        let now = Utc::now();
+        let agent = Agent {
+            id: Uuid::new_v4(),
+            name: "Coder".to_string(),
+            description: "Writes code".to_string(),
+            model_provider_id: Uuid::new_v4(),
+            model_id: "test-model".to_string(),
+            is_builtin: false,
+            avatar_icon: "bot".to_string(),
+            avatar_color: "#22c55e".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        let conversation_id = Uuid::new_v4();
+        let messages = vec![
+            ChatMessage {
+                id: Uuid::new_v4(),
+                agent_id: agent.id,
+                conversation_id,
+                role: ChatRole::User,
+                content: "run it".to_string(),
+                status: ChatMessageStatus::Done,
+                created_at: now,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                id: Uuid::new_v4(),
+                agent_id: agent.id,
+                conversation_id,
+                role: ChatRole::Assistant,
+                content: String::new(),
+                status: ChatMessageStatus::Done,
+                created_at: now,
+                tool_calls: Some(json!([{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "run", "arguments": "{}"}
+                }])),
+                tool_call_id: None,
+            },
+            ChatMessage {
+                id: Uuid::new_v4(),
+                agent_id: agent.id,
+                conversation_id,
+                role: ChatRole::Tool,
+                content: "ok".to_string(),
+                status: ChatMessageStatus::Done,
+                created_at: now,
+                tool_calls: None,
+                tool_call_id: Some("call-1".to_string()),
+            },
+        ];
+        (agent, messages)
+    }
+
+    #[test]
+    fn request_maps_tool_history() {
+        let (agent, messages) = fixture();
+        let request =
+            build_openai_responses_request(&agent, &messages, true, "system", &Value::Null, None)
+                .unwrap();
+        assert_eq!(request["model"], "test-model");
+        assert_eq!(request["stream"], true);
+        assert!(
+            request["input"].as_array().unwrap().iter().any(|item| {
+                item["type"] == "function_call_output" && item["call_id"] == "call-1"
+            })
+        );
+    }
+
+    #[test]
+    fn parses_output_and_stream_events() {
+        let output = parse_openai_responses_output(&json!({
+            "output": [
+                {"type":"message","content":[{"type":"output_text","text":"hello"}]},
+                {"type":"function_call","call_id":"call-r","name":"run","arguments":"{}"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(output.content, "hello");
+        assert_eq!(output.tool_calls[0].id, "call-r");
+
+        let mut parser = OpenAiResponsesStreamParser::new();
+        let events =
+            parser.parse_line(r#"data: {"type":"response.output_text.delta","delta":"hello"}"#);
+        assert!(matches!(
+            events.into_iter().next().unwrap().unwrap(),
+            StreamEvent::TextDelta(text) if text == "hello"
+        ));
+    }
+}
