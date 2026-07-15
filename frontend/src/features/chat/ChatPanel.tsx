@@ -21,6 +21,7 @@ import remarkMath from 'remark-math';
 
 import type {
   Agent,
+  AgentRunPhase,
   AppSettings,
   Conversation,
   ModelProvider,
@@ -83,6 +84,7 @@ export function ChatPanel({
     messages,
     isLoadingChat,
     isSending,
+    runPhase,
     loadConversationsForAgent,
     loadMessages,
     cancelActiveSend,
@@ -92,7 +94,8 @@ export function ChatPanel({
     removeConversation,
   } = useConversations({
     newConversationTitle: t('conversation.newTitle'),
-    approvalDisconnectedMessage: t('toolCard.approvalDisconnected'),
+    runCancelledMessage: t('chat.runCancelled'),
+    runInterruptedMessage: t('chat.runInterrupted'),
     onError: toast.error,
     timeoutSeconds: settings.request_timeout_seconds,
   });
@@ -342,6 +345,7 @@ export function ChatPanel({
   }
 
   function handleConversationSelect(conversationId: string) {
+    if (isSending) cancelActiveSend();
     setActiveConversationId(conversationId);
     onOpenMain();
   }
@@ -424,6 +428,7 @@ export function ChatPanel({
 
   function handleNewConversation() {
     if (!activeAgent) return;
+    if (isSending) return;
     if (activeConversation && activeConversation.message_count === 0) {
       onOpenMain();
       return;
@@ -444,6 +449,7 @@ export function ChatPanel({
       tone: 'danger',
     });
     if (!confirmed) return;
+    if (isSending && conversationId === activeConversationId) cancelActiveSend();
     try {
       await removeConversation(conversationId, activeAgent.id);
       toast.success(t('notification.conversationDeleted'));
@@ -524,7 +530,7 @@ export function ChatPanel({
                 </IconButton>
               )}
               actions={(
-                <IconButton variant="ghost" type="button" onClick={handleNewConversation} label={t('conversation.create')}>
+                <IconButton variant="ghost" type="button" onClick={handleNewConversation} disabled={isSending} label={t('conversation.create')}>
                   <Plus size={17} />
                 </IconButton>
               )}
@@ -638,7 +644,7 @@ export function ChatPanel({
               />
             );
           })}
-          {shouldShowAgentWaitingBubble(messages, isSending) ? (
+          {shouldShowAgentWaitingBubble(messages, isSending, runPhase) ? (
             <article className="message-row assistant is-streaming is-waiting" aria-live="polite">
               <MessageAvatar agent={activeAgent} settings={settings} isUser={false} />
               <div className="message-body">
@@ -721,8 +727,13 @@ export function ChatPanel({
 }
 
 
-function shouldShowAgentWaitingBubble(messages: UiMessageItem[], isSending: boolean): boolean {
+function shouldShowAgentWaitingBubble(
+  messages: UiMessageItem[],
+  isSending: boolean,
+  runPhase: AgentRunPhase,
+): boolean {
   if (!isSending) return false;
+  if (runPhase === 'waiting_for_approval') return false;
 
   const last = messages[messages.length - 1];
   if (!last) return true;
@@ -736,7 +747,7 @@ function shouldShowAgentWaitingBubble(messages: UiMessageItem[], isSending: bool
     // Empty streaming assistant already renders dots inside the bubble.
     // Streaming text already communicates progress.
     // Finalized assistant content should not flash a trailing waiting bubble before `done`.
-    return false;
+    return last.status !== 'streaming' && runPhase === 'executing_tool';
   }
 
   // e.g. last item is a user message and the optimistic assistant bubble is missing.

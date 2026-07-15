@@ -384,6 +384,7 @@ export async function streamMessage(
     }
   }
 
+  buffer += decoder.decode();
   if (buffer.trim()) {
     dispatchStreamEvent(buffer, onEvent, state);
   }
@@ -436,7 +437,7 @@ function dispatchStreamEvent(
     return;
   }
 
-  if (event === 'tool_call' || event === 'tool_result' || event === 'approval_required') {
+  if (event === 'phase' || event === 'tool_call' || event === 'tool_result' || event === 'approval_required') {
     try {
       onEvent({ event, data: JSON.parse(data) } as StreamEvent);
     } catch {

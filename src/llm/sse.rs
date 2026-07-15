@@ -22,14 +22,6 @@ pub fn parse_sse_line(line: &str) -> Vec<AppResult<StreamEvent>> {
         Ok(chunk) => {
             let mut events = Vec::new();
             for choice in &chunk.choices {
-                // Check finish_reason for tool_calls
-                if let Some(ref reason) = choice.finish_reason
-                    && reason == "tool_calls"
-                {
-                    events.push(Ok(StreamEvent::FinishedWithToolCalls));
-                    continue;
-                }
-
                 // Text content delta
                 if let Some(ref content) = choice.delta.content
                     && !content.is_empty()
@@ -59,6 +51,14 @@ pub fn parse_sse_line(line: &str) -> Vec<AppResult<StreamEvent>> {
                             }));
                         }
                     }
+                }
+
+                if let Some(reason) = choice.finish_reason.as_deref() {
+                    events.push(Ok(if reason == "tool_calls" {
+                        StreamEvent::FinishedWithToolCalls
+                    } else {
+                        StreamEvent::Finished
+                    }));
                 }
             }
             events
@@ -109,5 +109,28 @@ mod tests {
             StreamEvent::ToolCallArgsDelta { index: 0, .. }
         ));
         assert!(matches!(&events[2], StreamEvent::FinishedWithToolCalls));
+    }
+
+    #[test]
+    fn keeps_final_tool_arguments_when_finish_reason_shares_the_chunk() {
+        let parsed = parse_sse_line(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}",
+        );
+        let events: Vec<_> = parsed.into_iter().map(Result::unwrap).collect();
+        assert!(matches!(
+            &events[0],
+            StreamEvent::ToolCallArgsDelta { arguments, .. } if arguments == "}"
+        ));
+        assert!(matches!(&events[1], StreamEvent::FinishedWithToolCalls));
+    }
+
+    #[test]
+    fn finish_reason_stop_is_a_completion_event_without_done_sentinel() {
+        let parsed =
+            parse_sse_line("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}");
+        assert!(matches!(
+            parsed.into_iter().next().unwrap().unwrap(),
+            StreamEvent::Finished
+        ));
     }
 }

@@ -1,5 +1,13 @@
 import { useState, useCallback, useRef } from 'react';
-import type { ChatMessage, Conversation, ToolCallMessage, ToolCallStatus, UiMessage, UiMessageItem } from '../types';
+import type {
+  AgentRunPhase,
+  ChatMessage,
+  Conversation,
+  ToolCallMessage,
+  ToolCallStatus,
+  UiMessage,
+  UiMessageItem,
+} from '../types';
 import {
   listConversations,
   createConversation,
@@ -47,17 +55,51 @@ function statusFromToolResult(result: any): ToolCallStatus {
   return 'completed';
 }
 
-function rejectPendingApprovals(items: UiMessageItem[], reason: string): UiMessageItem[] {
-  return items.map((item) => {
-    if ('type' in item && item.type === 'tool_call' && item.status === 'pending_approval') {
+function interruptActiveRun(
+  items: UiMessageItem[],
+  reason: string,
+  toolStatus: 'rejected' | 'error',
+): UiMessageItem[] {
+  let activeRunStart = -1;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if ('role' in item && item.role === 'user') {
+      activeRunStart = index;
+      break;
+    }
+  }
+  const next = items.map((item, index) => {
+    if (
+      index > activeRunStart
+      && 'type' in item
+      && item.type === 'tool_call'
+      && (item.status === 'running' || item.status === 'pending_approval')
+    ) {
       return {
         ...item,
-        status: 'rejected',
-        result: { reason },
+        status: item.status === 'pending_approval' ? 'rejected' as const : toolStatus,
+        result: toolStatus === 'error' ? { ...item.result, message: reason } : { ...item.result, reason },
       };
     }
     return item;
   });
+  let assistantIndex = -1;
+  for (let index = next.length - 1; index > activeRunStart; index -= 1) {
+    const item = next[index];
+    if ('role' in item && item.role === 'assistant' && item.status === 'streaming') {
+      assistantIndex = index;
+      break;
+    }
+  }
+  if (assistantIndex < 0) return next;
+  const assistant = next[assistantIndex];
+  if (!('role' in assistant)) return next;
+  if (!assistant.content) {
+    return next.filter((_, index) => index !== assistantIndex);
+  }
+  return next.map((item, index) => (
+    index === assistantIndex && 'role' in item ? { ...item, status: 'failed' as const } : item
+  ));
 }
 
 function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
@@ -119,14 +161,16 @@ function isEmptyConversation(conversation: Conversation): boolean {
 
 type UseConversationsOptions = {
   newConversationTitle: string;
-  approvalDisconnectedMessage: string;
+  runCancelledMessage: string;
+  runInterruptedMessage: string;
   onError?: (msg: string) => void;
   timeoutSeconds: number;
 };
 
 export function useConversations({
   newConversationTitle,
-  approvalDisconnectedMessage,
+  runCancelledMessage,
+  runInterruptedMessage,
   onError,
   timeoutSeconds,
 }: UseConversationsOptions) {
@@ -135,6 +179,7 @@ export function useConversations({
   const [messages, setMessages] = useState<UiMessageItem[]>([]);
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [runPhase, setRunPhase] = useState<AgentRunPhase>('idle');
 
   const loadChatIdRef = useRef(0);
   const sendRequestIdRef = useRef(0);
@@ -185,12 +230,18 @@ export function useConversations({
     setActiveConversationId('');
     setMessages([]);
     setIsLoadingChat(false);
+    setRunPhase('idle');
   }, []);
 
   const appendDelta = useCallback((delta: string) => {
     setMessages((current) => {
       const last = current[current.length - 1];
-      if (last && 'role' in last && last.role === 'assistant') {
+      if (
+        last
+        && 'role' in last
+        && last.role === 'assistant'
+        && last.status === 'streaming'
+      ) {
         return [
           ...current.slice(0, -1),
           {
@@ -222,34 +273,26 @@ export function useConversations({
     sendAbortControllerRef.current?.abort();
     sendAbortControllerRef.current = null;
     setMessages((current) => {
-      const next = rejectPendingApprovals(current, approvalDisconnectedMessage);
-      const last = next[next.length - 1];
-      if (last && 'role' in last && last.role === 'assistant' && last.status === 'streaming') {
-        if (!last.content) return next.slice(0, -1);
-        return [...next.slice(0, -1), { ...last, status: 'failed' }];
-      }
-      return next;
+      return interruptActiveRun(current, runCancelledMessage, 'rejected');
     });
+    setRunPhase('idle');
     setIsSending(false);
-  }, [approvalDisconnectedMessage]);
+  }, [runCancelledMessage]);
 
   const handleStreamEvent = useCallback(
     (evt: { event: string; data: unknown }) => {
       if (evt.event === 'error') {
         setIsSending(false);
+        setRunPhase('idle');
         setMessages((current) => {
-          const next = rejectPendingApprovals(current, approvalDisconnectedMessage);
-          const last = next[next.length - 1];
-          if (last && 'role' in last && last.role === 'assistant' && last.status === 'streaming' && !last.content) {
-            return next.slice(0, -1);
-          }
-          return next;
+          return interruptActiveRun(current, runInterruptedMessage, 'error');
         });
         onErrorRef.current?.(typeof evt.data === 'string' ? evt.data : 'Stream error');
         return;
       }
       if (evt.event === 'done') {
         setIsSending(false);
+        setRunPhase('idle');
         setMessages((current) => {
           const last = current[current.length - 1];
           if (last && 'role' in last && last.role === 'assistant' && last.status === 'streaming') {
@@ -260,6 +303,11 @@ export function useConversations({
           }
           return current;
         });
+        return;
+      }
+      if (evt.event === 'phase') {
+        const phase = (evt.data as { phase: Exclude<AgentRunPhase, 'idle'> }).phase;
+        setRunPhase(phase);
         return;
       }
       if (evt.event === 'user') {
@@ -282,7 +330,34 @@ export function useConversations({
         const msg = toUiMessage(evt.data as Parameters<typeof toUiMessage>[0]);
         setMessages((current) => {
           const last = current[current.length - 1];
-          if (last && 'role' in last && last.role === 'assistant') {
+          if (msg.status === 'failed') {
+            const withoutEmptyStreaming = current.filter((item, index) => {
+              const isLast = index === current.length - 1;
+              return !(
+                isLast
+                && 'role' in item
+                && item.role === 'assistant'
+                && item.status === 'streaming'
+                && !item.content
+              );
+            });
+            const withFailedPartial = withoutEmptyStreaming.map((item, index) => {
+              const isLast = index === withoutEmptyStreaming.length - 1;
+              return isLast
+                && 'role' in item
+                && item.role === 'assistant'
+                && item.status === 'streaming'
+                ? { ...item, status: 'failed' as const }
+                : item;
+            });
+            return [...withFailedPartial, { ...msg, status: 'failed' as const }];
+          }
+          if (
+            last
+            && 'role' in last
+            && last.role === 'assistant'
+            && last.status === 'streaming'
+          ) {
             return [
               ...current.slice(0, -1),
               {
@@ -298,6 +373,7 @@ export function useConversations({
         return;
       }
       if (evt.event === 'tool_call') {
+        setRunPhase('executing_tool');
         const d = evt.data as { call_id: string; name: string; arguments: Record<string, any> };
         const toolMsg: ToolCallMessage = {
           type: 'tool_call',
@@ -311,6 +387,14 @@ export function useConversations({
             const isLast = index === current.length - 1;
             return !(isLast && 'role' in item && item.role === 'assistant' && item.status === 'streaming' && !item.content);
           });
+          const existingIndex = withoutEmptyAssistant.findIndex(
+            (item) => 'type' in item && item.type === 'tool_call' && item.call_id === d.call_id,
+          );
+          if (existingIndex >= 0) {
+            return withoutEmptyAssistant.map((item, index) => (
+              index === existingIndex ? toolMsg : item
+            ));
+          }
           return [...withoutEmptyAssistant, toolMsg];
         });
         return;
@@ -326,6 +410,7 @@ export function useConversations({
         return;
       }
       if (evt.event === 'approval_required') {
+        setRunPhase('waiting_for_approval');
         const d = evt.data as {
           call_id: string;
           agent_id: string;
@@ -346,7 +431,7 @@ export function useConversations({
         return;
       }
     },
-    [appendDelta, approvalDisconnectedMessage],
+    [appendDelta, runInterruptedMessage],
   );
 
   const send = useCallback(
@@ -358,6 +443,7 @@ export function useConversations({
       sendAbortControllerRef.current?.abort();
       sendAbortControllerRef.current = controller;
       setIsSending(true);
+      setRunPhase('waiting_for_model');
       setMessages((current) => [
         ...current,
         {
@@ -408,14 +494,10 @@ export function useConversations({
       } catch (cause) {
         if (requestId === sendRequestIdRef.current) {
           setIsSending(false);
+          setRunPhase('idle');
           if (!isAbortError(cause)) {
             setMessages((current) => {
-              const next = rejectPendingApprovals(current, approvalDisconnectedMessage);
-              const last = next[next.length - 1];
-              if (last && 'clientId' in last && last.clientId === optimisticAssistantClientId) {
-                return [...next.slice(0, -1), { ...last, status: 'failed' as const }];
-              }
-              return next;
+              return interruptActiveRun(current, runInterruptedMessage, 'error');
             });
             onErrorRef.current?.(cause instanceof Error ? cause.message : 'Send failed');
           }
@@ -424,10 +506,11 @@ export function useConversations({
         if (requestId === sendRequestIdRef.current) {
           sendAbortControllerRef.current = null;
           setIsSending(false);
+          setRunPhase('idle');
         }
       }
     },
-    [activeConversationId, approvalDisconnectedMessage, handleStreamEvent, loadConversationsForAgent, newConversationTitle, timeoutSeconds],
+    [activeConversationId, handleStreamEvent, loadConversationsForAgent, newConversationTitle, runInterruptedMessage, timeoutSeconds],
   );
 
   const createNewConversation = useCallback(
@@ -466,6 +549,7 @@ export function useConversations({
     setMessages,
     isLoadingChat,
     isSending,
+    runPhase,
     loadConversationsForAgent,
     loadMessages,
     cancelActiveSend,

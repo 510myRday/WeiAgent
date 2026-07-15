@@ -84,6 +84,8 @@
     "placeholderNoModel": "Please select a model",
     "messageLabel": "Message",
     "failed": "Response interrupted; current content was saved",
+    "runCancelled": "You stopped this response.",
+    "runInterrupted": "The connection or agent run was interrupted.",
     "copy": "Copy",
     "copied": "Copied",
     "copyCode": "Copy code",

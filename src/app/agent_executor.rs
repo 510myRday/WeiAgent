@@ -5,6 +5,7 @@ use std::{
 
 use chrono::Utc;
 use futures_util::StreamExt;
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -28,11 +29,24 @@ const MAX_TOOL_CALL_ID_BYTES: usize = 256;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_STREAM_CONTENT_BYTES: usize = 2 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunPhase {
+    WaitingForModel,
+    ExecutingTool,
+    WaitingForApproval,
+}
+
 #[derive(Debug, Clone)]
 pub enum AgentRunEvent {
     User(ChatMessage),
     Assistant(ChatMessage),
     Delta(String),
+    Phase {
+        phase: AgentRunPhase,
+        iteration: usize,
+        call_id: Option<String>,
+    },
     ToolCall {
         call_id: String,
         name: String,
@@ -92,7 +106,7 @@ pub async fn run_agent(
             std::slice::from_ref(&user_message),
         )
         .await?;
-    emit(&events, AgentRunEvent::User(user_message.clone()))?;
+    emit(&events, AgentRunEvent::User(user_message.clone())).await?;
     let runtime = AgentRuntime {
         state: &state,
         client: &client,
@@ -103,6 +117,15 @@ pub async fn run_agent(
     };
 
     for iteration in 0..max_llm_iterations {
+        emit(
+            &events,
+            AgentRunEvent::Phase {
+                phase: AgentRunPhase::WaitingForModel,
+                iteration,
+                call_id: None,
+            },
+        )
+        .await?;
         let output = match run_llm_iteration(&runtime, &messages, tools.clone()).await {
             Ok(output) => output,
             Err(error) => {
@@ -136,8 +159,8 @@ pub async fn run_agent(
             .await?;
 
         if output.output.tool_calls.is_empty() {
-            emit(&events, AgentRunEvent::Assistant(assistant_message.clone()))?;
-            emit(&events, AgentRunEvent::Done)?;
+            emit(&events, AgentRunEvent::Assistant(assistant_message.clone())).await?;
+            emit(&events, AgentRunEvent::Done).await?;
             return Ok(SendMessageResponse {
                 user: user_message,
                 assistant: assistant_message,
@@ -145,7 +168,7 @@ pub async fn run_agent(
         }
 
         if !assistant_message.content.is_empty() {
-            emit(&events, AgentRunEvent::Assistant(assistant_message.clone()))?;
+            emit(&events, AgentRunEvent::Assistant(assistant_message.clone())).await?;
         }
         messages.push(assistant_message);
         if let Err(error) = execute_tool_calls(
@@ -155,6 +178,7 @@ pub async fn run_agent(
             output.output.tool_calls,
             &mut tool_budget,
             &events,
+            iteration,
         )
         .await
         {
@@ -175,8 +199,8 @@ pub async fn run_agent(
             return Err(error);
         }
     };
-    emit(&events, AgentRunEvent::Assistant(summary.clone()))?;
-    emit(&events, AgentRunEvent::Done)?;
+    emit(&events, AgentRunEvent::Assistant(summary.clone())).await?;
+    emit(&events, AgentRunEvent::Done).await?;
     Ok(SendMessageResponse {
         user: user_message,
         assistant: summary,
@@ -200,7 +224,7 @@ async fn persist_run_failure(runtime: &AgentRuntime<'_>, error: &AppError) {
         .store
         .upsert_conversation_message(assistant_message.conversation_id, assistant_message.clone())
         .await;
-    let _ = emit(runtime.events, AgentRunEvent::Assistant(assistant_message));
+    let _ = emit(runtime.events, AgentRunEvent::Assistant(assistant_message)).await;
 }
 
 async fn finalize_after_budget(
@@ -224,6 +248,15 @@ async fn finalize_after_budget(
     // Keep the budget notice in the in-memory LLM context only.
     messages.push(budget_notice);
 
+    emit(
+        runtime.events,
+        AgentRunEvent::Phase {
+            phase: AgentRunPhase::WaitingForModel,
+            iteration: max_llm_iterations,
+            call_id: None,
+        },
+    )
+    .await?;
     let output = run_llm_iteration(runtime, messages, None).await?;
 
     let mut content = output.output.content;
@@ -262,8 +295,35 @@ async fn execute_tool_calls(
     tool_calls: Vec<ToolCall>,
     budget: &mut ToolBudget,
     events: &Option<mpsc::Sender<AgentRunEvent>>,
+    iteration: usize,
 ) -> AppResult<()> {
     for (index, call) in tool_calls.into_iter().enumerate() {
+        let parsed_arguments = serde_json::from_str::<Value>(&call.function.arguments);
+        let display_arguments = parsed_arguments
+            .as_ref()
+            .ok()
+            .filter(|value| value.is_object())
+            .cloned()
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        emit(
+            events,
+            AgentRunEvent::Phase {
+                phase: AgentRunPhase::ExecutingTool,
+                iteration,
+                call_id: Some(call.id.clone()),
+            },
+        )
+        .await?;
+        emit(
+            events,
+            AgentRunEvent::ToolCall {
+                call_id: call.id.clone(),
+                name: call.function.name.clone(),
+                arguments: display_arguments,
+            },
+        )
+        .await?;
+
         let validation_error = if call.id.is_empty() {
             Some("tool call id cannot be empty".to_string())
         } else if call.id.len() > MAX_TOOL_CALL_ID_BYTES {
@@ -293,10 +353,11 @@ async fn execute_tool_calls(
                     call_id: call.id,
                     result,
                 },
-            )?;
+            )
+            .await?;
             continue;
         }
-        let arguments = match serde_json::from_str::<Value>(&call.function.arguments) {
+        let arguments = match parsed_arguments {
             Ok(Value::Object(map)) => Value::Object(map),
             Ok(other) => {
                 let result = ToolResult::Error {
@@ -309,7 +370,8 @@ async fn execute_tool_calls(
                         call_id: call.id,
                         result,
                     },
-                )?;
+                )
+                .await?;
                 continue;
             }
             Err(error) => {
@@ -323,18 +385,11 @@ async fn execute_tool_calls(
                         call_id: call.id,
                         result,
                     },
-                )?;
+                )
+                .await?;
                 continue;
             }
         };
-        emit(
-            events,
-            AgentRunEvent::ToolCall {
-                call_id: call.id.clone(),
-                name: call.function.name.clone(),
-                arguments: arguments.clone(),
-            },
-        )?;
 
         let context = ToolExecutionContext {
             agent_id: prepared.agent.id,
@@ -346,15 +401,23 @@ async fn execute_tool_calls(
             approval_manager: state.approval_manager.clone(),
             event_sender: None,
         };
-        let result =
-            execute_tool_with_events(state, &call.function.name, arguments, context, events).await;
+        let result = execute_tool_with_events(
+            state,
+            &call.function.name,
+            arguments,
+            context,
+            events,
+            iteration,
+        )
+        .await;
         emit(
             events,
             AgentRunEvent::ToolResult {
                 call_id: call.id.clone(),
                 result: result.clone(),
             },
-        )?;
+        )
+        .await?;
         persist_tool_result(state, prepared, messages, &call.id, &result).await?;
     }
     Ok(())
@@ -412,6 +475,7 @@ async fn stream_llm_iteration(
     let mut persisted_chars = 0_usize;
     let mut last_save = Instant::now();
     let mut calls: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
+    let mut finished_with_tool_calls = None;
     let mut stream = runtime
         .client
         .stream(
@@ -447,15 +511,35 @@ async fn stream_llm_iteration(
         let Some(event) = next else {
             break;
         };
-        match event? {
+        let event = match event {
+            Ok(event) => event,
+            Err(error) => {
+                return Err(fail_stream_iteration(
+                    runtime, message_id, created_at, &content, persisted, error,
+                )
+                .await);
+            }
+        };
+        match event {
             StreamEvent::TextDelta(delta) => {
                 if content.len().saturating_add(delta.len()) > MAX_STREAM_CONTENT_BYTES {
-                    return Err(AppError::Llm(format!(
-                        "streamed response exceeded {MAX_STREAM_CONTENT_BYTES} bytes"
-                    )));
+                    return Err(fail_stream_iteration(
+                        runtime,
+                        message_id,
+                        created_at,
+                        &content,
+                        persisted,
+                        AppError::Llm(format!(
+                            "streamed response exceeded {MAX_STREAM_CONTENT_BYTES} bytes"
+                        )),
+                    )
+                    .await);
                 }
                 content.push_str(&delta);
-                if emit(runtime.events, AgentRunEvent::Delta(delta)).is_err() {
+                if emit(runtime.events, AgentRunEvent::Delta(delta))
+                    .await
+                    .is_err()
+                {
                     mark_interrupted(
                         runtime.state,
                         runtime.prepared,
@@ -473,11 +557,17 @@ async fn stream_llm_iteration(
                 {
                     let message =
                         partial_assistant(runtime.prepared, message_id, created_at, &content);
-                    runtime
+                    if let Err(error) = runtime
                         .state
                         .store
                         .upsert_conversation_message(message.conversation_id, message)
-                        .await?;
+                        .await
+                    {
+                        return Err(fail_stream_iteration(
+                            runtime, message_id, created_at, &content, persisted, error,
+                        )
+                        .await);
+                    }
                     persisted = true;
                     persisted_chars = content.chars().count();
                     last_save = Instant::now();
@@ -492,14 +582,84 @@ async fn stream_llm_iteration(
                 let builder = calls.entry(index).or_default();
                 if builder.arguments.len().saturating_add(arguments.len()) > MAX_TOOL_ARGUMENT_BYTES
                 {
-                    return Err(AppError::Llm(format!(
-                        "tool arguments exceeded {MAX_TOOL_ARGUMENT_BYTES} bytes"
-                    )));
+                    return Err(fail_stream_iteration(
+                        runtime,
+                        message_id,
+                        created_at,
+                        &content,
+                        persisted,
+                        AppError::Llm(format!(
+                            "tool arguments exceeded {MAX_TOOL_ARGUMENT_BYTES} bytes"
+                        )),
+                    )
+                    .await);
                 }
                 builder.arguments.push_str(&arguments);
             }
-            StreamEvent::FinishedWithToolCalls | StreamEvent::Finished => {}
+            StreamEvent::FinishedWithToolCalls => {
+                finished_with_tool_calls = Some(true);
+                break;
+            }
+            StreamEvent::Finished => {
+                finished_with_tool_calls = Some(false);
+                break;
+            }
         }
+    }
+
+    let Some(finished_with_tool_calls) = finished_with_tool_calls else {
+        mark_interrupted(
+            runtime.state,
+            runtime.prepared,
+            message_id,
+            created_at,
+            &content,
+            persisted,
+        )
+        .await;
+        return Err(AppError::Llm(
+            "LLM stream ended before a completion event".to_string(),
+        ));
+    };
+    let tool_calls = calls
+        .into_values()
+        .map(|builder| {
+            if builder.id.is_empty() || builder.name.is_empty() {
+                return Err(AppError::Llm(
+                    "LLM stream ended with an incomplete tool call".to_string(),
+                ));
+            }
+            Ok(ToolCall {
+                id: builder.id,
+                kind: "function".to_string(),
+                function: ToolCallFunction {
+                    name: builder.name,
+                    arguments: builder.arguments,
+                },
+            })
+        })
+        .collect::<AppResult<Vec<_>>>();
+    let tool_calls = match tool_calls {
+        Ok(tool_calls) => tool_calls,
+        Err(error) => {
+            return Err(fail_stream_iteration(
+                runtime, message_id, created_at, &content, persisted, error,
+            )
+            .await);
+        }
+    };
+    if finished_with_tool_calls && tool_calls.is_empty() {
+        return Err(fail_stream_iteration(
+            runtime,
+            message_id,
+            created_at,
+            &content,
+            persisted,
+            AppError::Llm(
+                "LLM reported tool calls but did not provide a complete tool call".to_string(),
+            ),
+        )
+        .await);
     }
 
     Ok(IterationOutput {
@@ -507,18 +667,7 @@ async fn stream_llm_iteration(
         created_at,
         output: ChatCompletionOutput {
             content,
-            tool_calls: calls
-                .into_values()
-                .filter(|builder| !builder.id.is_empty() && !builder.name.is_empty())
-                .map(|builder| ToolCall {
-                    id: builder.id,
-                    kind: "function".to_string(),
-                    function: ToolCallFunction {
-                        name: builder.name,
-                        arguments: builder.arguments,
-                    },
-                })
-                .collect(),
+            tool_calls,
         },
     })
 }
@@ -536,6 +685,7 @@ async fn execute_tool_with_events(
     arguments: Value,
     mut context: ToolExecutionContext,
     events: &Option<mpsc::Sender<AgentRunEvent>>,
+    iteration: usize,
 ) -> ToolResult {
     let Some(run_sender) = events.clone() else {
         return state.tool_registry.execute(name, arguments, context).await;
@@ -569,6 +719,19 @@ async fn execute_tool_with_events(
                         justification,
                         background,
                     } => {
+                        if run_sender
+                            .send(AgentRunEvent::Phase {
+                                phase: AgentRunPhase::WaitingForApproval,
+                                iteration,
+                                call_id: Some(call_id.clone()),
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return ToolResult::Rejected {
+                                reason: "Approval client disconnected".to_string(),
+                            };
+                        }
                         AgentRunEvent::ApprovalRequired {
                             call_id,
                             agent_id,
@@ -582,7 +745,7 @@ async fn execute_tool_with_events(
                         }
                     }
                 };
-                if run_sender.try_send(mapped).is_err() {
+                if run_sender.send(mapped).await.is_err() {
                     return ToolResult::Rejected {
                         reason: "Approval client disconnected".to_string(),
                     };
@@ -659,10 +822,31 @@ async fn mark_interrupted(
         .await;
 }
 
-fn emit(events: &Option<mpsc::Sender<AgentRunEvent>>, event: AgentRunEvent) -> AppResult<()> {
+async fn fail_stream_iteration(
+    runtime: &AgentRuntime<'_>,
+    message_id: Uuid,
+    created_at: chrono::DateTime<Utc>,
+    content: &str,
+    persisted: bool,
+    error: AppError,
+) -> AppError {
+    mark_interrupted(
+        runtime.state,
+        runtime.prepared,
+        message_id,
+        created_at,
+        content,
+        persisted,
+    )
+    .await;
+    error
+}
+
+async fn emit(events: &Option<mpsc::Sender<AgentRunEvent>>, event: AgentRunEvent) -> AppResult<()> {
     if let Some(events) = events {
         events
-            .try_send(event)
+            .send(event)
+            .await
             .map_err(|_| AppError::Llm("stream client disconnected".to_string()))?;
     }
     Ok(())

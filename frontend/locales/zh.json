@@ -84,6 +84,8 @@
     "placeholderNoModel": "请选择具体模型",
     "messageLabel": "消息",
     "failed": "回复中断，已保存当前内容",
+    "runCancelled": "本次回复已由你停止。",
+    "runInterrupted": "连接或 Agent 运行已中断。",
     "copy": "复制",
     "copied": "已复制",
     "copyCode": "复制代码",

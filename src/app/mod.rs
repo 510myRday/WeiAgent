@@ -524,6 +524,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalid_tool_arguments_still_emit_a_tool_card_and_result() {
+        let outputs = vec![
+            ChatCompletionOutput {
+                content: String::new(),
+                tool_calls: vec![crate::llm::types::ToolCall {
+                    id: "invalid-args-call".to_string(),
+                    kind: "function".to_string(),
+                    function: crate::llm::types::ToolCallFunction {
+                        name: "execute_terminal".to_string(),
+                        arguments: "{\"command\":".to_string(),
+                    },
+                }],
+            },
+            ChatCompletionOutput {
+                content: "handled invalid arguments".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ];
+        let (app, _, conversation_id, _, _) = scripted_test_app(outputs).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/conversations/{conversation_id}/messages/stream"
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"content": "run invalid tool", "stream": false}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("event: tool_call"));
+        assert!(text.contains("invalid-args-call"));
+        assert!(text.contains("event: tool_result"));
+        assert!(text.contains("Invalid tool arguments"));
+        assert!(text.contains("event: done"));
+    }
+
+    #[tokio::test]
     async fn timeout_moves_process_to_background_and_captures_output() {
         let outputs = vec![
             ChatCompletionOutput {
@@ -945,6 +989,59 @@ mod tests {
         }
     }
 
+    async fn streaming_test_app(streams: Vec<Vec<StreamEvent>>) -> (Router, Arc<JsonStore>, Uuid) {
+        let root = tempfile::tempdir().unwrap().keep();
+        let store = Arc::new(JsonStore::new(&root).await.unwrap());
+        let provider = store
+            .create_model_provider(CreateModelProviderRequest {
+                provider_type: ProviderType::OpenAiCompatible,
+                name: "Streaming Provider".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec!["test-model".to_string()],
+                extra_body: serde_json::Value::Null,
+            })
+            .await
+            .unwrap();
+        let agent = store
+            .create_agent(CreateAgentRequest {
+                name: "Streaming Tool Agent".to_string(),
+                description: "Runs streaming tool tests.".to_string(),
+                model_provider_id: provider.id,
+                model_id: "test-model".to_string(),
+                avatar_icon: Some("bot".to_string()),
+                avatar_color: Some("#22c55e".to_string()),
+            })
+            .await
+            .unwrap();
+        let conversation = store
+            .create_conversation(agent.id, CreateConversationRequest { title: None })
+            .await
+            .unwrap();
+        let mut tools_config = crate::domain::AgentToolsConfig::default();
+        tools_config.terminal.enabled = true;
+        tools_config.terminal.permission_mode = crate::domain::TerminalPermissionMode::FullAccess;
+        tools_config.terminal.allowed_cwd_roots = vec![root.to_string_lossy().to_string()];
+        store
+            .update_agent_tools_config(agent.id, tools_config)
+            .await
+            .unwrap();
+        let client = Arc::new(StreamingToolClient {
+            streams: std::sync::Mutex::new(streams.into()),
+        });
+        let state = AppState {
+            store: store.clone(),
+            llm_registry: Arc::new(MockLlmRegistry { client }),
+            llm_logger: Arc::new(LlmLogger::new(&root, false)),
+            terminal_manager: TerminalManager::new_for_tests(),
+            approval_manager: Arc::new(ApprovalManager::new()),
+            codex_runtime: test_codex_runtime(&root),
+            tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
+            run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
+        };
+        (build_router(state), store, conversation.id)
+    }
+
     #[tokio::test]
     async fn tool_budget_triggers_final_summary_without_tools() {
         let outputs = vec![
@@ -1022,85 +1119,34 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_function_call_runs_tool_and_streams_final_answer() {
-        let root = tempfile::tempdir().unwrap().keep();
-        let store = Arc::new(JsonStore::new(&root).await.unwrap());
-        let provider = store
-            .create_model_provider(CreateModelProviderRequest {
-                provider_type: ProviderType::OpenAiCompatible,
-                name: "Streaming Provider".to_string(),
-                base_url: "https://example.test/v1".to_string(),
-                api_key: "test-key".to_string(),
-                models: vec!["test-model".to_string()],
-                extra_body: serde_json::Value::Null,
-            })
-            .await
-            .unwrap();
-        let agent = store
-            .create_agent(CreateAgentRequest {
-                name: "Streaming Tool Agent".to_string(),
-                description: "Runs streaming tool tests.".to_string(),
-                model_provider_id: provider.id,
-                model_id: "test-model".to_string(),
-                avatar_icon: Some("bot".to_string()),
-                avatar_color: Some("#22c55e".to_string()),
-            })
-            .await
-            .unwrap();
-        let conversation = store
-            .create_conversation(agent.id, CreateConversationRequest { title: None })
-            .await
-            .unwrap();
-        let mut tools_config = crate::domain::AgentToolsConfig::default();
-        tools_config.terminal.enabled = true;
-        tools_config.terminal.permission_mode = crate::domain::TerminalPermissionMode::FullAccess;
-        tools_config.terminal.allowed_cwd_roots = vec![root.to_string_lossy().to_string()];
-        store
-            .update_agent_tools_config(agent.id, tools_config)
-            .await
-            .unwrap();
         let arguments = json!({"command": "echo streamed-tool"}).to_string();
-        let client = Arc::new(StreamingToolClient {
-            streams: std::sync::Mutex::new(
-                vec![
-                    vec![
-                        StreamEvent::ToolCallStart {
-                            index: 0,
-                            id: "stream-call".to_string(),
-                            name: "execute_terminal".to_string(),
-                        },
-                        StreamEvent::ToolCallArgsDelta {
-                            index: 0,
-                            arguments,
-                        },
-                        StreamEvent::FinishedWithToolCalls,
-                    ],
-                    vec![
-                        StreamEvent::TextDelta("streamed ".to_string()),
-                        StreamEvent::TextDelta("final".to_string()),
-                        StreamEvent::Finished,
-                    ],
-                ]
-                .into(),
-            ),
-        });
-        let state = AppState {
-            store: store.clone(),
-            llm_registry: Arc::new(MockLlmRegistry { client }),
-            llm_logger: Arc::new(LlmLogger::new(&root, false)),
-            terminal_manager: TerminalManager::new_for_tests(),
-            approval_manager: Arc::new(ApprovalManager::new()),
-            codex_runtime: test_codex_runtime(&root),
-            tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
-            run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
-        };
-        let app = build_router(state);
+        let (app, store, conversation_id) = streaming_test_app(vec![
+            vec![
+                StreamEvent::ToolCallStart {
+                    index: 0,
+                    id: "stream-call".to_string(),
+                    name: "execute_terminal".to_string(),
+                },
+                StreamEvent::ToolCallArgsDelta {
+                    index: 0,
+                    arguments,
+                },
+                StreamEvent::FinishedWithToolCalls,
+            ],
+            vec![
+                StreamEvent::TextDelta("streamed ".to_string()),
+                StreamEvent::TextDelta("final".to_string()),
+                StreamEvent::Finished,
+            ],
+        ])
+        .await;
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri(format!(
                         "/api/conversations/{}/messages/stream",
-                        conversation.id
+                        conversation_id
                     ))
                     .header("content-type", "application/json")
                     .body(Body::from(
@@ -1112,12 +1158,15 @@ mod tests {
             .unwrap();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("event: phase"));
+        assert!(text.contains("\"phase\":\"waiting_for_model\""));
+        assert!(text.contains("\"phase\":\"executing_tool\""));
         assert!(text.contains("event: tool_call"));
         assert!(text.contains("event: tool_result"));
         assert!(text.contains("streamed final"));
         assert!(text.contains("event: done"));
         let messages = store
-            .read_conversation_messages(conversation.id)
+            .read_conversation_messages(conversation_id)
             .await
             .unwrap();
         assert_eq!(
@@ -1128,5 +1177,43 @@ mod tests {
             1
         );
         assert_eq!(messages.last().unwrap().content, "streamed final");
+    }
+
+    #[tokio::test]
+    async fn incomplete_llm_stream_is_reported_as_an_error_not_normal_completion() {
+        let (app, store, conversation_id) = streaming_test_app(vec![vec![StreamEvent::TextDelta(
+            "partial response".to_string(),
+        )]])
+        .await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/conversations/{conversation_id}/messages/stream"
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"content": "drop the stream", "stream": true}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("partial response"));
+        assert!(text.contains("event: error"));
+        assert!(text.contains("ended before a completion event"));
+        assert!(!text.contains("event: done"));
+
+        let messages = store
+            .read_conversation_messages(conversation_id)
+            .await
+            .unwrap();
+        assert!(messages.iter().any(|message| {
+            message.status == crate::domain::ChatMessageStatus::Failed
+                && message.content == "partial response"
+        }));
     }
 }

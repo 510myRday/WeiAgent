@@ -132,6 +132,7 @@ export type SendMessageResponse = {
 };
 
 export type ToolCallStatus = 'running' | 'pending_approval' | 'completed' | 'blocked' | 'rejected' | 'error';
+export type AgentRunPhase = 'idle' | 'waiting_for_model' | 'executing_tool' | 'waiting_for_approval';
 
 export type ToolResultData = {
   stdout?: string;
@@ -163,6 +164,14 @@ export type StreamEvent =
   | { event: 'delta'; data: string }
   | { event: 'done'; data: string }
   | { event: 'error'; data: string }
+  | {
+      event: 'phase';
+      data: {
+        phase: Exclude<AgentRunPhase, 'idle'>;
+        iteration: number;
+        call_id?: string;
+      };
+    }
   | { event: 'tool_call'; data: { call_id: string; name: string; arguments: Record<string, any> } }
   | { event: 'tool_result'; data: { call_id: string; result: ToolResultData & { status: ToolCallStatus } } }
   | {

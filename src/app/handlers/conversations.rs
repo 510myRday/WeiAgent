@@ -186,7 +186,11 @@ pub async fn send_message_stream(
             yield Ok(agent_event_to_sse(event));
         }
     };
-    Ok(Sse::new(stream))
+    Ok(Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    ))
 }
 
 fn agent_event_to_sse(event: AgentRunEvent) -> Event {
@@ -194,6 +198,18 @@ fn agent_event_to_sse(event: AgentRunEvent) -> Event {
         AgentRunEvent::User(message) => json_event("user", &message),
         AgentRunEvent::Assistant(message) => json_event("assistant", &message),
         AgentRunEvent::Delta(delta) => Event::default().event("delta").data(delta),
+        AgentRunEvent::Phase {
+            phase,
+            iteration,
+            call_id,
+        } => json_event(
+            "phase",
+            &serde_json::json!({
+                "phase": phase,
+                "iteration": iteration,
+                "call_id": call_id,
+            }),
+        ),
         AgentRunEvent::ToolCall {
             call_id,
             name,
