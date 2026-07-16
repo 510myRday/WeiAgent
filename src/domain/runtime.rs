@@ -15,6 +15,7 @@ pub struct CodexRuntimeStatus {
     pub managed_installed: bool,
     pub installing: bool,
     pub target_version: String,
+    pub update_available: bool,
     pub platform: Option<String>,
     pub source: Option<CodexRuntimeSource>,
     pub detected_version: Option<String>,

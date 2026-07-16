@@ -110,6 +110,7 @@
     "newTitle": "New conversation",
     "empty": "No conversations yet.",
     "search": "Search conversations",
+    "runStatus": "Generating",
     "pin": "Pin conversation",
     "unpin": "Unpin conversation",
     "delete": "Delete conversation",
@@ -235,6 +236,9 @@
       "runtimeRefresh": "Refresh Codex runtime",
       "runtimeInstall": "Install runtime",
       "runtimeInstalling": "Installing...",
+      "runtimeUpdate": "Update runtime",
+      "runtimeUpdating": "Updating...",
+      "runtimeUpdateAvailable": "Update available: {version}",
       "runtimeInstallFailed": "Failed to install the Codex runtime",
       "runtimeRefreshFailed": "Failed to refresh the Codex runtime",
       "runtimeSource": {
@@ -326,6 +330,7 @@
     "conversationDeleted": "Conversation deleted.",
     "toolSettingsSaved": "Tool settings saved.",
     "runtimeInstalled": "Codex runtime installed.",
+    "runtimeUpdated": "Codex runtime updated.",
     "logDeleted": "Debug log deleted."
   },
   "toolCard": {

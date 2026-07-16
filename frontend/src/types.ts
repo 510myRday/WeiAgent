@@ -90,6 +90,7 @@ export type ChatRole = 'user' | 'assistant' | 'tool';
 export type ChatToolCall = {
   id: string;
   type: 'function';
+  permission_mode?: 'request_approval' | 'full_access';
   function: {
     name: string;
     arguments: string;
@@ -131,13 +132,21 @@ export type UpdateConversationPayload = {
   is_pinned: boolean;
 };
 
-export type SendMessageResponse = {
-  user: ChatMessage;
-  assistant: ChatMessage;
-};
-
 export type ToolCallStatus = 'running' | 'pending_approval' | 'completed' | 'blocked' | 'rejected' | 'error';
 export type AgentRunPhase = 'idle' | 'waiting_for_model' | 'executing_tool' | 'waiting_for_approval';
+export type AgentRunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+
+export type AgentRun = {
+  id: string;
+  conversation_id: string;
+  user_message_id?: string;
+  status: AgentRunStatus;
+  phase?: Exclude<AgentRunPhase, 'idle'>;
+  latest_sequence: number;
+  error?: string;
+  created_at: string;
+  finished_at?: string;
+};
 
 export type ToolResultData = {
   stdout?: string;
@@ -157,6 +166,7 @@ export type ToolCallMessage = {
   call_id: string;
   name: string;
   arguments: Record<string, any>;
+  permission_mode?: 'request_approval' | 'full_access';
   status: ToolCallStatus;
   result?: ToolResultData;
 };
@@ -164,23 +174,35 @@ export type ToolCallMessage = {
 export type UiMessageItem = UiMessage | ToolCallMessage;
 
 export type StreamEvent =
-  | { event: 'user'; data: ChatMessage }
-  | { event: 'assistant'; data: ChatMessage }
-  | { event: 'delta'; data: string }
-  | { event: 'done'; data: string }
-  | { event: 'error'; data: string }
+  | { event: 'user'; data: ChatMessage; sequence?: number }
+  | { event: 'assistant'; data: ChatMessage; sequence?: number }
+  | { event: 'delta'; data: string; sequence?: number }
+  | { event: 'done'; data: string; sequence?: number }
+  | { event: 'cancelled'; data: string; sequence?: number }
+  | { event: 'error'; data: string; sequence?: number }
   | {
       event: 'phase';
+      sequence?: number;
       data: {
         phase: Exclude<AgentRunPhase, 'idle'>;
         iteration: number;
         call_id?: string;
       };
     }
-  | { event: 'tool_call'; data: { call_id: string; name: string; arguments: Record<string, any> } }
-  | { event: 'tool_result'; data: { call_id: string; result: ToolResultData & { status: ToolCallStatus } } }
+  | {
+      event: 'tool_call';
+      sequence?: number;
+      data: {
+        call_id: string;
+        name: string;
+        arguments: Record<string, any>;
+        permission_mode: 'request_approval' | 'full_access';
+      };
+    }
+  | { event: 'tool_result'; data: { call_id: string; result: ToolResultData & { status: ToolCallStatus } }; sequence?: number }
   | {
       event: 'approval_required';
+      sequence?: number;
       data: {
         call_id: string;
         agent_id: string;

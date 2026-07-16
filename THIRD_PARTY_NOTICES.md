@@ -2,14 +2,15 @@
 
 ## OpenAI Codex CLI
 
-WeiAgent can download and run a pinned platform-native build of OpenAI Codex CLI
-as an operating-system sandbox helper.
+WeiAgent can download and run a platform-native build of OpenAI Codex CLI as
+an operating-system sandbox helper.
 
 - Project: OpenAI Codex
 - Copyright: Copyright 2025 OpenAI
 - License: Apache License 2.0
 - Upstream repository: `openai/codex`
-- Managed runtime version: `0.137.0`
+- Managed runtime source: current stable npm Registry release
+- Minimum and fallback runtime version: `0.137.0`
 
 The Apache License 2.0 permits use, modification, and redistribution subject to
 its terms, including preservation of applicable copyright, attribution, license,

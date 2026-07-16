@@ -75,8 +75,11 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
 
   activeContextRef.current = contextKey;
 
-  useEffect(() => () => {
-    isMountedRef.current = false;
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -285,10 +288,11 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
   }
 
   async function handleInstallRuntime() {
+    const wasUpdate = runtime?.update_available === true;
     setIsInstallingRuntime(true);
     try {
       setRuntime(await installCodexRuntime());
-      toast.success(t('notification.runtimeInstalled'));
+      toast.success(t(wasUpdate ? 'notification.runtimeUpdated' : 'notification.runtimeInstalled'));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('tools.terminal.runtimeInstallFailed'));
       try {
@@ -516,6 +520,7 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
               {runtime?.detected_version || runtime?.target_version || ''}
               {runtime?.source ? ` · ${t(`tools.terminal.runtimeSource.${runtime.source}`)}` : ''}
               {runtime?.platform ? ` · ${runtime.platform}` : ''}
+              {runtime?.update_available ? ` · ${t('tools.terminal.runtimeUpdateAvailable', { version: runtime.target_version })}` : ''}
             </small>
             {runtime?.error ? <code className="runtime-card__error">{runtime.error}</code> : null}
           </div>
@@ -529,14 +534,16 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
             >
               <RefreshCw size={17} className={isRefreshingRuntime ? 'is-spinning' : ''} />
             </IconButton>
-            {!sandboxAvailable ? (
+            {!sandboxAvailable || runtime?.update_available ? (
               <Button
                 variant="primary"
                 onClick={handleInstallRuntime}
                 disabled={isInstallingRuntime || runtime?.supported === false}
                 icon={<Download size={17} />}
               >
-                {isInstallingRuntime ? t('tools.terminal.runtimeInstalling') : t('tools.terminal.runtimeInstall')}
+                {isInstallingRuntime
+                  ? t(runtime?.update_available ? 'tools.terminal.runtimeUpdating' : 'tools.terminal.runtimeInstalling')
+                  : t(runtime?.update_available ? 'tools.terminal.runtimeUpdate' : 'tools.terminal.runtimeInstall')}
               </Button>
             ) : null}
           </div>

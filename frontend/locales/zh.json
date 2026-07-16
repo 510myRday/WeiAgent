@@ -110,6 +110,7 @@
     "newTitle": "新会话",
     "empty": "暂无会话。",
     "search": "搜索会话",
+    "runStatus": "生成中",
     "pin": "置顶会话",
     "unpin": "取消置顶",
     "delete": "删除会话",
@@ -161,6 +162,9 @@
       "runtimeRefresh": "重新检测 Codex 运行时",
       "runtimeInstall": "安装运行时",
       "runtimeInstalling": "安装中...",
+      "runtimeUpdate": "更新运行时",
+      "runtimeUpdating": "更新中...",
+      "runtimeUpdateAvailable": "可更新至 {version}",
       "runtimeInstallFailed": "安装 Codex 运行时失败",
       "runtimeRefreshFailed": "检测 Codex 运行时失败",
       "runtimeSource": {
@@ -326,6 +330,7 @@
     "conversationDeleted": "会话已删除。",
     "toolSettingsSaved": "工具配置已保存。",
     "runtimeInstalled": "Codex 运行时已安装。",
+    "runtimeUpdated": "Codex 运行时已更新。",
     "logDeleted": "调试日志已删除。"
   },
   "toolCard": {

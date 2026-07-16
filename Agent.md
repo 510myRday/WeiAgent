@@ -168,19 +168,24 @@ WeiAgent/
 - `DELETE /api/agents/{agent_id}`：删除 Agent（内置 Agent 不可删除；同时清理关联的会话文件和工作空间目录）
 - `GET /api/agents/{agent_id}/conversations`：读取某个 Agent 的会话列表
 - `POST /api/agents/{agent_id}/conversations`：创建会话
+- `GET /api/agents/{agent_id}/runs`：读取该 Agent 下正在运行的后台 run
 - `GET /api/conversations/{conversation_id}/messages`：读取会话消息
-- `POST /api/conversations/{conversation_id}/messages`：非流式发送消息（支持 timeout + retry）
-- `POST /api/conversations/{conversation_id}/messages/stream`：SSE 流式发送消息
+- `POST /api/conversations/{conversation_id}/runs`：创建独立后台 Agent run，返回 `run_id`
+- `GET /api/conversations/{conversation_id}/run`：读取会话当前活动 run
+- `GET /api/runs/{run_id}`：读取 run 状态
+- `GET /api/runs/{run_id}/events?after=N`：按序号订阅或重放 run 事件
+- `DELETE /api/runs/{run_id}`：显式取消 run，并等待取消完成
 - `DELETE /api/conversations/{conversation_id}`：删除会话
 
 ### SSE 流式协议
 
-前端 `api.ts` 中 `streamMessage` 使用 `fetch` + `ReadableStream` 消费 SSE，事件类型：
+前端 `api.ts` 中 `streamRunEvents` 使用 `fetch` + `ReadableStream` 消费可重放 SSE，事件类型：
 
 - `user`：用户消息已持久化，`data` 为 `ChatMessage` JSON
 - `assistant`：助手消息已创建，`data` 为 `ChatMessage` JSON（`status: "streaming"`）
 - `delta`：增量文本内容，`data` 为纯文本字符串
 - `done`：流式传输完成
+- `cancelled`：run 被显式取消
 - `error`：错误信息，`data` 为错误描述字符串
 
 后端流式保存策略：每 500ms 或每 240 字符触发一次增量持久化。如果流被中断（连接断开），`StreamCleanup` 的 `Drop` 实现会自动将已部分保存的消息标记为 `Failed`。
@@ -379,11 +384,12 @@ User Message
 
 ### Codex 终端运行时
 
-- WeiAgent 会依次发现 `WEIAGENT_CODEX_BIN`、托管安装版本和系统 Codex。
-- 全局工具页可以查看、刷新或安装固定版本的托管 Codex 运行时。
-- 当前托管版本为 Codex CLI `0.137.0`，按 OS/CPU 从 npm Registry 下载平台原生包，不要求用户安装 Node.js 或 npm。
+- `WEIAGENT_CODEX_BIN` 显式指定的兼容版本优先；否则 WeiAgent 在托管版本和系统 Codex 中选择版本较高的一份。
+- 全局工具页可以查看、刷新、安装或更新托管 Codex 运行时；启动时使用本地状态，后台刷新 npm Registry 的稳定版信息并缓存 24 小时。
+- 安装时优先使用 npm Registry 的当前稳定版及对应 OS/CPU 原生包；查询失败且没有可用缓存时回退到 Codex CLI `0.137.0`，不要求用户安装 Node.js 或 npm。
+- Codex CLI `0.137.0` 是当前最低兼容版本；更旧的系统安装不会被选用。
 - 托管包覆盖 Windows x64/ARM64、Linux x64/ARM64、macOS x64/Apple Silicon；三系统 CI 持续执行前端构建、Rust 测试和 Clippy。
-- 下载过程流式写入临时文件，限制最大体积，使用 Registry 提供的 SHA-512 integrity 校验后安全解包。
+- 下载过程流式写入临时文件，限制最大体积，使用 Registry 提供的 SHA-512 integrity 校验后安全解包，并通过版本检查和 app-server 初始化握手后再启用。
 - 托管运行时安装到 `data/runtimes/codex/{version}/{platform}`，独立 `CODEX_HOME` 保存到 `data/runtimes/codex-home`。
 - Codex 运行时不可用时不会向模型暴露终端工具，也不会自动降级为直接宿主执行。
 - Windows 沙箱命令复用用户 Codex 的默认 `CODEX_HOME` 沙箱设置；app-server 使用 WeiAgent 隔离的 `CODEX_HOME`，且启动环境会移除无关敏感变量。

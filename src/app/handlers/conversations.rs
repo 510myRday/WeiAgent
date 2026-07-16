@@ -2,10 +2,11 @@ use std::{convert::Infallible, time::Duration};
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::sse::{Event, Sse},
 };
 use futures_util::Stream;
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -14,10 +15,11 @@ use crate::{
         AppState,
         agent_executor::{AgentRunEvent, run_agent},
         chat::prepare_chat,
+        run_manager::SequencedRunEvent,
     },
     domain::{
-        ChatMessage, Conversation, CreateConversationRequest, SendMessageRequest,
-        SendMessageResponse, UpdateConversationRequest,
+        AgentRun, AgentRunStatus, ChatMessage, Conversation, CreateConversationRequest,
+        SendMessageRequest, SendMessageResponse, UpdateConversationRequest,
     },
     error::AppResult,
     llm::client::RequestOptions,
@@ -79,6 +81,18 @@ pub async fn list_conversations(
     Ok(Json(state.store.list_conversations(agent_id).await?))
 }
 
+pub async fn list_active_agent_runs(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+) -> AppResult<Json<Vec<AgentRun>>> {
+    let conversations = state.store.list_conversations(agent_id).await?;
+    let ids = conversations
+        .iter()
+        .map(|conversation| conversation.id)
+        .collect::<Vec<_>>();
+    Ok(Json(state.run_manager.active_for_conversations(&ids)))
+}
+
 pub async fn create_conversation(
     State(state): State<AppState>,
     Path(agent_id): Path<Uuid>,
@@ -93,6 +107,10 @@ pub async fn delete_conversation(
     State(state): State<AppState>,
     Path(conversation_id): Path<Uuid>,
 ) -> AppResult<()> {
+    state
+        .run_manager
+        .cancel_conversation_and_wait(conversation_id)
+        .await?;
     state.store.delete_conversation(conversation_id).await
 }
 
@@ -118,6 +136,176 @@ pub async fn read_conversation_messages(
             .store
             .read_conversation_messages(conversation_id)
             .await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RunEventsQuery {
+    #[serde(default)]
+    after: u64,
+}
+
+pub async fn create_message_run(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+    Json(request): Json<SendMessageRequest>,
+) -> AppResult<Json<AgentRun>> {
+    let settings = state.store.read_settings().await?;
+    let registration = state.run_manager.create(conversation_id)?;
+    let run_id = registration.info.id;
+    let prepared = match prepare_chat(
+        &state,
+        conversation_id,
+        &request.content,
+        request.restart_from_message_id,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            state
+                .run_manager
+                .finish(run_id, AgentRunStatus::Failed, Some(error.to_string()));
+            return Err(error);
+        }
+    };
+    state
+        .run_manager
+        .set_user_message(run_id, prepared.user_message.id);
+    let info = state.run_manager.get(run_id)?;
+    let options = request_options(&settings);
+    let use_streaming_llm = request.stream;
+    let manager = state.run_manager.clone();
+    let terminal_manager = state.terminal_manager.clone();
+    let store = state.store.clone();
+    let mut cancel = registration.cancel.clone();
+    let (event_sender, mut event_receiver) = mpsc::channel(256);
+    let event_manager = manager.clone();
+    let forwarding = tokio::spawn(async move {
+        while let Some(event) = event_receiver.recv().await {
+            event_manager.record_event(run_id, event);
+        }
+    });
+
+    tokio::spawn(async move {
+        let _registration = registration;
+        let run = run_agent(
+            state,
+            prepared,
+            options,
+            use_streaming_llm,
+            Some(event_sender.clone()),
+        );
+        let outcome = tokio::select! {
+            result = tokio::time::timeout(MAX_AGENT_RUN_DURATION, run) => {
+                match result {
+                    Ok(Ok(_)) => (AgentRunStatus::Completed, None, None),
+                    Ok(Err(error)) => {
+                        let message = error.to_string();
+                        (AgentRunStatus::Failed, Some(message.clone()), Some(AgentRunEvent::Error(message)))
+                    }
+                    Err(_) => {
+                        terminal_manager.stop_for_conversation(conversation_id).await;
+                        let message = "agent run exceeded the 60 minute deadline".to_string();
+                        (AgentRunStatus::Failed, Some(message.clone()), Some(AgentRunEvent::Error(message)))
+                    }
+                }
+            }
+            _ = cancel.changed() => {
+                terminal_manager.stop_for_conversation(conversation_id).await;
+                let _ = store.fail_streaming_messages(conversation_id).await;
+                (AgentRunStatus::Cancelled, None, Some(AgentRunEvent::Cancelled))
+            }
+        };
+        if let Some(event) = outcome.2 {
+            let _ = event_sender.send(event).await;
+        }
+        drop(event_sender);
+        let _ = forwarding.await;
+        manager.finish(run_id, outcome.0, outcome.1);
+    });
+
+    Ok(Json(info))
+}
+
+pub async fn active_conversation_run(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+) -> Json<Option<AgentRun>> {
+    Json(state.run_manager.active_for_conversation(conversation_id))
+}
+
+pub async fn cancel_run(
+    State(state): State<AppState>,
+    Path(run_id): Path<Uuid>,
+) -> AppResult<Json<AgentRun>> {
+    Ok(Json(state.run_manager.cancel_and_wait(run_id).await?))
+}
+
+pub async fn read_run(
+    State(state): State<AppState>,
+    Path(run_id): Path<Uuid>,
+) -> AppResult<Json<AgentRun>> {
+    Ok(Json(state.run_manager.get(run_id)?))
+}
+
+pub async fn stream_run_events(
+    State(state): State<AppState>,
+    Path(run_id): Path<Uuid>,
+    Query(query): Query<RunEventsQuery>,
+) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    let manager = state.run_manager.clone();
+    let subscription = manager.subscribe(run_id, query.after)?;
+    let stream = async_stream::stream! {
+        let mut cursor = query.after;
+        let mut replay = subscription.replay;
+        let mut receiver = subscription.receiver;
+        let mut terminal = subscription.terminal;
+        loop {
+            for event in replay.drain(..) {
+                if event.sequence <= cursor {
+                    continue;
+                }
+                cursor = event.sequence;
+                let done = run_event_is_terminal(&event.event);
+                yield Ok(sequenced_event_to_sse(event));
+                if done {
+                    return;
+                }
+            }
+            if terminal {
+                return;
+            }
+            match receiver.recv().await {
+                Ok(event) => {
+                    if event.sequence <= cursor {
+                        continue;
+                    }
+                    cursor = event.sequence;
+                    let done = run_event_is_terminal(&event.event);
+                    yield Ok(sequenced_event_to_sse(event));
+                    if done {
+                        return;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    match manager.subscribe(run_id, cursor) {
+                        Ok(next) => {
+                            replay = next.replay;
+                            receiver = next.receiver;
+                            terminal = next.terminal;
+                        }
+                        Err(_) => return,
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    };
+    Ok(Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
     ))
 }
 
@@ -239,12 +427,14 @@ fn agent_event_to_sse(event: AgentRunEvent) -> Event {
             call_id,
             name,
             arguments,
+            permission_mode,
         } => json_event(
             "tool_call",
             &serde_json::json!({
                 "call_id": call_id,
                 "name": name,
                 "arguments": arguments,
+                "permission_mode": permission_mode,
             }),
         ),
         AgentRunEvent::ToolResult { call_id, result } => json_event(
@@ -276,8 +466,20 @@ fn agent_event_to_sse(event: AgentRunEvent) -> Event {
             }),
         ),
         AgentRunEvent::Done => Event::default().event("done").data("ok"),
+        AgentRunEvent::Cancelled => Event::default().event("cancelled").data("ok"),
         AgentRunEvent::Error(error) => Event::default().event("error").data(error),
     }
+}
+
+fn run_event_is_terminal(event: &AgentRunEvent) -> bool {
+    matches!(
+        event,
+        AgentRunEvent::Done | AgentRunEvent::Cancelled | AgentRunEvent::Error(_)
+    )
+}
+
+fn sequenced_event_to_sse(event: SequencedRunEvent) -> Event {
+    agent_event_to_sse(event.event).id(event.sequence.to_string())
 }
 
 fn json_event<T: serde::Serialize>(name: &'static str, value: &T) -> Event {

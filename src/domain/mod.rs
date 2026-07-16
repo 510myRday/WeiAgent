@@ -10,7 +10,10 @@ pub use agents::{
     Agent, AgentResponse, AgentWorkspace, CreateAgentRequest, UpdateAgentRequest,
     UpdateAgentWorkspaceRequest,
 };
-pub use chat::{ChatMessage, ChatMessageStatus, ChatRole, SendMessageRequest, SendMessageResponse};
+pub use chat::{
+    AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, SendMessageRequest,
+    SendMessageResponse,
+};
 pub use conversations::{Conversation, CreateConversationRequest, UpdateConversationRequest};
 pub use providers::{
     CreateModelProviderRequest, FetchProviderModelsRequest, ModelProvider, ModelProviderResponse,

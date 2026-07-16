@@ -12,7 +12,7 @@ pub use state::AppState;
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use async_trait::async_trait;
     use axum::{
@@ -369,6 +369,67 @@ mod tests {
         assert!(text.contains("event: assistant"));
         assert!(text.contains("mock stream"));
         assert!(text.contains("event: done"));
+    }
+
+    #[tokio::test]
+    async fn message_run_completes_and_replays_events_without_an_initial_subscriber() {
+        let (app, _, _, conversation_id) = test_app().await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/conversations/{conversation_id}/runs"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "content": "keep running", "stream": true }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let run: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let run_id = run["id"].as_str().unwrap();
+
+        let mut status = String::new();
+        for _ in 0..50 {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/runs/{run_id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let run: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            status = run["status"].as_str().unwrap_or_default().to_string();
+            if status == "completed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(status, "completed");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{run_id}/events?after=0"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("event: delta"));
+        assert!(text.contains("mock stream"));
+        assert!(text.contains("event: done"));
+        assert!(text.contains("id: "));
     }
 
     struct ScriptedChatClient {

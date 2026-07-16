@@ -840,6 +840,19 @@
   padding: 9px 8px 9px 11px;
 }
 
+.conversation-run-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #58b982;
+  font-weight: 600;
+}
+
+.conversation-run-status svg {
+  flex: 0 0 auto;
+  animation: spin 1s linear infinite;
+}
+
 .conversation-row .list-item {
   border-color: transparent;
   background: transparent;

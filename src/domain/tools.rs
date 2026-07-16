@@ -109,7 +109,7 @@ pub struct TerminalToolOverrides {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<TerminalPermissionMode>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub approval_grants: Vec<TerminalApprovalGrant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_timeout_ms: Option<u64>,
@@ -239,6 +239,12 @@ mod tests {
             ..AgentToolsConfig::default()
         };
         assert_eq!(config.max_llm_iterations(), MAX_LLM_ITERATIONS as usize);
+    }
+
+    #[test]
+    fn empty_agent_grants_are_present_in_api_json() {
+        let value = serde_json::to_value(AgentToolsOverrides::default()).unwrap();
+        assert_eq!(value["terminal"]["approval_grants"], serde_json::json!([]));
     }
 }
 

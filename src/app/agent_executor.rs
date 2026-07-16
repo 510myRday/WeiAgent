@@ -12,7 +12,10 @@ use uuid::Uuid;
 
 use crate::{
     app::{AppState, chat::PreparedChat},
-    domain::{ChatMessage, ChatMessageStatus, ChatRole, SendMessageResponse, ToolResult},
+    domain::{
+        ChatMessage, ChatMessageStatus, ChatRole, SendMessageResponse, TerminalPermissionMode,
+        ToolResult,
+    },
     error::{AppError, AppResult},
     llm::{
         client::{DynChatClient, RequestOptions},
@@ -51,6 +54,7 @@ pub enum AgentRunEvent {
         call_id: String,
         name: String,
         arguments: Value,
+        permission_mode: TerminalPermissionMode,
     },
     ToolResult {
         call_id: String,
@@ -68,6 +72,7 @@ pub enum AgentRunEvent {
         background: bool,
     },
     Done,
+    Cancelled,
     Error(String),
 }
 
@@ -149,7 +154,10 @@ pub async fn run_agent(
             status: ChatMessageStatus::Done,
             created_at: output.created_at,
             tool_calls: (!output.output.tool_calls.is_empty()).then(|| {
-                serde_json::to_value(&output.output.tool_calls).unwrap_or(Value::Array(Vec::new()))
+                tool_calls_with_permission_mode(
+                    &output.output.tool_calls,
+                    &prepared.tools_config.terminal.permission_mode,
+                )
             }),
             tool_call_id: None,
         };
@@ -320,6 +328,7 @@ async fn execute_tool_calls(
                 call_id: call.id.clone(),
                 name: call.function.name.clone(),
                 arguments: display_arguments,
+                permission_mode: prepared.tools_config.terminal.permission_mode.clone(),
             },
         )
         .await?;
@@ -421,6 +430,24 @@ async fn execute_tool_calls(
         persist_tool_result(state, prepared, messages, &call.id, &result).await?;
     }
     Ok(())
+}
+
+fn tool_calls_with_permission_mode(
+    tool_calls: &[ToolCall],
+    permission_mode: &TerminalPermissionMode,
+) -> Value {
+    let mut value = serde_json::to_value(tool_calls).unwrap_or(Value::Array(Vec::new()));
+    if let Value::Array(calls) = &mut value {
+        for call in calls {
+            if let Value::Object(call) = call {
+                call.insert(
+                    "permission_mode".to_string(),
+                    serde_json::to_value(permission_mode).unwrap_or(Value::Null),
+                );
+            }
+        }
+    }
+    value
 }
 
 struct IterationOutput {

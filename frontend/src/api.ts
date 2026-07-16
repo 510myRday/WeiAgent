@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentRun,
   AgentWorkspace,
   AppSettings,
   ChatMessage,
@@ -11,7 +12,6 @@ import type {
   LlmLogEntry,
   ModelProvider,
   ModelProviderPayload,
-  SendMessageResponse,
   StreamEvent,
   UpdateAgentWorkspacePayload,
   UpdateAgentPayload,
@@ -231,6 +231,7 @@ export type CodexRuntimeStatus = {
   managed_installed: boolean;
   installing: boolean;
   target_version: string;
+  update_available: boolean;
   platform?: string;
   source?: 'managed' | 'environment' | 'system';
   detected_version?: string;
@@ -270,7 +271,8 @@ export function updateToolDefaults(config: AgentToolsConfig): Promise<AgentTools
 }
 
 export function readAgentToolsConfig(agentId: string): Promise<AgentToolsSettings> {
-  return request<AgentToolsSettings>(`/api/agents/${agentId}/tools-config`);
+  return request<AgentToolsSettings>(`/api/agents/${agentId}/tools-config`)
+    .then(normalizeAgentToolsSettings);
 }
 
 export function updateAgentToolsConfig(
@@ -280,7 +282,20 @@ export function updateAgentToolsConfig(
   return request<AgentToolsSettings>(`/api/agents/${agentId}/tools-config`, {
     method: 'PUT',
     body: JSON.stringify(config),
-  });
+  }).then(normalizeAgentToolsSettings);
+}
+
+function normalizeAgentToolsSettings(settings: AgentToolsSettings): AgentToolsSettings {
+  return {
+    ...settings,
+    overrides: {
+      ...settings.overrides,
+      terminal: {
+        ...settings.overrides.terminal,
+        approval_grants: settings.overrides.terminal.approval_grants ?? [],
+      },
+    },
+  };
 }
 
 export function readCodexRuntime(): Promise<CodexRuntimeStatus> {
@@ -338,55 +353,57 @@ export function readConversationMessages(conversationId: string): Promise<ChatMe
   return request<ChatMessage[]>(`/api/conversations/${conversationId}/messages`);
 }
 
-export function sendMessage(
+export function createMessageRun(
   conversationId: string,
   content: string,
-  timeoutSeconds: number,
-  signal?: AbortSignal,
-  restartFromMessageId?: string,
-): Promise<SendMessageResponse> {
-  const timeoutSignal = AbortSignal.timeout(Math.max(1, timeoutSeconds) * 1000);
-  const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-  return request<SendMessageResponse>(`/api/conversations/${conversationId}/messages`, {
-    method: 'POST',
-    body: JSON.stringify({
-      content,
-      ...(restartFromMessageId ? { restart_from_message_id: restartFromMessageId } : {}),
-    }),
-    signal: combinedSignal,
-  });
-}
-
-export async function streamMessage(
-  conversationId: string,
-  content: string,
-  onEvent: (event: StreamEvent) => void,
-  timeoutSeconds: number,
   streamOutput: boolean,
-  signal?: AbortSignal,
   restartFromMessageId?: string,
-): Promise<void> {
-  const timeoutSignal = AbortSignal.timeout(Math.max(1, timeoutSeconds, 3600) * 1000);
-  const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-  const response = await fetch(`/api/conversations/${conversationId}/messages/stream`, {
+  signal?: AbortSignal,
+): Promise<AgentRun> {
+  return request<AgentRun>(`/api/conversations/${conversationId}/runs`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       content,
       stream: streamOutput,
       ...(restartFromMessageId ? { restart_from_message_id: restartFromMessageId } : {}),
     }),
-    signal: combinedSignal,
+    signal,
   });
+}
 
+export function readActiveConversationRun(conversationId: string): Promise<AgentRun | null> {
+  return request<AgentRun | null>(`/api/conversations/${conversationId}/run`);
+}
+
+export function listActiveAgentRuns(agentId: string): Promise<AgentRun[]> {
+  return request<AgentRun[]>(`/api/agents/${agentId}/runs`);
+}
+
+export function cancelMessageRun(runId: string): Promise<AgentRun> {
+  return request<AgentRun>(`/api/runs/${runId}`, { method: 'DELETE' });
+}
+
+export async function streamRunEvents(
+  runId: string,
+  after: number,
+  onEvent: (event: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`/api/runs/${runId}/events?after=${after}`, { signal });
   if (!response.ok || !response.body) {
     throw new Error(await readError(response));
   }
+  await consumeEventStream(response.body, onEvent);
+}
 
-  const reader = response.body.getReader();
+async function consumeEventStream(
+  body: ReadableStream<Uint8Array>,
+  onEvent: (event: StreamEvent) => void,
+): Promise<void> {
+  const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  const state = { sawDone: false, sawError: false };
+  const state = { sawDone: false, sawError: false, sawCancelled: false };
 
   while (true) {
     const { value, done } = await reader.read();
@@ -409,7 +426,7 @@ export async function streamMessage(
     dispatchStreamEvent(buffer, onEvent, state);
   }
 
-  if (!state.sawDone && !state.sawError) {
+  if (!state.sawDone && !state.sawError && !state.sawCancelled) {
     throw new Error('Stream ended before completion');
   }
 }
@@ -417,10 +434,13 @@ export async function streamMessage(
 function dispatchStreamEvent(
   rawEvent: string,
   onEvent: (event: StreamEvent) => void,
-  state: { sawDone: boolean; sawError: boolean },
+  state: { sawDone: boolean; sawError: boolean; sawCancelled: boolean },
 ) {
   const lines = rawEvent.split(/\r?\n/);
   const event = lines.find((line) => line.startsWith('event: '))?.slice(7);
+  const rawSequence = lines.find((line) => line.startsWith('id: '))?.slice(4);
+  const parsedSequence = rawSequence ? Number(rawSequence) : undefined;
+  const sequence = Number.isFinite(parsedSequence) ? parsedSequence : undefined;
   const data = lines
     .filter((line) => line.startsWith('data: '))
     .map((line) => line.slice(6))
@@ -432,37 +452,43 @@ function dispatchStreamEvent(
 
   if (event === 'done') {
     state.sawDone = true;
-    onEvent({ event: 'done', data });
+    onEvent({ event: 'done', data, sequence });
+    return;
+  }
+
+  if (event === 'cancelled') {
+    state.sawCancelled = true;
+    onEvent({ event: 'cancelled', data, sequence });
     return;
   }
 
   if (event === 'error') {
     state.sawError = true;
-    onEvent({ event: 'error', data });
+    onEvent({ event: 'error', data, sequence });
     return;
   }
 
   if (event === 'user' || event === 'assistant') {
     try {
-      onEvent({ event, data: JSON.parse(data) as ChatMessage });
+      onEvent({ event, data: JSON.parse(data) as ChatMessage, sequence });
     } catch {
       state.sawError = true;
-      onEvent({ event: 'error', data: 'Failed to parse stream event' });
+      onEvent({ event: 'error', data: 'Failed to parse stream event', sequence });
     }
     return;
   }
 
   if (event === 'delta') {
-    onEvent({ event: 'delta', data });
+    onEvent({ event: 'delta', data, sequence });
     return;
   }
 
   if (event === 'phase' || event === 'tool_call' || event === 'tool_result' || event === 'approval_required') {
     try {
-      onEvent({ event, data: JSON.parse(data) } as StreamEvent);
+      onEvent({ event, data: JSON.parse(data), sequence } as StreamEvent);
     } catch {
       state.sawError = true;
-      onEvent({ event: 'error', data: 'Failed to parse stream event' });
+      onEvent({ event: 'error', data: 'Failed to parse stream event', sequence });
     }
   }
 }

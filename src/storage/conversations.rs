@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use chrono::Utc;
 use tokio::fs;
 use uuid::Uuid;
@@ -260,5 +262,73 @@ impl JsonStore {
         conversation.message_count = existing.len();
         conversation.updated_at = Utc::now();
         self.write_conversations_unlocked(&conversations).await
+    }
+
+    pub async fn fail_streaming_messages(&self, conversation_id: Uuid) -> AppResult<()> {
+        let _guard = self.lock.lock().await;
+        let mut conversations = self.read_conversations_unlocked().await?;
+        let conversation = conversations
+            .iter_mut()
+            .find(|conversation| conversation.id == conversation_id)
+            .ok_or(AppError::NotFound)?;
+        let mut messages = self
+            .read_conversation_messages_unchecked(conversation_id)
+            .await?;
+        let mut changed = false;
+        for message in &mut messages {
+            if message.status == crate::domain::ChatMessageStatus::Streaming {
+                message.status = crate::domain::ChatMessageStatus::Failed;
+                changed = true;
+            }
+        }
+        let completed_call_ids = messages
+            .iter()
+            .filter(|message| message.role == ChatRole::Tool)
+            .filter_map(|message| message.tool_call_id.clone())
+            .collect::<HashSet<_>>();
+        let incomplete_calls = messages
+            .iter()
+            .filter(|message| message.role == ChatRole::Assistant)
+            .flat_map(|message| {
+                let agent_id = message.agent_id;
+                message
+                    .tool_calls
+                    .as_ref()
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(move |call| {
+                        call.get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|id| (agent_id, id.to_string()))
+                    })
+            })
+            .filter(|(_, call_id)| !completed_call_ids.contains(call_id))
+            .collect::<Vec<_>>();
+        for (agent_id, call_id) in incomplete_calls {
+            messages.push(ChatMessage {
+                id: Uuid::new_v4(),
+                agent_id,
+                conversation_id,
+                role: ChatRole::Tool,
+                content: serde_json::json!({
+                    "status": "rejected",
+                    "reason": "Run cancelled"
+                })
+                .to_string(),
+                status: crate::domain::ChatMessageStatus::Done,
+                created_at: Utc::now(),
+                tool_calls: None,
+                tool_call_id: Some(call_id),
+            });
+            changed = true;
+        }
+        if changed {
+            write_json(&self.conversation_file(conversation_id), &messages).await?;
+            conversation.message_count = messages.len();
+            conversation.updated_at = Utc::now();
+            self.write_conversations_unlocked(&conversations).await?;
+        }
+        Ok(())
     }
 }

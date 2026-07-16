@@ -64,3 +64,31 @@ pub struct SendMessageResponse {
     pub user: ChatMessage,
     pub assistant: ChatMessage,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl AgentRunStatus {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRun {
+    pub id: Uuid,
+    pub conversation_id: Uuid,
+    pub user_message_id: Option<Uuid>,
+    pub status: AgentRunStatus,
+    pub phase: Option<String>,
+    pub latest_sequence: u64,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+}

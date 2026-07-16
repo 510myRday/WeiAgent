@@ -7,6 +7,7 @@ import {
   ChevronDown,
   Clock3,
   Clipboard,
+  LoaderCircle,
   MessageSquare,
   Pencil,
   Pin,
@@ -89,8 +90,12 @@ export function ChatPanel({
     isLoadingChat,
     isSending,
     runPhase,
+    runningConversationIds,
     loadConversationsForAgent,
+    refreshRunningConversations,
     loadMessages,
+    resumeActiveRun,
+    detachActiveRun,
     cancelActiveSend,
     clearChat,
     send,
@@ -102,7 +107,6 @@ export function ChatPanel({
     runCancelledMessage: t('chat.runCancelled'),
     runInterruptedMessage: t('chat.runInterrupted'),
     onError: toast.error,
-    timeoutSeconds: settings.request_timeout_seconds,
   });
 
   const [draft, setDraft] = useState('');
@@ -209,7 +213,7 @@ export function ChatPanel({
   }, []);
 
   useEffect(() => {
-    cancelActiveSend();
+    detachActiveRun();
     clearChat();
     setConversationFilter('');
     setTerminalPermissionMode(null);
@@ -226,12 +230,25 @@ export function ChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [activeAgentId, cancelActiveSend, clearChat, loadConversationsForAgent]);
+  }, [activeAgentId, clearChat, detachActiveRun, loadConversationsForAgent]);
+
+  useEffect(() => {
+    if (!activeAgentId) return;
+    void refreshRunningConversations(activeAgentId);
+    const timer = window.setInterval(() => {
+      void refreshRunningConversations(activeAgentId);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [activeAgentId, refreshRunningConversations]);
 
   useEffect(() => {
     if (!activeConversationId) return;
-    void loadMessages(activeConversationId);
-  }, [activeConversationId, loadMessages]);
+    void loadMessages(activeConversationId)
+      .then(() => resumeActiveRun(activeConversationId, activeAgentId))
+      .catch((cause) => {
+        toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      });
+  }, [activeAgentId, activeConversationId, loadMessages, resumeActiveRun]);
 
   const isMessagesNearBottom = useCallback(() => {
     const el = messagesContainerRef.current;
@@ -351,7 +368,7 @@ export function ChatPanel({
   }
 
   function handleConversationSelect(conversationId: string) {
-    if (isSending) cancelActiveSend();
+    if (isSending) detachActiveRun();
     setActiveConversationId(conversationId);
     onOpenMain();
   }
@@ -573,7 +590,9 @@ export function ChatPanel({
                   key={conversation.id}
                   conversation={conversation}
                   active={conversation.id === activeConversationId}
+                  isRunning={runningConversationIds.has(conversation.id)}
                   formatDate={formatDate}
+                  runStatusLabel={t('conversation.runStatus')}
                   deleteLabel={t('conversation.delete')}
                   pinLabel={conversation.is_pinned ? t('conversation.unpin') : t('conversation.pin')}
                   isPinning={pinningConversationIds.has(conversation.id)}
@@ -641,7 +660,7 @@ export function ChatPanel({
                         arguments={toolMsg.arguments}
                         status={toolMsg.status}
                         result={toolMsg.result}
-                        permissionMode={terminalPermissionMode}
+                        permissionMode={toolMsg.permission_mode ?? terminalPermissionMode}
                         onApprove={async (decision) => {
                           const approvalId = toolMsg.arguments.approval_id;
                           if (!approvalId) return;
@@ -1216,7 +1235,9 @@ function normalizeMathMarkdown(content: string): string {
 function ConversationRow({
   conversation,
   active,
+  isRunning,
   formatDate,
+  runStatusLabel,
   deleteLabel,
   pinLabel,
   isPinning,
@@ -1226,7 +1247,9 @@ function ConversationRow({
 }: {
   conversation: Conversation;
   active: boolean;
+  isRunning: boolean;
   formatDate: (value: string) => string;
+  runStatusLabel: string;
   deleteLabel: string;
   pinLabel: string;
   isPinning: boolean;
@@ -1244,7 +1267,12 @@ function ConversationRow({
         className="conversation-row-main"
         type="button"
         title={conversation.title}
-        subtitle={formatDate(conversation.updated_at)}
+        subtitle={(
+          <span className={isRunning ? 'conversation-run-status' : undefined}>
+            {isRunning ? <LoaderCircle size={12} aria-hidden="true" /> : null}
+            <span>{isRunning ? runStatusLabel : formatDate(conversation.updated_at)}</span>
+          </span>
+        )}
         onClick={onSelect}
       />
       <IconButton

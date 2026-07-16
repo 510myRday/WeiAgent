@@ -76,6 +76,10 @@ fn api_router() -> Router<AppState> {
             get(conversations::list_conversations).post(conversations::create_conversation),
         )
         .route(
+            "/api/agents/{agent_id}/runs",
+            get(conversations::list_active_agent_runs),
+        )
+        .route(
             "/api/conversations/{conversation_id}",
             put(conversations::update_conversation).delete(conversations::delete_conversation),
         )
@@ -87,6 +91,22 @@ fn api_router() -> Router<AppState> {
         .route(
             "/api/conversations/{conversation_id}/messages/stream",
             post(conversations::send_message_stream),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/runs",
+            post(conversations::create_message_run),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/run",
+            get(conversations::active_conversation_run),
+        )
+        .route(
+            "/api/runs/{run_id}/events",
+            get(conversations::stream_run_events),
+        )
+        .route(
+            "/api/runs/{run_id}",
+            get(conversations::read_run).delete(conversations::cancel_run),
         )
         .route(
             "/api/agents/{agent_id}/tools-config",
