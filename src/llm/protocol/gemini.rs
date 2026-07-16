@@ -301,6 +301,8 @@ fn parse_gemini_output(value: &Value) -> AppResult<ChatCompletionOutput> {
                 .unwrap_or("no candidates");
             AppError::Llm(format!("Gemini returned no candidates: {reason}"))
         })?;
+    validate_gemini_finish_reason(candidate["finishReason"].as_str())?;
+
     let mut content = String::new();
     let mut tool_calls = Vec::new();
     for part in candidate["content"]["parts"]
@@ -330,6 +332,42 @@ fn parse_gemini_output(value: &Value) -> AppResult<ChatCompletionOutput> {
         content,
         tool_calls,
     })
+}
+
+fn validate_gemini_finish_reason(reason: Option<&str>) -> AppResult<()> {
+    match reason {
+        None | Some("STOP") => Ok(()),
+        Some("MAX_TOKENS") => Err(AppError::Llm(
+            "Gemini response stopped because the token limit was reached".to_string(),
+        )),
+        Some("SAFETY") => Err(AppError::Llm(
+            "Gemini response was blocked by safety filters".to_string(),
+        )),
+        Some("RECITATION") => Err(AppError::Llm(
+            "Gemini response was blocked for recitation".to_string(),
+        )),
+        Some("LANGUAGE") => Err(AppError::Llm(
+            "Gemini response was blocked for unsupported language".to_string(),
+        )),
+        Some("BLOCKLIST") => Err(AppError::Llm(
+            "Gemini response was blocked by blocklist".to_string(),
+        )),
+        Some("PROHIBITED_CONTENT") => Err(AppError::Llm(
+            "Gemini response was blocked for prohibited content".to_string(),
+        )),
+        Some("SPII") => Err(AppError::Llm(
+            "Gemini response was blocked for sensitive personal information".to_string(),
+        )),
+        Some("MALFORMED_FUNCTION_CALL") => Err(AppError::Llm(
+            "Gemini response ended with a malformed function call".to_string(),
+        )),
+        Some("FINISH_REASON_UNSPECIFIED") => Err(AppError::Llm(
+            "Gemini response ended with an unspecified finish reason".to_string(),
+        )),
+        Some(other) => Err(AppError::Llm(format!(
+            "Gemini response ended with unsupported finishReason {other}"
+        ))),
+    }
 }
 
 struct GeminiStreamParser {
@@ -387,8 +425,11 @@ impl GeminiStreamParser {
                 }));
             }
         }
-        if candidate.get("finishReason").is_some() {
-            events.extend(self.finish());
+        if let Some(reason) = candidate["finishReason"].as_str() {
+            match validate_gemini_finish_reason(Some(reason)) {
+                Ok(()) => events.extend(self.finish()),
+                Err(error) => events.push(Err(error)),
+            }
         }
         events
     }
@@ -507,5 +548,24 @@ mod tests {
             events.last().unwrap().as_ref().unwrap(),
             StreamEvent::Finished
         ));
+    }
+
+    #[test]
+    fn abnormal_finish_reason_is_an_error() {
+        let error = parse_gemini_output(&json!({
+            "candidates": [{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"partial"}]}}]
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("token limit"));
+
+        let mut parser = GeminiStreamParser::new();
+        let events = parser.parse_line(
+            r#"data: {"candidates":[{"content":{"parts":[{"text":"partial"}]},"finishReason":"SAFETY"}]}"#,
+        );
+        assert!(matches!(
+            events.first().unwrap().as_ref().unwrap(),
+            StreamEvent::TextDelta(text) if text == "partial"
+        ));
+        assert!(events.last().unwrap().is_err());
     }
 }

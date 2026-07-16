@@ -9,10 +9,10 @@ use crate::{
     llm::{
         client::{ChatClient, ChatStream, RequestOptions},
         http::{
-            LlmHttp, MAX_LLM_LOG_BYTES, MAX_SSE_LINE_BUFFER_BYTES, read_response_body_limited,
-            spawn_log,
+            LlmHttp, MAX_LLM_LOG_BYTES, MAX_SSE_LINE_BUFFER_BYTES, decode_remaining_sse_line,
+            drain_sse_line, read_response_body_limited, spawn_log,
         },
-        sse::parse_sse_line,
+        sse::{openai_finish_event, parse_sse_line},
         types::{
             ChatCompletionOutput, ChatCompletionResponse, ModelsListResponse, ToolDefinition,
             build_chat_request,
@@ -169,7 +169,23 @@ impl ChatClient for OpenAiChatClient {
             AppError::Llm("empty model response".to_string())
         })?;
 
-        let content = choice.message.content;
+        if let Some(reason) = choice.finish_reason.as_deref()
+            && let Err(error) = openai_finish_event(reason)
+        {
+            self.http.spawn_log(
+                log_enabled,
+                &agent.name,
+                &agent.model_id,
+                &provider.name,
+                &request_json,
+                Some(&body),
+                Some(status.as_u16()),
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+
+        let content = choice.message.content.unwrap_or_default();
         let tool_calls = choice.message.tool_calls.unwrap_or_default();
         if content.is_empty() && tool_calls.is_empty() {
             self.http.spawn_log(
@@ -277,7 +293,7 @@ impl ChatClient for OpenAiChatClient {
         let stream_status = status.as_u16();
         let mut bytes = response.bytes_stream();
         let stream = async_stream::stream! {
-            let mut buffer = String::new();
+            let mut buffer: Vec<u8> = Vec::new();
 
             struct StreamLogGuard {
                 logger: Option<Arc<LlmLogger>>,
@@ -369,10 +385,27 @@ impl ChatClient for OpenAiChatClient {
                 };
                 match chunk {
                     Ok(bytes) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-                        while let Some(index) = buffer.find('\n') {
-                            let line = buffer[..index].trim_end_matches('\r').to_string();
-                            buffer = buffer[index + 1..].to_string();
+                        buffer.extend_from_slice(&bytes);
+                        while let Some(line) = drain_sse_line(&mut buffer) {
+                            let line = match line {
+                                Ok(line) => line,
+                                Err(error) => {
+                                    spawn_log(
+                                        &guard.logger,
+                                        guard.enabled,
+                                        &guard.agent_name,
+                                        &guard.model_id,
+                                        &guard.provider_name,
+                                        &guard.request_json,
+                                        Some(&guard.raw_lines.join("\n")),
+                                        Some(guard.raw_status),
+                                        Some(&error.to_string()),
+                                    );
+                                    guard.completed = true;
+                                    yield Err(error);
+                                    return;
+                                }
+                            };
                             if guard.raw_bytes.saturating_add(line.len()) <= MAX_LLM_LOG_BYTES {
                                 guard.raw_bytes += line.len();
                                 guard.raw_lines.push(line.clone());
@@ -431,8 +464,25 @@ impl ChatClient for OpenAiChatClient {
                     }
                 }
             }
-            if !buffer.trim().is_empty() {
-                let line = buffer.trim_end_matches('\r').to_string();
+            if let Some(line) = match decode_remaining_sse_line(&buffer) {
+                Ok(line) => line,
+                Err(error) => {
+                    spawn_log(
+                        &guard.logger,
+                        guard.enabled,
+                        &guard.agent_name,
+                        &guard.model_id,
+                        &guard.provider_name,
+                        &guard.request_json,
+                        Some(&guard.raw_lines.join("\n")),
+                        Some(guard.raw_status),
+                        Some(&error.to_string()),
+                    );
+                    guard.completed = true;
+                    yield Err(error);
+                    return;
+                }
+            } {
                 if guard.raw_bytes.saturating_add(line.len()) <= MAX_LLM_LOG_BYTES {
                     guard.raw_bytes += line.len();
                     guard.raw_lines.push(line.clone());
@@ -547,5 +597,30 @@ mod tests {
         assert!(request.stream);
         assert_eq!(request.messages[0].role, "system");
         assert_eq!(request.messages[1].role, "user");
+    }
+
+    #[test]
+    fn parses_nullable_content_for_tool_calls() {
+        let parsed: ChatCompletionResponse = serde_json::from_str(
+            r#"{
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {"name": "run", "arguments": "{}"}
+                        }]
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let choice = parsed.choices.into_iter().next().unwrap();
+        assert_eq!(choice.message.content.unwrap_or_default(), "");
+        assert_eq!(choice.message.tool_calls.unwrap()[0].id, "call-1");
     }
 }

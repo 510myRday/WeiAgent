@@ -122,18 +122,32 @@ pub fn build_chat_request(
 }
 
 pub(crate) fn select_context_messages(messages: &[ChatMessage]) -> Vec<&ChatMessage> {
-    let mut selected = Vec::new();
+    let groups = context_message_groups(messages);
+    let mut selected_groups = Vec::new();
     let mut bytes = 0_usize;
-    for message in messages.iter().rev() {
-        if selected.len() >= MAX_CONTEXT_MESSAGES
-            || bytes.saturating_add(message.content.len()) > MAX_CONTEXT_MESSAGE_BYTES
+    let mut count = 0_usize;
+
+    for group in groups.iter().rev() {
+        let group_len = group.len();
+        let group_bytes = group
+            .iter()
+            .map(|message| context_message_bytes(message))
+            .sum();
+        if count.saturating_add(group_len) > MAX_CONTEXT_MESSAGES
+            || bytes.saturating_add(group_bytes) > MAX_CONTEXT_MESSAGE_BYTES
         {
             break;
         }
-        bytes += message.content.len();
-        selected.push(message);
+        bytes += group_bytes;
+        count += group_len;
+        selected_groups.push(group);
     }
-    selected.reverse();
+
+    let mut selected = Vec::new();
+    for group in selected_groups.into_iter().rev() {
+        selected.extend(group.iter().copied());
+    }
+
     if let Some(first_user) = selected
         .iter()
         .position(|message| message.role.as_openai_role() == "user")
@@ -141,6 +155,41 @@ pub(crate) fn select_context_messages(messages: &[ChatMessage]) -> Vec<&ChatMess
         selected.drain(..first_user);
     }
     selected
+}
+
+fn context_message_groups(messages: &[ChatMessage]) -> Vec<Vec<&ChatMessage>> {
+    let mut groups = Vec::new();
+    let mut index = 0;
+    while index < messages.len() {
+        let message = &messages[index];
+        if message.role.as_openai_role() == "assistant" && message.tool_calls.is_some() {
+            let mut group = vec![message];
+            index += 1;
+            while index < messages.len() && messages[index].role.as_openai_role() == "tool" {
+                group.push(&messages[index]);
+                index += 1;
+            }
+            groups.push(group);
+        } else if message.role.as_openai_role() == "tool" {
+            index += 1;
+        } else {
+            groups.push(vec![message]);
+            index += 1;
+        }
+    }
+    groups
+}
+
+fn context_message_bytes(message: &ChatMessage) -> usize {
+    message.content.len()
+        + message
+            .tool_call_id
+            .as_ref()
+            .map_or(0, |tool_call_id| tool_call_id.len())
+        + message
+            .tool_calls
+            .as_ref()
+            .map_or(0, |tool_calls| tool_calls.to_string().len())
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,12 +200,14 @@ pub struct ChatCompletionResponse {
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionChoice {
     pub message: ChatCompletionMessage,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionMessage {
     #[serde(default)]
-    pub content: String,
+    pub content: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<ToolCall>>,
 }
@@ -202,4 +253,72 @@ pub struct ModelsListResponse {
 #[derive(Debug, Deserialize)]
 pub struct ModelEntry {
     pub id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::domain::{ChatMessageStatus, ChatRole};
+
+    fn message(role: ChatRole, content: impl Into<String>) -> ChatMessage {
+        ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            conversation_id: Uuid::new_v4(),
+            role,
+            content: content.into(),
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    #[test]
+    fn context_budget_counts_tool_calls_and_keeps_valid_start() {
+        let user = message(ChatRole::User, "old request");
+        let mut assistant = message(ChatRole::Assistant, "");
+        assistant.tool_calls = Some(json!([{
+            "id": "call-1",
+            "type": "function",
+            "function": {
+                "name": "run",
+                "arguments": "x".repeat(MAX_CONTEXT_MESSAGE_BYTES)
+            }
+        }]));
+        let mut tool = message(ChatRole::Tool, "ok");
+        tool.tool_call_id = Some("call-1".to_string());
+        let latest = message(ChatRole::User, "latest request");
+
+        let messages = vec![user.clone(), assistant, tool, latest.clone()];
+        let selected = select_context_messages(&messages);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, latest.id);
+    }
+
+    #[test]
+    fn context_selection_keeps_assistant_tool_group_together() {
+        let user = message(ChatRole::User, "run it");
+        let mut assistant = message(ChatRole::Assistant, "");
+        assistant.tool_calls = Some(json!([{
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "run", "arguments": "{}"}
+        }]));
+        let mut tool = message(ChatRole::Tool, "ok");
+        tool.tool_call_id = Some("call-1".to_string());
+
+        let messages = vec![user.clone(), assistant.clone(), tool.clone()];
+        let selected = select_context_messages(&messages);
+
+        assert_eq!(selected.len(), 3);
+        assert_eq!(selected[0].id, user.id);
+        assert_eq!(selected[1].id, assistant.id);
+        assert_eq!(selected[2].id, tool.id);
+    }
 }

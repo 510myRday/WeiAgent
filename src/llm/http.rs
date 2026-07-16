@@ -159,7 +159,8 @@ pub async fn read_response_body_limited(response: Response) -> AppResult<String>
         }
         body.extend_from_slice(&chunk);
     }
-    Ok(String::from_utf8_lossy(&body).into_owned())
+    String::from_utf8(body)
+        .map_err(|error| AppError::Llm(format!("LLM response was not valid UTF-8: {error}")))
 }
 
 pub trait StreamLineParser: Send {
@@ -202,6 +203,27 @@ pub fn format_stream_log(raw_lines: &[String], truncated: bool) -> String {
     )
 }
 
+pub fn drain_sse_line(buffer: &mut Vec<u8>) -> Option<AppResult<String>> {
+    let index = buffer.iter().position(|byte| *byte == b'\n')?;
+    let mut line = buffer.drain(..=index).collect::<Vec<_>>();
+    line.pop();
+    Some(decode_sse_line(&line))
+}
+
+pub fn decode_remaining_sse_line(buffer: &[u8]) -> AppResult<Option<String>> {
+    if buffer.iter().all(|byte| byte.is_ascii_whitespace()) {
+        return Ok(None);
+    }
+    decode_sse_line(buffer).map(Some)
+}
+
+fn decode_sse_line(line: &[u8]) -> AppResult<String> {
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    std::str::from_utf8(line)
+        .map(str::to_string)
+        .map_err(|error| AppError::Llm(format!("invalid SSE UTF-8: {error}")))
+}
+
 pub fn stream_response(
     response: Response,
     mut parser: Box<dyn StreamLineParser>,
@@ -210,7 +232,7 @@ pub fn stream_response(
 ) -> ChatStream {
     let mut bytes = response.bytes_stream();
     let stream = async_stream::stream! {
-        let mut buffer = String::new();
+        let mut buffer: Vec<u8> = Vec::new();
         let mut raw_lines = Vec::new();
         let mut raw_bytes = 0_usize;
         let mut raw_truncated = false;
@@ -243,10 +265,26 @@ pub fn stream_response(
             };
             match chunk {
                 Ok(chunk) => {
-                    buffer.push_str(&String::from_utf8_lossy(&chunk));
-                    while let Some(index) = buffer.find('\n') {
-                        let line = buffer[..index].trim_end_matches('\r').to_string();
-                        buffer = buffer[index + 1..].to_string();
+                    buffer.extend_from_slice(&chunk);
+                    while let Some(line) = drain_sse_line(&mut buffer) {
+                        let line = match line {
+                            Ok(line) => line,
+                            Err(error) => {
+                                spawn_log(
+                                    &context.logger,
+                                    context.enabled,
+                                    &context.agent_name,
+                                    &context.model_id,
+                                    &context.provider_name,
+                                    &context.request_json,
+                                    Some(&format_stream_log(&raw_lines, raw_truncated)),
+                                    Some(context.status),
+                                    Some(&error.to_string()),
+                                );
+                                yield Err(error);
+                                return;
+                            }
+                        };
                         capture_log_line(
                             &line,
                             &mut raw_lines,
@@ -299,8 +337,24 @@ pub fn stream_response(
                 }
             }
         }
-        if !buffer.trim().is_empty() {
-            let line = buffer.trim_end_matches('\r').to_string();
+        if let Some(line) = match decode_remaining_sse_line(&buffer) {
+            Ok(line) => line,
+            Err(error) => {
+                spawn_log(
+                    &context.logger,
+                    context.enabled,
+                    &context.agent_name,
+                    &context.model_id,
+                    &context.provider_name,
+                    &context.request_json,
+                    Some(&format_stream_log(&raw_lines, raw_truncated)),
+                    Some(context.status),
+                    Some(&error.to_string()),
+                );
+                yield Err(error);
+                return;
+            }
+        } {
             capture_log_line(
                 &line,
                 &mut raw_lines,

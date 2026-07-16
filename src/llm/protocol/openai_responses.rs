@@ -208,6 +208,8 @@ fn build_openai_responses_request(
 }
 
 fn parse_openai_responses_output(value: &Value) -> AppResult<ChatCompletionOutput> {
+    validate_openai_responses_status(value)?;
+
     let mut content = String::new();
     let mut tool_calls = Vec::new();
     for item in value["output"].as_array().into_iter().flatten() {
@@ -247,6 +249,29 @@ fn parse_openai_responses_output(value: &Value) -> AppResult<ChatCompletionOutpu
         content,
         tool_calls,
     })
+}
+
+fn validate_openai_responses_status(value: &Value) -> AppResult<()> {
+    match value["status"].as_str() {
+        None | Some("completed") => Ok(()),
+        Some("failed") => {
+            let message = value["error"]["message"]
+                .as_str()
+                .unwrap_or("OpenAI Responses request failed");
+            Err(AppError::Llm(message.to_string()))
+        }
+        Some("incomplete") => {
+            let reason = value["incomplete_details"]["reason"]
+                .as_str()
+                .unwrap_or("unknown reason");
+            Err(AppError::Llm(format!(
+                "OpenAI Responses request was incomplete: {reason}"
+            )))
+        }
+        Some(status) => Err(AppError::Llm(format!(
+            "OpenAI Responses returned unsupported status {status}"
+        ))),
+    }
 }
 
 struct OpenAiResponsesStreamParser {
@@ -467,5 +492,15 @@ mod tests {
             events.into_iter().next().unwrap().unwrap(),
             StreamEvent::TextDelta(text) if text == "hello"
         ));
+    }
+
+    #[test]
+    fn incomplete_response_is_an_error() {
+        let error = parse_openai_responses_output(&json!({
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"}
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("incomplete"));
     }
 }

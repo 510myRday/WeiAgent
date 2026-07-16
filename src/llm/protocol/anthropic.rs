@@ -247,6 +247,8 @@ fn append_content_blocks(messages: &mut Vec<Value>, role: &str, blocks: Vec<Valu
 }
 
 fn parse_anthropic_output(value: &Value) -> AppResult<ChatCompletionOutput> {
+    validate_anthropic_stop_reason(value["stop_reason"].as_str())?;
+
     let mut content = String::new();
     let mut tool_calls = Vec::new();
     for block in value["content"].as_array().into_iter().flatten() {
@@ -274,9 +276,31 @@ fn parse_anthropic_output(value: &Value) -> AppResult<ChatCompletionOutput> {
     })
 }
 
+fn validate_anthropic_stop_reason(reason: Option<&str>) -> AppResult<()> {
+    match reason {
+        None | Some("end_turn" | "tool_use" | "stop_sequence") => Ok(()),
+        Some("max_tokens") => Err(AppError::Llm(
+            "Anthropic response stopped because the token limit was reached".to_string(),
+        )),
+        Some("pause_turn") => Err(AppError::Llm(
+            "Anthropic response paused and requires a continuation turn".to_string(),
+        )),
+        Some("refusal") => Err(AppError::Llm(
+            "Anthropic response was stopped by a refusal".to_string(),
+        )),
+        Some("model_context_window_exceeded") => Err(AppError::Llm(
+            "Anthropic response exceeded the model context window".to_string(),
+        )),
+        Some(other) => Err(AppError::Llm(format!(
+            "Anthropic response ended with unsupported stop_reason {other}"
+        ))),
+    }
+}
+
 struct AnthropicStreamParser {
     saw_tool_calls: bool,
     finished: bool,
+    stop_reason: Option<String>,
 }
 
 impl AnthropicStreamParser {
@@ -284,6 +308,7 @@ impl AnthropicStreamParser {
         Self {
             saw_tool_calls: false,
             finished: false,
+            stop_reason: None,
         }
     }
 
@@ -341,6 +366,12 @@ impl AnthropicStreamParser {
                 }
                 _ => Vec::new(),
             },
+            Some("message_delta") => {
+                if let Some(reason) = value["delta"]["stop_reason"].as_str() {
+                    self.stop_reason = Some(reason.to_string());
+                }
+                Vec::new()
+            }
             Some("message_stop") => self.finish(),
             Some("error") => {
                 let message = value["error"]["message"]
@@ -357,6 +388,9 @@ impl AnthropicStreamParser {
             return Vec::new();
         }
         self.finished = true;
+        if let Err(error) = validate_anthropic_stop_reason(self.stop_reason.as_deref()) {
+            return vec![Err(error)];
+        }
         vec![Ok(if self.saw_tool_calls {
             StreamEvent::FinishedWithToolCalls
         } else {
@@ -485,5 +519,26 @@ mod tests {
             events.into_iter().next().unwrap().unwrap(),
             StreamEvent::ToolCallArgsDelta { index: 0, .. }
         ));
+    }
+
+    #[test]
+    fn max_tokens_stop_reason_is_an_error() {
+        let error = parse_anthropic_output(&json!({
+            "stop_reason": "max_tokens",
+            "content": [{"type":"text","text":"partial"}]
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("token limit"));
+
+        let mut parser = AnthropicStreamParser::new();
+        assert!(
+            parser
+                .parse_line(
+                    r#"data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}"#
+                )
+                .is_empty()
+        );
+        let events = parser.parse_line(r#"data: {"type":"message_stop"}"#);
+        assert!(events.into_iter().next().unwrap().is_err());
     }
 }

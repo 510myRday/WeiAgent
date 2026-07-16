@@ -1,5 +1,5 @@
 use crate::{
-    error::AppResult,
+    error::{AppError, AppResult},
     llm::types::{StreamChunk, StreamEvent},
 };
 
@@ -54,16 +54,28 @@ pub fn parse_sse_line(line: &str) -> Vec<AppResult<StreamEvent>> {
                 }
 
                 if let Some(reason) = choice.finish_reason.as_deref() {
-                    events.push(Ok(if reason == "tool_calls" {
-                        StreamEvent::FinishedWithToolCalls
-                    } else {
-                        StreamEvent::Finished
-                    }));
+                    events.push(openai_finish_event(reason));
                 }
             }
             events
         }
         Err(error) => vec![Err(error.into())],
+    }
+}
+
+pub fn openai_finish_event(reason: &str) -> AppResult<StreamEvent> {
+    match reason {
+        "stop" => Ok(StreamEvent::Finished),
+        "tool_calls" | "function_call" => Ok(StreamEvent::FinishedWithToolCalls),
+        "length" => Err(AppError::Llm(
+            "OpenAI response stopped because the token limit was reached".to_string(),
+        )),
+        "content_filter" => Err(AppError::Llm(
+            "OpenAI response was stopped by content filtering".to_string(),
+        )),
+        other => Err(AppError::Llm(format!(
+            "OpenAI response ended with unsupported finish_reason {other}"
+        ))),
     }
 }
 
@@ -132,5 +144,12 @@ mod tests {
             parsed.into_iter().next().unwrap().unwrap(),
             StreamEvent::Finished
         ));
+    }
+
+    #[test]
+    fn abnormal_finish_reason_is_an_error() {
+        let parsed =
+            parse_sse_line("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}");
+        assert!(parsed.into_iter().next().unwrap().is_err());
     }
 }
