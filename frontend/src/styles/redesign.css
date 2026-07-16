@@ -1,7 +1,7 @@
 /* Cohesive application shell and shared interaction language. */
 
 .chat-area {
-  --chat-inline-gutter: clamp(36px, 2.5vw, 46px);
+  --chat-inline-gutter: var(--page-inline-padding);
 }
 
 .pane-header {
@@ -40,7 +40,7 @@
   font-size: 17px;
   font-weight: 760;
   line-height: 1.35;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
 }
 
 .pane-title-block p {
@@ -78,8 +78,8 @@
 }
 
 .config-page-header .pane-title-block h2 {
-  font-size: clamp(22px, 2vw, 28px);
-  letter-spacing: -0.035em;
+  font-size: 26px;
+  letter-spacing: 0;
 }
 
 .config-page-header .pane-title-block p {
@@ -477,9 +477,9 @@
 
 .messages > * {
   min-width: 0;
-  max-width: 100%;
-  width: 100%;
-  margin-inline: 0;
+  width: min(100%, var(--content-max-width));
+  max-width: var(--content-max-width);
+  margin-inline: auto;
 }
 
 .message-time-separator {
@@ -500,12 +500,12 @@
 
 .message-body {
   min-width: 0;
-  max-width: min(760px, 78%);
+  max-width: min(var(--reading-max-width), 80%);
 }
 
 .message-row--tool .message-body {
-  width: min(760px, calc(100% - 50px));
-  max-width: min(760px, 86%);
+  width: min(var(--reading-max-width), calc(100% - 50px));
+  max-width: min(var(--reading-max-width), 88%);
 }
 
 .message-bubble {
@@ -541,6 +541,126 @@
 
 .message-meta strong {
   font-weight: 650;
+}
+
+.message-row.user.is-editing .message-body {
+  width: min(620px, 80%);
+}
+
+.message-edit-form,
+.message-edit-bubble {
+  width: 100%;
+}
+
+.message-edit-textarea {
+  display: block;
+  width: 100%;
+  min-height: 72px;
+  max-height: 240px;
+  margin: 0;
+  padding: 0;
+  resize: vertical;
+  overflow-y: auto;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  color: #202923;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.68;
+  letter-spacing: 0;
+}
+
+.message-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  align-self: flex-end;
+  width: max-content;
+  gap: 1px;
+  min-height: 26px;
+  margin-top: 2px;
+  margin-right: -2px;
+}
+
+.message-action-button {
+  display: inline-flex;
+  width: 27px;
+  height: 27px;
+  min-height: 27px;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 27px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #74827a;
+  letter-spacing: 0;
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard),
+    opacity var(--duration-fast) var(--ease-standard);
+}
+
+.message-row.user:not(.is-editing) .message-actions {
+  opacity: 0.58;
+}
+
+.message-row.user:hover .message-actions,
+.message-row.user:focus-within .message-actions {
+  opacity: 1;
+}
+
+.message-action-button:hover,
+.message-action-button:focus-visible {
+  outline: none;
+  border-color: var(--border-subtle);
+  background: var(--surface-pane);
+  color: var(--color-primary-strong);
+  box-shadow: 0 2px 7px rgba(18, 30, 24, 0.08);
+}
+
+.message-edit-actions {
+  gap: 6px;
+  margin-top: 6px;
+  margin-right: 0;
+}
+
+.message-edit-actions .message-action-button {
+  width: auto;
+  height: 30px;
+  min-height: 30px;
+  flex-basis: auto;
+  gap: 5px;
+  padding: 4px 9px;
+  border-color: var(--border-subtle);
+  background: var(--surface-pane);
+  color: var(--color-text-soft);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.message-edit-actions .message-action-button.is-primary {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.message-edit-actions .message-action-button.is-primary:hover,
+.message-edit-actions .message-action-button.is-primary:focus-visible {
+  border-color: var(--color-primary-strong);
+  background: var(--color-primary-strong);
+  color: #fff;
+}
+
+.message-action-button:disabled {
+  opacity: 0.42;
+  cursor: default;
 }
 
 .message-markdown,
@@ -798,11 +918,11 @@
 }
 
 .composer-box {
-  width: 100%;
+  width: min(100%, var(--content-max-width));
   min-width: 0;
-  max-width: 100%;
+  max-width: var(--content-max-width);
   min-height: 0;
-  margin-inline: 0;
+  margin-inline: auto;
   padding: 10px 11px 9px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
@@ -917,7 +1037,7 @@
   margin: 0;
   color: var(--color-text);
   font-size: 18px;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .empty-state p {

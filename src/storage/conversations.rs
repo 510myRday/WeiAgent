@@ -169,6 +169,49 @@ impl JsonStore {
         self.write_conversations_unlocked(&conversations).await
     }
 
+    pub async fn truncate_conversation_from_message(
+        &self,
+        conversation_id: Uuid,
+        message_id: Uuid,
+    ) -> AppResult<()> {
+        let _guard = self.lock.lock().await;
+        let mut conversations = self.read_conversations_unlocked().await?;
+        let conversation = conversations
+            .iter_mut()
+            .find(|conversation| conversation.id == conversation_id)
+            .ok_or(AppError::NotFound)?;
+        let mut existing = self
+            .read_conversation_messages_unchecked(conversation_id)
+            .await?;
+        let index = existing
+            .iter()
+            .position(|message| message.id == message_id)
+            .ok_or_else(|| {
+                AppError::BadRequest(
+                    "restart message does not belong to this conversation".to_string(),
+                )
+            })?;
+        if existing[index].role != ChatRole::User {
+            return Err(AppError::BadRequest(
+                "conversation can only restart from a user message".to_string(),
+            ));
+        }
+
+        let derived_title = title_from_first_user_message(&existing);
+        let title_tracks_first_message = is_generated_conversation_title(&conversation.title)
+            || derived_title.as_deref() == Some(conversation.title.as_str());
+        existing.truncate(index);
+        write_json(&self.conversation_file(conversation_id), &existing).await?;
+
+        conversation.message_count = existing.len();
+        if title_tracks_first_message {
+            conversation.title = title_from_first_user_message(&existing)
+                .unwrap_or_else(|| "New Conversation".to_string());
+        }
+        conversation.updated_at = Utc::now();
+        self.write_conversations_unlocked(&conversations).await
+    }
+
     pub async fn upsert_conversation_message(
         &self,
         conversation_id: Uuid,

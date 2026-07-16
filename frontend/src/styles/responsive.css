@@ -1,9 +1,9 @@
-@media (max-width: 1180px) and (min-width: 921px) {
+@media (max-width: 1280px) and (min-width: 921px) {
   :root {
-    --rail-width: 70px;
-    --list-width: 292px;
+    --rail-width: 68px;
+    --list-width: 272px;
+    --page-inline-padding: clamp(20px, 2.5vw, 32px);
   }
-
 }
 
 @media (max-width: 920px) {
@@ -272,6 +272,26 @@
 
   .message-bubble {
     padding: 10px 12px;
+  }
+
+  .message-row.user.is-editing .message-body {
+    width: calc(100% - 42px);
+    max-width: calc(100% - 42px);
+  }
+
+  .message-action-button {
+    width: 30px;
+    height: 30px;
+    min-height: 30px;
+    flex-basis: 30px;
+  }
+
+  .message-edit-actions .message-action-button {
+    width: auto;
+    height: 34px;
+    min-height: 34px;
+    flex-basis: auto;
+    padding-inline: 10px;
   }
 
   .pane-header,

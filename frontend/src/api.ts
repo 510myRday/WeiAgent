@@ -332,12 +332,16 @@ export function sendMessage(
   content: string,
   timeoutSeconds: number,
   signal?: AbortSignal,
+  restartFromMessageId?: string,
 ): Promise<SendMessageResponse> {
   const timeoutSignal = AbortSignal.timeout(Math.max(1, timeoutSeconds) * 1000);
   const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   return request<SendMessageResponse>(`/api/conversations/${conversationId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({
+      content,
+      ...(restartFromMessageId ? { restart_from_message_id: restartFromMessageId } : {}),
+    }),
     signal: combinedSignal,
   });
 }
@@ -349,13 +353,18 @@ export async function streamMessage(
   timeoutSeconds: number,
   streamOutput: boolean,
   signal?: AbortSignal,
+  restartFromMessageId?: string,
 ): Promise<void> {
   const timeoutSignal = AbortSignal.timeout(Math.max(1, timeoutSeconds, 3600) * 1000);
   const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   const response = await fetch(`/api/conversations/${conversationId}/messages/stream`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content, stream: streamOutput }),
+    body: JSON.stringify({
+      content,
+      stream: streamOutput,
+      ...(restartFromMessageId ? { restart_from_message_id: restartFromMessageId } : {}),
+    }),
     signal: combinedSignal,
   });
 

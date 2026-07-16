@@ -171,6 +171,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restarting_from_user_message_replaces_it_and_following_history() {
+        let (app, _, _, conversation_id) = test_app().await;
+        let kept_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/conversations/{conversation_id}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "content": "keep this" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(kept_response.status(), StatusCode::OK);
+        let kept_body = to_bytes(kept_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let kept: serde_json::Value = serde_json::from_slice(&kept_body).unwrap();
+        let kept_user_id = kept["user"]["id"].as_str().unwrap();
+        let kept_assistant_id = kept["assistant"]["id"].as_str().unwrap();
+
+        let first_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/conversations/{conversation_id}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "content": "original" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first_response.status(), StatusCode::OK);
+        let first_body = to_bytes(first_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let first: serde_json::Value = serde_json::from_slice(&first_body).unwrap();
+        let original_user_id = first["user"]["id"].as_str().unwrap();
+        let original_assistant_id = first["assistant"]["id"].as_str().unwrap();
+
+        let restart_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/conversations/{conversation_id}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "content": "edited",
+                            "restart_from_message_id": original_user_id,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(restart_response.status(), StatusCode::OK);
+
+        let history_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/conversations/{conversation_id}/messages"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(history_response.status(), StatusCode::OK);
+        let history_body = to_bytes(history_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let history: Vec<serde_json::Value> = serde_json::from_slice(&history_body).unwrap();
+
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[0]["role"], "user");
+        assert_eq!(history[0]["content"], "keep this");
+        assert_eq!(history[1]["role"], "assistant");
+        assert_eq!(history[2]["role"], "user");
+        assert_eq!(history[2]["content"], "edited");
+        assert_eq!(history[3]["role"], "assistant");
+        assert_eq!(history[0]["id"], kept_user_id);
+        assert_eq!(history[1]["id"], kept_assistant_id);
+        assert!(
+            history
+                .iter()
+                .all(|message| message["id"] != original_user_id)
+        );
+        assert!(
+            history
+                .iter()
+                .all(|message| message["id"] != original_assistant_id)
+        );
+    }
+
+    #[tokio::test]
     async fn lists_model_providers_without_secret() {
         let (app, _, provider_id, _) = test_app().await;
         let response = app

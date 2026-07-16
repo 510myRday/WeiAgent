@@ -114,7 +114,13 @@ pub async fn send_message_complete(
     Json(request): Json<SendMessageRequest>,
 ) -> AppResult<Json<SendMessageResponse>> {
     let _run_guard = state.run_manager.try_start(conversation_id)?;
-    let prepared = prepare_chat(&state, conversation_id, &request.content).await?;
+    let prepared = prepare_chat(
+        &state,
+        conversation_id,
+        &request.content,
+        request.restart_from_message_id,
+    )
+    .await?;
     let settings = state.store.read_settings().await?;
     let terminal_manager = state.terminal_manager.clone();
     let mut cleanup_guard = ProcessCleanupGuard::new(terminal_manager.clone(), conversation_id);
@@ -147,7 +153,13 @@ pub async fn send_message_stream(
     Json(request): Json<SendMessageRequest>,
 ) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let run_guard = state.run_manager.try_start(conversation_id)?;
-    let prepared = prepare_chat(&state, conversation_id, &request.content).await?;
+    let prepared = prepare_chat(
+        &state,
+        conversation_id,
+        &request.content,
+        request.restart_from_message_id,
+    )
+    .await?;
     let settings = state.store.read_settings().await?;
     let options = request_options(&settings);
     let use_streaming_llm = request.stream;

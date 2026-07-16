@@ -23,6 +23,7 @@ pub async fn prepare_chat(
     state: &AppState,
     conversation_id: Uuid,
     content: &str,
+    restart_from_message_id: Option<Uuid>,
 ) -> AppResult<PreparedChat> {
     let content = content.trim();
     if content.is_empty() {
@@ -42,6 +43,25 @@ pub async fn prepare_chat(
         .store
         .get_model_provider(agent.model_provider_id)
         .await?;
+    let mut tools_config = state.store.read_agent_tools_config(agent.id).await?;
+    if tools_config.terminal.enabled && !state.codex_runtime.is_available_cached() {
+        tools_config.terminal.enabled = false;
+    }
+    let system_prompt = state
+        .store
+        .build_agent_system_prompt(&agent, &tools_config)
+        .await?;
+    if system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "agent system prompt exceeds {MAX_SYSTEM_PROMPT_BYTES} bytes"
+        )));
+    }
+    if let Some(message_id) = restart_from_message_id {
+        state
+            .store
+            .truncate_conversation_from_message(conversation_id, message_id)
+            .await?;
+    }
     let history = state
         .store
         .read_conversation_messages(conversation_id)
@@ -59,19 +79,6 @@ pub async fn prepare_chat(
     };
     let mut messages_for_llm = history;
     messages_for_llm.push(user_message.clone());
-    let mut tools_config = state.store.read_agent_tools_config(agent.id).await?;
-    if tools_config.terminal.enabled && !state.codex_runtime.is_available_cached() {
-        tools_config.terminal.enabled = false;
-    }
-    let system_prompt = state
-        .store
-        .build_agent_system_prompt(&agent, &tools_config)
-        .await?;
-    if system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
-        return Err(AppError::BadRequest(format!(
-            "agent system prompt exceeds {MAX_SYSTEM_PROMPT_BYTES} bytes"
-        )));
-    }
 
     Ok(PreparedChat {
         agent,

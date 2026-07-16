@@ -51,6 +51,8 @@ pub struct SendMessageRequest {
     pub content: String,
     #[serde(default = "default_stream_response")]
     pub stream: bool,
+    #[serde(default)]
+    pub restart_from_message_id: Option<Uuid>,
 }
 
 fn default_stream_response() -> bool {

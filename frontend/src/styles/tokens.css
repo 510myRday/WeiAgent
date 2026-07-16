@@ -64,12 +64,14 @@
   --shadow-popover: 0 18px 48px rgba(18, 30, 24, 0.16);
   --shadow-message: 0 2px 8px rgba(18, 30, 24, 0.045);
 
-  --rail-width: 78px;
-  --list-width: 316px;
+  --rail-width: 72px;
+  --list-width: 288px;
   --header-height: 68px;
   --control-height: 42px;
   --list-row-height: 66px;
-  --content-max-width: 1080px;
+  --content-max-width: 1240px;
+  --reading-max-width: 880px;
+  --page-inline-padding: clamp(24px, 3vw, 48px);
 
   --duration-fast: 140ms;
   --duration-normal: 220ms;

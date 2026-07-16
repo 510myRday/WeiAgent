@@ -8,10 +8,13 @@ import {
   Clock3,
   Clipboard,
   MessageSquare,
+  Pencil,
+  RotateCcw,
   Square,
   Plus,
   Send,
   Trash2,
+  X,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
@@ -368,6 +371,12 @@ export function ChatPanel({
     composerFormRef.current?.requestSubmit();
   }
 
+  function handleRestartMessage(messageId: string, content: string) {
+    if (!activeAgent || isSending || !messageId || !content.trim()) return;
+    void send(content.trim(), activeAgent.id, isStreamMode, messageId);
+    scrollToBottom(true);
+  }
+
   async function handleModelChange(value: string) {
     if (!activeAgent || isSavingModel || isSending) return;
     const selection = modelOptions.find((option) => option.value === value);
@@ -641,6 +650,8 @@ export function ChatPanel({
                 agent={activeAgent}
                 settings={settings}
                 failedLabel={t('chat.failed')}
+                actionsDisabled={isSending}
+                onRestart={handleRestartMessage}
               />
             );
           })}
@@ -890,6 +901,8 @@ function MessageRow({
   agent,
   settings,
   failedLabel,
+  actionsDisabled,
+  onRestart,
 }: {
   anchorId: string;
   message: UiMessage;
@@ -899,8 +912,54 @@ function MessageRow({
   agent?: Agent;
   settings: AppSettings;
   failedLabel: string;
+  actionsDisabled: boolean;
+  onRestart: (messageId: string, content: string) => void;
 }) {
+  const { t } = useI18n();
   const isUser = message.role === 'user';
+  const [isEditing, setIsEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState(message.content);
+  const editInputRef = useRef<HTMLTextAreaElement>(null);
+  const canRestart = isUser && Boolean(message.id) && message.status !== 'streaming';
+
+  useLayoutEffect(() => {
+    if (!isEditing) return;
+    const input = editInputRef.current;
+    if (!input) return;
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(Math.max(input.scrollHeight, 72), 240)}px`;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }, [editDraft, isEditing]);
+
+  function beginEditing() {
+    setEditDraft(message.content);
+    setIsEditing(true);
+  }
+
+  function cancelEditing() {
+    setEditDraft(message.content);
+    setIsEditing(false);
+  }
+
+  function submitEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const content = editDraft.trim();
+    if (!content || actionsDisabled || !message.id) return;
+    setIsEditing(false);
+    onRestart(message.id, content);
+  }
+
+  function handleEditKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelEditing();
+      return;
+    }
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  }
 
   return (
     <>
@@ -910,7 +969,12 @@ function MessageRow({
         </div>
       ) : null}
       <article
-        className={['message-row', message.role, message.status === 'streaming' ? 'is-streaming' : ''].filter(Boolean).join(' ')}
+        className={[
+          'message-row',
+          message.role,
+          message.status === 'streaming' ? 'is-streaming' : '',
+          isEditing ? 'is-editing' : '',
+        ].filter(Boolean).join(' ')}
         data-message-anchor={anchorId}
       >
         {!isUser ? <MessageAvatar agent={agent} settings={settings} isUser={false} /> : null}
@@ -918,10 +982,75 @@ function MessageRow({
           <div className="message-meta">
             <strong>{participantName}</strong>
           </div>
-          <div className="message-bubble">
-            <MessageContent message={message} />
-            {message.status === 'failed' ? <span className="message-status error">{failedLabel}</span> : null}
-          </div>
+          {isEditing ? (
+            <form className="message-edit-form" onSubmit={submitEdit}>
+              <div className="message-bubble message-edit-bubble">
+                <textarea
+                  ref={editInputRef}
+                  className="message-edit-textarea"
+                  value={editDraft}
+                  onChange={(event) => setEditDraft(event.target.value)}
+                  onKeyDown={handleEditKeyDown}
+                  aria-label={t('chat.editMessage')}
+                  disabled={actionsDisabled}
+                  rows={3}
+                />
+              </div>
+              <div className="message-actions message-edit-actions">
+                <button
+                  className="message-action-button"
+                  type="button"
+                  onClick={cancelEditing}
+                  aria-label={t('chat.cancelEdit')}
+                  title={t('chat.cancelEdit')}
+                >
+                  <X size={14} />
+                  <span>{t('chat.cancelEdit')}</span>
+                </button>
+                <button
+                  className="message-action-button is-primary"
+                  type="submit"
+                  disabled={actionsDisabled || !editDraft.trim()}
+                  aria-label={t('chat.sendEdit')}
+                  title={t('chat.sendEdit')}
+                >
+                  <Send size={14} />
+                  <span>{t('chat.sendEdit')}</span>
+                </button>
+              </div>
+            </form>
+          ) : (
+            <>
+              <div className="message-bubble">
+                <MessageContent message={message} />
+                {message.status === 'failed' ? <span className="message-status error">{failedLabel}</span> : null}
+              </div>
+              {canRestart ? (
+                <div className="message-actions">
+                  <button
+                    className="message-action-button"
+                    type="button"
+                    onClick={beginEditing}
+                    disabled={actionsDisabled}
+                    aria-label={t('chat.editMessage')}
+                    title={t('chat.editMessage')}
+                  >
+                    <Pencil size={15} />
+                  </button>
+                  <button
+                    className="message-action-button"
+                    type="button"
+                    onClick={() => onRestart(message.id, message.content)}
+                    disabled={actionsDisabled}
+                    aria-label={t('chat.retryMessage')}
+                    title={t('chat.retryMessage')}
+                  >
+                    <RotateCcw size={15} />
+                  </button>
+                </div>
+              ) : null}
+            </>
+          )}
         </div>
         {isUser ? <MessageAvatar agent={agent} settings={settings} isUser /> : null}
       </article>

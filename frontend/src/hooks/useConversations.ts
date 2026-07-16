@@ -435,7 +435,12 @@ export function useConversations({
   );
 
   const send = useCallback(
-    async (content: string, agentId: string, isStreamMode: boolean) => {
+    async (
+      content: string,
+      agentId: string,
+      isStreamMode: boolean,
+      restartFromMessageId?: string,
+    ) => {
       const requestId = ++sendRequestIdRef.current;
       const controller = new AbortController();
       const optimisticUserClientId = genClientId();
@@ -444,29 +449,37 @@ export function useConversations({
       sendAbortControllerRef.current = controller;
       setIsSending(true);
       setRunPhase('waiting_for_model');
-      setMessages((current) => [
-        ...current,
-        {
-          id: '',
-          agent_id: agentId,
-          conversation_id: activeConversationId,
-          role: 'user' as const,
-          content,
-          status: 'done' as const,
-          created_at: new Date().toISOString(),
-          clientId: optimisticUserClientId,
-        },
-        {
-          id: '',
-          agent_id: agentId,
-          conversation_id: activeConversationId,
-          role: 'assistant' as const,
-          content: '',
-          status: 'streaming' as const,
-          created_at: new Date().toISOString(),
-          clientId: optimisticAssistantClientId,
-        },
-      ]);
+      setMessages((current) => {
+        const restartIndex = restartFromMessageId
+          ? current.findIndex(
+            (item) => 'role' in item && item.role === 'user' && item.id === restartFromMessageId,
+          )
+          : -1;
+        const retained = restartIndex >= 0 ? current.slice(0, restartIndex) : current;
+        return [
+          ...retained,
+          {
+            id: '',
+            agent_id: agentId,
+            conversation_id: activeConversationId,
+            role: 'user' as const,
+            content,
+            status: 'done' as const,
+            created_at: new Date().toISOString(),
+            clientId: optimisticUserClientId,
+          },
+          {
+            id: '',
+            agent_id: agentId,
+            conversation_id: activeConversationId,
+            role: 'assistant' as const,
+            content: '',
+            status: 'streaming' as const,
+            created_at: new Date().toISOString(),
+            clientId: optimisticAssistantClientId,
+          },
+        ];
+      });
 
       try {
         let conversationId = activeConversationId;
@@ -486,10 +499,18 @@ export function useConversations({
         }
 
         activeStreamRef.current = { agentId, conversationId };
-        await streamMessage(conversationId, content, (evt) => {
-          if (requestId !== sendRequestIdRef.current) return;
-          handleStreamEvent(evt);
-        }, timeoutSeconds, isStreamMode, controller.signal);
+        await streamMessage(
+          conversationId,
+          content,
+          (evt) => {
+            if (requestId !== sendRequestIdRef.current) return;
+            handleStreamEvent(evt);
+          },
+          timeoutSeconds,
+          isStreamMode,
+          controller.signal,
+          restartFromMessageId,
+        );
         void loadConversationsForAgent(agentId);
       } catch (cause) {
         if (requestId === sendRequestIdRef.current) {

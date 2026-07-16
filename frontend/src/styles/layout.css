@@ -85,12 +85,14 @@
 .agents-panel-main,
 .settings-main {
   height: 100%;
-  padding: clamp(20px, 2.4vw, 36px);
+  padding: clamp(20px, 2.4vw, 36px) var(--page-inline-padding);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-.config-main > * {
+.config-main > *,
+.agents-panel-main > *,
+.settings-main > * {
   width: min(100%, var(--content-max-width));
   margin-inline: auto;
 }
