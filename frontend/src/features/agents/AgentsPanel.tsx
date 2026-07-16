@@ -40,7 +40,7 @@ const defaultWorkspaceForm: Pick<AgentWorkspace, 'personality' | 'memory' | 'ins
   instructions: '',
 };
 
-type WorkspaceField = keyof typeof defaultWorkspaceForm | 'tools';
+type WorkspaceField = keyof typeof defaultWorkspaceForm;
 type AgentAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type PendingAgentSave = {
   agentId: string;
@@ -49,7 +49,7 @@ type PendingAgentSave = {
   workspace: typeof defaultWorkspaceForm;
 };
 
-const workspaceTabs: WorkspaceField[] = ['personality', 'memory', 'instructions', 'tools'];
+const workspaceTabs: WorkspaceField[] = ['personality', 'memory', 'instructions'];
 const AGENT_AUTO_SAVE_DELAY_MS = 600;
 const AGENT_AUTO_SAVE_RETRY_DELAY_MS = 1200;
 const AGENT_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
@@ -417,112 +417,137 @@ export function AgentsPanel({
           />
 
           <form className="form-card entity-form" onSubmit={handleSubmit}>
-            <div className="form-grid two-column">
-              <FormField label={t('agentConfig.name')} htmlFor="agent-name" required>
-                <input
-                  id="agent-name"
-                  value={agentForm.name}
-                  onChange={(e) => { setAgentForm({ ...agentForm, name: e.target.value }); setAgentFormDirty(true); }}
-                  placeholder={t('agentConfig.placeholder_name')}
-                  disabled={isSubmittingAgent || activeAgent?.is_builtin}
-                />
-              </FormField>
-              <FormField label={t('agentConfig.avatar')}>
-                <AvatarPopover
-                  icon={agentForm.avatar_icon}
-                  color={agentForm.avatar_color}
-                  title={t('agentConfig.avatarPreview')}
-                  pickerTitle={t('agentConfig.avatarChange')}
-                  onChange={(next) => {
-                    setAgentForm({ ...agentForm, avatar_icon: next.icon, avatar_color: next.color });
-                    setAgentFormDirty(true);
-                  }}
-                  trigger={() => (
-                    <button type="button" className="avatar-trigger">
-                      <AvatarBadge icon={agentForm.avatar_icon} color={agentForm.avatar_color} size={24} />
-                      <span>{t('agentConfig.avatarChange')}</span>
-                    </button>
-                  )}
-                  />
-              </FormField>
-              <div className="agent-description-field">
-                <FormField label={t('agentConfig.description')} htmlFor="agent-description" required>
-                  <textarea
-                    id="agent-description"
-                    value={agentForm.description}
-                    onChange={(e) => { setAgentForm({ ...agentForm, description: e.target.value }); setAgentFormDirty(true); }}
-                    placeholder={t('agentConfig.placeholder_description')}
-                    disabled={isSubmittingAgent || activeAgent?.is_builtin}
-                    rows={3}
-                    required
+            <div className="agent-basics-layout">
+              <div className="agent-avatar-field">
+                <FormField label={t('agentConfig.avatar')}>
+                  <AvatarPopover
+                    className="agent-avatar-popover"
+                    icon={agentForm.avatar_icon}
+                    color={agentForm.avatar_color}
+                    title={t('agentConfig.avatarPreview')}
+                    pickerTitle={t('agentConfig.avatarChange')}
+                    onChange={(next) => {
+                      setAgentForm({ ...agentForm, avatar_icon: next.icon, avatar_color: next.color });
+                      setAgentFormDirty(true);
+                    }}
+                    trigger={(open) => (
+                      <button
+                        type="button"
+                        className="agent-avatar-trigger"
+                        aria-expanded={open}
+                        aria-label={t('agentConfig.avatarChange')}
+                      >
+                        <AvatarBadge
+                          icon={agentForm.avatar_icon}
+                          color={agentForm.avatar_color}
+                          size={48}
+                          className="agent-avatar-preview"
+                        />
+                        <span className="agent-avatar-change">{t('agentConfig.avatarChange')}</span>
+                      </button>
+                    )}
                   />
                 </FormField>
               </div>
-              <FormField label={t('agentConfig.provider')} htmlFor="agent-provider" required>
-                <div className="field-with-action">
-                  <select
-                    id="agent-provider"
-                    value={agentForm.model_provider_id}
-                    onChange={(e) => {
-                      const provider = providers.find((p) => p.id === e.target.value);
-                      setAgentForm({ ...agentForm, model_provider_id: e.target.value, model_id: provider?.models[0] ?? '' });
-                      setAgentFormDirty(true);
-                    }}
-                    disabled={isSubmittingAgent}
+
+              <div className="agent-config-details">
+                <FormField label={t('agentConfig.name')} htmlFor="agent-name" required>
+                  <input
+                    id="agent-name"
+                    value={agentForm.name}
+                    onChange={(e) => { setAgentForm({ ...agentForm, name: e.target.value }); setAgentFormDirty(true); }}
+                    placeholder={t('agentConfig.placeholder_name')}
+                    disabled={isSubmittingAgent || activeAgent?.is_builtin}
+                  />
+                </FormField>
+
+                <div className="agent-model-row">
+                  <FormField label={t('agentConfig.provider')} htmlFor="agent-provider" required>
+                    <select
+                      id="agent-provider"
+                      value={agentForm.model_provider_id}
+                      onChange={(e) => {
+                        const provider = providers.find((p) => p.id === e.target.value);
+                        setAgentForm({ ...agentForm, model_provider_id: e.target.value, model_id: provider?.models[0] ?? '' });
+                        setAgentFormDirty(true);
+                      }}
+                      disabled={isSubmittingAgent}
+                    >
+                      <option value="">{t('agentConfig.placeholder_provider')}</option>
+                      {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                    </select>
+                  </FormField>
+                  <FormField
+                    label={t('agentConfig.model')}
+                    htmlFor="agent-model"
+                    required
+                    action={(
+                      <IconButton variant="ghost" type="button" onClick={onOpenProviderSettings} label={t('agentConfig.openProviderSettings')}>
+                        <SlidersHorizontal size={16} />
+                      </IconButton>
+                    )}
                   >
-                    <option value="">{t('agentConfig.placeholder_provider')}</option>
-                    {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-                  </select>
-                  <IconButton variant="ghost" type="button" onClick={onOpenProviderSettings} label={t('agentConfig.openProviderSettings')}>
-                    <SlidersHorizontal size={17} />
-                  </IconButton>
+                    <select
+                      id="agent-model"
+                      value={agentForm.model_id}
+                      onChange={(e) => { setAgentForm({ ...agentForm, model_id: e.target.value }); setAgentFormDirty(true); }}
+                      disabled={isSubmittingAgent || !selectedAgentProvider}
+                    >
+                      <option value="">{t('agentConfig.placeholder_model')}</option>
+                      {selectedAgentProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}
+                    </select>
+                  </FormField>
                 </div>
-              </FormField>
-              <FormField label={t('agentConfig.model')} htmlFor="agent-model" required>
-                <select
-                  id="agent-model"
-                  value={agentForm.model_id}
-                  onChange={(e) => { setAgentForm({ ...agentForm, model_id: e.target.value }); setAgentFormDirty(true); }}
-                  disabled={isSubmittingAgent || !selectedAgentProvider}
-                >
-                  <option value="">{t('agentConfig.placeholder_model')}</option>
-                  {selectedAgentProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}
-                </select>
-              </FormField>
+
+                <div className="agent-description-field">
+                  <FormField label={t('agentConfig.description')} htmlFor="agent-description" required>
+                    <textarea
+                      id="agent-description"
+                      value={agentForm.description}
+                      onChange={(e) => { setAgentForm({ ...agentForm, description: e.target.value }); setAgentFormDirty(true); }}
+                      placeholder={t('agentConfig.placeholder_description')}
+                      disabled={isSubmittingAgent || activeAgent?.is_builtin}
+                      rows={3}
+                      required
+                    />
+                  </FormField>
+                </div>
+              </div>
             </div>
             {activeAgent ? (
-              <div className="workspace-editor">
-                <PaneHeader compact title={t('agentConfig.workspace')} description={isLoadingWorkspace ? t('chat.loading') : t('agentConfig.workspaceHint')} />
-                <div className="workspace-tabs" role="tablist" aria-label={t('agentConfig.workspace')}>
-                  {workspaceTabs.map((field) => (
-                    <button
-                      key={field}
-                      type="button"
-                      className={`workspace-tab${activeWorkspaceField === field ? ' active' : ''}`}
-                      role="tab"
-                      aria-selected={activeWorkspaceField === field}
-                      aria-controls="agent-workspace-field"
-                      onClick={() => setActiveWorkspaceField(field)}
-                    >
-                      {t(`agentConfig.${field}`)}
-                    </button>
-                  ))}
-                </div>
-                {activeWorkspaceField === 'tools' && activeAgent ? (
-                  <TerminalToolSettings scope="agent" agentId={activeAgent.id} />
-                ) : (
+              <>
+                <div className="workspace-editor">
+                  <PaneHeader compact title={t('agentConfig.workspace')} description={isLoadingWorkspace ? t('chat.loading') : t('agentConfig.workspaceHint')} />
+                  <div className="workspace-tabs" role="tablist" aria-label={t('agentConfig.workspace')}>
+                    {workspaceTabs.map((field) => (
+                      <button
+                        key={field}
+                        type="button"
+                        className={`workspace-tab${activeWorkspaceField === field ? ' active' : ''}`}
+                        role="tab"
+                        aria-selected={activeWorkspaceField === field}
+                        aria-controls="agent-workspace-field"
+                        onClick={() => setActiveWorkspaceField(field)}
+                      >
+                        {t(`agentConfig.${field}`)}
+                      </button>
+                    ))}
+                  </div>
                   <FormField label={activeWorkspaceLabel} htmlFor="agent-workspace-field">
                     <textarea
                       id="agent-workspace-field"
                       role="tabpanel"
-                      value={activeWorkspaceField !== 'tools' ? workspaceForm[activeWorkspaceField] : ''}
+                      value={workspaceForm[activeWorkspaceField]}
                       onChange={(e) => { setWorkspaceForm({ ...workspaceForm, [activeWorkspaceField]: e.target.value }); setAgentFormDirty(true); }}
                       rows={12}
                       disabled={isSubmittingAgent || isLoadingWorkspace}
                     />
                   </FormField>
-                )}
-              </div>
+                </div>
+                <div className="agent-tools-section">
+                  <TerminalToolSettings scope="agent" agentId={activeAgent.id} />
+                </div>
+              </>
             ) : null}
             {!activeAgent ? (
               <div className="form-actions">

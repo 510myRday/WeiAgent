@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeft, BadgeCheck, CircleAlert, CircleCheck, Clock, Download, FolderLock, Hand, Pencil, Plus, RefreshCw, Shield, ShieldAlert, ShieldCheck, Square, Terminal, Trash2 } from 'lucide-react';
 
 import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, CodexRuntimeStatus, ToolProcessInfo } from '../../api';
@@ -21,10 +21,11 @@ interface TerminalToolSettingsProps {
   scope: 'defaults' | 'agent';
   agentId?: string;
   agents?: Agent[];
+  onAutoSaveStatusChange?: (status: TerminalAutoSaveStatus) => void;
 }
 
 type OverrideField = 'permission_mode' | 'default_timeout_ms' | 'allowed_cwd_roots';
-type AutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+export type TerminalAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type AgentToolView = 'list' | 'terminal';
 type PendingSave =
   | {
@@ -46,7 +47,12 @@ const AUTO_SAVE_RETRY_DELAY_MS = 1200;
 const AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
 const MAX_LLM_ITERATIONS = 999;
 
-export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalToolSettingsProps) {
+export function TerminalToolSettings({
+  scope,
+  agentId,
+  agents = [],
+  onAutoSaveStatusChange,
+}: TerminalToolSettingsProps) {
   const { t } = useI18n();
   const { confirm, toast } = useFeedback();
   const contextKey = scope === 'defaults' ? 'defaults' : `agent:${agentId ?? ''}`;
@@ -54,7 +60,7 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
   const [agentSettings, setAgentSettings] = useState<AgentToolsSettings | null>(null);
   const [runtime, setRuntime] = useState<CodexRuntimeStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>('idle');
+  const [autoSaveStatus, setAutoSaveStatus] = useState<TerminalAutoSaveStatus>('idle');
   const [agentToolView, setAgentToolView] = useState<AgentToolView>('list');
   const [isInstallingRuntime, setIsInstallingRuntime] = useState(false);
   const [isRefreshingRuntime, setIsRefreshingRuntime] = useState(false);
@@ -74,6 +80,10 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
   const isMountedRef = useRef(true);
 
   activeContextRef.current = contextKey;
+
+  useEffect(() => {
+    onAutoSaveStatusChange?.(autoSaveStatus);
+  }, [autoSaveStatus, onAutoSaveStatusChange]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -196,7 +206,9 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
 
     if (persistedSerializedRef.current.get(contextKey) === pendingSave.serialized) {
       pendingSavesRef.current.delete(contextKey);
-      setAutoSaveStatus('saved');
+      if (previousSerialized !== pendingSave.serialized) {
+        setAutoSaveStatus('saved');
+      }
       return;
     }
 
@@ -482,10 +494,10 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
   }
 
   return (
-    <div className="terminal-tool-settings-v2">
-      <div className="settings-hero">
-        <div className="hero-content">
-          {isAgentScope ? (
+    <div className={`terminal-tool-settings-v2 ${isAgentScope ? 'is-agent-scope' : 'is-default-scope'}`}>
+      {isAgentScope ? (
+        <div className="tool-config-heading">
+          <div className="tool-config-heading__main">
             <IconButton
               type="button"
               variant="ghost"
@@ -495,26 +507,28 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
             >
               <ArrowLeft size={18} />
             </IconButton>
-          ) : null}
-          <div className="hero-icon"><Shield size={32} /></div>
-          <div className="hero-text">
+            <div>
             <h2>{isAgentScope ? t('tools.terminal.agentConfigTitle') : t('tools.terminal.defaultsTitle')}</h2>
             <p>{isAgentScope ? t('tools.terminal.agentConfigDesc') : t('tools.terminal.defaultsDesc')}</p>
+            </div>
           </div>
+          <AutoSaveIndicator status={autoSaveStatus} t={t} />
         </div>
-        <AutoSaveIndicator status={autoSaveStatus} t={t} />
-      </div>
+      ) : null}
 
-      {scope === 'defaults' ? <div className={`settings-card runtime-card ${sandboxAvailable ? 'runtime-card--ready' : 'warning-card'}`}>
-        <div className="card-header">
-          {sandboxAvailable ? <CircleCheck size={20} /> : <CircleAlert size={20} />}
-          <h3>{t('tools.terminal.runtimeTitle')}</h3>
-          <span className={`runtime-status ${sandboxAvailable ? 'is-ready' : 'is-missing'}`}>
-            {t(sandboxAvailable ? 'tools.terminal.runtimeReady' : 'tools.terminal.runtimeMissing')}
-          </span>
-        </div>
-        <div className="card-body runtime-card__body">
+      <div className={`${isAgentScope ? '' : 'form-card '}terminal-settings-form`}>
+      {scope === 'defaults' ? <section className={`settings-card runtime-card ${sandboxAvailable ? 'runtime-card--ready' : 'warning-card'}`}>
+        <div className="runtime-card__body">
+          <div className={`runtime-card__icon ${sandboxAvailable ? 'is-ready' : 'is-missing'}`}>
+            {sandboxAvailable ? <CircleCheck size={20} /> : <CircleAlert size={20} />}
+          </div>
           <div className="runtime-card__details">
+            <div className="runtime-card__title">
+              <h3>{t('tools.terminal.runtimeTitle')}</h3>
+              <span className={`runtime-status ${sandboxAvailable ? 'is-ready' : 'is-missing'}`}>
+                {t(sandboxAvailable ? 'tools.terminal.runtimeReady' : 'tools.terminal.runtimeMissing')}
+              </span>
+            </div>
             <p>{t(sandboxAvailable ? 'tools.terminal.runtimeReadyDesc' : 'tools.terminal.runtimeMissingDesc')}</p>
             <small>
               {runtime?.detected_version || runtime?.target_version || ''}
@@ -548,9 +562,9 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
             ) : null}
           </div>
         </div>
-      </div> : null}
+      </section> : null}
 
-      <div className="settings-card">
+      <section className="settings-card basic-settings-card">
         <div className="card-header"><Clock size={20} /><h3>{t('tools.terminal.basicSettings')}</h3></div>
         <div className="card-body">
           {!isAgentScope ? (
@@ -585,9 +599,9 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      <div className="settings-card">
+      <section className="settings-card access-settings-card">
         <div className="card-header"><Shield size={20} /><h3>{t('tools.terminal.permissionMode')}</h3></div>
         <div className="card-body">
           <div className="setting-section-heading">
@@ -605,9 +619,9 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
             </button>
           </div>
         </div>
-      </div>
+      </section>
 
-      <div className="settings-card">
+      <section className="settings-card roots-settings-card">
         <div className="card-header">
           <FolderLock size={20} />
           <h3>{t('tools.terminal.allowedRootsLabel')}</h3>
@@ -631,60 +645,89 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
             </ul>
           ) : null}
         </div>
-      </div>
+      </section>
 
       {isAgentScope && overrides ? (
-        <div className="settings-card">
+        <section className="settings-card grants-settings-card">
           <div className="card-header"><BadgeCheck size={20} /><h3>{t('tools.terminal.contextGrants')}</h3><span className="badge">{overrides.terminal.approval_grants.length}</span></div>
           <div className="card-body">
             <p className="card-description">{t('tools.terminal.contextGrantsDesc')}</p>
             {overrides.terminal.approval_grants.length === 0 ? <p className="muted">{t('tools.terminal.noContextGrants')}</p> : (
               <div className="tool-process-list">
                 {overrides.terminal.approval_grants.map((grant, index) => (
-                  <article key={`${grant.command}-${grant.cwd || ''}-${index}`} className="tool-process-row">
-                    <div className="tool-process-row__header">
-                      <code>{grant.command}</code>
-                      <span>{t('tools.terminal.fullAccess')}</span>
-                      <button type="button" className="tool-process-action" onClick={() => removeApprovalGrant(index)} title={t('tools.terminal.remove')}><Trash2 size={13} /></button>
-                    </div>
-                    <small>{grant.cwd || t('toolCard.defaultCwd')} · {grant.expires_at ? t('tools.terminal.grantExpires', { time: new Date(grant.expires_at).toLocaleString() }) : t('tools.terminal.grantExpired')}</small>
-                  </article>
+                  <ToolRecordRow
+                    key={`${grant.command}-${grant.cwd || ''}-${index}`}
+                    command={grant.command}
+                    status={t('tools.terminal.fullAccess')}
+                    meta={`${grant.cwd || t('toolCard.defaultCwd')} · ${grant.expires_at ? t('tools.terminal.grantExpires', { time: new Date(grant.expires_at).toLocaleString() }) : t('tools.terminal.grantExpired')}`}
+                    action={<button type="button" className="tool-process-action" onClick={() => removeApprovalGrant(index)} title={t('tools.terminal.remove')}><Trash2 size={13} /></button>}
+                  />
                 ))}
               </div>
             )}
           </div>
-        </div>
+        </section>
       ) : null}
 
       {scope === 'defaults' ? (
-        <div className="settings-card">
+        <section className="settings-card processes-settings-card">
           <div className="card-header"><RefreshCw size={20} /><h3>{t('tools.terminal.backgroundProcesses')}</h3><span className="badge">{processes.length}</span></div>
           <div className="card-body">
             <p className="card-description">{t('tools.terminal.backgroundProcessesDesc')}</p>
             {processes.length === 0 ? <p className="muted">{t('tools.terminal.noBackgroundProcesses')}</p> : (
               <div className="tool-process-list">
                 {processes.map((process) => (
-                  <article key={process.process_id} className={`tool-process-row is-${process.status}`}>
-                    <div className="tool-process-row__header">
-                      <code>{process.command}</code>
-                      <span>{t(`toolCard.processStatus.${process.status}`)}</span>
-                      {process.status === 'running' ? (
-                        <button type="button" className="tool-process-action" onClick={() => handleStopProcess(process)} disabled={isStoppingProcess === process.process_id}>
-                          <Square size={13} /> {isStoppingProcess === process.process_id ? t('toolCard.stopping') : t('toolCard.stop')}
-                        </button>
-                      ) : null}
-                    </div>
-                    <small>{agentName(process.agent_id, agents, t)} · {process.process_id} · {t('toolCard.duration', { ms: process.duration_ms })}</small>
+                  <ToolRecordRow
+                    key={process.process_id}
+                    className={`is-${process.status}`}
+                    command={process.command}
+                    status={t(`toolCard.processStatus.${process.status}`)}
+                    meta={`${agentName(process.agent_id, agents, t)} · ${process.process_id} · ${t('toolCard.duration', { ms: process.duration_ms })}`}
+                    action={process.status === 'running' ? (
+                      <button type="button" className="tool-process-action" onClick={() => handleStopProcess(process)} disabled={isStoppingProcess === process.process_id}>
+                        <Square size={13} /> {isStoppingProcess === process.process_id ? t('toolCard.stopping') : t('toolCard.stop')}
+                      </button>
+                    ) : null}
+                  >
                     {process.stdout ? <pre className="tool-card__output">{process.stdout}</pre> : null}
                     {process.stderr ? <pre className="tool-card__error">{process.stderr}</pre> : null}
-                  </article>
+                  </ToolRecordRow>
                 ))}
               </div>
             )}
           </div>
-        </div>
+        </section>
       ) : null}
+      </div>
     </div>
+  );
+}
+
+function ToolRecordRow({
+  command,
+  status,
+  meta,
+  action,
+  children,
+  className = '',
+}: {
+  command: string;
+  status: ReactNode;
+  meta: ReactNode;
+  action?: ReactNode;
+  children?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <article className={`tool-process-row ${className}`.trim()}>
+      <div className="tool-process-row__header">
+        <code title={command}>{command}</code>
+        <span>{status}</span>
+        {action}
+      </div>
+      <small>{meta}</small>
+      {children}
+    </article>
   );
 }
 

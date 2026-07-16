@@ -139,6 +139,14 @@ impl Default for AgentToolsOverrides {
 }
 
 impl AgentToolsOverrides {
+    pub fn remove_expired_approval_grants(&mut self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        let previous_len = self.terminal.approval_grants.len();
+        self.terminal
+            .approval_grants
+            .retain(|grant| grant.expires_at.is_some_and(|expires_at| expires_at > now));
+        self.terminal.approval_grants.len() != previous_len
+    }
+
     pub fn apply_to(&self, defaults: &AgentToolsConfig) -> AgentToolsConfig {
         AgentToolsConfig {
             max_llm_iterations: self
@@ -245,6 +253,40 @@ mod tests {
     fn empty_agent_grants_are_present_in_api_json() {
         let value = serde_json::to_value(AgentToolsOverrides::default()).unwrap();
         assert_eq!(value["terminal"]["approval_grants"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn expired_and_undated_approval_grants_are_removed() {
+        let now = chrono::Utc::now();
+        let mut overrides = AgentToolsOverrides::default();
+        overrides.terminal.approval_grants = vec![
+            TerminalApprovalGrant {
+                command: "expired".to_string(),
+                cwd: None,
+                permission_mode: TerminalPermissionMode::RequestApproval,
+                created_at: Some(now - chrono::Duration::hours(25)),
+                expires_at: Some(now - chrono::Duration::hours(1)),
+            },
+            TerminalApprovalGrant {
+                command: "missing-expiry".to_string(),
+                cwd: None,
+                permission_mode: TerminalPermissionMode::RequestApproval,
+                created_at: Some(now),
+                expires_at: None,
+            },
+            TerminalApprovalGrant {
+                command: "active".to_string(),
+                cwd: Some("workspace".to_string()),
+                permission_mode: TerminalPermissionMode::RequestApproval,
+                created_at: Some(now),
+                expires_at: Some(now + chrono::Duration::hours(1)),
+            },
+        ];
+
+        assert!(overrides.remove_expired_approval_grants(now));
+        assert_eq!(overrides.terminal.approval_grants.len(), 1);
+        assert_eq!(overrides.terminal.approval_grants[0].command, "active");
+        assert!(!overrides.remove_expired_approval_grants(now));
     }
 }
 

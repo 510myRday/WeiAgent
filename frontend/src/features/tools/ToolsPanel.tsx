@@ -4,8 +4,8 @@ import { ArrowLeft, ShieldCheck, Terminal } from 'lucide-react';
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
-import { Button, ListItem, PaneHeader } from '../../components/ui';
-import { TerminalToolSettings } from '../settings/TerminalToolSettings';
+import { AutoSaveIndicator, Button, ListItem, PaneHeader } from '../../components/ui';
+import { TerminalToolSettings, type TerminalAutoSaveStatus } from '../settings/TerminalToolSettings';
 
 interface ToolsPanelProps {
   agents: Agent[];
@@ -22,6 +22,7 @@ const toolDefs: { key: ToolKey; icon: typeof Terminal; isBuiltin: boolean; getLa
 export function ToolsPanel({ agents, onOpenMain, onBackToList }: ToolsPanelProps) {
   const { t } = useI18n();
   const [activeTool, setActiveTool] = useState<ToolKey>('terminal');
+  const [autoSaveStatus, setAutoSaveStatus] = useState<TerminalAutoSaveStatus>('idle');
 
   const activeDef = toolDefs.find((d) => d.key === activeTool);
 
@@ -68,10 +69,15 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList }: ToolsPanelProps
             eyebrow={t('nav.tools')}
             title={activeDef?.getLabel(t) ?? t('tools.title')}
             description={activeDef?.getDesc(t) ?? t('tools.description')}
+            actions={<AutoSaveIndicator status={autoSaveStatus} t={t} />}
           />
 
           {activeTool === 'terminal' ? (
-            <TerminalToolSettings scope="defaults" agents={agents} />
+            <TerminalToolSettings
+              scope="defaults"
+              agents={agents}
+              onAutoSaveStatusChange={setAutoSaveStatus}
+            />
           ) : null}
         </div>
       )}

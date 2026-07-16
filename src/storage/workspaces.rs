@@ -168,11 +168,12 @@ impl JsonStore {
     pub async fn update_agent_tools_overrides(
         &self,
         id: Uuid,
-        overrides: crate::domain::AgentToolsOverrides,
+        mut overrides: crate::domain::AgentToolsOverrides,
     ) -> AppResult<crate::domain::AgentToolsSettings> {
         self.get_agent(id).await?;
         let _guard = self.lock.lock().await;
         let defaults = self.read_tool_defaults_unlocked().await?;
+        overrides.remove_expired_approval_grants(chrono::Utc::now());
         validate_tools_overrides(&overrides, &defaults)?;
         self.write_agent_tools_overrides_unlocked(id, &overrides)
             .await?;
@@ -218,11 +219,7 @@ impl JsonStore {
             created_at: Some(chrono::Utc::now()),
             expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(24)),
         };
-        overrides.terminal.approval_grants.retain(|existing| {
-            existing
-                .expires_at
-                .is_some_and(|expires_at| expires_at > chrono::Utc::now())
-        });
+        overrides.remove_expired_approval_grants(chrono::Utc::now());
         if !overrides.terminal.approval_grants.iter().any(|existing| {
             existing.command == grant.command
                 && existing.cwd == grant.cwd
@@ -272,7 +269,7 @@ impl JsonStore {
         let value: serde_json::Value = serde_json::from_str(trimmed).map_err(|error| {
             crate::error::AppError::BadRequest(format!("invalid tools.json: {error}"))
         })?;
-        let overrides = if value.get("version").is_some() {
+        let mut overrides = if value.get("version").is_some() {
             serde_json::from_value::<crate::domain::AgentToolsOverrides>(value).map_err(
                 |error| crate::error::AppError::BadRequest(format!("invalid tools.json: {error}")),
             )?
@@ -289,6 +286,10 @@ impl JsonStore {
                 .await?;
             migrated
         };
+        if overrides.remove_expired_approval_grants(chrono::Utc::now()) {
+            self.write_agent_tools_overrides_unlocked(id, &overrides)
+                .await?;
+        }
         validate_tools_overrides(&overrides, defaults)?;
         Ok(overrides)
     }

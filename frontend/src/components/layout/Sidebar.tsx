@@ -1,4 +1,4 @@
-import { Bot, Globe, MessageSquare, Settings, Users, Wrench } from 'lucide-react';
+import { Bot, Globe, Settings, Users, Wrench } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 import type { AppSettings, AvatarIcon, NavKey } from '../../types';
@@ -49,7 +49,7 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
       </div>
 
       <nav className="sidebar-nav">
-        <NavButton active={activeNav === 'chat'} onClick={() => onNavChange('chat')} icon={<MessageSquare size={21} />} label={t('nav.chat')} />
+        <NavButton active={activeNav === 'chat'} onClick={() => onNavChange('chat')} icon={<ChatBubbleMoreIcon />} label={t('nav.chat')} />
         <NavButton active={activeNav === 'agents'} onClick={() => onNavChange('agents')} icon={<Bot size={21} />} label={t('nav.agents')} />
         <NavButton active={activeNav === 'groups'} onClick={() => onNavChange('groups')} icon={<Users size={21} />} label={t('nav.groups')} />
         <NavButton active={activeNav === 'tools'} onClick={() => onNavChange('tools')} icon={<Wrench size={21} />} label={t('nav.tools')} />
@@ -70,6 +70,23 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
         </IconButton>
       </div>
     </aside>
+  );
+}
+
+function ChatBubbleMoreIcon() {
+  return (
+    <svg width="21" height="21" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+      <path
+        d="M8.9 18.3 5.2 20l.7-3.1C3.5 15.5 2 13.4 2 10.8 2 6.5 6.3 3.5 12 3.5s10 3 10 7.3-4.3 8-10 8c-1.1 0-2.1-.2-3.1-.5Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="8" cy="10.8" r="1" fill="currentColor" />
+      <circle cx="12" cy="10.8" r="1" fill="currentColor" />
+      <circle cx="16" cy="10.8" r="1" fill="currentColor" />
+    </svg>
   );
 }
 

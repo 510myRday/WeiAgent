@@ -21,6 +21,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
+import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
@@ -69,6 +70,7 @@ type PendingModelSave = {
 };
 
 const MODEL_AUTO_SAVE_DELAY_MS = 600;
+const EMPTY_MESSAGES: UiMessageItem[] = [];
 
 export function ChatPanel({
   agents,
@@ -152,14 +154,17 @@ export function ChatPanel({
       : !hasModel
         ? t('chat.placeholderNoModel')
         : t('chat.placeholder');
-  const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId);
+  const visibleMessages = activeAgent ? messages : EMPTY_MESSAGES;
+  const activeConversation = activeAgent
+    ? conversations.find((conversation) => conversation.id === activeConversationId)
+    : undefined;
   const filteredConversations = conversations.filter((conversation) =>
     conversation.title.toLowerCase().includes(conversationFilter.trim().toLowerCase()),
   );
   const timelineItems = useMemo<MessageTimelineItem[]>(() => {
     const result: MessageTimelineItem[] = [];
     let previousTimelineTimestamp: number | undefined;
-    messages.forEach((item, index) => {
+    visibleMessages.forEach((item, index) => {
       if (!('role' in item)) return;
       const date = new Date(item.created_at);
       const timestamp = date.getTime();
@@ -174,7 +179,7 @@ export function ChatPanel({
       });
     });
     return result;
-  }, [locale, messages]);
+  }, [locale, visibleMessages]);
 
   useEffect(() => {
     const pending = pendingModelSaveRef.current;
@@ -311,11 +316,11 @@ export function ChatPanel({
   }, [updateActiveTimelineItem, updateScrollButtonVisibility]);
 
   const scrollToBottom = useCallback(
-    (force = false) => {
+    (force = false, behavior: ScrollBehavior = 'auto') => {
       const el = messagesContainerRef.current;
       if (!el) return;
       if (!force && !isMessagesNearBottom()) return;
-      el.scrollTop = el.scrollHeight;
+      el.scrollTo({ top: el.scrollHeight, behavior });
       setIsAwayFromBottom(false);
     },
     [isMessagesNearBottom],
@@ -376,6 +381,14 @@ export function ChatPanel({
 
   function handleAgentSelect(agentId: string) {
     onAgentChange(agentId);
+  }
+
+  function handleBackToAgents() {
+    detachActiveRun();
+    clearChat();
+    setConversationFilter('');
+    setTerminalPermissionMode(null);
+    onAgentChange('');
   }
 
   function handleConversationSelect(conversationId: string) {
@@ -583,7 +596,7 @@ export function ChatPanel({
               className="conversation-pane-header"
               title={agentDisplayName(activeAgent, t)}
               leading={(
-                <IconButton variant="ghost" type="button" onClick={() => onAgentChange('')} label={t('chat.selectAgent')}>
+                <IconButton variant="ghost" type="button" onClick={handleBackToAgents} label={t('chat.selectAgent')}>
                   <ArrowLeft size={17} />
                 </IconButton>
               )}
@@ -647,15 +660,15 @@ export function ChatPanel({
           ) : null}
         </header>
         <div className="messages" aria-live="polite" ref={messagesContainerRef} onScroll={handleMessagesScroll}>
-          {isLoadingChat ? <p className="muted centered">{t('chat.loading')}</p> : null}
-          {!isLoadingChat && messages.length === 0 ? (
+          {activeAgent && isLoadingChat ? <p className="muted centered">{t('chat.loading')}</p> : null}
+          {(!activeAgent || !isLoadingChat) && visibleMessages.length === 0 ? (
             <EmptyState
               icon={activeAgent ? <MessageSquare size={34} /> : <Bot size={34} />}
               title={activeAgent ? t('chat.emptyTitle') : t('chat.noAgent')}
               description={activeAgent ? t('chat.emptyHint') : t('chat.noAgentHint')}
             />
           ) : null}
-          {messages.map((item, index) => {
+          {visibleMessages.map((item, index) => {
             if ('type' in item && item.type === 'tool_call') {
               const toolMsg = item as ToolCallMessage;
               return (
@@ -691,7 +704,7 @@ export function ChatPanel({
               );
             }
             const msg = item as UiMessage;
-            const prev = messages[index - 1];
+            const prev = visibleMessages[index - 1];
             const prevUi = prev && 'role' in prev ? prev as UiMessage : undefined;
             return (
               <MessageRow
@@ -709,7 +722,7 @@ export function ChatPanel({
               />
             );
           })}
-          {shouldShowAgentWaitingBubble(messages, isSending, runPhase) ? (
+          {activeAgent && shouldShowAgentWaitingBubble(visibleMessages, isSending, runPhase) ? (
             <article className="message-row assistant is-streaming is-waiting" aria-live="polite">
               <MessageAvatar agent={activeAgent} settings={settings} isUser={false} />
               <div className="message-body">
@@ -739,7 +752,7 @@ export function ChatPanel({
           <button
             className="scroll-to-bottom-button"
             type="button"
-            onClick={() => scrollToBottom(true)}
+            onClick={() => scrollToBottom(true, 'smooth')}
             aria-label={t('chat.scrollToBottom')}
             title={t('chat.scrollToBottom')}
           >
@@ -1228,14 +1241,103 @@ function extractText(node: ReactNode): string {
 const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath]}
+      remarkPlugins={[remarkGfm, remarkCjkFriendly, remarkMath]}
       rehypePlugins={[rehypeKatex, rehypeHighlight]}
       components={{ pre: CodeBlock }}
     >
-      {normalizeMathMarkdown(content)}
+      {normalizeMathMarkdown(normalizeLooseStrongMarkdown(content))}
     </ReactMarkdown>
   );
 });
+
+function normalizeLooseStrongMarkdown(content: string): string {
+  const parts = content.split(/(\r\n|\r|\n)/);
+  let fence: { marker: string; length: number } | null = null;
+
+  for (let index = 0; index < parts.length; index += 2) {
+    const line = parts[index];
+    const fenceMatch = line.match(/^(?: {0,3}>[ \t]?)* {0,3}(`{3,}|~{3,})/);
+
+    if (fence) {
+      if (
+        fenceMatch
+        && fenceMatch[1][0] === fence.marker
+        && fenceMatch[1].length >= fence.length
+        && line.slice(fenceMatch[0].length).trim() === ''
+      ) {
+        fence = null;
+      }
+      continue;
+    }
+
+    if (fenceMatch) {
+      fence = { marker: fenceMatch[1][0], length: fenceMatch[1].length };
+      continue;
+    }
+
+    parts[index] = normalizeInlineStrongSpacing(line);
+  }
+
+  return parts.join('');
+}
+
+function normalizeInlineStrongSpacing(line: string): string {
+  let result = '';
+  let plainStart = 0;
+  let cursor = 0;
+
+  while (cursor < line.length) {
+    if (line[cursor] !== '`' || isEscapedMarkdownCharacter(line, cursor)) {
+      cursor += 1;
+      continue;
+    }
+
+    const openingStart = cursor;
+    while (line[cursor] === '`') cursor += 1;
+    const markerLength = cursor - openingStart;
+    const closingEnd = findClosingBacktickRun(line, cursor, markerLength);
+
+    if (closingEnd === -1) continue;
+
+    result += normalizeStrongSpacing(line.slice(plainStart, openingStart));
+    result += line.slice(openingStart, closingEnd);
+    plainStart = closingEnd;
+    cursor = closingEnd;
+  }
+
+  return result + normalizeStrongSpacing(line.slice(plainStart));
+}
+
+function findClosingBacktickRun(line: string, start: number, markerLength: number): number {
+  let cursor = start;
+
+  while (cursor < line.length) {
+    if (line[cursor] !== '`') {
+      cursor += 1;
+      continue;
+    }
+
+    const runStart = cursor;
+    while (line[cursor] === '`') cursor += 1;
+    if (cursor - runStart === markerLength) return cursor;
+  }
+
+  return -1;
+}
+
+function isEscapedMarkdownCharacter(value: string, index: number): boolean {
+  let slashCount = 0;
+  for (let cursor = index - 1; cursor >= 0 && value[cursor] === '\\'; cursor -= 1) {
+    slashCount += 1;
+  }
+  return slashCount % 2 === 1;
+}
+
+function normalizeStrongSpacing(value: string): string {
+  return value
+    .replace(/(?<![\\*])\*\*(?!\*)((?:(?!\*\*).)*?\S)([ \t]+)\*\*(?!\*)/g, '**$1**$2')
+    .replace(/(?<![\\*])\*\*(?!\*)([ \t]+)((?:(?!\*\*).)*?\S)\*\*(?!\*)/g, '$1**$2**');
+}
 
 function normalizeMathMarkdown(content: string): string {
   return content.replace(/\\\[([\s\S]*?)\\\]/g, (_match, formula: string) => {
