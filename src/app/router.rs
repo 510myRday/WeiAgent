@@ -77,7 +77,7 @@ fn api_router() -> Router<AppState> {
         )
         .route(
             "/api/conversations/{conversation_id}",
-            axum::routing::delete(conversations::delete_conversation),
+            put(conversations::update_conversation).delete(conversations::delete_conversation),
         )
         .route(
             "/api/conversations/{conversation_id}/messages",

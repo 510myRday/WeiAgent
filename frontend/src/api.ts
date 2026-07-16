@@ -15,6 +15,7 @@ import type {
   StreamEvent,
   UpdateAgentWorkspacePayload,
   UpdateAgentPayload,
+  UpdateConversationPayload,
 } from './types';
 
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -154,6 +155,16 @@ export function createConversation(
 ): Promise<Conversation> {
   return request<Conversation>(`/api/agents/${agentId}/conversations`, {
     method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateConversation(
+  conversationId: string,
+  payload: UpdateConversationPayload,
+): Promise<Conversation> {
+  return request<Conversation>(`/api/conversations/${conversationId}`, {
+    method: 'PUT',
     body: JSON.stringify(payload),
   });
 }

@@ -9,6 +9,8 @@ pub struct Conversation {
     pub title: String,
     #[serde(default)]
     pub message_count: usize,
+    #[serde(default)]
+    pub is_pinned: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -16,4 +18,9 @@ pub struct Conversation {
 #[derive(Debug, Deserialize)]
 pub struct CreateConversationRequest {
     pub title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateConversationRequest {
+    pub is_pinned: bool,
 }

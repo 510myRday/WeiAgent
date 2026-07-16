@@ -3,7 +3,9 @@ use tokio::fs;
 use uuid::Uuid;
 
 use crate::{
-    domain::{ChatMessage, ChatRole, Conversation, CreateConversationRequest},
+    domain::{
+        ChatMessage, ChatRole, Conversation, CreateConversationRequest, UpdateConversationRequest,
+    },
     error::{AppError, AppResult},
     storage::{files::write_json, json_store::JsonStore},
 };
@@ -73,7 +75,12 @@ impl JsonStore {
             .into_iter()
             .filter(|conversation| conversation.agent_id == agent_id)
             .collect::<Vec<_>>();
-        conversations.sort_by_key(|item| std::cmp::Reverse(item.updated_at));
+        conversations.sort_by_key(|item| {
+            (
+                std::cmp::Reverse(item.is_pinned),
+                std::cmp::Reverse(item.updated_at),
+            )
+        });
         Ok(conversations)
     }
 
@@ -108,6 +115,7 @@ impl JsonStore {
                 .unwrap_or("New Conversation")
                 .to_string(),
             message_count: 0,
+            is_pinned: false,
             created_at: now,
             updated_at: now,
         };
@@ -115,6 +123,23 @@ impl JsonStore {
         self.write_conversations_unlocked(&conversations).await?;
         fs::write(self.conversation_file(conversation.id), "[]").await?;
         Ok(conversation)
+    }
+
+    pub async fn update_conversation(
+        &self,
+        id: Uuid,
+        request: UpdateConversationRequest,
+    ) -> AppResult<Conversation> {
+        let _guard = self.lock.lock().await;
+        let mut conversations = self.read_conversations_unlocked().await?;
+        let conversation = conversations
+            .iter_mut()
+            .find(|conversation| conversation.id == id)
+            .ok_or(AppError::NotFound)?;
+        conversation.is_pinned = request.is_pinned;
+        let updated = conversation.clone();
+        self.write_conversations_unlocked(&conversations).await?;
+        Ok(updated)
     }
 
     pub async fn delete_conversation(&self, id: Uuid) -> AppResult<()> {

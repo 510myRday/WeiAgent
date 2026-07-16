@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowLeft, Terminal } from 'lucide-react';
+import { ArrowLeft, ShieldCheck, Terminal } from 'lucide-react';
 
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
@@ -15,8 +15,8 @@ interface ToolsPanelProps {
 
 type ToolKey = 'terminal';
 
-const toolDefs: { key: ToolKey; icon: typeof Terminal; getLabel: (t: (p: string) => string) => string; getDesc: (t: (p: string) => string) => string }[] = [
-  { key: 'terminal', icon: Terminal, getLabel: (t) => t('tools.terminal.name'), getDesc: (t) => t('tools.terminal.description') },
+const toolDefs: { key: ToolKey; icon: typeof Terminal; isBuiltin: boolean; getLabel: (t: (p: string) => string) => string; getDesc: (t: (p: string) => string) => string }[] = [
+  { key: 'terminal', icon: Terminal, isBuiltin: true, getLabel: (t) => t('tools.terminal.name'), getDesc: (t) => t('tools.terminal.description') },
 ];
 
 export function ToolsPanel({ agents, onOpenMain, onBackToList }: ToolsPanelProps) {
@@ -40,7 +40,17 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList }: ToolsPanelProps
                 key={def.key}
                 type="button"
                 active={activeTool === def.key}
-                title={def.getLabel(t)}
+                title={(
+                  <span className="tool-list-title">
+                    <span>{def.getLabel(t)}</span>
+                    {def.isBuiltin ? (
+                      <span className="mini-status-badge">
+                        <ShieldCheck size={12} />
+                        {t('tools.builtinBadge')}
+                      </span>
+                    ) : null}
+                  </span>
+                )}
                 subtitle={def.getDesc(t)}
                 leading={<def.icon size={18} />}
                 onClick={() => { setActiveTool(def.key); onOpenMain(); }}

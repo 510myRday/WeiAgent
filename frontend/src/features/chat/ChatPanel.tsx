@@ -9,6 +9,7 @@ import {
   Clipboard,
   MessageSquare,
   Pencil,
+  Pin,
   RotateCcw,
   Square,
   Plus,
@@ -95,6 +96,7 @@ export function ChatPanel({
     send,
     createNewConversation,
     removeConversation,
+    setConversationPinned,
   } = useConversations({
     newConversationTitle: t('conversation.newTitle'),
     runCancelledMessage: t('chat.runCancelled'),
@@ -109,6 +111,7 @@ export function ChatPanel({
   const [isModelSavePending, setIsModelSavePending] = useState(false);
   const [isSavingModel, setIsSavingModel] = useState(false);
   const [conversationFilter, setConversationFilter] = useState('');
+  const [pinningConversationIds, setPinningConversationIds] = useState<Set<string>>(() => new Set());
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
   const [activeTimelineAnchor, setActiveTimelineAnchor] = useState('');
   const [terminalPermissionMode, setTerminalPermissionMode] = useState<AgentToolsConfig['terminal']['permission_mode'] | null>(null);
@@ -467,6 +470,24 @@ export function ChatPanel({
     }
   }
 
+  async function handlePinConversation(conversation: Conversation) {
+    setPinningConversationIds((current) => new Set(current).add(conversation.id));
+    try {
+      await setConversationPinned(conversation.id, !conversation.is_pinned);
+      toast.success(t(conversation.is_pinned
+        ? 'notification.conversationUnpinned'
+        : 'notification.conversationPinned'));
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+    } finally {
+      setPinningConversationIds((current) => {
+        const next = new Set(current);
+        next.delete(conversation.id);
+        return next;
+      });
+    }
+  }
+
   function formatTime(value: string) {
     return new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
       hour: '2-digit',
@@ -554,7 +575,10 @@ export function ChatPanel({
                   active={conversation.id === activeConversationId}
                   formatDate={formatDate}
                   deleteLabel={t('conversation.delete')}
+                  pinLabel={conversation.is_pinned ? t('conversation.unpin') : t('conversation.pin')}
+                  isPinning={pinningConversationIds.has(conversation.id)}
                   onSelect={() => handleConversationSelect(conversation.id)}
+                  onTogglePin={() => handlePinConversation(conversation)}
                   onDelete={() => handleDeleteConversation(conversation.id)}
                 />
               ))}
@@ -1194,31 +1218,56 @@ function ConversationRow({
   active,
   formatDate,
   deleteLabel,
+  pinLabel,
+  isPinning,
   onSelect,
+  onTogglePin,
   onDelete,
 }: {
   conversation: Conversation;
   active: boolean;
   formatDate: (value: string) => string;
   deleteLabel: string;
+  pinLabel: string;
+  isPinning: boolean;
   onSelect: () => void;
+  onTogglePin: () => void;
   onDelete: () => void;
 }) {
   return (
-    <div className={['conversation-row', active ? 'is-active' : ''].filter(Boolean).join(' ')}>
+    <div className={[
+      'conversation-row',
+      active ? 'is-active' : '',
+      conversation.is_pinned ? 'is-pinned' : '',
+    ].filter(Boolean).join(' ')}>
       <ListItem
         className="conversation-row-main"
         type="button"
         title={conversation.title}
         subtitle={formatDate(conversation.updated_at)}
-        leading={<span className="avatar-badge avatar-muted"><MessageSquare size={17} /></span>}
         onClick={onSelect}
       />
-      <span className="row-actions">
-        <IconButton variant="danger" type="button" onClick={onDelete} label={deleteLabel}>
-          <Trash2 size={15} />
-        </IconButton>
-      </span>
+      <IconButton
+        className="conversation-action conversation-pin-action"
+        variant="ghost"
+        type="button"
+        active={conversation.is_pinned}
+        disabled={isPinning}
+        aria-pressed={conversation.is_pinned}
+        onClick={onTogglePin}
+        label={pinLabel}
+      >
+        <Pin size={14} fill={conversation.is_pinned ? 'currentColor' : 'none'} />
+      </IconButton>
+      <IconButton
+        className="conversation-action conversation-delete-action"
+        variant="ghost"
+        type="button"
+        onClick={onDelete}
+        label={deleteLabel}
+      >
+        <Trash2 size={14} />
+      </IconButton>
     </div>
   );
 }

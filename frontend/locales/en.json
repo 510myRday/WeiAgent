@@ -110,6 +110,8 @@
     "newTitle": "New conversation",
     "empty": "No conversations yet.",
     "search": "Search conversations",
+    "pin": "Pin conversation",
+    "unpin": "Unpin conversation",
     "delete": "Delete conversation",
     "deleteConfirm": "Delete this conversation?"
   },
@@ -198,6 +200,7 @@
   "tools": {
     "title": "Tool Management",
     "description": "Configure global defaults and runtime state for built-in tools.",
+    "builtinBadge": "Built-in",
     "agentToolsTitle": "Available tools",
     "agentToolsDesc": "Enable tools for this agent or edit their per-agent overrides.",
     "enabled": "Enabled",
@@ -318,6 +321,8 @@
     "providerSaved": "Model provider saved.",
     "providerDeleted": "Model provider deleted.",
     "modelsLoaded": "Loaded {count} models.",
+    "conversationPinned": "Conversation pinned.",
+    "conversationUnpinned": "Conversation unpinned.",
     "conversationDeleted": "Conversation deleted.",
     "toolSettingsSaved": "Tool settings saved.",
     "runtimeInstalled": "Codex runtime installed.",

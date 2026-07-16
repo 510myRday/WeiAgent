@@ -14,6 +14,7 @@ import {
   deleteConversation,
   readConversationMessages,
   streamMessage,
+  updateConversation,
 } from '../api';
 
 function genClientId(): string {
@@ -157,6 +158,14 @@ function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
 
 function isEmptyConversation(conversation: Conversation): boolean {
   return (conversation.message_count ?? 0) === 0;
+}
+
+function sortConversationList(conversations: Conversation[]): Conversation[] {
+  return [...conversations].sort((left, right) => {
+    const pinOrder = Number(right.is_pinned) - Number(left.is_pinned);
+    if (pinOrder !== 0) return pinOrder;
+    return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+  });
 }
 
 type UseConversationsOptions = {
@@ -561,6 +570,31 @@ export function useConversations({
     [activeConversationId, loadConversationsForAgent],
   );
 
+  const setConversationPinned = useCallback(
+    async (conversationId: string, isPinned: boolean) => {
+      setConversations((current) => sortConversationList(current.map((conversation) => (
+        conversation.id === conversationId
+          ? { ...conversation, is_pinned: isPinned }
+          : conversation
+      ))));
+      try {
+        const updated = await updateConversation(conversationId, { is_pinned: isPinned });
+        setConversations((current) => sortConversationList(current.map((conversation) => (
+          conversation.id === conversationId ? updated : conversation
+        ))));
+        return updated;
+      } catch (cause) {
+        setConversations((current) => sortConversationList(current.map((conversation) => (
+          conversation.id === conversationId && conversation.is_pinned === isPinned
+            ? { ...conversation, is_pinned: !isPinned }
+            : conversation
+        ))));
+        throw cause;
+      }
+    },
+    [],
+  );
+
   return {
     conversations,
     setConversations,
@@ -578,5 +612,6 @@ export function useConversations({
     send,
     createNewConversation,
     removeConversation,
+    setConversationPinned,
   };
 }

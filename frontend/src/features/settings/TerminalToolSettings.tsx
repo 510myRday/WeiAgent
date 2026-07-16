@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, BadgeCheck, CircleAlert, CircleCheck, Clock, Download, FolderLock, Hand, Pencil, Plus, RefreshCw, Shield, ShieldAlert, Square, Terminal, Trash2 } from 'lucide-react';
+import { ArrowLeft, BadgeCheck, CircleAlert, CircleCheck, Clock, Download, FolderLock, Hand, Pencil, Plus, RefreshCw, Shield, ShieldAlert, ShieldCheck, Square, Terminal, Trash2 } from 'lucide-react';
 
 import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, CodexRuntimeStatus, ToolProcessInfo } from '../../api';
 import {
@@ -437,7 +437,13 @@ export function TerminalToolSettings({ scope, agentId, agents = [] }: TerminalTo
           <div className="agent-tool-row">
             <div className="agent-tool-row__icon"><Terminal size={20} /></div>
             <div className="agent-tool-row__body">
-              <strong>{t('tools.terminal.name')}</strong>
+              <div className="agent-tool-row__title">
+                <strong>{t('tools.terminal.name')}</strong>
+                <span className="mini-status-badge">
+                  <ShieldCheck size={12} />
+                  {t('tools.builtinBadge')}
+                </span>
+              </div>
               <small>{t('tools.terminal.description')}</small>
               <span className="agent-tool-row__source">
                 {overrides?.terminal.enabled === undefined

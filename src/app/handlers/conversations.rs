@@ -17,7 +17,7 @@ use crate::{
     },
     domain::{
         ChatMessage, Conversation, CreateConversationRequest, SendMessageRequest,
-        SendMessageResponse,
+        SendMessageResponse, UpdateConversationRequest,
     },
     error::AppResult,
     llm::client::RequestOptions,
@@ -94,6 +94,19 @@ pub async fn delete_conversation(
     Path(conversation_id): Path<Uuid>,
 ) -> AppResult<()> {
     state.store.delete_conversation(conversation_id).await
+}
+
+pub async fn update_conversation(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+    Json(request): Json<UpdateConversationRequest>,
+) -> AppResult<Json<Conversation>> {
+    Ok(Json(
+        state
+            .store
+            .update_conversation(conversation_id, request)
+            .await?,
+    ))
 }
 
 pub async fn read_conversation_messages(

@@ -80,6 +80,7 @@ export type Conversation = {
   agent_id: string;
   title: string;
   message_count: number;
+  is_pinned: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -124,6 +125,10 @@ export type UpdateAgentWorkspacePayload = Pick<AgentWorkspace, 'personality' | '
 
 export type CreateConversationPayload = {
   title?: string;
+};
+
+export type UpdateConversationPayload = {
+  is_pinned: boolean;
 };
 
 export type SendMessageResponse = {

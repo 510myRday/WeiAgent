@@ -306,25 +306,85 @@
   line-height: 1.35;
 }
 
+.settings-nav .list-item-leading,
+.tools-nav .list-item-leading {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--surface-pane);
+  color: var(--color-text-soft);
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.settings-nav .list-item:hover .list-item-leading,
+.settings-nav .list-item:focus-visible .list-item-leading,
+.tools-nav .list-item:hover .list-item-leading,
+.tools-nav .list-item:focus-visible .list-item-leading {
+  border-color: var(--color-primary-border);
+}
+
+.settings-nav .list-item.is-active .list-item-leading,
+.tools-nav .list-item.is-active .list-item-leading {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-soft);
+  color: var(--color-primary-strong);
+}
+
 .conversation-row {
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
+  gap: 3px;
+  padding-right: 5px;
   border-radius: var(--radius-sm);
 }
 
-.conversation-row.is-active,
 .conversation-row:hover,
 .conversation-row:focus-within {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.conversation-row.is-active {
   border-color: var(--color-primary-border);
   background: var(--surface-active);
 }
 
-.row-actions {
-  opacity: 0;
+.conversation-row-main {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 9px 8px 9px 11px;
 }
 
-.conversation-row.is-active .row-actions,
-.conversation-row:hover .row-actions,
-.conversation-row:focus-within .row-actions {
-  opacity: 1;
+.conversation-action.icon-button {
+  width: 30px;
+  height: 30px;
+  border-color: transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-muted);
+  box-shadow: none;
+}
+
+.conversation-action.icon-button:hover:not(:disabled),
+.conversation-action.icon-button:focus-visible {
+  transform: none;
+}
+
+.conversation-pin-action.icon-button:hover:not(:disabled),
+.conversation-pin-action.icon-button:focus-visible,
+.conversation-pin-action.icon-button.is-active {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-soft);
+  color: var(--color-primary-deep);
+}
+
+.conversation-delete-action.icon-button:hover:not(:disabled),
+.conversation-delete-action.icon-button:focus-visible {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
 }
 
 .avatar-badge,

@@ -28,7 +28,7 @@ mod tests {
     use crate::domain::{
         ChatMessage, ChatMessageStatus, ChatRole, CreateAgentRequest, CreateConversationRequest,
         CreateModelProviderRequest, ProviderType, UpdateAgentRequest, UpdateAgentWorkspaceRequest,
-        UpdateModelProviderRequest,
+        UpdateConversationRequest, UpdateModelProviderRequest,
     };
 
     fn provider_request(name: &str, model: &str) -> CreateModelProviderRequest {
@@ -250,6 +250,53 @@ mod tests {
             .unwrap();
         assert_eq!(listed_conversation.message_count, 1);
         assert_eq!(listed_conversation.title, "这是第一条用户消息 用于生成标题");
+    }
+
+    #[tokio::test]
+    async fn pinned_conversations_sort_first_and_persist() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let agent = store
+            .list_agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.is_builtin)
+            .unwrap();
+        let pinned = store
+            .create_conversation(
+                agent.id,
+                CreateConversationRequest {
+                    title: Some("Pinned".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+        let recent = store
+            .create_conversation(
+                agent.id,
+                CreateConversationRequest {
+                    title: Some("Recent".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let updated = store
+            .update_conversation(pinned.id, UpdateConversationRequest { is_pinned: true })
+            .await
+            .unwrap();
+        assert!(updated.is_pinned);
+
+        let listed = store.list_conversations(agent.id).await.unwrap();
+        assert_eq!(listed[0].id, pinned.id);
+        assert_eq!(listed[1].id, recent.id);
+
+        drop(store);
+        let reopened = JsonStore::new(temp_dir.path()).await.unwrap();
+        let persisted = reopened.list_conversations(agent.id).await.unwrap();
+        assert_eq!(persisted[0].id, pinned.id);
+        assert!(persisted[0].is_pinned);
     }
 
     #[tokio::test]

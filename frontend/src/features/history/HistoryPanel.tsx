@@ -1,9 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
-import { MessageSquare, Trash2, X } from 'lucide-react';
+import { Pin, Trash2, X } from 'lucide-react';
 
 import type { Agent, Conversation, UiMessage } from '../../types';
 import { useI18n } from '../../i18n';
-import { listConversations, readConversationMessages, deleteConversation } from '../../api';
+import {
+  deleteConversation,
+  listConversations,
+  readConversationMessages,
+  updateConversation,
+} from '../../api';
 import { Button, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
 
 function genClientId(): string {
@@ -11,6 +16,14 @@ function genClientId(): string {
     return crypto.randomUUID();
   }
   return 'c' + Math.random().toString(36).slice(2, 10);
+}
+
+function sortConversationList(conversations: Conversation[]): Conversation[] {
+  return [...conversations].sort((left, right) => {
+    const pinOrder = Number(right.is_pinned) - Number(left.is_pinned);
+    if (pinOrder !== 0) return pinOrder;
+    return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+  });
 }
 
 interface HistoryPanelProps {
@@ -23,6 +36,7 @@ export function HistoryPanel({ agents }: HistoryPanelProps) {
   const [historyConversations, setHistoryConversations] = useState<Record<string, Conversation[]>>({});
   const [historyConversationId, setHistoryConversationId] = useState('');
   const [historyMessages, setHistoryMessages] = useState<UiMessage[]>([]);
+  const [pinningConversationIds, setPinningConversationIds] = useState<Set<string>>(() => new Set());
 
   const refreshHistory = useCallback(async () => {
     const entries = await Promise.all(
@@ -64,6 +78,34 @@ export function HistoryPanel({ agents }: HistoryPanelProps) {
       toast.success(t('notification.conversationDeleted'));
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+    }
+  }
+
+  async function handlePinConversation(conversation: Conversation) {
+    setPinningConversationIds((current) => new Set(current).add(conversation.id));
+    try {
+      const updated = await updateConversation(conversation.id, {
+        is_pinned: !conversation.is_pinned,
+      });
+      setHistoryConversations((current) => ({
+        ...current,
+        [updated.agent_id]: sortConversationList(
+          (current[updated.agent_id] ?? []).map((item) => (
+            item.id === updated.id ? updated : item
+          )),
+        ),
+      }));
+      toast.success(t(conversation.is_pinned
+        ? 'notification.conversationUnpinned'
+        : 'notification.conversationPinned'));
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+    } finally {
+      setPinningConversationIds((current) => {
+        const next = new Set(current);
+        next.delete(conversation.id);
+        return next;
+      });
     }
   }
 
@@ -131,21 +173,43 @@ export function HistoryPanel({ agents }: HistoryPanelProps) {
             <h3>{agent.is_builtin ? t('agentConfig.builtinMasterName') : agent.name}</h3>
             {(historyConversations[agent.id] ?? []).length === 0 ? <p className="muted">{t('conversation.empty')}</p> : null}
             {(historyConversations[agent.id] ?? []).map((conversation) => (
-              <ListItem
+              <div
+                className={[
+                  'conversation-row',
+                  'history-conversation-row',
+                  conversation.is_pinned ? 'is-pinned' : '',
+                ].filter(Boolean).join(' ')}
                 key={conversation.id}
-                type="button"
-                title={conversation.title}
-                subtitle={formatDate(conversation.updated_at)}
-                leading={<MessageSquare size={20} />}
-                trailing={(
-                  <span onClick={(event) => event.stopPropagation()}>
-                    <IconButton variant="danger" type="button" onClick={() => handleDeleteConversation(conversation.id)} label={t('conversation.delete')}>
-                      <Trash2 size={15} />
-                    </IconButton>
-                  </span>
-                )}
-                onClick={() => openHistoryConversation(conversation.id)}
-              />
+              >
+                <ListItem
+                  className="conversation-row-main"
+                  type="button"
+                  title={conversation.title}
+                  subtitle={formatDate(conversation.updated_at)}
+                  onClick={() => openHistoryConversation(conversation.id)}
+                />
+                <IconButton
+                  className="conversation-action conversation-pin-action"
+                  variant="ghost"
+                  type="button"
+                  active={conversation.is_pinned}
+                  disabled={pinningConversationIds.has(conversation.id)}
+                  aria-pressed={conversation.is_pinned}
+                  onClick={() => handlePinConversation(conversation)}
+                  label={conversation.is_pinned ? t('conversation.unpin') : t('conversation.pin')}
+                >
+                  <Pin size={14} fill={conversation.is_pinned ? 'currentColor' : 'none'} />
+                </IconButton>
+                <IconButton
+                  className="conversation-action conversation-delete-action"
+                  variant="ghost"
+                  type="button"
+                  onClick={() => handleDeleteConversation(conversation.id)}
+                  label={t('conversation.delete')}
+                >
+                  <Trash2 size={14} />
+                </IconButton>
+              </div>
             ))}
           </section>
         ))}
