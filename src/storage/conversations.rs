@@ -47,12 +47,41 @@ impl JsonStore {
             return Err(AppError::NotFound);
         }
 
+        let mut conversations = self
+            .read_conversations_unlocked()
+            .await?
+            .into_iter()
+            .filter(|conversation| conversation.agent_id == agent_id)
+            .collect::<Vec<_>>();
+        conversations.sort_by_key(|item| {
+            (
+                std::cmp::Reverse(item.is_pinned),
+                std::cmp::Reverse(item.updated_at),
+            )
+        });
+        Ok(conversations)
+    }
+
+    pub async fn list_conversation_ids(&self, agent_id: Uuid) -> AppResult<Vec<Uuid>> {
+        let _guard = self.lock.lock().await;
+        let agents = self.read_agents_unlocked().await?;
+        if !agents.iter().any(|agent| agent.id == agent_id) {
+            return Err(AppError::NotFound);
+        }
+        Ok(self
+            .read_conversations_unlocked()
+            .await?
+            .into_iter()
+            .filter(|conversation| conversation.agent_id == agent_id)
+            .map(|conversation| conversation.id)
+            .collect())
+    }
+
+    pub(super) async fn repair_conversation_metadata(&self) -> AppResult<()> {
+        let _guard = self.lock.lock().await;
         let mut changed = false;
         let mut conversations = self.read_conversations_unlocked().await?;
-        for conversation in conversations
-            .iter_mut()
-            .filter(|conversation| conversation.agent_id == agent_id)
-        {
+        for conversation in &mut conversations {
             let messages = self
                 .read_conversation_messages_unchecked(conversation.id)
                 .await?;
@@ -68,22 +97,10 @@ impl JsonStore {
                 changed = true;
             }
         }
-
         if changed {
             self.write_conversations_unlocked(&conversations).await?;
         }
-
-        let mut conversations = conversations
-            .into_iter()
-            .filter(|conversation| conversation.agent_id == agent_id)
-            .collect::<Vec<_>>();
-        conversations.sort_by_key(|item| {
-            (
-                std::cmp::Reverse(item.is_pinned),
-                std::cmp::Reverse(item.updated_at),
-            )
-        });
-        Ok(conversations)
+        Ok(())
     }
 
     pub async fn get_conversation(&self, id: Uuid) -> AppResult<Conversation> {

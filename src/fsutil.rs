@@ -1,16 +1,16 @@
 use std::path::{Path, PathBuf};
 
-use tokio::fs;
+use tokio::{fs, io::AsyncWriteExt};
 use uuid::Uuid;
 
 use crate::error::AppResult;
 
-/// Write `content` to `path` via a same-directory temp file + rename.
-/// On Windows, replace is implemented as remove-then-rename because renames
-/// cannot overwrite an existing file.
+/// Write `content` to `path` via a synced same-directory temp file and atomic replace.
 pub async fn write_atomic(path: &Path, content: impl AsRef<[u8]>) -> AppResult<()> {
     let content = content.as_ref();
-    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
     if let Some(parent) = parent {
         fs::create_dir_all(parent).await?;
     }
@@ -32,20 +32,12 @@ pub async fn write_atomic(path: &Path, content: impl AsRef<[u8]>) -> AppResult<(
     };
 
     let write_result = async {
-        fs::write(&temp_path, content).await?;
-        match fs::rename(&temp_path, path).await {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                // Windows cannot rename over an existing destination.
-                if fs::metadata(path).await.is_ok() {
-                    fs::remove_file(path).await?;
-                    fs::rename(&temp_path, path).await?;
-                    Ok(())
-                } else {
-                    Err(error)
-                }
-            }
-        }
+        let mut temp_file = fs::File::create(&temp_path).await?;
+        temp_file.write_all(content).await?;
+        temp_file.flush().await?;
+        temp_file.sync_all().await?;
+        drop(temp_file);
+        replace_file(&temp_path, path).await
     }
     .await;
 
@@ -56,6 +48,48 @@ pub async fn write_atomic(path: &Path, content: impl AsRef<[u8]>) -> AppResult<(
     Ok(())
 }
 
+#[cfg(not(windows))]
+async fn replace_file(temp_path: &Path, path: &Path) -> std::io::Result<()> {
+    fs::rename(temp_path, path).await
+}
+
+#[cfg(windows)]
+async fn replace_file(temp_path: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let temp_path = temp_path.to_path_buf();
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let source = temp_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let destination = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let result = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if result == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
 /// True when `path` is `root` or a descendant of `root`.
 /// On Windows the comparison is case-insensitive and slash-normalized.
 pub fn path_is_within(path: &Path, root: &Path) -> bool {
@@ -63,9 +97,7 @@ pub fn path_is_within(path: &Path, root: &Path) -> bool {
     {
         let path = normalize_path_key(path);
         let root = normalize_path_key(root);
-        path == root
-            || path.starts_with(&(root.clone() + "\\"))
-            || path.starts_with(&(root + "/"))
+        path == root || path.starts_with(&(root.clone() + "\\")) || path.starts_with(&(root + "/"))
     }
     #[cfg(not(windows))]
     {
@@ -122,7 +154,11 @@ mod tests {
 
     #[test]
     fn path_within_accepts_descendants() {
-        let root = PathBuf::from(if cfg!(windows) { r"C:\work\project" } else { "/work/project" });
+        let root = PathBuf::from(if cfg!(windows) {
+            r"C:\work\project"
+        } else {
+            "/work/project"
+        });
         let child = root.join("src").join("main.rs");
         assert!(path_is_within(&child, &root));
         assert!(path_is_within(&root, &root));

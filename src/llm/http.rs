@@ -147,10 +147,24 @@ pub fn spawn_log(
     }
 }
 
-pub async fn read_response_body_limited(response: Response) -> AppResult<String> {
+pub async fn read_response_body_limited(
+    response: Response,
+    idle_timeout: Duration,
+) -> AppResult<String> {
     let mut stream = response.bytes_stream();
     let mut body = Vec::new();
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let next = tokio::time::timeout(idle_timeout, stream.next())
+            .await
+            .map_err(|_| {
+                AppError::Llm(format!(
+                    "LLM response body idle timeout after {}s",
+                    idle_timeout.as_secs()
+                ))
+            })?;
+        let Some(chunk) = next else {
+            break;
+        };
         let chunk = chunk.map_err(|error| AppError::Llm(error.to_string()))?;
         if body.len().saturating_add(chunk.len()) > MAX_LLM_RESPONSE_BYTES {
             return Err(AppError::Llm(format!(
@@ -378,4 +392,39 @@ pub fn stream_response(
         );
     };
     Box::pin(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn response_body_has_an_idle_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nx")
+                .await
+                .unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+        let error = read_response_body_limited(response, Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("idle timeout"));
+        server.abort();
+    }
 }

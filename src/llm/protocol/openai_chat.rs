@@ -109,7 +109,7 @@ impl ChatClient for OpenAiChatClient {
         };
 
         let status = response.status();
-        let body = match read_response_body_limited(response).await {
+        let body = match read_response_body_limited(response, options.timeout).await {
             Ok(body) => body,
             Err(error) => {
                 self.http.spawn_log(
@@ -270,7 +270,7 @@ impl ChatClient for OpenAiChatClient {
 
         let status = response.status();
         if !status.is_success() {
-            let body = read_response_body_limited(response)
+            let body = read_response_body_limited(response, options.timeout)
                 .await
                 .unwrap_or_else(|_| "failed to read error body".to_string());
             self.http.spawn_log(
@@ -529,7 +529,9 @@ impl ChatClient for OpenAiChatClient {
             .map_err(|error| AppError::Llm(error.to_string()))?;
 
         let status = response.status();
-        let body = read_response_body_limited(response).await?;
+        let body =
+            read_response_body_limited(response, crate::llm::http::DEFAULT_MODEL_LIST_TIMEOUT)
+                .await?;
         if !status.is_success() {
             return Err(AppError::Llm(format!("upstream returned {status}: {body}")));
         }

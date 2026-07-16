@@ -129,7 +129,7 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         };
 
         let status = response.status();
-        let body = read_response_body_limited(response).await?;
+        let body = read_response_body_limited(response, options.timeout).await?;
         if !status.is_success() {
             let error = format!("upstream returned {status}: {body}");
             self.http.spawn_log(
@@ -241,7 +241,7 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
 
         let status = response.status();
         if !status.is_success() {
-            let body = read_response_body_limited(response)
+            let body = read_response_body_limited(response, options.timeout)
                 .await
                 .unwrap_or_else(|_| "failed to read error body".to_string());
             let error = format!("upstream returned {status}: {body}");
@@ -292,7 +292,7 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
             .map_err(|_| AppError::Llm("model list request timed out after 30s".to_string()))?
             .map_err(|error| AppError::Llm(error.to_string()))?;
             let status = response.status();
-            let body = read_response_body_limited(response).await?;
+            let body = read_response_body_limited(response, DEFAULT_MODEL_LIST_TIMEOUT).await?;
             if !status.is_success() {
                 return Err(AppError::Llm(format!("upstream returned {status}: {body}")));
             }

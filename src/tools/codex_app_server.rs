@@ -21,6 +21,8 @@ use crate::{
 };
 
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(15);
+const CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const COMMAND_EXEC_REQUEST_TIMEOUT: Duration = Duration::from_secs(60 * 60 + 30);
 const NOTIFICATION_BUFFER: usize = 4096;
 
 #[derive(Debug, Clone)]
@@ -34,6 +36,17 @@ struct CodexConnection {
     stdin: Mutex<ChildStdin>,
     pending: DashMap<u64, oneshot::Sender<Result<Value, String>>>,
     closed: AtomicBool,
+}
+
+struct PendingRequestGuard {
+    connection: Arc<CodexConnection>,
+    id: u64,
+}
+
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        self.connection.pending.remove(&self.id);
+    }
 }
 
 pub struct CodexAppServer {
@@ -190,16 +203,22 @@ impl CodexAppServer {
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
         connection.pending.insert(id, sender);
+        let _pending_guard = PendingRequestGuard {
+            connection: connection.clone(),
+            id,
+        };
         let message = json!({
             "id": id,
             "method": method,
             "params": params,
         });
-        if let Err(error) = write_message(connection, &message).await {
-            connection.pending.remove(&id);
-            return Err(error);
-        }
-        match receiver.await {
+        write_message(connection, &message).await?;
+        let response = tokio::time::timeout(request_timeout(method), receiver)
+            .await
+            .map_err(|_| {
+                AppError::Process(format!("Codex app-server {method} request timed out"))
+            })?;
+        match response {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(message)) => Err(AppError::Process(format!(
                 "Codex app-server {method} failed: {message}"
@@ -251,6 +270,14 @@ impl CodexAppServer {
             }
         }
         self.clear_connection(connection.id).await;
+    }
+}
+
+fn request_timeout(method: &str) -> Duration {
+    match method {
+        "command/exec" => COMMAND_EXEC_REQUEST_TIMEOUT,
+        "initialize" => INITIALIZE_TIMEOUT,
+        _ => CONTROL_REQUEST_TIMEOUT,
     }
 }
 

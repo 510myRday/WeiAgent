@@ -85,11 +85,7 @@ pub async fn list_active_agent_runs(
     State(state): State<AppState>,
     Path(agent_id): Path<Uuid>,
 ) -> AppResult<Json<Vec<AgentRun>>> {
-    let conversations = state.store.list_conversations(agent_id).await?;
-    let ids = conversations
-        .iter()
-        .map(|conversation| conversation.id)
-        .collect::<Vec<_>>();
+    let ids = state.store.list_conversation_ids(agent_id).await?;
     Ok(Json(state.run_manager.active_for_conversations(&ids)))
 }
 
@@ -111,6 +107,10 @@ pub async fn delete_conversation(
         .run_manager
         .cancel_conversation_and_wait(conversation_id)
         .await?;
+    state
+        .terminal_manager
+        .stop_all_for_conversation(conversation_id)
+        .await;
     state.store.delete_conversation(conversation_id).await
 }
 
@@ -182,8 +182,49 @@ pub async fn create_message_run(
     let (event_sender, mut event_receiver) = mpsc::channel(256);
     let event_manager = manager.clone();
     let forwarding = tokio::spawn(async move {
-        while let Some(event) = event_receiver.recv().await {
-            event_manager.record_event(run_id, event);
+        let mut pending_delta = String::new();
+        let mut flush_interval = tokio::time::interval(Duration::from_millis(32));
+        flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = flush_interval.tick(), if !pending_delta.is_empty() => {
+                    event_manager.record_event(
+                        run_id,
+                        AgentRunEvent::Delta(std::mem::take(&mut pending_delta)),
+                    );
+                }
+                event = event_receiver.recv() => {
+                    let Some(event) = event else {
+                        if !pending_delta.is_empty() {
+                            event_manager.record_event(
+                                run_id,
+                                AgentRunEvent::Delta(std::mem::take(&mut pending_delta)),
+                            );
+                        }
+                        break;
+                    };
+                    match event {
+                        AgentRunEvent::Delta(delta) => {
+                            pending_delta.push_str(&delta);
+                            if pending_delta.len() >= 8 * 1024 {
+                                event_manager.record_event(
+                                    run_id,
+                                    AgentRunEvent::Delta(std::mem::take(&mut pending_delta)),
+                                );
+                            }
+                        }
+                        event => {
+                            if !pending_delta.is_empty() {
+                                event_manager.record_event(
+                                    run_id,
+                                    AgentRunEvent::Delta(std::mem::take(&mut pending_delta)),
+                                );
+                            }
+                            event_manager.record_event(run_id, event);
+                        }
+                    }
+                }
+            }
         }
     });
 

@@ -10,7 +10,7 @@ use crate::{
         AgentResponse, AgentWorkspace, CreateAgentRequest, UpdateAgentRequest,
         UpdateAgentWorkspaceRequest,
     },
-    error::AppResult,
+    error::{AppError, AppResult},
 };
 
 pub async fn list_agents(State(state): State<AppState>) -> AppResult<Json<Vec<AgentResponse>>> {
@@ -36,6 +36,19 @@ pub async fn delete_agent(
     State(state): State<AppState>,
     Path(agent_id): Path<Uuid>,
 ) -> AppResult<()> {
+    if state.store.get_agent(agent_id).await?.is_builtin {
+        return Err(AppError::BadRequest(
+            "built-in agents cannot be deleted".to_string(),
+        ));
+    }
+    let conversation_ids = state.store.list_conversation_ids(agent_id).await?;
+    for conversation_id in conversation_ids {
+        state
+            .run_manager
+            .cancel_conversation_and_wait(conversation_id)
+            .await?;
+    }
+    state.terminal_manager.stop_for_agent(agent_id).await;
     state.store.delete_agent(agent_id).await
 }
 

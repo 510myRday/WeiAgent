@@ -196,26 +196,34 @@ export function useConversations({
   const [runningConversationIds, setRunningConversationIds] = useState<Set<string>>(() => new Set());
 
   const loadChatIdRef = useRef(0);
+  const conversationsRequestIdRef = useRef(0);
+  const runningRequestIdRef = useRef(0);
+  const resumeRequestIdRef = useRef(0);
   const sendRequestIdRef = useRef(0);
   const sendAbortControllerRef = useRef<AbortController | null>(null);
   const activeRunIdRef = useRef('');
   const activeStreamRef = useRef({ agentId: '', conversationId: '' });
   const suppressNextLoadConversationIdRef = useRef('');
+  const pendingDeltaRef = useRef('');
+  const deltaTimerRef = useRef<number | undefined>(undefined);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
   const loadConversationsForAgent = useCallback(async (agentId: string) => {
+    const requestId = ++conversationsRequestIdRef.current;
     try {
       const [next, activeRuns] = await Promise.all([
         listConversations(agentId),
         listActiveAgentRuns(agentId),
       ]);
+      if (requestId !== conversationsRequestIdRef.current) return;
       setConversations(next);
       setRunningConversationIds(new Set(activeRuns.map((run) => run.conversation_id)));
       setActiveConversationId((current) =>
         current && next.some((c) => c.id === current) ? current : next[0]?.id ?? '',
       );
     } catch (cause) {
+      if (requestId !== conversationsRequestIdRef.current) return;
       setConversations([]);
       setActiveConversationId('');
       onErrorRef.current?.(cause instanceof Error ? cause.message : 'Failed to load conversations');
@@ -223,21 +231,25 @@ export function useConversations({
   }, []);
 
   const loadMessages = useCallback(async (conversationId: string) => {
+    resumeRequestIdRef.current += 1;
+    const requestId = ++loadChatIdRef.current;
     if (suppressNextLoadConversationIdRef.current === conversationId) {
       suppressNextLoadConversationIdRef.current = '';
-      return;
+      setIsLoadingChat(false);
+      return true;
     }
-    const requestId = ++loadChatIdRef.current;
     setIsLoadingChat(true);
     setMessages([]);
     try {
       const raw = await readConversationMessages(conversationId);
-      if (requestId !== loadChatIdRef.current) return;
+      if (requestId !== loadChatIdRef.current) return false;
       setMessages(toUiMessageItems(raw));
+      return true;
     } catch (cause) {
       if (requestId === loadChatIdRef.current) {
         onErrorRef.current?.(cause instanceof Error ? cause.message : 'Failed to load messages');
       }
+      return false;
     } finally {
       if (requestId === loadChatIdRef.current) setIsLoadingChat(false);
     }
@@ -245,23 +257,29 @@ export function useConversations({
 
   const clearChat = useCallback(() => {
     ++loadChatIdRef.current;
+    ++conversationsRequestIdRef.current;
+    ++runningRequestIdRef.current;
+    ++resumeRequestIdRef.current;
     setConversations([]);
     setActiveConversationId('');
     setMessages([]);
+    setRunningConversationIds(new Set());
     setIsLoadingChat(false);
     setRunPhase('idle');
   }, []);
 
   const refreshRunningConversations = useCallback(async (agentId: string) => {
+    const requestId = ++runningRequestIdRef.current;
     try {
       const activeRuns = await listActiveAgentRuns(agentId);
+      if (requestId !== runningRequestIdRef.current) return;
       setRunningConversationIds(new Set(activeRuns.map((run) => run.conversation_id)));
     } catch {
       // The next refresh will retry while the chat view is active.
     }
   }, []);
 
-  const appendDelta = useCallback((delta: string) => {
+  const applyDelta = useCallback((delta: string) => {
     setMessages((current) => {
       const last = current[current.length - 1];
       if (
@@ -296,16 +314,41 @@ export function useConversations({
     });
   }, []);
 
+  const flushPendingDelta = useCallback(() => {
+    if (deltaTimerRef.current !== undefined) {
+      window.clearTimeout(deltaTimerRef.current);
+      deltaTimerRef.current = undefined;
+    }
+    const delta = pendingDeltaRef.current;
+    pendingDeltaRef.current = '';
+    if (delta) applyDelta(delta);
+  }, [applyDelta]);
+
+  const appendDelta = useCallback((delta: string) => {
+    pendingDeltaRef.current += delta;
+    if (deltaTimerRef.current !== undefined) return;
+    deltaTimerRef.current = window.setTimeout(() => {
+      deltaTimerRef.current = undefined;
+      const buffered = pendingDeltaRef.current;
+      pendingDeltaRef.current = '';
+      if (buffered) applyDelta(buffered);
+    }, 32);
+  }, [applyDelta]);
+
   const detachActiveRun = useCallback(() => {
+    flushPendingDelta();
+    resumeRequestIdRef.current += 1;
     sendRequestIdRef.current += 1;
     sendAbortControllerRef.current?.abort();
     sendAbortControllerRef.current = null;
     activeRunIdRef.current = '';
     setRunPhase('idle');
     setIsSending(false);
-  }, []);
+  }, [flushPendingDelta]);
 
   const cancelActiveSend = useCallback(() => {
+    flushPendingDelta();
+    resumeRequestIdRef.current += 1;
     const runId = activeRunIdRef.current;
     const conversationId = activeStreamRef.current.conversationId;
     const agentId = activeStreamRef.current.agentId;
@@ -332,10 +375,13 @@ export function useConversations({
     });
     setRunPhase('idle');
     setIsSending(false);
-  }, [loadConversationsForAgent, runCancelledMessage]);
+  }, [flushPendingDelta, loadConversationsForAgent, runCancelledMessage]);
 
   const handleStreamEvent = useCallback(
     (evt: { event: string; data: unknown }) => {
+      if (evt.event !== 'delta') {
+        flushPendingDelta();
+      }
       if (evt.event === 'error') {
         setIsSending(false);
         setRunPhase('idle');
@@ -500,7 +546,7 @@ export function useConversations({
         return;
       }
     },
-    [appendDelta, runCancelledMessage, runInterruptedMessage],
+    [appendDelta, flushPendingDelta, runCancelledMessage, runInterruptedMessage],
   );
 
   const followRun = useCallback(async (
@@ -543,6 +589,7 @@ export function useConversations({
       }
     } catch (cause) {
       if (requestId === sendRequestIdRef.current && !isAbortError(cause)) {
+        flushPendingDelta();
         setRunningConversationIds((current) => {
           const next = new Set(current);
           next.delete(run.conversation_id);
@@ -564,10 +611,12 @@ export function useConversations({
         setRunPhase('idle');
       }
     }
-  }, [handleStreamEvent, loadConversationsForAgent, runInterruptedMessage]);
+  }, [flushPendingDelta, handleStreamEvent, loadConversationsForAgent, runInterruptedMessage]);
 
   const resumeActiveRun = useCallback(async (conversationId: string, agentId: string) => {
+    const resumeRequestId = ++resumeRequestIdRef.current;
     const run = await readActiveConversationRun(conversationId);
+    if (resumeRequestId !== resumeRequestIdRef.current) return;
     if (!run || run.status !== 'running') return;
     const requestId = ++sendRequestIdRef.current;
     const controller = new AbortController();
@@ -577,10 +626,16 @@ export function useConversations({
   }, [followRun]);
 
   useEffect(() => () => {
+    resumeRequestIdRef.current += 1;
     sendRequestIdRef.current += 1;
     sendAbortControllerRef.current?.abort();
     sendAbortControllerRef.current = null;
     activeRunIdRef.current = '';
+    pendingDeltaRef.current = '';
+    if (deltaTimerRef.current !== undefined) {
+      window.clearTimeout(deltaTimerRef.current);
+      deltaTimerRef.current = undefined;
+    }
   }, []);
 
   const send = useCallback(

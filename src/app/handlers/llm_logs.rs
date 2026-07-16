@@ -1,7 +1,8 @@
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
 };
+use serde::Deserialize;
 
 use crate::{
     app::AppState,
@@ -9,8 +10,28 @@ use crate::{
     storage::llm_logs::{LlmLogDetail, LlmLogEntry},
 };
 
-pub async fn list_llm_logs(State(state): State<AppState>) -> AppResult<Json<Vec<LlmLogEntry>>> {
-    Ok(Json(state.llm_logger.list_logs().await?))
+#[derive(Debug, Deserialize)]
+pub struct LogListQuery {
+    #[serde(default)]
+    offset: usize,
+    #[serde(default = "default_log_limit")]
+    limit: usize,
+}
+
+fn default_log_limit() -> usize {
+    200
+}
+
+pub async fn list_llm_logs(
+    State(state): State<AppState>,
+    Query(query): Query<LogListQuery>,
+) -> AppResult<Json<Vec<LlmLogEntry>>> {
+    Ok(Json(
+        state
+            .llm_logger
+            .list_logs(query.offset, query.limit)
+            .await?,
+    ))
 }
 
 pub async fn get_llm_log(

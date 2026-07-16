@@ -253,6 +253,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conversation_lists_do_not_reparse_message_history() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let provider = store
+            .create_model_provider(provider_request("Fast List", "fast-model"))
+            .await
+            .unwrap();
+        let agent = store
+            .create_agent(CreateAgentRequest {
+                name: "Fast List Agent".to_string(),
+                description: "Exercises metadata-only conversation listing.".to_string(),
+                model_provider_id: provider.id,
+                model_id: "fast-model".to_string(),
+                avatar_icon: Some("rocket".to_string()),
+                avatar_color: Some("#ef4444".to_string()),
+            })
+            .await
+            .unwrap();
+        let conversation = store
+            .create_conversation(agent.id, CreateConversationRequest { title: None })
+            .await
+            .unwrap();
+        tokio::fs::write(store.conversation_file(conversation.id), "{broken-json")
+            .await
+            .unwrap();
+
+        assert_eq!(store.list_conversations(agent.id).await.unwrap().len(), 1);
+        assert_eq!(
+            store.list_conversation_ids(agent.id).await.unwrap(),
+            vec![conversation.id]
+        );
+    }
+
+    #[tokio::test]
     async fn pinned_conversations_sort_first_and_persist() {
         let temp_dir = tempfile::tempdir().unwrap();
         let store = JsonStore::new(temp_dir.path()).await.unwrap();

@@ -59,7 +59,10 @@ impl JsonStore {
     ) -> AppResult<ModelProviderResponse> {
         let _guard = self.lock.lock().await;
         let mut providers = self.read_providers_unlocked().await?;
-        let agents = self.read_agents_unlocked().await?;
+        let original_providers = providers.clone();
+        let mut agents = self.read_agents_unlocked().await?;
+        let original_agents = agents.clone();
+        let mut agents_changed = false;
         let provider = providers
             .iter_mut()
             .find(|provider| provider.id == id)
@@ -81,8 +84,6 @@ impl JsonStore {
         }
         if let Some(models) = request.models {
             let models = normalize_models(models)?;
-            let mut agents = agents;
-            let mut agents_changed = false;
             for agent in agents
                 .iter_mut()
                 .filter(|agent| agent.model_provider_id == provider.id)
@@ -94,9 +95,6 @@ impl JsonStore {
                 }
             }
             provider.models = models;
-            if agents_changed {
-                self.write_agents_unlocked(&agents).await?;
-            }
         }
         if let Some(extra_body) = request.extra_body {
             validate_extra_body(&extra_body)?;
@@ -105,7 +103,16 @@ impl JsonStore {
 
         provider.updated_at = Utc::now();
         let updated = provider.clone();
-        self.write_providers_unlocked(&providers).await?;
+        if agents_changed {
+            self.write_agents_unlocked(&agents).await?;
+        }
+        if let Err(error) = self.write_providers_unlocked(&providers).await {
+            if agents_changed {
+                let _ = self.write_agents_unlocked(&original_agents).await;
+            }
+            let _ = self.write_providers_unlocked(&original_providers).await;
+            return Err(error);
+        }
         Ok(ModelProviderResponse::from(&updated))
     }
 

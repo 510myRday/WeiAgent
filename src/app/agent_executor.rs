@@ -24,8 +24,8 @@ use crate::{
     tools::registry::{ToolExecutionContext, ToolExecutionEvent},
 };
 
-const STREAM_SAVE_INTERVAL: Duration = Duration::from_millis(500);
-const STREAM_SAVE_CHARS: usize = 240;
+const STREAM_SAVE_INTERVAL: Duration = Duration::from_secs(2);
+const STREAM_SAVE_BYTES: usize = 32 * 1024;
 const MAX_TOOL_CALLS_PER_ITERATION: usize = 8;
 const MAX_TOTAL_TOOL_CALLS: usize = 256;
 const MAX_TOOL_CALL_ID_BYTES: usize = 256;
@@ -499,7 +499,7 @@ async fn stream_llm_iteration(
     let created_at = Utc::now();
     let mut content = String::new();
     let mut persisted = false;
-    let mut persisted_chars = 0_usize;
+    let mut persisted_bytes = 0_usize;
     let mut last_save = Instant::now();
     let mut calls: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
     let mut finished_with_tool_calls = None;
@@ -579,7 +579,7 @@ async fn stream_llm_iteration(
                     return Err(AppError::Llm("stream client disconnected".to_string()));
                 }
                 if !persisted
-                    || content.chars().count().saturating_sub(persisted_chars) >= STREAM_SAVE_CHARS
+                    || content.len().saturating_sub(persisted_bytes) >= STREAM_SAVE_BYTES
                     || last_save.elapsed() >= STREAM_SAVE_INTERVAL
                 {
                     let message =
@@ -596,7 +596,7 @@ async fn stream_llm_iteration(
                         .await);
                     }
                     persisted = true;
-                    persisted_chars = content.chars().count();
+                    persisted_bytes = content.len();
                     last_save = Instant::now();
                 }
             }

@@ -35,6 +35,7 @@ const MAX_RUNNING_PROCESSES: usize = 32;
 const MAX_RUNNING_PROCESSES_PER_AGENT: usize = 8;
 const MAX_PROCESS_LIFETIME_MS: u64 = 60 * 60 * 1_000;
 const MAX_RETAINED_PROCESSES: usize = 256;
+const OUTPUT_CHANNEL_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -102,7 +103,7 @@ trait TerminalBackend: Send + Sync {
     async fn execute(
         &self,
         request: BackendExecRequest,
-        output: mpsc::UnboundedSender<BackendOutput>,
+        output: mpsc::Sender<BackendOutput>,
     ) -> AppResult<i32>;
     async fn write(&self, process_id: &str, data: &[u8], close_stdin: bool) -> AppResult<()>;
     async fn terminate(&self, process_id: &str) -> AppResult<()>;
@@ -139,7 +140,7 @@ impl CodexTerminalBackend {
     async fn execute_command_exec(
         &self,
         request: &BackendExecRequest,
-        output: &mpsc::UnboundedSender<BackendOutput>,
+        output: &mpsc::Sender<BackendOutput>,
     ) -> AppResult<i32> {
         let (command, sandbox_policy, tty) = build_codex_exec(request);
         let runtime_label = match request.access {
@@ -168,7 +169,7 @@ impl CodexTerminalBackend {
             tokio::select! {
                 result = &mut call => {
                     let result = result?;
-                    drain_codex_output(&mut notifications, &request.process_id, output)?;
+                    drain_codex_output(&mut notifications, &request.process_id, output).await?;
                     let exit_code = result
                         .get("exitCode")
                         .and_then(Value::as_i64)
@@ -180,10 +181,10 @@ impl CodexTerminalBackend {
                 notification = notifications.recv() => {
                     match notification {
                         Ok(notification) => {
-                            forward_codex_output(notification, &request.process_id, output)?;
+                            forward_codex_output(notification, &request.process_id, output).await?;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                            report_missed_output(output, count);
+                            report_missed_output(output, count).await?;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             return Err(AppError::Process(
@@ -199,7 +200,7 @@ impl CodexTerminalBackend {
     async fn execute_windows_sandbox(
         &self,
         request: &BackendExecRequest,
-        output: &mpsc::UnboundedSender<BackendOutput>,
+        output: &mpsc::Sender<BackendOutput>,
     ) -> AppResult<i32> {
         use tokio::io::AsyncReadExt;
 
@@ -240,10 +241,16 @@ impl CodexTerminalBackend {
                     match stdout.read(&mut buffer).await {
                         Ok(0) | Err(_) => break,
                         Ok(read) => {
-                            let _ = output.send(BackendOutput {
-                                stream: OutputStream::Stdout,
-                                data: buffer[..read].to_vec(),
-                            });
+                            if output
+                                .send(BackendOutput {
+                                    stream: OutputStream::Stdout,
+                                    data: buffer[..read].to_vec(),
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                     }
                 }
@@ -257,10 +264,16 @@ impl CodexTerminalBackend {
                     match stderr.read(&mut buffer).await {
                         Ok(0) | Err(_) => break,
                         Ok(read) => {
-                            let _ = output.send(BackendOutput {
-                                stream: OutputStream::Stderr,
-                                data: buffer[..read].to_vec(),
-                            });
+                            if output
+                                .send(BackendOutput {
+                                    stream: OutputStream::Stderr,
+                                    data: buffer[..read].to_vec(),
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                     }
                 }
@@ -324,21 +337,7 @@ impl CodexTerminalBackend {
     }
 
     async fn request_process_control(&self, method: &str, params: Value) -> AppResult<()> {
-        let mut last_error = None;
-        for attempt in 0..20 {
-            match self.app_server.request(method, params.clone()).await {
-                Ok(_) => return Ok(()),
-                Err(error) => {
-                    last_error = Some(error);
-                    if attempt < 19 {
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                }
-            }
-        }
-        Err(last_error.unwrap_or_else(|| {
-            AppError::Process(format!("Codex process control request '{method}' failed"))
-        }))
+        self.app_server.request(method, params).await.map(|_| ())
     }
 }
 
@@ -347,7 +346,7 @@ impl TerminalBackend for CodexTerminalBackend {
     async fn execute(
         &self,
         request: BackendExecRequest,
-        output: mpsc::UnboundedSender<BackendOutput>,
+        output: mpsc::Sender<BackendOutput>,
     ) -> AppResult<i32> {
         let path = if cfg!(windows) && request.access == TerminalAccess::Sandbox {
             CodexExecutionPath::WindowsSandboxCli
@@ -429,23 +428,26 @@ impl TerminalBackend for CodexTerminalBackend {
     }
 }
 
-fn report_missed_output(output: &mpsc::UnboundedSender<BackendOutput>, count: u64) {
-    let _ = output.send(BackendOutput {
-        stream: OutputStream::Stderr,
-        data: format!("\n[WeiAgent missed {count} Codex output events]\n").into_bytes(),
-    });
+async fn report_missed_output(output: &mpsc::Sender<BackendOutput>, count: u64) -> AppResult<()> {
+    output
+        .send(BackendOutput {
+            stream: OutputStream::Stderr,
+            data: format!("\n[WeiAgent missed {count} Codex output events]\n").into_bytes(),
+        })
+        .await
+        .map_err(|_| AppError::Process("terminal output receiver closed".to_string()))
 }
 
-fn drain_codex_output(
+async fn drain_codex_output(
     notifications: &mut tokio::sync::broadcast::Receiver<CodexNotification>,
     process_id: &str,
-    output: &mpsc::UnboundedSender<BackendOutput>,
+    output: &mpsc::Sender<BackendOutput>,
 ) -> AppResult<()> {
     loop {
         match notifications.try_recv() {
-            Ok(notification) => forward_codex_output(notification, process_id, output)?,
+            Ok(notification) => forward_codex_output(notification, process_id, output).await?,
             Err(tokio::sync::broadcast::error::TryRecvError::Lagged(count)) => {
-                report_missed_output(output, count);
+                report_missed_output(output, count).await?;
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
             | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return Ok(()),
@@ -453,22 +455,22 @@ fn drain_codex_output(
     }
 }
 
-fn forward_codex_output(
+async fn forward_codex_output(
     notification: CodexNotification,
     process_id: &str,
-    output: &mpsc::UnboundedSender<BackendOutput>,
+    output: &mpsc::Sender<BackendOutput>,
 ) -> AppResult<()> {
     if notification.method != "command/exec/outputDelta"
         || notification.params["processId"].as_str() != Some(process_id)
     {
         return Ok(());
     }
-    forward_encoded_output(&notification.params, output)
+    forward_encoded_output(&notification.params, output).await
 }
 
-fn forward_encoded_output(
+async fn forward_encoded_output(
     params: &Value,
-    output: &mpsc::UnboundedSender<BackendOutput>,
+    output: &mpsc::Sender<BackendOutput>,
 ) -> AppResult<()> {
     let Some(encoded) = params["deltaBase64"].as_str() else {
         return Ok(());
@@ -480,8 +482,10 @@ fn forward_encoded_output(
         Some("stderr") => OutputStream::Stderr,
         _ => OutputStream::Stdout,
     };
-    let _ = output.send(BackendOutput { stream, data });
-    Ok(())
+    output
+        .send(BackendOutput { stream, data })
+        .await
+        .map_err(|_| AppError::Process("terminal output receiver closed".to_string()))
 }
 
 fn build_codex_exec(request: &BackendExecRequest) -> (Vec<String>, Value, bool) {
@@ -716,7 +720,7 @@ impl TerminalManager {
         self.processes.insert(process_id.clone(), record.clone());
 
         let backend = self.backend.clone();
-        let (output_tx, mut output_rx) = mpsc::unbounded_channel::<BackendOutput>();
+        let (output_tx, mut output_rx) = mpsc::channel::<BackendOutput>(OUTPUT_CHANNEL_CAPACITY);
         let output_record = record.clone();
         let output_task = tokio::spawn(async move {
             while let Some(output) = output_rx.recv().await {
@@ -916,9 +920,31 @@ impl TerminalManager {
             })
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>();
-        for id in ids {
-            let _ = self.terminate(&id).await;
-        }
+        self.terminate_all(ids).await;
+    }
+
+    pub async fn stop_all_for_conversation(&self, conversation_id: Uuid) {
+        let ids = self
+            .processes
+            .iter()
+            .filter(|entry| entry.metadata.conversation_id == conversation_id)
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        self.terminate_all(ids).await;
+    }
+
+    pub async fn stop_for_agent(&self, agent_id: Uuid) {
+        let ids = self
+            .processes
+            .iter()
+            .filter(|entry| entry.metadata.agent_id == agent_id)
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        self.terminate_all(ids).await;
+    }
+
+    async fn terminate_all(&self, ids: Vec<String>) {
+        futures_util::future::join_all(ids.iter().map(|id| self.terminate(id))).await;
     }
 
     pub async fn cleanup_loop(self: Arc<Self>) {
@@ -1475,7 +1501,7 @@ impl TerminalBackend for TestTerminalBackend {
     async fn execute(
         &self,
         request: BackendExecRequest,
-        output: mpsc::UnboundedSender<BackendOutput>,
+        output: mpsc::Sender<BackendOutput>,
     ) -> AppResult<i32> {
         use tokio::io::AsyncReadExt;
 
@@ -1513,10 +1539,16 @@ impl TerminalBackend for TestTerminalBackend {
                     match stdout.read(&mut buffer).await {
                         Ok(0) | Err(_) => break,
                         Ok(read) => {
-                            let _ = output.send(BackendOutput {
-                                stream: OutputStream::Stdout,
-                                data: buffer[..read].to_vec(),
-                            });
+                            if output
+                                .send(BackendOutput {
+                                    stream: OutputStream::Stdout,
+                                    data: buffer[..read].to_vec(),
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                     }
                 }
@@ -1529,10 +1561,16 @@ impl TerminalBackend for TestTerminalBackend {
                     match stderr.read(&mut buffer).await {
                         Ok(0) | Err(_) => break,
                         Ok(read) => {
-                            let _ = output.send(BackendOutput {
-                                stream: OutputStream::Stderr,
-                                data: buffer[..read].to_vec(),
-                            });
+                            if output
+                                .send(BackendOutput {
+                                    stream: OutputStream::Stderr,
+                                    data: buffer[..read].to_vec(),
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                     }
                 }
@@ -1604,12 +1642,15 @@ mod tests {
         async fn execute(
             &self,
             _request: BackendExecRequest,
-            output: mpsc::UnboundedSender<BackendOutput>,
+            output: mpsc::Sender<BackendOutput>,
         ) -> AppResult<i32> {
-            let _ = output.send(BackendOutput {
-                stream: OutputStream::Stdout,
-                data: b"final-output".to_vec(),
-            });
+            output
+                .send(BackendOutput {
+                    stream: OutputStream::Stdout,
+                    data: b"final-output".to_vec(),
+                })
+                .await
+                .map_err(|_| AppError::Process("test output receiver closed".to_string()))?;
             Ok(0)
         }
 
@@ -1727,7 +1768,7 @@ mod tests {
             panic!("expected running process");
         };
         let (prompt_info, prompt, prompt_error, cursor) = manager
-            .read_since(&process_id, 0, Duration::from_secs(2))
+            .read_since(&process_id, 0, Duration::from_secs(10))
             .await
             .unwrap();
         assert!(

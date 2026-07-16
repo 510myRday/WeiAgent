@@ -57,11 +57,13 @@ impl JsonStore {
             lock: Mutex::new(()),
         };
         store.ensure_builtin_agents().await?;
+        store.repair_conversation_metadata().await?;
         Ok(store)
     }
 
     pub async fn read_settings(&self) -> AppResult<AppSettings> {
-        load_or_init_settings(&self.settings_file).await
+        let _guard = self.lock.lock().await;
+        crate::config::read_settings(&self.settings_file).await
     }
 
     pub async fn write_settings(&self, settings: AppSettings) -> AppResult<AppSettings> {

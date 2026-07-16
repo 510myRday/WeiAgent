@@ -1,4 +1,4 @@
-import { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState, isValidElement } from 'react';
+import { memo, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState, isValidElement } from 'react';
 import type { FormEvent, KeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react';
 import {
   ArrowLeft,
@@ -237,17 +237,28 @@ export function ChatPanel({
     void refreshRunningConversations(activeAgentId);
     const timer = window.setInterval(() => {
       void refreshRunningConversations(activeAgentId);
-    }, 1000);
+    }, 3000);
     return () => window.clearInterval(timer);
   }, [activeAgentId, refreshRunningConversations]);
 
   useEffect(() => {
     if (!activeConversationId) return;
+    let cancelled = false;
     void loadMessages(activeConversationId)
-      .then(() => resumeActiveRun(activeConversationId, activeAgentId))
+      .then((loaded) => {
+        if (!cancelled && loaded) {
+          return resumeActiveRun(activeConversationId, activeAgentId);
+        }
+        return undefined;
+      })
       .catch((cause) => {
-        toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+        if (!cancelled) {
+          toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+        }
       });
+    return () => {
+      cancelled = true;
+    };
   }, [activeAgentId, activeConversationId, loadMessages, resumeActiveRun]);
 
   const isMessagesNearBottom = useCallback(() => {
@@ -391,11 +402,11 @@ export function ChatPanel({
     composerFormRef.current?.requestSubmit();
   }
 
-  function handleRestartMessage(messageId: string, content: string) {
+  const handleRestartMessage = useCallback((messageId: string, content: string) => {
     if (!activeAgent || isSending || !messageId || !content.trim()) return;
     void send(content.trim(), activeAgent.id, isStreamMode, messageId);
     scrollToBottom(true);
-  }
+  }, [activeAgent, isSending, isStreamMode, scrollToBottom, send]);
 
   async function handleModelChange(value: string) {
     if (!activeAgent || isSavingModel || isSending) return;
@@ -935,7 +946,7 @@ function TypingIndicator({ label }: { label: string }) {
   );
 }
 
-function MessageRow({
+const MessageRow = memo(function MessageRow({
   anchorId,
   message,
   showTimeSeparator,
@@ -1099,7 +1110,7 @@ function MessageRow({
       </article>
     </>
   );
-}
+});
 
 function MessageAvatar({ agent, settings, isUser }: { agent?: Agent; settings: AppSettings; isUser: boolean }) {
   if (isUser) {
@@ -1214,7 +1225,7 @@ function extractText(node: ReactNode): string {
   return '';
 }
 
-function MarkdownContent({ content }: { content: string }) {
+const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
@@ -1224,7 +1235,7 @@ function MarkdownContent({ content }: { content: string }) {
       {normalizeMathMarkdown(content)}
     </ReactMarkdown>
   );
-}
+});
 
 function normalizeMathMarkdown(content: string): string {
   return content.replace(/\\\[([\s\S]*?)\\\]/g, (_match, formula: string) => {

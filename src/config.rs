@@ -78,9 +78,9 @@ fn env_flag_enabled(name: &str) -> bool {
 
 fn portable_data_dir() -> AppResult<PathBuf> {
     let exe_path = std::env::current_exe()?;
-    let exe_dir = exe_path.parent().ok_or_else(|| {
-        AppError::BadRequest("failed to locate executable directory".to_string())
-    })?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| AppError::BadRequest("failed to locate executable directory".to_string()))?;
     Ok(exe_dir.join("data"))
 }
 
@@ -111,12 +111,17 @@ pub async fn load_or_init_settings(path: &std::path::Path) -> AppResult<AppSetti
     if fs::metadata(path).await.is_err() {
         write_settings(path, &AppSettings::default()).await?;
     }
+    let settings = read_settings(path).await?;
+    write_settings(path, &settings).await?;
+    Ok(settings)
+}
+
+pub async fn read_settings(path: &std::path::Path) -> AppResult<AppSettings> {
     let content = fs::read_to_string(path).await?;
     let mut settings: AppSettings = serde_json::from_str(&content)?;
     validate_settings(&settings)?;
     settings.log_level = settings.log_level.trim().to_ascii_lowercase();
     settings.language = settings.language.trim().to_string();
-    write_settings(path, &settings).await?;
     Ok(settings)
 }
 
@@ -167,11 +172,22 @@ pub fn validate_settings(settings: &AppSettings) -> AppResult<()> {
         ))?,
     }
     match settings.language.trim() {
-        "zh" | "en" => Ok(()),
+        "zh" | "en" => {}
         _ => Err(AppError::BadRequest(
             "language must be zh or en".to_string(),
-        )),
+        ))?,
     }
+    if !(1..=600).contains(&settings.request_timeout_seconds) {
+        return Err(AppError::BadRequest(
+            "request_timeout_seconds must be between 1 and 600".to_string(),
+        ));
+    }
+    if !(1..=10).contains(&settings.request_retry_attempts) {
+        return Err(AppError::BadRequest(
+            "request_retry_attempts must be between 1 and 10".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub fn log_level_filter(value: &str) -> tracing_subscriber::filter::LevelFilter {
@@ -212,6 +228,32 @@ mod tests {
             };
             assert!(validate_settings(&settings).is_ok());
         }
+    }
+
+    #[test]
+    fn settings_reject_unbounded_request_policy() {
+        let mut settings = AppSettings {
+            request_timeout_seconds: 601,
+            ..AppSettings::default()
+        };
+        assert!(validate_settings(&settings).is_err());
+        settings.request_timeout_seconds = 60;
+        settings.request_retry_attempts = 11;
+        assert!(validate_settings(&settings).is_err());
+    }
+
+    #[tokio::test]
+    async fn reading_settings_does_not_rewrite_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let original = format!(
+            "{}\n\n",
+            serde_json::to_string_pretty(&AppSettings::default()).unwrap()
+        );
+        fs::write(&path, &original).await.unwrap();
+        let settings = read_settings(&path).await.unwrap();
+        assert_eq!(settings, AppSettings::default());
+        assert_eq!(fs::read_to_string(path).await.unwrap(), original);
     }
 
     #[test]
@@ -265,6 +307,9 @@ mod tests {
         }
         let home = user_home_dir().unwrap();
         assert_eq!(resolved, home.join("WeiAgent"));
-        assert_eq!(resolved.file_name().and_then(|name| name.to_str()), Some("WeiAgent"));
+        assert_eq!(
+            resolved.file_name().and_then(|name| name.to_str()),
+            Some("WeiAgent")
+        );
     }
 }

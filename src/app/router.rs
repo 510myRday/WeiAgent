@@ -16,7 +16,6 @@ use crate::app::{
 pub fn build_router(state: AppState) -> Router {
     api_router()
         .fallback(|uri: axum::http::Uri| async move { serve_frontend(uri).await })
-        .layer(security_headers())
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(ConcurrencyLimitLayer::new(64))
         .with_state(state)
@@ -24,13 +23,12 @@ pub fn build_router(state: AppState) -> Router {
 
 pub fn build_router_dev(state: AppState) -> Router {
     api_router()
-        .layer(security_headers())
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(ConcurrencyLimitLayer::new(64))
         .with_state(state)
 }
 
-fn security_headers() -> SetResponseHeaderLayer<HeaderValue> {
+fn no_store() -> SetResponseHeaderLayer<HeaderValue> {
     SetResponseHeaderLayer::overriding(
         HeaderName::from_static("cache-control"),
         HeaderValue::from_static("no-store"),
@@ -135,4 +133,5 @@ fn api_router() -> Router<AppState> {
             "/api/llm-logs/{log_id}",
             get(llm_logs::get_llm_log).delete(llm_logs::delete_llm_log),
         )
+        .layer(no_store())
 }
