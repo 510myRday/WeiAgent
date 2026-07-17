@@ -92,3 +92,15 @@ pub struct UpdateAgentWorkspaceRequest {
     pub memory: String,
     pub instructions: String,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateAgentProfileRequest {
+    pub agent: UpdateAgentRequest,
+    pub workspace: UpdateAgentWorkspaceRequest,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentProfileResponse {
+    pub agent: AgentResponse,
+    pub workspace: AgentWorkspace,
+}

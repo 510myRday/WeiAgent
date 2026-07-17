@@ -29,6 +29,7 @@ body {
   overflow: hidden;
 }
 
+/* stylelint-disable-next-line selector-max-specificity -- application mount point is an ID in index.html */
 #root {
   min-height: 100vh;
   min-height: 100dvh;
@@ -81,7 +82,7 @@ select {
 input:hover,
 textarea:hover,
 select:hover {
-  border-color: #c6d1cb;
+  border-color: var(--border-hover);
 }
 
 input:focus,
@@ -89,12 +90,12 @@ textarea:focus,
 select:focus {
   border-color: var(--border-focus);
   outline: none;
-  box-shadow: 0 0 0 3px rgba(7, 193, 96, 0.1);
+  box-shadow: 0 0 0 3px var(--focus-ring-control);
 }
 
 input::placeholder,
 textarea::placeholder {
-  color: #98a39d;
+  color: var(--color-placeholder);
 }
 
 textarea {
@@ -128,7 +129,7 @@ pre {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #c9d2cd transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -139,12 +140,12 @@ pre {
 *::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
   border-radius: var(--radius-round);
-  background: #c9d2cd;
+  background: var(--scrollbar-thumb);
   background-clip: padding-box;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background-color: #aebbb4;
+  background-color: var(--scrollbar-thumb-hover);
 }
 
 *::-webkit-scrollbar-track {

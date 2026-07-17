@@ -1,0 +1,43 @@
+.llm-logs-modal {
+  border-radius: var(--radius-lg);
+}
+
+.llm-logs-list {
+  border-right-color: var(--border-subtle);
+  background: var(--surface-subtle);
+}
+
+.llm-log-item-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+
+.llm-log-item-row:hover,
+.llm-log-item-row:focus-within,
+.llm-log-item-row.is-active {
+  border-color: var(--color-primary-border);
+  background: var(--surface-active);
+}
+
+.llm-log-item-row .llm-log-item {
+  border: 0;
+  background: transparent;
+}
+
+.llm-log-item-row .list-item-trailing {
+  padding-right: 7px;
+}
+
+.llm-logs-content {
+  border-color: var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-code);
+}
+
+.llm-logs-select-hint {
+  align-self: center;
+  margin: auto;
+}

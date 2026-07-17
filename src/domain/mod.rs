@@ -7,14 +7,16 @@ pub mod settings;
 pub mod tools;
 
 pub use agents::{
-    Agent, AgentResponse, AgentWorkspace, CreateAgentRequest, UpdateAgentRequest,
-    UpdateAgentWorkspaceRequest,
+    Agent, AgentProfileResponse, AgentResponse, AgentWorkspace, CreateAgentRequest,
+    UpdateAgentProfileRequest, UpdateAgentRequest, UpdateAgentWorkspaceRequest,
 };
 pub use chat::{
     AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, SendMessageRequest,
     SendMessageResponse,
 };
-pub use conversations::{Conversation, CreateConversationRequest, UpdateConversationRequest};
+pub use conversations::{
+    Conversation, ConversationMessagePage, CreateConversationRequest, UpdateConversationRequest,
+};
 pub use providers::{
     CreateModelProviderRequest, FetchProviderModelsRequest, ModelProvider, ModelProviderResponse,
     ProviderType, UpdateModelProviderRequest,

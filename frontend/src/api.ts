@@ -1,10 +1,11 @@
 import type {
   Agent,
+  AgentProfile,
   AgentRun,
   AgentWorkspace,
   AppSettings,
-  ChatMessage,
   Conversation,
+  ConversationMessagePage,
   CreateAgentPayload,
   CreateConversationPayload,
   FetchProviderModelsPayload,
@@ -14,37 +15,55 @@ import type {
   ModelProviderPayload,
   StreamEvent,
   UpdateAgentWorkspacePayload,
+  UpdateAgentProfilePayload,
   UpdateAgentPayload,
   UpdateConversationPayload,
 } from './types';
+import {
+  agentRunListRuntimeSchema,
+  agentRunRuntimeSchema,
+  conversationMessagePageRuntimeSchema,
+  nullableAgentRunRuntimeSchema,
+  parseJsonStreamEvent,
+} from './apiSchemas';
+import { createAbortSignal } from './utils/abort';
 
 const DEFAULT_TIMEOUT_MS = 30000;
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const timeoutSignal = AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
-  const combinedSignal = options?.signal
-    ? AbortSignal.any([options.signal, timeoutSignal])
-    : timeoutSignal;
+type RuntimeSchema<T> = {
+  parse: (value: unknown) => T;
+};
 
-  const response = await fetch(path, {
-    ...options,
-    signal: combinedSignal,
-    headers: {
-      'content-type': 'application/json',
-      ...options?.headers,
-    },
-  });
+async function request<T>(
+  path: string,
+  options?: RequestInit,
+  schema?: RuntimeSchema<T>,
+): Promise<T> {
+  const abortHandle = createAbortSignal(DEFAULT_TIMEOUT_MS, options?.signal ?? undefined);
+  try {
+    const response = await fetch(path, {
+      ...options,
+      signal: abortHandle.signal,
+      headers: {
+        'content-type': 'application/json',
+        ...options?.headers,
+      },
+    });
 
-  if (!response.ok) {
-    throw new Error(await readError(response));
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    const text = await response.text();
+    if (!text.trim()) {
+      return undefined as T;
+    }
+
+    const parsed: unknown = JSON.parse(text);
+    return schema ? schema.parse(parsed) : parsed as T;
+  } finally {
+    abortHandle.dispose();
   }
-
-  const text = await response.text();
-  if (!text.trim()) {
-    return undefined as T;
-  }
-
-  return JSON.parse(text) as T;
 }
 
 async function readError(response: Response): Promise<string> {
@@ -155,6 +174,16 @@ export function createConversation(
 ): Promise<Conversation> {
   return request<Conversation>(`/api/agents/${agentId}/conversations`, {
     method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateAgentProfile(
+  agentId: string,
+  payload: UpdateAgentProfilePayload,
+): Promise<AgentProfile> {
+  return request<AgentProfile>(`/api/agents/${agentId}/profile`, {
+    method: 'PUT',
     body: JSON.stringify(payload),
   });
 }
@@ -325,29 +354,39 @@ export function refreshCodexRuntime(): Promise<CodexRuntimeStatus> {
 }
 
 export async function installCodexRuntime(): Promise<CodexRuntimeStatus> {
-  const response = await fetch('/api/tools/codex-runtime', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    signal: AbortSignal.timeout(15 * 60 * 1000),
-  });
-  if (!response.ok) {
-    throw new Error(await readError(response));
+  const abortHandle = createAbortSignal(15 * 60 * 1000);
+  try {
+    const response = await fetch('/api/tools/codex-runtime', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: abortHandle.signal,
+    });
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+    return response.json() as Promise<CodexRuntimeStatus>;
+  } finally {
+    abortHandle.dispose();
   }
-  return response.json() as Promise<CodexRuntimeStatus>;
 }
 
 export async function installRuntimeComponent(
   component: RuntimeComponentKind,
 ): Promise<CodexRuntimeStatus> {
-  const response = await fetch(`/api/tools/runtime/${component}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    signal: AbortSignal.timeout(15 * 60 * 1000),
-  });
-  if (!response.ok) {
-    throw new Error(await readError(response));
+  const abortHandle = createAbortSignal(15 * 60 * 1000);
+  try {
+    const response = await fetch(`/api/tools/runtime/${component}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: abortHandle.signal,
+    });
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+    return response.json() as Promise<CodexRuntimeStatus>;
+  } finally {
+    abortHandle.dispose();
   }
-  return response.json() as Promise<CodexRuntimeStatus>;
 }
 
 export function refreshRuntimeComponent(
@@ -387,8 +426,18 @@ export function stopToolProcess(processId: string, agentId: string): Promise<Too
     method: 'DELETE',
   });
 }
-export function readConversationMessages(conversationId: string): Promise<ChatMessage[]> {
-  return request<ChatMessage[]>(`/api/conversations/${conversationId}/messages`);
+export function readConversationMessages(
+  conversationId: string,
+  before?: string,
+  limit = 80,
+): Promise<ConversationMessagePage> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (before) query.set('before', before);
+  return request(
+    `/api/conversations/${conversationId}/messages/page?${query}`,
+    undefined,
+    conversationMessagePageRuntimeSchema,
+  );
 }
 
 export function createMessageRun(
@@ -398,7 +447,7 @@ export function createMessageRun(
   restartFromMessageId?: string,
   signal?: AbortSignal,
 ): Promise<AgentRun> {
-  return request<AgentRun>(`/api/conversations/${conversationId}/runs`, {
+  return request(`/api/conversations/${conversationId}/runs`, {
     method: 'POST',
     body: JSON.stringify({
       content,
@@ -406,19 +455,23 @@ export function createMessageRun(
       ...(restartFromMessageId ? { restart_from_message_id: restartFromMessageId } : {}),
     }),
     signal,
-  });
+  }, agentRunRuntimeSchema);
 }
 
 export function readActiveConversationRun(conversationId: string): Promise<AgentRun | null> {
-  return request<AgentRun | null>(`/api/conversations/${conversationId}/run`);
+  return request(
+    `/api/conversations/${conversationId}/run`,
+    undefined,
+    nullableAgentRunRuntimeSchema,
+  );
 }
 
 export function listActiveAgentRuns(agentId: string): Promise<AgentRun[]> {
-  return request<AgentRun[]>(`/api/agents/${agentId}/runs`);
+  return request(`/api/agents/${agentId}/runs`, undefined, agentRunListRuntimeSchema);
 }
 
 export function cancelMessageRun(runId: string): Promise<AgentRun> {
-  return request<AgentRun>(`/api/runs/${runId}`, { method: 'DELETE' });
+  return request(`/api/runs/${runId}`, { method: 'DELETE' }, agentRunRuntimeSchema);
 }
 
 export async function streamRunEvents(
@@ -506,27 +559,24 @@ function dispatchStreamEvent(
     return;
   }
 
-  if (event === 'user' || event === 'assistant') {
-    try {
-      onEvent({ event, data: JSON.parse(data) as ChatMessage, sequence });
-    } catch {
-      state.sawError = true;
-      onEvent({ event: 'error', data: 'Failed to parse stream event', sequence });
-    }
-    return;
-  }
-
   if (event === 'delta') {
     onEvent({ event: 'delta', data, sequence });
     return;
   }
 
-  if (event === 'phase' || event === 'tool_call' || event === 'tool_result' || event === 'approval_required') {
+  if (
+    event === 'user'
+    || event === 'assistant'
+    || event === 'phase'
+    || event === 'tool_call'
+    || event === 'tool_result'
+    || event === 'approval_required'
+  ) {
     try {
-      onEvent({ event, data: JSON.parse(data), sequence } as StreamEvent);
+      onEvent(parseJsonStreamEvent(event, data, sequence));
     } catch {
       state.sawError = true;
-      onEvent({ event: 'error', data: 'Failed to parse stream event', sequence });
+      onEvent({ event: 'error', data: `Invalid ${event} stream event`, sequence });
     }
   }
 }

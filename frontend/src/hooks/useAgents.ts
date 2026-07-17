@@ -1,10 +1,17 @@
 import { useState, useCallback } from 'react';
-import type { Agent, CreateAgentPayload, UpdateAgentPayload } from '../types';
+import type {
+  Agent,
+  AgentProfile,
+  CreateAgentPayload,
+  UpdateAgentPayload,
+  UpdateAgentWorkspacePayload,
+} from '../types';
 import {
   listAgents,
   createAgent,
   updateAgent,
   deleteAgent,
+  updateAgentProfile,
 } from '../api';
 
 export function useAgents() {
@@ -41,6 +48,18 @@ export function useAgents() {
     return updated;
   }, []);
 
+  const editAgentProfile = useCallback(async (
+    id: string,
+    agent: UpdateAgentPayload,
+    workspace: UpdateAgentWorkspacePayload,
+  ): Promise<AgentProfile> => {
+    const updated = await updateAgentProfile(id, { agent, workspace });
+    setAgents((current) =>
+      current.map((item) => (item.id === updated.agent.id ? updated.agent : item)),
+    );
+    return updated;
+  }, []);
+
   const removeAgent = useCallback(async (id: string) => {
     await deleteAgent(id);
     setAgents((current) => current.filter((a) => a.id !== id));
@@ -56,7 +75,7 @@ export function useAgents() {
     refreshAgents,
     addAgent,
     editAgent,
+    editAgentProfile,
     removeAgent,
   };
 }
-

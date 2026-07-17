@@ -6,7 +6,6 @@
   "nav": {
     "chat": "聊天",
     "agents": "智能体",
-    "groups": "群聊",
     "tools": "工具",
     "settings": "设置"
   },
@@ -23,7 +22,8 @@
     "cancel": "取消",
     "confirm": "确认",
     "delete": "删除",
-    "close": "关闭"
+    "close": "关闭",
+    "retry": "重试"
   },
   "dialog": {
     "confirmTitle": "请确认"
@@ -62,7 +62,20 @@
     "selectAgent": "选择一个智能体进行配置",
     "noAgents": "暂无智能体，创建一个开始使用。",
     "avatarChange": "选择头像样式",
-    "avatarPreview": "智能体头像"
+    "avatarPreview": "智能体头像",
+    "sectionsLabel": "Agent 配置分类",
+    "section": {
+      "basic": "基本信息",
+      "model": "模型",
+      "prompt": "人格与指令",
+      "memory": "记忆",
+      "tools": "工具权限"
+    },
+    "modelHint": "选择这个智能体对话和执行任务时使用的模型服务。",
+    "promptHint": "分别定义智能体的角色风格和执行规则。",
+    "memoryHint": "记录需要长期保留并在后续对话中使用的背景信息。",
+    "noProviders": "还没有可用的模型服务。配置模型提供商后才能创建或运行 Agent。",
+    "configureProvider": "配置模型服务"
   },
   "chat": {
     "selectAgent": "选择智能体",
@@ -97,35 +110,26 @@
     "scrollToBottom": "滚动到最新消息",
     "timeline": "时间定位"
   },
-  "history": {
-    "title": "对话历史",
-    "empty": "暂无对话记录。",
-    "messages": "{count} 条消息",
-    "view": "查看",
-    "back": "返回历史列表"
-  },
   "conversation": {
     "select": "选择会话",
     "create": "新建会话",
     "newTitle": "新会话",
     "empty": "暂无会话。",
     "search": "搜索会话",
+    "loading": "正在加载对话...",
+    "loadEarlier": "加载更早消息",
+    "loadingEarlier": "正在加载...",
+    "loadFailed": "对话加载失败",
+    "noSearchResults": "没有匹配的对话",
     "runStatus": "生成中",
     "pin": "置顶会话",
     "unpin": "取消置顶",
     "delete": "删除会话",
     "deleteConfirm": "确定删除这个会话吗？"
   },
-  "groups": {
-    "title": "群聊",
-    "description": "预留给多 Agent 协作",
-    "entryTitle": "Agent 群聊",
-    "entryHint": "后续可把多个 Agent 放进同一个上下文",
-    "emptyTitle": "群聊功能预留",
-    "emptyHint": "本阶段不新增后端模型，先保留入口和产品位置。"
-  },
   "tools": {
     "title": "工具管理",
+    "areaTitle": "工具与执行环境",
     "description": "配置内置工具的全局默认值与运行状态。",
     "builtinBadge": "内置",
     "agentToolsTitle": "工具配置",
@@ -230,6 +234,7 @@
   },
   "settings": {
     "title": "后端设置",
+    "areaTitle": "应用与服务设置",
     "description": "服务监听、端口和日志等运行参数。",
     "host": "监听地址",
     "port": "端口",
@@ -296,14 +301,27 @@
     "invalidJson": "额外请求体不是有效的 JSON。",
     "validation": "名称、提供商和模型不能为空。",
     "providerValidation": "提供商名称、Base URL、API Key 和模型列表不能为空。",
-    "avatarDuplicate": "不能和其他 Agent 使用完全相同的头像图标和颜色。"
+    "avatarDuplicate": "不能和其他 Agent 使用完全相同的头像图标和颜色。",
+    "appCrashedTitle": "应用遇到异常",
+    "appCrashedMessage": "界面渲染已中断，请重新加载应用。",
+    "featureCrashedTitle": "此区域暂时不可用",
+    "featureCrashedMessage": "该功能遇到异常，其他区域仍可继续使用。",
+    "reloadApp": "重新加载",
+    "initialLoadFailed": "应用数据加载失败。",
+    "retryConnection": "请检查服务是否正在运行，然后重试。",
+    "agentActionFailed": "Agent 配置操作失败。",
+    "conversationActionFailed": "会话操作失败。",
+    "settingsSaveFailed": "应用设置保存失败。",
+    "providerSaveFailed": "模型服务保存失败。",
+    "providerDeleteFailed": "模型服务删除失败。",
+    "checkProviderFields": "请检查服务地址、API Key 和模型列表后重试。"
   },
   "deleteConfirm": {
     "title": "删除 Agent",
     "message": "确定要删除「{name}」吗？此操作不可撤销。"
   },
   "model": {
-    "loadFailed": "模型列表加载失败，你可以手动输入模型 ID。"
+    "loadFailed": "无法获取模型列表。请检查服务地址和 API Key，然后重试；也可以手动输入模型 ID。"
   },
   "mobile": {},
   "lang": {
@@ -344,6 +362,7 @@
     "conversationUnpinned": "已取消置顶。",
     "conversationDeleted": "会话已删除。",
     "toolSettingsSaved": "工具配置已保存。",
+    "copyFailed": "复制失败，请检查浏览器剪贴板权限后重试。",
     "runtimeInstalled": "Codex 运行时已安装。",
     "runtimeUpdated": "Codex 运行时已更新。",
     "logDeleted": "调试日志已删除。"

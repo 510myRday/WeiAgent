@@ -26,7 +26,7 @@
     padding: 6px max(8px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(8px, env(safe-area-inset-left, 0px));
     border-top: 1px solid var(--border-strong);
     border-right: 0;
-    background: rgba(250, 252, 251, 0.96);
+    background: var(--surface-nav);
     backdrop-filter: blur(16px);
   }
 
@@ -37,7 +37,7 @@
 
   .sidebar-nav {
     display: grid;
-    grid-template-columns: repeat(5, minmax(52px, 1fr));
+    grid-template-columns: repeat(4, minmax(52px, 1fr));
     gap: 2px;
     padding: 0;
   }
@@ -77,8 +77,8 @@
   }
 
   .lang-switch {
-    width: 44px !important;
-    min-width: 44px !important;
+    width: 44px;
+    min-width: 44px;
   }
 
   .lang-switch > svg {
@@ -179,6 +179,11 @@
     padding: 16px 14px 28px;
   }
 
+  .app-load-error {
+    top: 8px;
+    width: calc(100% - 16px);
+  }
+
   .form-grid.two-column {
     grid-template-columns: 1fr;
   }
@@ -258,6 +263,17 @@
   .workspace-tabs {
     overflow-x: auto;
     overscroll-behavior-inline: contain;
+  }
+
+  .agent-config-tabs {
+    display: flex;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
+  .agent-config-tab {
+    flex: 0 0 auto;
+    min-width: 118px;
   }
 
   .workspace-tab {
@@ -354,7 +370,7 @@
   }
 
   .sidebar-nav {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .message-row {
@@ -456,6 +472,11 @@
   .llm-log-toggle-row .button {
     width: 100%;
   }
+
+  .terminal-inline-error {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 @media (min-width: 921px) {
@@ -466,6 +487,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* stylelint-disable declaration-no-important -- user motion preference overrides component animation rules */
   *,
   *::before,
   *::after {
@@ -474,4 +496,5 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+  /* stylelint-enable declaration-no-important */
 }

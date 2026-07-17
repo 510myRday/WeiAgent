@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, BadgeCheck, Braces, CircleAlert, CircleCheck, Clock, Code2, Download, FolderLock, Gauge, Hand, Pencil, Plus, RefreshCw, Shield, ShieldAlert, ShieldCheck, Square, Terminal, Trash2 } from 'lucide-react';
+import { ArrowLeft, BadgeCheck, Braces, Clock, Code2, Download, FolderLock, Gauge, Pencil, Plus, RefreshCw, Shield, ShieldCheck, Square, Terminal, Trash2 } from 'lucide-react';
 
 import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, ToolProcessInfo } from '../../api';
 import {
@@ -15,13 +15,14 @@ import {
 } from '../../api';
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
+import { useBeforeUnloadGuard, usePageVisibility } from '../../hooks';
 import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../components/ui';
+import { PermissionModeControl, type PermissionMode } from './PermissionModeControl';
 
 interface TerminalToolSettingsProps {
   scope: 'defaults' | 'agent';
   agentId?: string;
   agents?: Agent[];
-  onAutoSaveStatusChange?: (status: TerminalAutoSaveStatus) => void;
 }
 
 type OverrideField = 'permission_mode' | 'default_timeout_ms' | 'allowed_cwd_roots';
@@ -45,13 +46,14 @@ type PendingSave =
 const AUTO_SAVE_DELAY_MS = 600;
 const AUTO_SAVE_RETRY_DELAY_MS = 1200;
 const AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
+const PROCESS_POLL_RETRY_DELAY_MS = 1500;
+const PROCESS_POLL_MAX_RETRY_DELAY_MS = 30000;
 const MAX_LLM_ITERATIONS = 999;
 
 export function TerminalToolSettings({
   scope,
   agentId,
   agents = [],
-  onAutoSaveStatusChange,
 }: TerminalToolSettingsProps) {
   const { t } = useI18n();
   const { confirm, toast } = useFeedback();
@@ -60,13 +62,20 @@ export function TerminalToolSettings({
   const [agentSettings, setAgentSettings] = useState<AgentToolsSettings | null>(null);
   const [runtime, setRuntime] = useState<CodexRuntimeStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [configLoadError, setConfigLoadError] = useState('');
+  const [runtimeLoadError, setRuntimeLoadError] = useState('');
+  const [isRetryingRuntime, setIsRetryingRuntime] = useState(false);
+  const [loadRequestKey, setLoadRequestKey] = useState(0);
   const [autoSaveStatus, setAutoSaveStatus] = useState<TerminalAutoSaveStatus>('idle');
   const [agentToolView, setAgentToolView] = useState<AgentToolView>('list');
   const [installingRuntimeComponent, setInstallingRuntimeComponent] = useState<RuntimeComponentKind | null>(null);
   const [refreshingRuntimeComponent, setRefreshingRuntimeComponent] = useState<RuntimeComponentKind | null>(null);
   const [processes, setProcesses] = useState<ToolProcessInfo[]>([]);
+  const [processLoadError, setProcessLoadError] = useState('');
+  const [processRequestKey, setProcessRequestKey] = useState(0);
   const [isStoppingProcess, setIsStoppingProcess] = useState('');
   const [rootInput, setRootInput] = useState('');
+  const isPageVisible = usePageVisibility();
   const activeContextRef = useRef(contextKey);
   const loadedContextRef = useRef('');
   const latestSerializedRef = useRef(new Map<string, string>());
@@ -81,9 +90,11 @@ export function TerminalToolSettings({
 
   activeContextRef.current = contextKey;
 
-  useEffect(() => {
-    onAutoSaveStatusChange?.(autoSaveStatus);
-  }, [autoSaveStatus, onAutoSaveStatusChange]);
+  useBeforeUnloadGuard(
+    autoSaveStatus === 'pending'
+    || autoSaveStatus === 'saving'
+    || autoSaveStatus === 'error',
+  );
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -96,6 +107,14 @@ export function TerminalToolSettings({
     let cancelled = false;
     loadedContextRef.current = '';
     setIsLoading(true);
+    setConfigLoadError('');
+    setRuntimeLoadError('');
+    setRuntime(null);
+    if (scope === 'defaults') {
+      setDefaults(null);
+    } else {
+      setAgentSettings(null);
+    }
     setAutoSaveStatus('idle');
     setAgentToolView('list');
     const configRequest = scope === 'defaults'
@@ -123,15 +142,29 @@ export function TerminalToolSettings({
           }
         })
         : Promise.reject(new Error(t('tools.terminal.agentRequired')));
-    const load = Promise.all([
+    const load = Promise.allSettled([
       configRequest,
       readCodexRuntime().then((next) => {
         if (!cancelled) setRuntime(next);
       }),
     ]);
     load
-      .catch((error) => {
-        if (!cancelled) toast.error(error instanceof Error ? error.message : t('tools.terminal.loadFailed'));
+      .then(([configResult, runtimeResult]) => {
+        if (cancelled) return;
+        if (configResult.status === 'rejected') {
+          const message = configResult.reason instanceof Error
+            ? configResult.reason.message
+            : t('tools.terminal.loadFailed');
+          setConfigLoadError(message);
+          toast.error(message);
+        }
+        if (runtimeResult.status === 'rejected') {
+          const message = runtimeResult.reason instanceof Error
+            ? runtimeResult.reason.message
+            : t('tools.terminal.runtimeRefreshFailed');
+          setRuntimeLoadError(message);
+          toast.error(message);
+        }
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
@@ -139,7 +172,7 @@ export function TerminalToolSettings({
     return () => {
       cancelled = true;
     };
-  }, [agentId, contextKey, scope, t, toast]);
+  }, [agentId, contextKey, loadRequestKey, scope, t, toast]);
 
   useEffect(() => () => {
     if (debounceContextRef.current === contextKey && debounceTimerRef.current !== undefined) {
@@ -153,18 +186,32 @@ export function TerminalToolSettings({
   useEffect(() => {
     if (scope !== 'defaults') {
       setProcesses([]);
+      setProcessLoadError('');
       return;
     }
+    if (!isPageVisible) return;
     let cancelled = false;
     let timer: number | undefined;
+    let failureCount = 0;
     const refresh = async () => {
       try {
         const next = await listToolProcesses();
         if (cancelled) return;
+        failureCount = 0;
         setProcesses(next);
+        setProcessLoadError('');
         timer = window.setTimeout(refresh, next.some((process) => process.status === 'running') ? 1500 : 4000);
       } catch (error) {
-        if (!cancelled) toast.error(error instanceof Error ? error.message : t('tools.terminal.processLoadFailed'));
+        if (cancelled) return;
+        failureCount += 1;
+        const message = error instanceof Error ? error.message : t('tools.terminal.processLoadFailed');
+        setProcessLoadError(message);
+        if (failureCount === 1) toast.error(message);
+        const retryDelay = Math.min(
+          PROCESS_POLL_MAX_RETRY_DELAY_MS,
+          PROCESS_POLL_RETRY_DELAY_MS * (2 ** Math.min(failureCount - 1, 4)),
+        );
+        timer = window.setTimeout(refresh, retryDelay);
       }
     };
     void refresh();
@@ -172,7 +219,7 @@ export function TerminalToolSettings({
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [scope, t, toast]);
+  }, [isPageVisible, processRequestKey, scope, t, toast]);
 
   const config = scope === 'defaults' ? defaults : agentSettings?.effective ?? null;
   const overrides = agentSettings?.overrides;
@@ -287,6 +334,33 @@ export function TerminalToolSettings({
     }
   }
 
+  function retryAutoSaveNow() {
+    if (debounceTimerRef.current !== undefined) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = undefined;
+      debounceContextRef.current = '';
+    }
+    if (retryTimerRef.current !== undefined) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = undefined;
+    }
+    void flushSaveQueue();
+  }
+
+  async function retryRuntimeLoad() {
+    setIsRetryingRuntime(true);
+    setRuntimeLoadError('');
+    try {
+      setRuntime(await readCodexRuntime());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('tools.terminal.runtimeRefreshFailed');
+      setRuntimeLoadError(message);
+      toast.error(message);
+    } finally {
+      setIsRetryingRuntime(false);
+    }
+  }
+
   async function handleStopProcess(process: ToolProcessInfo) {
     setIsStoppingProcess(process.process_id);
     try {
@@ -337,6 +411,14 @@ export function TerminalToolSettings({
     });
     if (!confirmed) return;
     updateTerminal({ permission_mode: 'full_access' });
+  }
+
+  function handlePermissionModeChange(mode: PermissionMode) {
+    if (mode === 'request_approval') {
+      updateTerminal({ permission_mode: mode });
+      return;
+    }
+    void selectFullAccess();
   }
 
   function updateGlobalConfig(next: AgentToolsConfig) {
@@ -426,8 +508,18 @@ export function TerminalToolSettings({
   if (isLoading || !config) {
     return (
       <div className="terminal-loading-state">
-        <div className="loading-spinner" />
-        <p>{isLoading ? t('tools.terminal.loading') : t('tools.terminal.noConfig')}</p>
+        {isLoading ? <div className="loading-spinner" /> : null}
+        {isLoading ? <p>{t('tools.terminal.loading')}</p> : null}
+        {!isLoading && configLoadError ? (
+          <div className="terminal-load-error" role="alert">
+            <strong>{t('tools.terminal.loadFailed')}</strong>
+            <span>{configLoadError}</span>
+            <Button variant="secondary" type="button" onClick={() => setLoadRequestKey((current) => current + 1)} icon={<RefreshCw size={15} />}>
+              {t('common.retry')}
+            </Button>
+          </div>
+        ) : null}
+        {!isLoading && !configLoadError ? <p>{t('tools.terminal.noConfig')}</p> : null}
       </div>
     );
   }
@@ -448,7 +540,7 @@ export function TerminalToolSettings({
             <h3>{t('tools.agentToolsTitle')}</h3>
             <p>{t('tools.agentToolsDesc')}</p>
           </div>
-          <AutoSaveIndicator status={autoSaveStatus} t={t} />
+          <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryAutoSaveNow} />
         </div>
         <div className="agent-tool-list">
           <div className="agent-tool-row">
@@ -472,6 +564,7 @@ export function TerminalToolSettings({
               <label className="toggle-switch" title={terminal.enabled ? t('tools.enabled') : t('tools.disabled')}>
                 <input
                   type="checkbox"
+                  aria-label={t('tools.terminal.enabled')}
                   checked={terminal.enabled}
                   disabled={terminalUnavailable}
                   onChange={(event) => updateTerminal({ enabled: event.target.checked })}
@@ -513,7 +606,7 @@ export function TerminalToolSettings({
             <p>{isAgentScope ? t('tools.terminal.agentConfigDesc') : t('tools.terminal.defaultsDesc')}</p>
             </div>
           </div>
-          <AutoSaveIndicator status={autoSaveStatus} t={t} />
+          <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryAutoSaveNow} />
         </div>
       ) : null}
 
@@ -522,22 +615,34 @@ export function TerminalToolSettings({
         <div className="card-header">
           <Terminal size={20} />
           <h3>{t('tools.terminal.runtimeTitle')}</h3>
+          <span className="runtime-card__save-status">
+            <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryAutoSaveNow} />
+          </span>
         </div>
         <div className="card-body runtime-card__body">
-          <div className="runtime-component-list">
-            {runtimeComponents.map((component) => (
-              <RuntimeComponentRow
-                key={component.kind}
-                component={component}
-                installing={installingRuntimeComponent === component.kind}
-                refreshing={refreshingRuntimeComponent === component.kind}
-                actionsDisabled={installingRuntimeComponent === component.kind || refreshingRuntimeComponent === component.kind || runtime?.supported === false}
-                onInstall={() => handleInstallRuntime(component)}
-                onRefresh={() => handleRefreshRuntime(component.kind)}
-                t={t}
-              />
-            ))}
-          </div>
+          {runtimeLoadError ? (
+            <div className="terminal-inline-error" role="alert">
+              <span>{runtimeLoadError}</span>
+              <Button variant="secondary" type="button" disabled={isRetryingRuntime} onClick={() => void retryRuntimeLoad()} icon={<RefreshCw size={15} className={isRetryingRuntime ? 'is-spinning' : ''} />}>
+                {t('common.retry')}
+              </Button>
+            </div>
+          ) : (
+            <div className="runtime-component-list">
+              {runtimeComponents.map((component) => (
+                <RuntimeComponentRow
+                  key={component.kind}
+                  component={component}
+                  installing={installingRuntimeComponent === component.kind}
+                  refreshing={refreshingRuntimeComponent === component.kind}
+                  actionsDisabled={installingRuntimeComponent === component.kind || refreshingRuntimeComponent === component.kind || runtime?.supported === false}
+                  onInstall={() => handleInstallRuntime(component)}
+                  onRefresh={() => handleRefreshRuntime(component.kind)}
+                  t={t}
+                />
+              ))}
+            </div>
+          )}
           {runtime?.error ? <code className="runtime-card__error">{runtime.error}</code> : null}
         </div>
       </section> : null}
@@ -549,7 +654,7 @@ export function TerminalToolSettings({
             <div className="setting-row">
               <div className="setting-info"><label>{t('tools.terminal.enabled')}</label><p className="setting-desc">{t('tools.terminal.enabledDesc')}</p></div>
               <label className="toggle-switch">
-                <input type="checkbox" checked={terminal.enabled} disabled={terminalUnavailable} onChange={(event) => updateTerminal({ enabled: event.target.checked })} />
+                <input type="checkbox" aria-label={t('tools.terminal.enabled')} checked={terminal.enabled} disabled={terminalUnavailable} onChange={(event) => updateTerminal({ enabled: event.target.checked })} />
                 <span className="toggle-slider" />
               </label>
             </div>
@@ -586,16 +691,17 @@ export function TerminalToolSettings({
             <p className="card-description">{t('tools.terminal.permissionModeDesc')}</p>
             {isAgentScope ? <InheritanceControl inherited={fieldInherited('permission_mode')} onChange={(value) => setTerminalInherited('permission_mode', value)} t={t} /> : null}
           </div>
-          <div className="permission-mode-control" role="radiogroup" aria-label={t('tools.terminal.permissionMode')}>
-            <button type="button" role="radio" disabled={fieldInherited('permission_mode') || !sandboxAvailable} aria-checked={terminal.permission_mode === 'request_approval'} className={`${terminal.permission_mode === 'request_approval' ? 'is-active' : ''}${!sandboxAvailable ? ' is-disabled' : ''}`} onClick={() => updateTerminal({ permission_mode: 'request_approval' })}>
-              <Hand size={20} />
-              <span><strong>{t('tools.terminal.requestApproval')}</strong><small>{t('tools.terminal.requestApprovalDesc')}</small></span>
-            </button>
-            <button type="button" role="radio" disabled={fieldInherited('permission_mode')} aria-checked={terminal.permission_mode === 'full_access'} className={terminal.permission_mode === 'full_access' ? 'is-active is-danger' : ''} onClick={selectFullAccess}>
-              <ShieldAlert size={20} />
-              <span><strong>{t('tools.terminal.fullAccess')}</strong><small>{t('tools.terminal.fullAccessDesc')}</small></span>
-            </button>
-          </div>
+          <PermissionModeControl
+            value={terminal.permission_mode}
+            label={t('tools.terminal.permissionMode')}
+            requestApprovalLabel={t('tools.terminal.requestApproval')}
+            requestApprovalDescription={t('tools.terminal.requestApprovalDesc')}
+            fullAccessLabel={t('tools.terminal.fullAccess')}
+            fullAccessDescription={t('tools.terminal.fullAccessDesc')}
+            requestApprovalDisabled={fieldInherited('permission_mode') || !sandboxAvailable}
+            fullAccessDisabled={fieldInherited('permission_mode')}
+            onChange={handlePermissionModeChange}
+          />
         </div>
       </section>
 
@@ -617,7 +723,16 @@ export function TerminalToolSettings({
               {terminal.allowed_cwd_roots.map((value, index) => (
                 <li key={`${value}-${index}`} className="pattern-tag safe">
                   <code>{value}</code>
-                  <button type="button" disabled={fieldInherited('allowed_cwd_roots')} onClick={() => removeRoot(index)} className="remove-btn" title={t('tools.terminal.remove')}><Trash2 size={14} /></button>
+                  <IconButton
+                    type="button"
+                    variant="ghost"
+                    disabled={fieldInherited('allowed_cwd_roots')}
+                    onClick={() => removeRoot(index)}
+                    className="remove-btn"
+                    label={t('tools.terminal.remove')}
+                  >
+                    <Trash2 size={14} />
+                  </IconButton>
                 </li>
               ))}
             </ul>
@@ -638,7 +753,17 @@ export function TerminalToolSettings({
                     command={grant.command}
                     status={t('tools.terminal.fullAccess')}
                     meta={`${grant.cwd || t('toolCard.defaultCwd')} · ${grant.expires_at ? t('tools.terminal.grantExpires', { time: new Date(grant.expires_at).toLocaleString() }) : t('tools.terminal.grantExpired')}`}
-                    action={<button type="button" className="tool-process-action" onClick={() => removeApprovalGrant(index)} title={t('tools.terminal.remove')}><Trash2 size={13} /></button>}
+                    action={(
+                      <IconButton
+                        type="button"
+                        variant="ghost"
+                        className="tool-process-action"
+                        onClick={() => removeApprovalGrant(index)}
+                        label={t('tools.terminal.remove')}
+                      >
+                        <Trash2 size={13} />
+                      </IconButton>
+                    )}
                   />
                 ))}
               </div>
@@ -652,6 +777,14 @@ export function TerminalToolSettings({
           <div className="card-header"><RefreshCw size={20} /><h3>{t('tools.terminal.backgroundProcesses')}</h3><span className="badge">{processes.length}</span></div>
           <div className="card-body">
             <p className="card-description">{t('tools.terminal.backgroundProcessesDesc')}</p>
+            {processLoadError ? (
+              <div className="terminal-inline-error" role="alert">
+                <span>{processLoadError}</span>
+                <Button variant="secondary" type="button" onClick={() => setProcessRequestKey((current) => current + 1)} icon={<RefreshCw size={15} />}>
+                  {t('common.retry')}
+                </Button>
+              </div>
+            ) : null}
             {processes.length === 0 ? <p className="muted">{t('tools.terminal.noBackgroundProcesses')}</p> : (
               <div className="tool-process-list">
                 {processes.map((process) => (

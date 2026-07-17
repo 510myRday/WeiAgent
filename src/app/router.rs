@@ -70,6 +70,10 @@ fn api_router() -> Router<AppState> {
             get(agents::read_agent_workspace).put(agents::update_agent_workspace),
         )
         .route(
+            "/api/agents/{agent_id}/profile",
+            put(agents::update_agent_profile),
+        )
+        .route(
             "/api/agents/{agent_id}/conversations",
             get(conversations::list_conversations).post(conversations::create_conversation),
         )
@@ -85,6 +89,10 @@ fn api_router() -> Router<AppState> {
             "/api/conversations/{conversation_id}/messages",
             get(conversations::read_conversation_messages)
                 .post(conversations::send_message_complete),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/messages/page",
+            get(conversations::read_conversation_message_page),
         )
         .route(
             "/api/conversations/{conversation_id}/messages/stream",

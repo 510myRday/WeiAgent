@@ -1,11 +1,13 @@
 import { lazy, Suspense, useState, useEffect } from 'react';
-import { Bot, MessageCircle } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import type { AppSettings, MobileView, NavKey } from './types';
 import { useSettings, useProviders, useAgents } from './hooks';
 import { Sidebar } from './components/layout';
+import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { ChatPanel } from './features/chat/ChatPanel';
-import { Button, EmptyState, ListItem, PaneHeader, useFeedback } from './components/ui';
+import { Button, useFeedback } from './components/ui';
 import { isLocale, useI18n } from './i18n';
+import { userErrorMessage } from './utils/userError';
 
 const AgentsPanel = lazy(() => import('./features/agents/AgentsPanel').then((module) => ({ default: module.AgentsPanel })));
 const ToolsPanel = lazy(() => import('./features/tools/ToolsPanel').then((module) => ({ default: module.ToolsPanel })));
@@ -19,18 +21,21 @@ export function App() {
   const [activeNav, setActiveNav] = useState<NavKey>('chat');
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('runtime');
   const [mobileView, setMobileView] = useState<MobileView>('list');
+  const [initialLoadError, setInitialLoadError] = useState('');
+  const [isRefreshingInitialData, setIsRefreshingInitialData] = useState(false);
 
   useEffect(() => {
-    const mq = window.matchMedia('(min-width: 921px)');
-    const syncMobileView = (matches: boolean) => {
-      if (matches) {
+    const desktopQuery = window.matchMedia('(min-width: 921px)');
+    const syncResponsiveState = () => {
+      if (desktopQuery.matches) {
         setMobileView('list');
       }
     };
-    syncMobileView(mq.matches);
-    const handler = (e: MediaQueryListEvent) => syncMobileView(e.matches);
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
+    syncResponsiveState();
+    desktopQuery.addEventListener('change', syncResponsiveState);
+    return () => {
+      desktopQuery.removeEventListener('change', syncResponsiveState);
+    };
   }, []);
 
   const {
@@ -56,6 +61,7 @@ export function App() {
     refreshAgents,
     addAgent,
     editAgent,
+    editAgentProfile,
     removeAgent,
   } = useAgents();
 
@@ -64,14 +70,28 @@ export function App() {
   }, []);
 
   async function refreshAll() {
-    try {
-      const [settings] = await Promise.all([refreshSettings(), refreshProviders(), refreshAgents()]);
-      if (isLocale(settings.language)) {
-        setLocaleStateOnly(settings.language);
-      }
-    } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+    setIsRefreshingInitialData(true);
+    setInitialLoadError('');
+    const [settingsResult, providersResult, agentsResult] = await Promise.allSettled([
+      refreshSettings(),
+      refreshProviders(),
+      refreshAgents(),
+    ]);
+    if (settingsResult.status === 'fulfilled' && isLocale(settingsResult.value.language)) {
+      setLocaleStateOnly(settingsResult.value.language);
     }
+    const errors = [settingsResult, providersResult, agentsResult]
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason instanceof Error ? result.reason.message : t('error.unknown'));
+    if (errors.length > 0) {
+      const message = userErrorMessage(new Error(errors.join(' ')), {
+        summary: t('error.initialLoadFailed'),
+        recovery: t('error.retryConnection'),
+      });
+      setInitialLoadError(message);
+      toast.error(message);
+    }
+    setIsRefreshingInitialData(false);
   }
 
   async function saveSettingsWithLocale(payload: AppSettings) {
@@ -94,6 +114,12 @@ export function App() {
     setMobileView('main');
   }
 
+  function openAgentCreation() {
+    setActiveAgentId('');
+    setActiveNav('agents');
+    setMobileView('main');
+  }
+
   function openMainPane() {
     setMobileView('main');
   }
@@ -102,83 +128,112 @@ export function App() {
     setMobileView('list');
   }
 
+  useEffect(() => {
+    const openSettingsShortcut = (event: globalThis.KeyboardEvent) => {
+      if (
+        !(event.ctrlKey || event.metaKey)
+        || event.key !== ','
+        || document.querySelector('[role="dialog"]')
+      ) {
+        return;
+      }
+      event.preventDefault();
+      setActiveNav('settings');
+      setSettingsSection('runtime');
+      setMobileView('list');
+    };
+    window.addEventListener('keydown', openSettingsShortcut);
+    return () => window.removeEventListener('keydown', openSettingsShortcut);
+  }, []);
+
   return (
     <main className={`workspace-shell mobile-${mobileView}`}>
+      {initialLoadError ? (
+        <div className="app-load-error" role="alert">
+          <span>{initialLoadError}</span>
+          <Button
+            variant="secondary"
+            type="button"
+            disabled={isRefreshingInitialData}
+            onClick={() => void refreshAll()}
+            icon={<RefreshCw size={15} className={isRefreshingInitialData ? 'is-spinning' : ''} />}
+          >
+            {t('common.retry')}
+          </Button>
+        </div>
+      ) : null}
       <Sidebar
         activeNav={activeNav}
         settings={settingsForm}
         onNavChange={handleNavChange}
         onSettingsSave={saveSettingsWithLocale}
       />
-      {activeNav === 'chat' && (
-        <ChatPanel
-          agents={agents}
-          providers={providers}
-          activeAgentId={activeAgentId}
-          onAgentChange={setActiveAgentId}
-          onAgentEdit={editAgent}
-          onOpenMain={openMainPane}
-          onBackToList={openListPane}
-          settings={settingsForm}
-        />
-      )}
-      <Suspense fallback={<PanelLoading label={t('sidebar.loading')} />}>
-      {activeNav === 'agents' && (
-        <AgentsPanel
-          agents={agents}
-          providers={providers}
-          activeAgentId={activeAgentId}
-          isLoadingAgents={isLoadingAgents}
-          onAgentChange={setActiveAgentId}
-          onAgentAdd={addAgent}
-          onAgentEdit={editAgent}
-          onAgentRemove={removeAgent}
-          onOpenProviderSettings={openProviderSettings}
-          onOpenMain={openMainPane}
-          onBackToList={openListPane}
-        />
-      )}
-      {activeNav === 'groups' && (
-        <GroupsPlaceholder
-          onOpenMain={openMainPane}
-          onBackToList={openListPane}
-        />
-      )}
-      {activeNav === 'tools' && (
-        <ToolsPanel
-          agents={agents}
-          onOpenMain={openMainPane}
-          onBackToList={openListPane}
-        />
-      )}
-      {activeNav === 'settings' && (
-        <SettingsPanel
-          settingsForm={settingsForm}
-          onSettingsFormChange={setSettingsForm}
-          onSettingsSave={saveSettingsWithLocale}
-          providers={providers}
-          activeProviderId={activeProviderId}
-          initialSection={settingsSection}
-          onProviderChange={setActiveProviderId}
-          onProviderAdd={async (payload) => {
-            const created = await addProvider(payload);
-            await refreshAgents();
-            return created;
-          }}
-          onProviderEdit={async (id, payload) => {
-            const updated = await editProvider(id, payload);
-            await refreshAgents();
-            return updated;
-          }}
-          onProviderRemove={async (id) => {
-            await removeProvider(id);
-            await refreshAgents();
-          }}
-          onOpenMain={openMainPane}
-          onBackToList={openListPane}
-        />
-      )}
-      </Suspense>
+      <AppErrorBoundary scope="feature" resetKey={`${activeNav}:${activeAgentId}`}>
+        {activeNav === 'chat' && (
+          <ChatPanel
+            agents={agents}
+            providers={providers}
+            activeAgentId={activeAgentId}
+            onAgentChange={setActiveAgentId}
+            onAgentEdit={editAgent}
+            onOpenMain={openMainPane}
+            onBackToList={openListPane}
+            onCreateAgent={openAgentCreation}
+            settings={settingsForm}
+          />
+        )}
+        <Suspense fallback={<PanelLoading label={t('sidebar.loading')} />}>
+        {activeNav === 'agents' && (
+          <AgentsPanel
+            agents={agents}
+            providers={providers}
+            activeAgentId={activeAgentId}
+            isLoadingAgents={isLoadingAgents}
+            onAgentChange={setActiveAgentId}
+            onAgentAdd={addAgent}
+            onAgentProfileSave={editAgentProfile}
+            onAgentRemove={removeAgent}
+            onOpenProviderSettings={openProviderSettings}
+            onOpenMain={openMainPane}
+            onBackToList={openListPane}
+          />
+        )}
+        {activeNav === 'tools' && (
+          <ToolsPanel
+            agents={agents}
+            onOpenMain={openMainPane}
+            onBackToList={openListPane}
+          />
+        )}
+        {activeNav === 'settings' && (
+          <SettingsPanel
+            settingsForm={settingsForm}
+            onSettingsFormChange={setSettingsForm}
+            onSettingsSave={saveSettingsWithLocale}
+            providers={providers}
+            activeProviderId={activeProviderId}
+            initialSection={settingsSection}
+            onProviderChange={setActiveProviderId}
+            onProviderAdd={async (payload) => {
+              const created = await addProvider(payload);
+              await refreshAgents();
+              return created;
+            }}
+            onProviderEdit={async (id, payload) => {
+              const updated = await editProvider(id, payload);
+              await refreshAgents();
+              return updated;
+            }}
+            onProviderRemove={async (id) => {
+              await removeProvider(id);
+              await refreshAgents();
+            }}
+            onOpenMain={openMainPane}
+            onBackToList={openListPane}
+          />
+        )}
+        </Suspense>
+      </AppErrorBoundary>
     </main>
   );
 }
@@ -189,40 +244,5 @@ function PanelLoading({ label }: { label: string }) {
       <span className="panel-loading-spinner" aria-hidden="true" />
       <span>{label}</span>
     </section>
-  );
-}
-
-function GroupsPlaceholder({
-  onOpenMain,
-  onBackToList,
-}: {
-  onOpenMain: () => void;
-  onBackToList: () => void;
-}) {
-  const { t } = useI18n();
-
-  return (
-    <>
-      <section className="context-pane groups-list-pane">
-        <PaneHeader
-          className="mobile-pane-header"
-          title={t('groups.title')}
-        />
-        <div className="list-stack">
-          <ListItem
-            active
-            type="button"
-            onClick={onOpenMain}
-            title={t('groups.entryTitle')}
-            subtitle={t('groups.entryHint')}
-            leading={<span className="avatar-badge avatar-muted"><Bot size={18} /></span>}
-          />
-        </div>
-      </section>
-      <section className="main-pane placeholder-pane">
-        <Button className="main-back-button placeholder-back-button" variant="ghost" type="button" onClick={onBackToList}>{t('common.back')}</Button>
-        <EmptyState icon={<MessageCircle size={34} />} title={t('groups.emptyTitle')} description={t('groups.emptyHint')} />
-      </section>
-    </>
   );
 }

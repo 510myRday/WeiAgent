@@ -1,0 +1,10 @@
+@media (hover: none) {
+  .row-actions {
+    opacity: 1;
+  }
+
+  .button:hover:not(:disabled),
+  .icon-button:hover:not(:disabled) {
+    transform: none;
+  }
+}

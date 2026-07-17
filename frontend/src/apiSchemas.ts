@@ -1,0 +1,208 @@
+import {
+  array,
+  boolean,
+  custom,
+  literal,
+  looseObject,
+  nullable,
+  number,
+  optional,
+  parse,
+  picklist,
+  string,
+  type BaseIssue,
+  type BaseSchema,
+} from 'valibot';
+
+import type {
+  AgentRun,
+  ChatMessage,
+  ConversationMessagePage,
+  StreamEvent,
+  ToolResultData,
+} from './types';
+
+const permissionModeSchema = picklist(['request_approval', 'full_access']);
+const toolCallStatusSchema = picklist([
+  'running',
+  'pending_approval',
+  'completed',
+  'blocked',
+  'rejected',
+  'error',
+]);
+const agentRunPhaseSchema = picklist([
+  'waiting_for_model',
+  'executing_tool',
+  'waiting_for_approval',
+]);
+const toolArgumentsSchema = custom<Record<string, unknown>>(
+  (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+  'Tool arguments must be an object',
+);
+
+const chatToolCallSchema = looseObject({
+  id: string(),
+  type: literal('function'),
+  permission_mode: optional(permissionModeSchema),
+  function: looseObject({
+    name: string(),
+    arguments: string(),
+  }),
+});
+
+export const chatMessageSchema = looseObject({
+  id: string(),
+  agent_id: string(),
+  conversation_id: string(),
+  role: picklist(['user', 'assistant', 'tool']),
+  content: string(),
+  status: optional(picklist(['done', 'streaming', 'failed'])),
+  created_at: string(),
+  tool_calls: optional(array(chatToolCallSchema)),
+  tool_call_id: optional(string()),
+});
+
+export const conversationMessagePageSchema = looseObject({
+  messages: array(chatMessageSchema),
+  next_cursor: optional(nullable(string())),
+  has_more: boolean(),
+});
+
+export const agentRunSchema = looseObject({
+  id: string(),
+  conversation_id: string(),
+  user_message_id: optional(nullable(string())),
+  status: picklist(['running', 'completed', 'failed', 'cancelled']),
+  phase: optional(nullable(agentRunPhaseSchema)),
+  latest_sequence: number(),
+  error: optional(nullable(string())),
+  created_at: string(),
+  finished_at: optional(nullable(string())),
+});
+
+export const toolResultDataSchema = looseObject({
+  stdout: optional(string()),
+  stderr: optional(string()),
+  exit_code: optional(number()),
+  duration_ms: optional(number()),
+  process_id: optional(string()),
+  output_cursor: optional(number()),
+  message: optional(string()),
+  reason: optional(string()),
+  runtime: optional(string()),
+});
+
+const phaseEventDataSchema = looseObject({
+  phase: agentRunPhaseSchema,
+  iteration: number(),
+  call_id: optional(nullable(string())),
+});
+
+const toolCallEventDataSchema = looseObject({
+  call_id: string(),
+  name: string(),
+  arguments: toolArgumentsSchema,
+  permission_mode: permissionModeSchema,
+});
+
+const toolResultEventDataSchema = looseObject({
+  call_id: string(),
+  result: looseObject({
+    stdout: optional(string()),
+    stderr: optional(string()),
+    exit_code: optional(number()),
+    duration_ms: optional(number()),
+    process_id: optional(string()),
+    output_cursor: optional(number()),
+    message: optional(string()),
+    reason: optional(string()),
+    runtime: optional(string()),
+    status: toolCallStatusSchema,
+  }),
+});
+
+const approvalRequiredEventDataSchema = looseObject({
+  call_id: string(),
+  agent_id: string(),
+  command: string(),
+  approval_id: string(),
+  cwd: optional(nullable(string())),
+  runtime: string(),
+  permission: string(),
+  justification: optional(nullable(string())),
+  background: boolean(),
+});
+
+type AnySchema = BaseSchema<unknown, unknown, BaseIssue<unknown>>;
+
+export function runtimeSchema<T>(schema: AnySchema): { parse: (value: unknown) => T } {
+  return {
+    parse: (value) => parse(schema, value) as T,
+  };
+}
+
+export const conversationMessagePageRuntimeSchema = runtimeSchema<ConversationMessagePage>(
+  conversationMessagePageSchema,
+);
+export const agentRunRuntimeSchema = runtimeSchema<AgentRun>(agentRunSchema);
+export const nullableAgentRunRuntimeSchema = runtimeSchema<AgentRun | null>(
+  nullable(agentRunSchema),
+);
+export const agentRunListRuntimeSchema = runtimeSchema<AgentRun[]>(array(agentRunSchema));
+
+export function parseChatMessage(value: unknown): ChatMessage {
+  return parse(chatMessageSchema, value) as ChatMessage;
+}
+
+export function parseConversationMessagePage(value: unknown): ConversationMessagePage {
+  return parse(conversationMessagePageSchema, value) as ConversationMessagePage;
+}
+
+export function parseAgentRun(value: unknown): AgentRun {
+  return parse(agentRunSchema, value) as AgentRun;
+}
+
+export function parseToolResultData(value: unknown): ToolResultData {
+  return parse(toolResultDataSchema, value) as ToolResultData;
+}
+
+export function parseJsonStreamEvent(
+  event: 'user' | 'assistant' | 'phase' | 'tool_call' | 'tool_result' | 'approval_required',
+  data: string,
+  sequence?: number,
+): StreamEvent {
+  const parsed: unknown = JSON.parse(data);
+  switch (event) {
+    case 'user':
+    case 'assistant':
+      return { event, data: parseChatMessage(parsed), sequence };
+    case 'phase': {
+      const { call_id, ...phaseData } = parse(phaseEventDataSchema, parsed);
+      return {
+        event,
+        data: call_id == null ? phaseData : { ...phaseData, call_id },
+        sequence,
+      };
+    }
+    case 'tool_call':
+      return { event, data: parse(toolCallEventDataSchema, parsed), sequence };
+    case 'tool_result':
+      return { event, data: parse(toolResultEventDataSchema, parsed), sequence };
+    case 'approval_required': {
+      const { cwd, justification, ...approvalData } = parse(
+        approvalRequiredEventDataSchema,
+        parsed,
+      );
+      return {
+        event,
+        data: {
+          ...approvalData,
+          ...(cwd == null ? {} : { cwd }),
+          ...(justification == null ? {} : { justification }),
+        },
+        sequence,
+      };
+    }
+  }
+}

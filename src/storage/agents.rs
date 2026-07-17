@@ -3,7 +3,10 @@ use tokio::fs;
 use uuid::Uuid;
 
 use crate::{
-    domain::{Agent, AgentResponse, CreateAgentRequest, UpdateAgentRequest},
+    domain::{
+        Agent, AgentProfileResponse, AgentResponse, AgentWorkspace, CreateAgentRequest,
+        ModelProvider, UpdateAgentProfileRequest, UpdateAgentRequest,
+    },
     error::{AppError, AppResult},
     storage::{
         json_store::JsonStore,
@@ -66,50 +69,50 @@ impl JsonStore {
         let _guard = self.lock.lock().await;
         let providers = self.read_providers_unlocked().await?;
         let mut agents = self.read_agents_unlocked().await?;
-        let agent_index = agents
-            .iter()
-            .position(|agent| agent.id == id)
-            .ok_or(AppError::NotFound)?;
-        let next_avatar_icon = request
-            .avatar_icon
-            .as_deref()
-            .map(|value| normalize_avatar_icon(Some(value)))
-            .transpose()?
-            .unwrap_or_else(|| agents[agent_index].avatar_icon.clone());
-        let next_avatar_color = request
-            .avatar_color
-            .as_deref()
-            .map(|value| normalize_avatar_color(Some(value)))
-            .transpose()?
-            .unwrap_or_else(|| agents[agent_index].avatar_color.clone());
-        validate_unique_avatar(&agents, Some(id), &next_avatar_icon, &next_avatar_color)?;
-        let agent = agents.get_mut(agent_index).ok_or(AppError::NotFound)?;
-
-        if let Some(name) = request.name.filter(|_| !agent.is_builtin) {
-            agent.name = crate::storage::validation::validate_non_empty("agent name", &name)?;
-        }
-        if let Some(description) = request.description.filter(|_| !agent.is_builtin) {
-            agent.description =
-                crate::storage::validation::validate_non_empty("agent description", &description)?;
-        }
-
-        let next_provider_id = request.model_provider_id.unwrap_or(agent.model_provider_id);
-        let next_model_id = request
-            .model_id
-            .as_deref()
-            .unwrap_or(&agent.model_id)
-            .trim()
-            .to_string();
-        validate_provider_model(&providers, next_provider_id, &next_model_id)?;
-        agent.model_provider_id = next_provider_id;
-        agent.model_id = next_model_id;
-        agent.avatar_icon = next_avatar_icon;
-        agent.avatar_color = next_avatar_color;
-        agent.updated_at = Utc::now();
-
-        let updated = agent.clone();
+        let updated = apply_agent_update(&mut agents, &providers, id, request)?;
         self.write_agents_unlocked(&agents).await?;
         Ok(AgentResponse::from_agent(&updated))
+    }
+
+    pub async fn update_agent_profile(
+        &self,
+        id: Uuid,
+        request: UpdateAgentProfileRequest,
+    ) -> AppResult<AgentProfileResponse> {
+        let _guard = self.lock.lock().await;
+        let providers = self.read_providers_unlocked().await?;
+        let mut agents = self.read_agents_unlocked().await?;
+        let original_workspace = self.read_agent_workspace_unlocked(id).await?;
+        let updated = apply_agent_update(&mut agents, &providers, id, request.agent)?;
+        let workspace = AgentWorkspace {
+            personality: request.workspace.personality,
+            memory: request.workspace.memory,
+            instructions: request.workspace.instructions,
+        };
+
+        if let Err(error) = self.write_agent_workspace_unlocked(id, &workspace).await {
+            if let Err(rollback_error) = self
+                .write_agent_workspace_unlocked(id, &original_workspace)
+                .await
+            {
+                tracing::error!(%rollback_error, "failed to roll back agent workspace");
+            }
+            return Err(error);
+        }
+        if let Err(error) = self.write_agents_unlocked(&agents).await {
+            if let Err(rollback_error) = self
+                .write_agent_workspace_unlocked(id, &original_workspace)
+                .await
+            {
+                tracing::error!(%rollback_error, "failed to roll back agent profile workspace");
+            }
+            return Err(error);
+        }
+
+        Ok(AgentProfileResponse {
+            agent: AgentResponse::from_agent(&updated),
+            workspace,
+        })
     }
 
     pub async fn delete_agent(&self, id: Uuid) -> AppResult<()> {
@@ -168,4 +171,53 @@ impl JsonStore {
         }
         Ok(responses)
     }
+}
+
+fn apply_agent_update(
+    agents: &mut [Agent],
+    providers: &[ModelProvider],
+    id: Uuid,
+    request: UpdateAgentRequest,
+) -> AppResult<Agent> {
+    let agent_index = agents
+        .iter()
+        .position(|agent| agent.id == id)
+        .ok_or(AppError::NotFound)?;
+    let next_avatar_icon = request
+        .avatar_icon
+        .as_deref()
+        .map(|value| normalize_avatar_icon(Some(value)))
+        .transpose()?
+        .unwrap_or_else(|| agents[agent_index].avatar_icon.clone());
+    let next_avatar_color = request
+        .avatar_color
+        .as_deref()
+        .map(|value| normalize_avatar_color(Some(value)))
+        .transpose()?
+        .unwrap_or_else(|| agents[agent_index].avatar_color.clone());
+    validate_unique_avatar(agents, Some(id), &next_avatar_icon, &next_avatar_color)?;
+    let agent = agents.get_mut(agent_index).ok_or(AppError::NotFound)?;
+
+    if let Some(name) = request.name.filter(|_| !agent.is_builtin) {
+        agent.name = crate::storage::validation::validate_non_empty("agent name", &name)?;
+    }
+    if let Some(description) = request.description.filter(|_| !agent.is_builtin) {
+        agent.description =
+            crate::storage::validation::validate_non_empty("agent description", &description)?;
+    }
+
+    let next_provider_id = request.model_provider_id.unwrap_or(agent.model_provider_id);
+    let next_model_id = request
+        .model_id
+        .as_deref()
+        .unwrap_or(&agent.model_id)
+        .trim()
+        .to_string();
+    validate_provider_model(providers, next_provider_id, &next_model_id)?;
+    agent.model_provider_id = next_provider_id;
+    agent.model_id = next_model_id;
+    agent.avatar_icon = next_avatar_icon;
+    agent.avatar_color = next_avatar_color;
+    agent.updated_at = Utc::now();
+    Ok(agent.clone())
 }

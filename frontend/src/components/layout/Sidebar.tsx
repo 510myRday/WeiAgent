@@ -1,10 +1,10 @@
-import { Bot, Globe, Settings, Users, Wrench } from 'lucide-react';
+import { Bot, Globe, Settings, Wrench } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 import type { AppSettings, AvatarIcon, NavKey } from '../../types';
 import { useI18n } from '../../i18n';
 import { AvatarBadge } from '../AvatarPicker';
-import { AvatarPopover, IconButton } from '../ui';
+import { AvatarPopover, IconButton, useFeedback } from '../ui';
 
 interface SidebarProps {
   activeNav: NavKey;
@@ -15,15 +15,24 @@ interface SidebarProps {
 
 export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: SidebarProps) {
   const { t, locale, setLocale } = useI18n();
+  const { toast } = useFeedback();
 
   function handleAvatarChange(next: { icon: AvatarIcon; color: string }) {
-    void onSettingsSave({ ...settings, avatar_icon: next.icon, avatar_color: next.color });
+    void onSettingsSave({ ...settings, avatar_icon: next.icon, avatar_color: next.color })
+      .catch((cause) => toast.error(cause instanceof Error ? cause.message : t('error.unknown')));
   }
 
-  function handleLocaleToggle() {
+  async function handleLocaleToggle() {
+    const previousLocale = locale;
     const nextLocale = locale === 'zh' ? 'en' : 'zh';
     setLocale(nextLocale);
-    void onSettingsSave({ ...settings, language: nextLocale });
+    try {
+      const updated = await onSettingsSave({ ...settings, language: nextLocale });
+      setLocale(updated.language);
+    } catch (cause) {
+      setLocale(previousLocale);
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+    }
   }
 
   return (
@@ -51,7 +60,6 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
       <nav className="sidebar-nav">
         <NavButton active={activeNav === 'chat'} onClick={() => onNavChange('chat')} icon={<ChatBubbleMoreIcon />} label={t('nav.chat')} />
         <NavButton active={activeNav === 'agents'} onClick={() => onNavChange('agents')} icon={<Bot size={21} />} label={t('nav.agents')} />
-        <NavButton active={activeNav === 'groups'} onClick={() => onNavChange('groups')} icon={<Users size={21} />} label={t('nav.groups')} />
         <NavButton active={activeNav === 'tools'} onClick={() => onNavChange('tools')} icon={<Wrench size={21} />} label={t('nav.tools')} />
         <NavButton active={activeNav === 'settings'} onClick={() => onNavChange('settings')} icon={<Settings size={21} />} label={t('nav.settings')} />
       </nav>
@@ -62,7 +70,7 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
           className="lang-switch"
           variant="rail"
           type="button"
-          onClick={handleLocaleToggle}
+          onClick={() => void handleLocaleToggle()}
           label={locale === 'zh' ? t('lang.switchTo') : t('lang.switchToZh')}
         >
           <Globe size={17} />
@@ -90,9 +98,21 @@ function ChatBubbleMoreIcon() {
   );
 }
 
-function NavButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: ReactNode; label: string }) {
+function NavButton({
+  active,
+  className,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  className?: string;
+  onClick: () => void;
+  icon: ReactNode;
+  label: string;
+}) {
   return (
-    <IconButton variant="rail" active={active} type="button" onClick={onClick} label={label} aria-current={active ? 'page' : undefined}>
+    <IconButton className={className} variant="rail" active={active} type="button" onClick={onClick} label={label} aria-current={active ? 'page' : undefined}>
       {icon}
       <span className="rail-nav-label">{label}</span>
     </IconButton>

@@ -21,9 +21,11 @@ import type {
   ProviderType,
 } from '../../types';
 import { fetchModels, fetchModelsForProvider } from '../../api';
+import { useBeforeUnloadGuard } from '../../hooks';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
 import { AutoSaveIndicator, Button, FormField, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
+import { userErrorMessage } from '../../utils/userError';
 import { LlmLogsModal } from './LlmLogsModal';
 
 interface SettingsPanelProps {
@@ -193,20 +195,30 @@ export function SettingsPanel({
 
   onSettingsSaveRef.current = onSettingsSave;
 
+  useBeforeUnloadGuard(
+    runtimeDirty
+    || autoSaveStatus === 'pending'
+    || autoSaveStatus === 'saving'
+    || autoSaveStatus === 'error',
+  );
+
   const activeProvider = providers.find((provider) => provider.id === activeProviderId);
   const modelCount = parseModels(providerForm.modelsText).length;
 
-  useEffect(() => () => {
-    isMountedRef.current = false;
-    if (saveTimerRef.current !== undefined) {
-      window.clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = undefined;
-    }
-    if (retryTimerRef.current !== undefined) {
-      window.clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = undefined;
-    }
-    void flushRuntimeSaveQueue();
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (saveTimerRef.current !== undefined) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = undefined;
+      }
+      if (retryTimerRef.current !== undefined) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = undefined;
+      }
+      void flushRuntimeSaveQueue();
+    };
   }, []);
 
   useEffect(() => {
@@ -331,7 +343,10 @@ export function SettingsPanel({
       if (isMountedRef.current) {
         setAutoSaveStatus('error');
         if (attempt === 1) {
-          toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+          toast.error(userErrorMessage(cause, {
+            summary: t('error.settingsSaveFailed'),
+            recovery: t('error.retryConnection'),
+          }));
         }
       }
     } finally {
@@ -346,6 +361,18 @@ export function SettingsPanel({
         }, retryDelay);
       }
     }
+  }
+
+  function retryRuntimeSaveNow() {
+    if (saveTimerRef.current !== undefined) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = undefined;
+    }
+    if (retryTimerRef.current !== undefined) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = undefined;
+    }
+    void flushRuntimeSaveQueue();
   }
 
   function patchRuntimeSettings(patch: Partial<AppSettings>) {
@@ -387,7 +414,10 @@ export function SettingsPanel({
       }
       setProviderForm((current) => ({ ...current, api_key: '' }));
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      toast.error(userErrorMessage(cause, {
+        summary: t('error.providerSaveFailed'),
+        recovery: t('error.checkProviderFields'),
+      }));
     } finally {
       setIsSubmittingProvider(false);
     }
@@ -406,7 +436,10 @@ export function SettingsPanel({
       await onProviderRemove(activeProvider.id);
       toast.success(t('notification.providerDeleted'));
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      toast.error(userErrorMessage(cause, {
+        summary: t('error.providerDeleteFailed'),
+        recovery: t('error.retryConnection'),
+      }));
     }
   }
 
@@ -446,7 +479,9 @@ export function SettingsPanel({
       setProviderForm((current) => ({ ...current, modelsText: models.join('\n') }));
       toast.success(t('notification.modelsLoaded', { count: models.length }));
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      toast.error(userErrorMessage(cause, {
+        summary: t('model.loadFailed'),
+      }));
     } finally {
       setFetchingModels(false);
     }
@@ -474,7 +509,7 @@ export function SettingsPanel({
           <div className="context-pane settings-nav">
             <PaneHeader
               className="mobile-pane-header"
-              title={t('nav.settings')}
+              title={t('settings.areaTitle')}
             />
             <div className="list-stack">
               <ListItem
@@ -501,7 +536,7 @@ export function SettingsPanel({
           <PaneHeader
             className="config-page-header"
             leading={<Button className="main-back-button" variant="ghost" type="button" onClick={onBackToList} icon={<ArrowLeft size={17} />}>{t('common.back')}</Button>}
-            eyebrow={t('nav.settings')}
+            eyebrow={t('settings.areaTitle')}
             title={activeSection === 'runtime' ? t('settings.title') : (
               <span className="provider-page-title">
                 {t('provider.title')}
@@ -512,7 +547,7 @@ export function SettingsPanel({
             )}
             description={activeSection === 'runtime' ? t('settings.description') : t('provider.description')}
             actions={activeSection === 'runtime'
-              ? <AutoSaveIndicator status={autoSaveStatus} t={t} />
+              ? <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryRuntimeSaveNow} />
               : null}
           />
 
@@ -524,6 +559,7 @@ export function SettingsPanel({
                     id="settings-host"
                     value={settingsForm.host}
                     onChange={(e) => patchRuntimeSettings({ host: e.target.value })}
+                    required
                   >
                     <option value="127.0.0.1">127.0.0.1</option>
                     <option value="::1">::1</option>
@@ -537,6 +573,7 @@ export function SettingsPanel({
                     max={65535}
                     value={settingsForm.port}
                     onChange={(e) => patchRuntimeSettings({ port: Number(e.target.value) })}
+                    required
                   />
                 </FormField>
                 <FormField label={t('settings.logLevel')} htmlFor="settings-log" required>
@@ -544,6 +581,7 @@ export function SettingsPanel({
                     id="settings-log"
                     value={settingsForm.log_level}
                     onChange={(e) => patchRuntimeSettings({ log_level: e.target.value })}
+                    required
                   >
                     {['trace', 'debug', 'info', 'warn', 'error'].map((level) => <option key={level} value={level}>{level}</option>)}
                   </select>
@@ -556,6 +594,7 @@ export function SettingsPanel({
                     max={600}
                     value={settingsForm.request_timeout_seconds}
                     onChange={(e) => patchRuntimeSettings({ request_timeout_seconds: Number(e.target.value) })}
+                    required
                   />
                 </FormField>
                 <FormField label={t('settings.requestRetries')} htmlFor="settings-retries" required>
@@ -566,6 +605,7 @@ export function SettingsPanel({
                     max={10}
                     value={settingsForm.request_retry_attempts}
                     onChange={(e) => patchRuntimeSettings({ request_retry_attempts: Number(e.target.value) })}
+                    required
                   />
                 </FormField>
               </div>
@@ -631,7 +671,7 @@ export function SettingsPanel({
                   />
                   <div className="form-grid two-column provider-connection-grid">
                     <FormField label={t('provider.name')} htmlFor="provider-name" required>
-                      <input id="provider-name" value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} disabled={isSubmittingProvider} />
+                      <input id="provider-name" value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} disabled={isSubmittingProvider} required />
                     </FormField>
                     <FormField label={t('provider.apiMode')} htmlFor="provider-api-mode" required>
                       <select
@@ -639,6 +679,7 @@ export function SettingsPanel({
                         value={providerForm.provider_type}
                         onChange={(event) => handleProtocolChange(event.target.value as ProviderType)}
                         disabled={isSubmittingProvider}
+                        required
                       >
                         {PROTOCOL_PRESETS.map((preset) => (
                           <option key={preset.type} value={preset.type}>
@@ -648,7 +689,7 @@ export function SettingsPanel({
                       </select>
                     </FormField>
                     <FormField label={t('provider.baseUrl')} htmlFor="provider-base-url" required>
-                      <input id="provider-base-url" value={providerForm.base_url} onChange={(e) => setProviderForm({ ...providerForm, base_url: e.target.value })} disabled={isSubmittingProvider} />
+                      <input id="provider-base-url" value={providerForm.base_url} onChange={(e) => setProviderForm({ ...providerForm, base_url: e.target.value })} disabled={isSubmittingProvider} required />
                     </FormField>
                     <FormField label={t('provider.apiKey')} htmlFor="provider-api-key" required={!activeProvider}>
                       <div className="provider-secret-input">
@@ -659,6 +700,7 @@ export function SettingsPanel({
                           onChange={(e) => setProviderForm({ ...providerForm, api_key: e.target.value })}
                           placeholder={activeProvider?.has_api_key ? activeProvider.masked_api_key : ''}
                           disabled={isSubmittingProvider}
+                          required={!activeProvider}
                         />
                         <IconButton
                           className="provider-secret-toggle"

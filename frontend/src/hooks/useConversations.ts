@@ -6,6 +6,8 @@ import type {
   Conversation,
   ToolCallMessage,
   ToolCallStatus,
+  ToolArguments,
+  StreamEvent,
   UiMessage,
   UiMessageItem,
 } from '../types';
@@ -37,7 +39,7 @@ function toUiMessage(msg: ChatMessage & { role: 'user' | 'assistant' }): UiMessa
   return { ...msg, clientId: msg.id ?? genClientId() };
 }
 
-function parseJsonObject(value: string): Record<string, any> {
+function parseJsonObject(value: string): ToolArguments {
   try {
     const parsed = JSON.parse(value);
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
@@ -46,8 +48,8 @@ function parseJsonObject(value: string): Record<string, any> {
   }
 }
 
-function statusFromToolResult(result: any): ToolCallStatus {
-  const status = result?.status;
+function statusFromToolResult(result: unknown): ToolCallStatus {
+  const status = isRecord(result) ? result.status : undefined;
   if (
     status === 'completed'
     || status === 'running'
@@ -106,6 +108,10 @@ function interruptActiveRun(
   return next.map((item, index) => (
     index === assistantIndex && 'role' in item ? { ...item, status: 'failed' as const } : item
   ));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
@@ -190,12 +196,18 @@ export function useConversations({
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState('');
   const [messages, setMessages] = useState<UiMessageItem[]>([]);
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
+  const [isLoadingConversations, setIsLoadingConversations] = useState(false);
+  const [conversationsError, setConversationsError] = useState('');
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [runPhase, setRunPhase] = useState<AgentRunPhase>('idle');
   const [runningConversationIds, setRunningConversationIds] = useState<Set<string>>(() => new Set());
 
   const loadChatIdRef = useRef(0);
+  const olderMessagesRequestIdRef = useRef(0);
+  const olderMessagesCursorRef = useRef('');
   const conversationsRequestIdRef = useRef(0);
   const runningRequestIdRef = useRef(0);
   const resumeRequestIdRef = useRef(0);
@@ -209,29 +221,58 @@ export function useConversations({
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
+  const selectConversation = useCallback((conversationId: string) => {
+    ++loadChatIdRef.current;
+    ++olderMessagesRequestIdRef.current;
+    ++resumeRequestIdRef.current;
+    setActiveConversationId(conversationId);
+    setMessages([]);
+    setHasOlderMessages(false);
+    setIsLoadingOlderMessages(false);
+    olderMessagesCursorRef.current = '';
+    setIsLoadingChat(Boolean(conversationId));
+  }, []);
+
   const loadConversationsForAgent = useCallback(async (agentId: string) => {
     const requestId = ++conversationsRequestIdRef.current;
-    try {
-      const [next, activeRuns] = await Promise.all([
-        listConversations(agentId),
-        listActiveAgentRuns(agentId),
-      ]);
-      if (requestId !== conversationsRequestIdRef.current) return;
+    setIsLoadingConversations(true);
+    setConversationsError('');
+    const [conversationsResult, activeRunsResult] = await Promise.allSettled([
+      listConversations(agentId),
+      listActiveAgentRuns(agentId),
+    ]);
+    if (requestId !== conversationsRequestIdRef.current) return;
+
+    if (conversationsResult.status === 'fulfilled') {
+      const next = conversationsResult.value;
       setConversations(next);
-      setRunningConversationIds(new Set(activeRuns.map((run) => run.conversation_id)));
       setActiveConversationId((current) =>
         current && next.some((c) => c.id === current) ? current : next[0]?.id ?? '',
       );
-    } catch (cause) {
-      if (requestId !== conversationsRequestIdRef.current) return;
-      setConversations([]);
-      setActiveConversationId('');
-      onErrorRef.current?.(cause instanceof Error ? cause.message : 'Failed to load conversations');
+    } else {
+      const message = conversationsResult.reason instanceof Error
+        ? conversationsResult.reason.message
+        : 'Failed to load conversations';
+      setConversationsError(message);
+      onErrorRef.current?.(message);
     }
+
+    if (activeRunsResult.status === 'fulfilled') {
+      setRunningConversationIds(new Set(activeRunsResult.value.map((run) => run.conversation_id)));
+    } else {
+      setRunningConversationIds(new Set());
+      onErrorRef.current?.(
+        activeRunsResult.reason instanceof Error
+          ? activeRunsResult.reason.message
+          : 'Failed to load active runs',
+      );
+    }
+    setIsLoadingConversations(false);
   }, []);
 
   const loadMessages = useCallback(async (conversationId: string) => {
     resumeRequestIdRef.current += 1;
+    olderMessagesRequestIdRef.current += 1;
     const requestId = ++loadChatIdRef.current;
     if (suppressNextLoadConversationIdRef.current === conversationId) {
       suppressNextLoadConversationIdRef.current = '';
@@ -240,10 +281,14 @@ export function useConversations({
     }
     setIsLoadingChat(true);
     setMessages([]);
+    setHasOlderMessages(false);
+    olderMessagesCursorRef.current = '';
     try {
-      const raw = await readConversationMessages(conversationId);
+      const page = await readConversationMessages(conversationId);
       if (requestId !== loadChatIdRef.current) return false;
-      setMessages(toUiMessageItems(raw));
+      setMessages(toUiMessageItems(page.messages));
+      olderMessagesCursorRef.current = page.next_cursor ?? '';
+      setHasOlderMessages(page.has_more);
       return true;
     } catch (cause) {
       if (requestId === loadChatIdRef.current) {
@@ -257,13 +302,19 @@ export function useConversations({
 
   const clearChat = useCallback(() => {
     ++loadChatIdRef.current;
+    ++olderMessagesRequestIdRef.current;
     ++conversationsRequestIdRef.current;
     ++runningRequestIdRef.current;
     ++resumeRequestIdRef.current;
     setConversations([]);
     setActiveConversationId('');
     setMessages([]);
+    setHasOlderMessages(false);
+    setIsLoadingOlderMessages(false);
+    olderMessagesCursorRef.current = '';
     setRunningConversationIds(new Set());
+    setIsLoadingConversations(false);
+    setConversationsError('');
     setIsLoadingChat(false);
     setRunPhase('idle');
   }, []);
@@ -276,6 +327,28 @@ export function useConversations({
       setRunningConversationIds(new Set(activeRuns.map((run) => run.conversation_id)));
     } catch {
       // The next refresh will retry while the chat view is active.
+    }
+  }, []);
+
+  const loadOlderMessages = useCallback(async (conversationId: string) => {
+    const cursor = olderMessagesCursorRef.current;
+    if (!cursor) return false;
+    const requestId = ++olderMessagesRequestIdRef.current;
+    setIsLoadingOlderMessages(true);
+    try {
+      const page = await readConversationMessages(conversationId, cursor);
+      if (requestId !== olderMessagesRequestIdRef.current) return false;
+      setMessages((current) => [...toUiMessageItems(page.messages), ...current]);
+      olderMessagesCursorRef.current = page.next_cursor ?? '';
+      setHasOlderMessages(page.has_more);
+      return true;
+    } catch (cause) {
+      if (requestId === olderMessagesRequestIdRef.current) {
+        onErrorRef.current?.(cause instanceof Error ? cause.message : 'Failed to load older messages');
+      }
+      return false;
+    } finally {
+      if (requestId === olderMessagesRequestIdRef.current) setIsLoadingOlderMessages(false);
     }
   }, []);
 
@@ -378,7 +451,7 @@ export function useConversations({
   }, [flushPendingDelta, loadConversationsForAgent, runCancelledMessage]);
 
   const handleStreamEvent = useCallback(
-    (evt: { event: string; data: unknown }) => {
+    (evt: StreamEvent) => {
       if (evt.event !== 'delta') {
         flushPendingDelta();
       }
@@ -483,12 +556,7 @@ export function useConversations({
       }
       if (evt.event === 'tool_call') {
         setRunPhase('executing_tool');
-        const d = evt.data as {
-          call_id: string;
-          name: string;
-          arguments: Record<string, any>;
-          permission_mode: 'request_approval' | 'full_access';
-        };
+        const d = evt.data;
         const toolMsg: ToolCallMessage = {
           type: 'tool_call',
           call_id: d.call_id,
@@ -515,7 +583,7 @@ export function useConversations({
         return;
       }
       if (evt.event === 'tool_result') {
-        const d = evt.data as { call_id: string; result: any };
+        const d = evt.data;
         setMessages((current) => current.map((item) => {
           if ('type' in item && item.type === 'tool_call' && item.call_id === d.call_id) {
             return { ...item, status: d.result.status, result: d.result };
@@ -526,17 +594,7 @@ export function useConversations({
       }
       if (evt.event === 'approval_required') {
         setRunPhase('waiting_for_approval');
-        const d = evt.data as {
-          call_id: string;
-          agent_id: string;
-          command: string;
-          approval_id: string;
-          cwd?: string;
-          runtime: string;
-          permission: string;
-          justification?: string;
-          background: boolean;
-        };
+        const d = evt.data;
         setMessages((current) => current.map((item) => {
           if ('type' in item && item.type === 'tool_call' && item.call_id === d.call_id) {
             return { ...item, status: 'pending_approval', arguments: { ...item.arguments, ...d } };
@@ -738,15 +796,15 @@ export function useConversations({
     async (agentId: string) => {
       const existing = conversations.find(isEmptyConversation);
       if (existing) {
-        setActiveConversationId(existing.id);
+        if (existing.id !== activeConversationId) selectConversation(existing.id);
         return existing;
       }
       const created = await createConversation(agentId, { title: newConversationTitle });
       setConversations((current) => [created, ...current]);
-      setActiveConversationId(created.id);
+      selectConversation(created.id);
       return created;
     },
-    [conversations, activeConversationId, newConversationTitle],
+    [activeConversationId, conversations, newConversationTitle, selectConversation],
   );
 
   const removeConversation = useCallback(
@@ -755,6 +813,8 @@ export function useConversations({
       if (conversationId === activeConversationId) {
         setActiveConversationId('');
         setMessages([]);
+        setHasOlderMessages(false);
+        olderMessagesCursorRef.current = '';
       }
       await loadConversationsForAgent(agentId);
     },
@@ -790,9 +850,13 @@ export function useConversations({
     conversations,
     setConversations,
     activeConversationId,
-    setActiveConversationId,
+    selectConversation,
     messages,
     setMessages,
+    hasOlderMessages,
+    isLoadingOlderMessages,
+    isLoadingConversations,
+    conversationsError,
     isLoadingChat,
     isSending,
     runPhase,
@@ -800,6 +864,7 @@ export function useConversations({
     loadConversationsForAgent,
     refreshRunningConversations,
     loadMessages,
+    loadOlderMessages,
     resumeActiveRun,
     detachActiveRun,
     cancelActiveSend,

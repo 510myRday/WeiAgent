@@ -3,6 +3,7 @@ import { Copy, FileText, RefreshCw, Trash2 } from 'lucide-react';
 import type { LlmLogDetail, LlmLogEntry } from '../../types';
 import { listLlmLogs, getLlmLog, deleteLlmLog } from '../../api';
 import { useI18n } from '../../i18n';
+import { useClipboard } from '../../hooks';
 import { Button, Dialog, IconButton, useFeedback } from '../../components/ui';
 
 interface LlmLogsModalProps {
@@ -12,11 +13,11 @@ interface LlmLogsModalProps {
 export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
   const { t } = useI18n();
   const { confirm, toast } = useFeedback();
+  const { copied, copy } = useClipboard(2000);
   const [logs, setLogs] = useState<LlmLogEntry[]>([]);
   const [selectedLog, setSelectedLog] = useState<LlmLogDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'request' | 'response'>('request');
-  const [copied, setCopied] = useState(false);
 
   const loadLogs = useCallback(async () => {
     setIsLoading(true);
@@ -78,10 +79,7 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
       ? formatRaw(selectedLog?.raw_request)
       : (selectedLog?.raw_response ? formatRaw(selectedLog.raw_response) : selectedLog?.error || '');
     if (!text) return;
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
+    void copy(text);
   }
 
   return (
@@ -204,7 +202,7 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
                   </pre>
                 </>
               ) : (
-                <p className="muted" style={{ alignSelf: 'center', margin: 'auto' }}>
+                <p className="muted llm-logs-select-hint">
                   {logs.length > 0 ? t('llmLogs.selectHint') : ''}
                 </p>
               )}

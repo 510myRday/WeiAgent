@@ -1,0 +1,338 @@
+.settings-card {
+  border-color: var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+}
+
+.settings-card:hover {
+  transform: none;
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.settings-card .card-header {
+  min-height: 56px;
+  border-bottom-color: var(--border-subtle);
+  background: var(--surface-subtle);
+}
+
+.terminal-settings-form > .settings-card {
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.terminal-settings-form > .settings-card:last-child {
+  border-bottom: 0;
+}
+
+.terminal-settings-form > .settings-card:hover {
+  border-color: var(--border-subtle);
+  box-shadow: none;
+}
+
+.terminal-settings-form > .settings-card > .card-header {
+  min-height: 34px;
+  padding: 0 0 12px;
+  border: 0;
+  background: transparent;
+}
+
+.terminal-tool-settings-v2.is-default-scope .terminal-settings-form {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.72fr) minmax(440px, 1.55fr);
+  grid-template-areas:
+    "runtime runtime"
+    "basic access"
+    "basic roots"
+    "processes processes";
+  padding: 0;
+  overflow: hidden;
+}
+
+.terminal-tool-settings-v2.is-default-scope .runtime-card {
+  grid-area: runtime;
+  margin: 0;
+  padding: 20px 22px 22px;
+  background: transparent;
+}
+
+.terminal-tool-settings-v2.is-default-scope .basic-settings-card {
+  grid-area: basic;
+  margin: 0;
+  padding: 22px 22px 24px;
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 0;
+}
+
+.terminal-tool-settings-v2.is-default-scope .access-settings-card {
+  grid-area: access;
+  margin: 0 22px;
+  padding: 22px 0 20px;
+}
+
+.terminal-tool-settings-v2.is-default-scope .roots-settings-card {
+  grid-area: roots;
+  margin: 0 22px;
+  padding: 20px 0 22px;
+  border-bottom: 0;
+}
+
+.terminal-tool-settings-v2.is-default-scope .processes-settings-card {
+  grid-area: processes;
+  margin: 0;
+  padding: 20px 22px 22px;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 0;
+}
+
+.terminal-tool-settings-v2.is-default-scope .settings-card > .card-header {
+  padding-bottom: 8px;
+}
+
+.terminal-tool-settings-v2.is-default-scope .card-header h3 {
+  font-size: 14px;
+}
+
+.terminal-tool-settings-v2.is-default-scope .card-header > svg {
+  width: 18px;
+  height: 18px;
+  color: var(--color-text-soft);
+}
+
+.terminal-tool-settings-v2.is-default-scope .setting-row {
+  min-height: 66px;
+  padding: 11px 0;
+}
+
+.terminal-tool-settings-v2.is-default-scope .setting-info label {
+  font-size: 13px;
+}
+
+.terminal-tool-settings-v2.is-default-scope .setting-desc,
+.terminal-tool-settings-v2.is-default-scope .card-description,
+.terminal-tool-settings-v2.is-default-scope .permission-mode-control small {
+  font-size: 12px;
+}
+
+.terminal-tool-settings-v2.is-default-scope .permission-mode-control {
+  gap: 10px;
+  margin: 10px 0 0;
+}
+
+.terminal-tool-settings-v2.is-default-scope .permission-mode-control button {
+  min-height: 70px;
+  padding: 12px;
+}
+
+.terminal-tool-settings-v2.is-default-scope .roots-settings-card .card-description {
+  margin-bottom: 10px;
+}
+
+.terminal-tool-settings-v2.is-default-scope .pattern-input-wrapper {
+  margin-bottom: 10px;
+}
+
+.terminal-tool-settings-v2.is-default-scope .runtime-card > .card-header {
+  min-height: 40px;
+  padding-bottom: 12px;
+}
+
+.terminal-tool-settings-v2.is-agent-scope {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  margin-top: 2px;
+  padding: 18px 20px 22px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-pane);
+  box-shadow: var(--shadow-xs);
+}
+
+.terminal-tool-settings-v2.is-agent-scope .tool-config-heading {
+  align-items: flex-start;
+  margin: 0 0 20px;
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.terminal-tool-settings-v2.is-agent-scope .tool-config-heading__main {
+  gap: 10px;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .tool-config-heading h2 {
+  font-size: 15px;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .tool-config-heading p {
+  max-width: 720px;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .terminal-settings-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "basic"
+    "access"
+    "roots"
+    "grants";
+  min-width: 0;
+  max-width: 100%;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .basic-settings-card {
+  grid-area: basic;
+  margin: 0;
+  padding: 0 0 20px;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .basic-settings-card .card-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .basic-settings-card .setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "info info"
+    "inherit input";
+  align-items: center;
+  min-width: 0;
+  padding: 4px 20px 2px 0;
+  border: 0;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .basic-settings-card .setting-row + .setting-row {
+  padding-right: 0;
+  padding-left: 20px;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.terminal-tool-settings-v2.is-agent-scope .basic-settings-card .setting-info {
+  grid-area: info;
+  min-height: 54px;
+  margin-bottom: 10px;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .basic-settings-card .inherit-control {
+  grid-area: inherit;
+  justify-self: start;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .basic-settings-card .timeout-input {
+  grid-area: input;
+  justify-self: end;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .access-settings-card {
+  grid-area: access;
+  margin: 0;
+  padding: 20px 0;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .roots-settings-card {
+  grid-area: roots;
+  margin: 0;
+  padding: 20px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.terminal-tool-settings-v2.is-agent-scope .grants-settings-card {
+  grid-area: grants;
+  margin: 0;
+  padding: 20px 0 0;
+  border-bottom: 0;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .setting-row {
+  min-height: 66px;
+  padding: 10px 0;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .setting-section-heading {
+  align-items: flex-start;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .permission-mode-control {
+  gap: 10px;
+  margin-bottom: 0;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .permission-mode-control button {
+  min-height: 72px;
+  padding: 12px;
+}
+
+.setting-row {
+  border-bottom-color: var(--border-subtle);
+}
+
+.permission-mode-control button {
+  border-radius: var(--radius-sm);
+}
+
+.toggle-switch input:focus-visible + .toggle-slider {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.tools-coming-soon {
+  padding: 12px 16px;
+  font-size: 13px;
+}
+
+.terminal-load-error {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  max-width: 520px;
+  color: var(--color-danger-text);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.terminal-inline-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-xs);
+  background: var(--color-danger-soft);
+  color: var(--color-danger-text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.terminal-inline-error > span {
+  min-width: 0;
+  flex: 1;
+}
+
+.terminal-inline-error .button {
+  min-height: 34px;
+  flex: 0 0 auto;
+}
+
+.runtime-card__save-status {
+  display: inline-flex;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.tool-card {
+  border-color: var(--border-subtle);
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+.tool-card__status-icon {
+  border-radius: 9px;
+}

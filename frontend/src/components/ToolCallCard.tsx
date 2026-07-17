@@ -17,16 +17,17 @@ import {
   XCircle,
 } from 'lucide-react';
 
-import { getToolProcess, stopToolProcess, type ToolProcessInfo } from '../api';
-import type { ToolCallStatus, ToolResultData } from '../types';
+import { stopToolProcess } from '../api';
+import type { ToolArguments, ToolCallStatus, ToolResultData } from '../types';
 import { useI18n } from '../i18n';
+import { updateToolProcessCache, useClipboard, useToolProcess } from '../hooks';
 import { Dialog, IconButton } from './ui';
 
 interface ToolCallCardProps {
   agentId: string;
   callId: string;
   name: string;
-  arguments: Record<string, any>;
+  arguments: ToolArguments;
   status: ToolCallStatus;
   result?: ToolResultData;
   permissionMode?: 'request_approval' | 'full_access' | null;
@@ -44,7 +45,7 @@ function isTerminalTool(name: string): boolean {
   );
 }
 
-function formatToolArguments(args: Record<string, any>): string | null {
+function formatToolArguments(args: ToolArguments): string | null {
   const display: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
     if (
@@ -128,7 +129,7 @@ function TerminalContent({
   const previewRef = useRef<HTMLPreElement>(null);
   const [isOverflowing, setIsOverflowing] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useClipboard();
   const isCommand = tone === 'command';
   const isArgs = tone === 'args';
   const title = isCommand
@@ -154,16 +155,6 @@ function TerminalContent({
     observer.observe(preview);
     return () => observer.disconnect();
   }, [content]);
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setCopied(false);
-    }
-  }
 
   const shellTone = tone === 'args' ? 'command' : tone;
 
@@ -191,7 +182,7 @@ function TerminalContent({
         className={`terminal-output-modal terminal-output-modal--${shellTone}`}
         bodyClassName="terminal-output-modal__body"
         headerActions={(
-          <IconButton variant="ghost" type="button" onClick={handleCopy} label={copyLabel}>
+          <IconButton variant="ghost" type="button" onClick={() => void copy(content)} label={copyLabel}>
             {copied ? <Check size={18} /> : <Copy size={18} />}
           </IconButton>
         )}
@@ -208,7 +199,7 @@ function ToolPayload({
   t,
 }: {
   name: string;
-  args: Record<string, any>;
+  args: ToolArguments;
   t: (path: string, vars?: Record<string, string | number>) => string;
 }) {
   if (typeof args.command === 'string' && args.command.trim()) {
@@ -258,8 +249,9 @@ function TerminalOutputs({
 export function ToolCallCard({ agentId, name, arguments: args, status, result, permissionMode, onApprove }: ToolCallCardProps) {
   const { t } = useI18n();
   const processId = result?.process_id;
-  const [process, setProcess] = useState<ToolProcessInfo | null>(null);
-  const [processError, setProcessError] = useState('');
+  const processSnapshot = useToolProcess(processId, agentId);
+  const process = processSnapshot.process;
+  const [processActionError, setProcessActionError] = useState('');
   const [isStopping, setIsStopping] = useState(false);
   const [approvalDecision, setApprovalDecision] = useState<'approve' | 'reject' | 'always_approve' | null>(null);
 
@@ -268,53 +260,27 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
   }, [args.approval_id, status]);
 
   useEffect(() => {
-    if (!processId) {
-      setProcess(null);
-      setProcessError('');
-      return;
-    }
-    let cancelled = false;
-    let timer: number | undefined;
-    setProcess(null);
-    setProcessError('');
-    const refresh = async () => {
-      try {
-        const next = await getToolProcess(processId, agentId);
-        if (cancelled) return;
-        setProcess(next);
-        setProcessError('');
-        if (next.status === 'running') {
-          timer = window.setTimeout(refresh, 1000);
-        }
-      } catch (error) {
-        if (cancelled) return;
-        setProcess(null);
-        const message = error instanceof Error ? error.message : '';
-        // Backend uses a shared NotFound error ("agent not found" / "not found").
-        const notFound = /not found/i.test(message);
-        setProcessError(notFound ? t('toolCard.processUnavailable') : message || t('toolCard.refreshFailed'));
-      }
-    };
-    void refresh();
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [agentId, processId, t]);
+    setProcessActionError('');
+  }, [processId]);
+
+  const processError = processActionError
+    || (processSnapshot.notFound
+      ? t('toolCard.processUnavailable')
+      : processSnapshot.error || '');
 
   async function handleStop() {
     if (!processId) return;
     setIsStopping(true);
     try {
-      setProcess(await stopToolProcess(processId, agentId));
-      setProcessError('');
+      const stopped = await stopToolProcess(processId, agentId);
+      updateToolProcessCache(stopped);
+      setProcessActionError('');
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       if (/not found/i.test(message)) {
-        setProcess(null);
-        setProcessError(t('toolCard.processUnavailable'));
+        setProcessActionError(t('toolCard.processUnavailable'));
       } else {
-        setProcessError(message || t('toolCard.stopFailed'));
+        setProcessActionError(message || t('toolCard.stopFailed'));
       }
     } finally {
       setIsStopping(false);
@@ -363,7 +329,7 @@ export function ToolCallCard({ agentId, name, arguments: args, status, result, p
     // Only treat as running after the process manager confirms it. After restart the
     // process_id remains in chat history but the in-memory process is gone.
     const missing = !process && Boolean(processError);
-    const loading = !process && !processError;
+    const loading = processSnapshot.loading || (!process && !processError);
     const effectiveStatus = process?.status ?? (missing ? 'not_found' : 'running');
     const running = process?.status === 'running';
     const failed = effectiveStatus === 'failed' || (process?.exit_code !== undefined && process.exit_code !== 0);

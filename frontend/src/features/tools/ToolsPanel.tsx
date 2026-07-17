@@ -4,8 +4,8 @@ import { ArrowLeft, ShieldCheck, Terminal } from 'lucide-react';
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
-import { AutoSaveIndicator, Button, ListItem, PaneHeader } from '../../components/ui';
-import { TerminalToolSettings, type TerminalAutoSaveStatus } from '../settings/TerminalToolSettings';
+import { Button, ListItem, PaneHeader } from '../../components/ui';
+import { TerminalToolSettings } from '../settings/TerminalToolSettings';
 
 interface ToolsPanelProps {
   agents: Agent[];
@@ -22,7 +22,6 @@ const toolDefs: { key: ToolKey; icon: typeof Terminal; isBuiltin: boolean; getLa
 export function ToolsPanel({ agents, onOpenMain, onBackToList }: ToolsPanelProps) {
   const { t } = useI18n();
   const [activeTool, setActiveTool] = useState<ToolKey>('terminal');
-  const [autoSaveStatus, setAutoSaveStatus] = useState<TerminalAutoSaveStatus>('idle');
 
   const activeDef = toolDefs.find((d) => d.key === activeTool);
 
@@ -33,7 +32,7 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList }: ToolsPanelProps
         <div className="context-pane tools-nav">
           <PaneHeader
             className="mobile-pane-header"
-            title={t('nav.tools')}
+            title={t('tools.areaTitle')}
           />
           <div className="list-stack">
             {toolDefs.map((def) => (
@@ -57,7 +56,7 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList }: ToolsPanelProps
                 onClick={() => { setActiveTool(def.key); onOpenMain(); }}
               />
             ))}
-            <p className="muted" style={{ padding: '12px 16px', fontSize: '13px' }}>{t('tools.comingSoon')}</p>
+            <p className="muted tools-coming-soon">{t('tools.comingSoon')}</p>
           </div>
         </div>
       )}
@@ -66,17 +65,15 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList }: ToolsPanelProps
           <PaneHeader
             className="config-page-header"
             leading={<Button className="main-back-button" variant="ghost" type="button" onClick={onBackToList} icon={<ArrowLeft size={17} />}>{t('common.back')}</Button>}
-            eyebrow={t('nav.tools')}
+            eyebrow={t('tools.areaTitle')}
             title={activeDef?.getLabel(t) ?? t('tools.title')}
             description={activeDef?.getDesc(t) ?? t('tools.description')}
-            actions={<AutoSaveIndicator status={autoSaveStatus} t={t} />}
           />
 
           {activeTool === 'terminal' ? (
             <TerminalToolSettings
               scope="defaults"
               agents={agents}
-              onAutoSaveStatusChange={setAutoSaveStatus}
             />
           ) : null}
         </div>

@@ -7,6 +7,7 @@
   --color-text: #17201c;
   --color-text-soft: #3f4b45;
   --color-muted: #738078;
+  --color-placeholder: #98a39d;
   --color-disabled: #a4ada8;
   --color-on-primary: #ffffff;
   --color-danger-text: #9f2424;
@@ -28,6 +29,10 @@
   --color-info: #2e69c7;
   --color-info-soft: #eef5ff;
   --color-info-border: #c8daf5;
+  --color-message-text: #202923;
+  --color-message-muted: #74827a;
+  --text-terminal: #d1fae5;
+  --text-terminal-error: #fecaca;
 
   --surface-app: #edf1ef;
   --surface-rail: #f7f9f8;
@@ -38,10 +43,31 @@
   --surface-active: #e9f7ef;
   --surface-input: #ffffff;
   --surface-elevated: rgba(255, 255, 255, 0.94);
+  --surface-header: rgba(255, 255, 255, 0.9);
+  --surface-nav: rgba(250, 252, 251, 0.96);
+  --surface-message-user: #d9f5e4;
+  --surface-code: #f3f6f4;
+  --surface-terminal: #111827;
+  --surface-terminal-error: #1c1013;
+  --surface-backdrop: rgba(18, 28, 23, 0.46);
 
   --border-subtle: #e6ebe8;
   --border-strong: #d8e0dc;
   --border-focus: #79d8a4;
+  --border-hover: #c6d1cb;
+  --border-interactive: #b9e8cc;
+  --border-terminal: #283548;
+  --border-terminal-error: #7f1d1d;
+
+  --status-running: #b45309;
+  --status-running-soft: #fffbeb;
+  --status-running-border: #fde68a;
+
+  --focus-ring: rgba(7, 193, 96, 0.18);
+  --focus-ring-control: rgba(7, 193, 96, 0.1);
+  --focus-ring-soft: rgba(7, 193, 96, 0.08);
+  --scrollbar-thumb: #c9d2cd;
+  --scrollbar-thumb-hover: #aebbb4;
 
   --space-1: 4px;
   --space-2: 8px;

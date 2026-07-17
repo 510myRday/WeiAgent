@@ -112,6 +112,7 @@ export function Dialog({
   return createPortal(
     <div
       className="dialog-backdrop"
+      role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget && closeOnBackdrop) onClose?.();
       }}

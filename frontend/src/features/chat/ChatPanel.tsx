@@ -1,48 +1,28 @@
-import { memo, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState, isValidElement } from 'react';
-import type { FormEvent, KeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react';
+import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
 import {
   ArrowLeft,
-  Bot,
-  Check,
-  ChevronDown,
-  Clock3,
-  Clipboard,
   LoaderCircle,
-  MessageSquare,
-  Pencil,
   Pin,
-  RotateCcw,
-  Square,
   Plus,
-  Send,
   Trash2,
-  X,
 } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import rehypeHighlight from 'rehype-highlight';
-import rehypeKatex from 'rehype-katex';
-import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-
 import type {
   Agent,
-  AgentRunPhase,
   AppSettings,
   Conversation,
   ModelProvider,
-  ToolCallMessage,
-  UiMessage,
   UiMessageItem,
   UpdateAgentPayload,
 } from '../../types';
-import { ToolCallCard } from '../../components/ToolCallCard';
 import { approveToolCall, readAgentToolsConfig, type AgentToolsConfig } from '../../api';
 import { useI18n } from '../../i18n';
-import { useConversations } from '../../hooks';
-import { AvatarBadge } from '../../components/AvatarPicker';
+import { useConversations, usePageVisibility } from '../../hooks';
 import { AgentListItem, agentDisplayName } from '../../components/AgentListItem';
-import { Button, EmptyState, IconButton, ListItem, PaneHeader, SearchInput, useFeedback } from '../../components/ui';
+import { Button, IconButton, ListItem, PaneHeader, SearchInput, useFeedback } from '../../components/ui';
+import { ChatComposer } from './ChatComposer';
+import { MessageAvatar, MessageList, type MessageListHandle } from './MessageList';
+import { MessageTimeline, type MessageTimelineItem } from './MessageTimeline';
+import { userErrorMessage } from '../../utils/userError';
 
 interface ChatPanelProps {
   agents: Agent[];
@@ -52,6 +32,7 @@ interface ChatPanelProps {
   onAgentEdit: (id: string, payload: UpdateAgentPayload) => Promise<Agent>;
   onOpenMain: () => void;
   onBackToList: () => void;
+  onCreateAgent: () => void;
   settings: AppSettings;
 }
 
@@ -80,6 +61,7 @@ export function ChatPanel({
   onAgentEdit,
   onOpenMain,
   onBackToList,
+  onCreateAgent,
   settings,
 }: ChatPanelProps) {
   const { t, locale } = useI18n();
@@ -87,8 +69,12 @@ export function ChatPanel({
   const {
     conversations,
     activeConversationId,
-    setActiveConversationId,
+    selectConversation,
     messages,
+    hasOlderMessages,
+    isLoadingOlderMessages,
+    isLoadingConversations,
+    conversationsError,
     isLoadingChat,
     isSending,
     runPhase,
@@ -96,6 +82,7 @@ export function ChatPanel({
     loadConversationsForAgent,
     refreshRunningConversations,
     loadMessages,
+    loadOlderMessages,
     resumeActiveRun,
     detachActiveRun,
     cancelActiveSend,
@@ -111,23 +98,18 @@ export function ChatPanel({
     onError: toast.error,
   });
 
-  const [draft, setDraft] = useState('');
   const [isStreamMode, setIsStreamMode] = useState(true);
   const [selectedModelValue, setSelectedModelValue] = useState('');
   const [isModelSavePending, setIsModelSavePending] = useState(false);
   const [isSavingModel, setIsSavingModel] = useState(false);
   const [conversationFilter, setConversationFilter] = useState('');
   const [pinningConversationIds, setPinningConversationIds] = useState<Set<string>>(() => new Set());
-  const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
-  const [activeTimelineAnchor, setActiveTimelineAnchor] = useState('');
+  const [activeTimelineMessageIndex, setActiveTimelineMessageIndex] = useState<number | null>(null);
   const [terminalPermissionMode, setTerminalPermissionMode] = useState<AgentToolsConfig['terminal']['permission_mode'] | null>(null);
+  const isPageVisible = usePageVisibility();
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const composerFormRef = useRef<HTMLFormElement>(null);
-  const composerInputRef = useRef<HTMLTextAreaElement>(null);
-  const timelineWheelRef = useRef<HTMLDivElement>(null);
-  const messagesScrollFrameRef = useRef<number | undefined>(undefined);
+  const conversationSearchRef = useRef<HTMLInputElement>(null);
+  const messageListRef = useRef<MessageListHandle>(null);
   const modelSaveTimerRef = useRef<number | undefined>(undefined);
   const modelSaveRequestRef = useRef(0);
   const pendingModelSaveRef = useRef<PendingModelSave | null>(null);
@@ -161,6 +143,30 @@ export function ChatPanel({
   const filteredConversations = conversations.filter((conversation) =>
     conversation.title.toLowerCase().includes(conversationFilter.trim().toLowerCase()),
   );
+  const dateFormatters = useMemo(() => {
+    const formatLocale = locale === 'zh' ? 'zh-CN' : 'en-US';
+    return {
+      time: new Intl.DateTimeFormat(formatLocale, { hour: '2-digit', minute: '2-digit' }),
+      dateTime: new Intl.DateTimeFormat(formatLocale, {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+      timelineDate: new Intl.DateTimeFormat(formatLocale, { month: 'long', day: 'numeric' }),
+      timelineDateWithYear: new Intl.DateTimeFormat(formatLocale, {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      }),
+      markerDate: new Intl.DateTimeFormat(formatLocale, { month: '2-digit', day: '2-digit' }),
+      markerTime: new Intl.DateTimeFormat(formatLocale, {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }),
+    };
+  }, [locale]);
   const timelineItems = useMemo<MessageTimelineItem[]>(() => {
     const result: MessageTimelineItem[] = [];
     let previousTimelineTimestamp: number | undefined;
@@ -172,14 +178,18 @@ export function ChatPanel({
       if (previousTimelineTimestamp !== undefined && timestamp - previousTimelineTimestamp < 60_000) return;
       previousTimelineTimestamp = timestamp;
       result.push({
-        anchorId: `message-anchor-${index}`,
-        dateLabel: new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', { month: '2-digit', day: '2-digit' }).format(date),
-        timeLabel: new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date),
+        messageIndex: index,
+        dateLabel: dateFormatters.markerDate.format(date),
+        timeLabel: dateFormatters.markerTime.format(date),
         preview: item.content.trim().replace(/\s+/g, ' ').slice(0, 48),
       });
     });
     return result;
-  }, [locale, visibleMessages]);
+  }, [activeConversationId, dateFormatters, visibleMessages.length]);
+  const timelineMessageIndexes = useMemo(
+    () => timelineItems.map((item) => item.messageIndex),
+    [timelineItems],
+  );
 
   useEffect(() => {
     const pending = pendingModelSaveRef.current;
@@ -189,7 +199,7 @@ export function ChatPanel({
         model_provider_id: pending.selection.providerId,
         model_id: pending.selection.modelId,
       }).catch((cause) => {
-        toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+        toast.error(conversationActionError(cause));
       });
     }
     modelSaveRequestRef.current += 1;
@@ -238,13 +248,13 @@ export function ChatPanel({
   }, [activeAgentId, clearChat, detachActiveRun, loadConversationsForAgent]);
 
   useEffect(() => {
-    if (!activeAgentId) return;
+    if (!activeAgentId || !isPageVisible) return;
     void refreshRunningConversations(activeAgentId);
     const timer = window.setInterval(() => {
       void refreshRunningConversations(activeAgentId);
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [activeAgentId, refreshRunningConversations]);
+  }, [activeAgentId, isPageVisible, refreshRunningConversations]);
 
   useEffect(() => {
     if (!activeConversationId) return;
@@ -258,126 +268,13 @@ export function ChatPanel({
       })
       .catch((cause) => {
         if (!cancelled) {
-          toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+          toast.error(conversationActionError(cause));
         }
       });
     return () => {
       cancelled = true;
     };
   }, [activeAgentId, activeConversationId, loadMessages, resumeActiveRun]);
-
-  const isMessagesNearBottom = useCallback(() => {
-    const el = messagesContainerRef.current;
-    if (!el) return true;
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-  }, []);
-
-  const updateScrollButtonVisibility = useCallback(() => {
-    const el = messagesContainerRef.current;
-    if (!el) {
-      setIsAwayFromBottom(false);
-      return;
-    }
-    const canScroll = el.scrollHeight > el.clientHeight + 8;
-    setIsAwayFromBottom(canScroll && !isMessagesNearBottom());
-  }, [isMessagesNearBottom]);
-
-  const updateActiveTimelineItem = useCallback(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return;
-    const timelineAnchorIds = new Set(timelineItems.map((item) => item.anchorId));
-    const anchors = Array.from(container.querySelectorAll<HTMLElement>('[data-message-anchor]'))
-      .filter((anchor) => timelineAnchorIds.has(anchor.dataset.messageAnchor ?? ''));
-    if (anchors.length === 0) {
-      setActiveTimelineAnchor('');
-      return;
-    }
-    const containerTop = container.getBoundingClientRect().top;
-    const focusLine = containerTop + Math.min(container.clientHeight * 0.3, 220);
-    let closest = anchors[0];
-    let closestDistance = Math.abs(closest.getBoundingClientRect().top - focusLine);
-    for (const anchor of anchors.slice(1)) {
-      const distance = Math.abs(anchor.getBoundingClientRect().top - focusLine);
-      if (distance < closestDistance) {
-        closest = anchor;
-        closestDistance = distance;
-      }
-    }
-    setActiveTimelineAnchor(closest.dataset.messageAnchor ?? '');
-  }, [timelineItems]);
-
-  const handleMessagesScroll = useCallback(() => {
-    updateScrollButtonVisibility();
-    if (messagesScrollFrameRef.current !== undefined) return;
-    messagesScrollFrameRef.current = window.requestAnimationFrame(() => {
-      messagesScrollFrameRef.current = undefined;
-      updateActiveTimelineItem();
-    });
-  }, [updateActiveTimelineItem, updateScrollButtonVisibility]);
-
-  const scrollToBottom = useCallback(
-    (force = false, behavior: ScrollBehavior = 'auto') => {
-      const el = messagesContainerRef.current;
-      if (!el) return;
-      if (!force && !isMessagesNearBottom()) return;
-      el.scrollTo({ top: el.scrollHeight, behavior });
-      setIsAwayFromBottom(false);
-    },
-    [isMessagesNearBottom],
-  );
-
-  useLayoutEffect(() => {
-    if (!isLoadingChat && messages.length > 0) {
-      scrollToBottom(true);
-    }
-  }, [isLoadingChat, messages.length, scrollToBottom]);
-
-  useLayoutEffect(() => {
-    scrollToBottom();
-  }, [messages, isSending, scrollToBottom]);
-
-  useLayoutEffect(() => {
-    const input = composerInputRef.current;
-    if (!input) return;
-    input.style.height = 'auto';
-    input.style.height = `${Math.min(Math.max(input.scrollHeight, 48), 168)}px`;
-  }, [draft]);
-
-  useEffect(() => {
-    const frameId = window.requestAnimationFrame(() => {
-      updateScrollButtonVisibility();
-      updateActiveTimelineItem();
-    });
-    return () => window.cancelAnimationFrame(frameId);
-  }, [messages, updateActiveTimelineItem, updateScrollButtonVisibility]);
-
-  useEffect(() => () => {
-    if (messagesScrollFrameRef.current !== undefined) {
-      window.cancelAnimationFrame(messagesScrollFrameRef.current);
-    }
-  }, []);
-
-  useEffect(() => {
-    const wheel = timelineWheelRef.current;
-    if (!wheel || !activeTimelineAnchor) return;
-    const activeOption = wheel.querySelector<HTMLElement>(`[data-timeline-target="${activeTimelineAnchor}"]`);
-    if (!activeOption) return;
-    wheel.scrollTo({
-      top: activeOption.offsetTop - (wheel.clientHeight / 2) + (activeOption.offsetHeight / 2),
-      behavior: 'smooth',
-    });
-  }, [activeTimelineAnchor]);
-
-  function scrollToTimelineMessage(anchorId: string) {
-    const container = messagesContainerRef.current;
-    const target = container?.querySelector<HTMLElement>(`[data-message-anchor="${anchorId}"]`);
-    if (!container || !target) return;
-    container.scrollTo({
-      top: Math.max(0, target.offsetTop - Math.min(container.clientHeight * 0.28, 220)),
-      behavior: 'smooth',
-    });
-    setActiveTimelineAnchor(anchorId);
-  }
 
   function handleAgentSelect(agentId: string) {
     onAgentChange(agentId);
@@ -393,33 +290,14 @@ export function ChatPanel({
 
   function handleConversationSelect(conversationId: string) {
     if (isSending) detachActiveRun();
-    setActiveConversationId(conversationId);
+    if (conversationId !== activeConversationId) selectConversation(conversationId);
     onOpenMain();
-  }
-
-  function handleSend(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (isSending) return;
-    if (isModelSavePending || isSavingModel) return;
-    const content = draft.trim();
-    if (!activeAgent || !content) return;
-    setDraft('');
-    void send(content, activeAgent.id, isStreamMode);
-    scrollToBottom(true);
-  }
-
-  function handleComposerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
-    e.preventDefault();
-    if (!activeAgent || isSending) return;
-    composerFormRef.current?.requestSubmit();
   }
 
   const handleRestartMessage = useCallback((messageId: string, content: string) => {
     if (!activeAgent || isSending || !messageId || !content.trim()) return;
     void send(content.trim(), activeAgent.id, isStreamMode, messageId);
-    scrollToBottom(true);
-  }, [activeAgent, isSending, isStreamMode, scrollToBottom, send]);
+  }, [activeAgent, isSending, isStreamMode, send]);
 
   async function handleModelChange(value: string) {
     if (!activeAgent || isSavingModel || isSending) return;
@@ -471,7 +349,7 @@ export function ChatPanel({
         setSelectedModelValue(pending.previousValue);
         setIsModelSavePending(false);
       }
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      toast.error(conversationActionError(cause));
     } finally {
       if (modelSaveRequestRef.current === requestId) {
         setIsSavingModel(false);
@@ -489,8 +367,15 @@ export function ChatPanel({
     void createNewConversation(activeAgent.id)
       .then(() => onOpenMain())
       .catch((cause) => {
-        toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+        toast.error(conversationActionError(cause));
       });
+  }
+
+  function conversationActionError(cause: unknown) {
+    return userErrorMessage(cause, {
+      summary: t('error.conversationActionFailed'),
+      recovery: t('error.retryConnection'),
+    });
   }
 
   async function handleDeleteConversation(conversationId: string) {
@@ -507,7 +392,7 @@ export function ChatPanel({
       await removeConversation(conversationId, activeAgent.id);
       toast.success(t('notification.conversationDeleted'));
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      toast.error(conversationActionError(cause));
     }
   }
 
@@ -519,7 +404,7 @@ export function ChatPanel({
         ? 'notification.conversationUnpinned'
         : 'notification.conversationPinned'));
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      toast.error(conversationActionError(cause));
     } finally {
       setPinningConversationIds((current) => {
         const next = new Set(current);
@@ -529,23 +414,61 @@ export function ChatPanel({
     }
   }
 
-  function formatTime(value: string) {
-    return new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(new Date(value));
-  }
+  const handleSendMessage = useCallback((content: string, streamMode: boolean) => {
+    if (!activeAgent || isSending || isModelSavePending || isSavingModel) return;
+    void send(content, activeAgent.id, streamMode);
+  }, [activeAgent, isModelSavePending, isSavingModel, isSending, send]);
 
-  function formatDate(value: string) {
-    return new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(new Date(value));
-  }
+  const handleLoadOlderMessages = useCallback(async () => {
+    if (!activeConversationId || isLoadingOlderMessages) return false;
+    return loadOlderMessages(activeConversationId);
+  }, [activeConversationId, isLoadingOlderMessages, loadOlderMessages]);
 
-  function formatTimelineTime(value: string) {
+  const handleApproveToolCall = useCallback(async (
+    approvalId: string,
+    agentId: string,
+    decision: 'approve' | 'reject' | 'always_approve',
+  ) => {
+    await approveToolCall(approvalId, agentId, decision);
+  }, []);
+
+  const handleTimelineSelect = useCallback((messageIndex: number) => {
+    messageListRef.current?.scrollToMessage(messageIndex);
+    setActiveTimelineMessageIndex(messageIndex);
+  }, []);
+
+  useEffect(() => {
+    const handleShortcut = (event: globalThis.KeyboardEvent) => {
+      if (event.repeat || document.querySelector('[role="dialog"]')) return;
+      const commandKey = event.ctrlKey || event.metaKey;
+      if (commandKey && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        conversationSearchRef.current?.focus();
+        return;
+      }
+      if (commandKey && event.key.toLowerCase() === 'n' && activeAgent && !isSending) {
+        event.preventDefault();
+        handleNewConversation();
+        return;
+      }
+      if (!commandKey && !event.altKey && event.key === 'Escape' && isSending) {
+        event.preventDefault();
+        cancelActiveSend();
+      }
+    };
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  }, [activeAgent?.id, activeConversation?.id, activeConversation?.message_count, cancelActiveSend, isSending]);
+
+  const formatTime = useCallback((value: string) => {
+    return dateFormatters.time.format(new Date(value));
+  }, [dateFormatters]);
+
+  const formatDate = useCallback((value: string) => {
+    return dateFormatters.dateTime.format(new Date(value));
+  }, [dateFormatters]);
+
+  const formatTimelineTime = useCallback((value: string) => {
     const date = new Date(value);
     const now = new Date();
     const isSameYear = date.getFullYear() === now.getFullYear();
@@ -553,22 +476,11 @@ export function ChatPanel({
 
     if (isSameDay) return formatTime(value);
 
-    return new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
-      month: 'long',
-      day: 'numeric',
-      ...(isSameYear ? {} : { year: 'numeric' as const }),
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(date);
-  }
-
-  function shouldShowTimeSeparator(message: UiMessage, previous?: UiMessage) {
-    if (!previous) return true;
-    const currentTime = new Date(message.created_at).getTime();
-    const previousTime = new Date(previous.created_at).getTime();
-    if (!Number.isFinite(currentTime) || !Number.isFinite(previousTime)) return false;
-    return currentTime - previousTime >= 5 * 60 * 1000;
-  }
+    const dateLabel = (isSameYear
+      ? dateFormatters.timelineDate
+      : dateFormatters.timelineDateWithYear).format(date);
+    return `${dateLabel} ${dateFormatters.time.format(date)}`;
+  }, [dateFormatters, formatTime]);
 
   return (
     <>
@@ -580,7 +492,14 @@ export function ChatPanel({
               title={t('nav.chat')}
             />
             <div className="list-stack">
-              {agents.length === 0 ? <p className="muted centered">{t('agentConfig.noAgents')}</p> : null}
+              {agents.length === 0 ? (
+                <div className="list-empty-action">
+                  <p className="muted centered">{t('agentConfig.noAgents')}</p>
+                  <Button variant="primary" type="button" onClick={onCreateAgent} icon={<Plus size={16} />}>
+                    {t('agentConfig.create')}
+                  </Button>
+                </div>
+              ) : null}
               {agents.map((agent) => (
                 <AgentListItem
                   key={agent.id}
@@ -606,9 +525,34 @@ export function ChatPanel({
                 </IconButton>
               )}
             />
-            <SearchInput value={conversationFilter} onChange={setConversationFilter} placeholder={t('conversation.search')} />
+            <SearchInput ref={conversationSearchRef} value={conversationFilter} onChange={setConversationFilter} placeholder={t('conversation.search')} />
             <div className="list-stack conversation-list">
-              {conversations.length === 0 ? <p className="muted centered">{t('conversation.empty')}</p> : null}
+              {isLoadingConversations && conversations.length === 0 ? (
+                <p className="muted centered conversation-list-state" role="status">{t('conversation.loading')}</p>
+              ) : null}
+              {conversationsError ? (
+                <div className="conversation-list-state conversation-list-error" role="alert">
+                  <strong>{t('conversation.loadFailed')}</strong>
+                  <span>{conversationsError}</span>
+                  <Button variant="secondary" type="button" onClick={() => void loadConversationsForAgent(activeAgent.id)}>
+                    {t('common.retry')}
+                  </Button>
+                </div>
+              ) : null}
+              {!isLoadingConversations && !conversationsError && conversations.length === 0 ? (
+                <div className="conversation-list-state list-empty-action">
+                  <p className="muted centered">{t('conversation.empty')}</p>
+                  <Button variant="secondary" type="button" onClick={handleNewConversation} icon={<Plus size={15} />}>
+                    {t('conversation.create')}
+                  </Button>
+                </div>
+              ) : null}
+              {!isLoadingConversations
+                && !conversationsError
+                && conversations.length > 0
+                && filteredConversations.length === 0 ? (
+                  <p className="muted centered conversation-list-state">{t('conversation.noSearchResults')}</p>
+                ) : null}
               {filteredConversations.map((conversation) => (
                 <ConversationRow
                   key={conversation.id}
@@ -659,692 +603,52 @@ export function ChatPanel({
             </select>
           ) : null}
         </header>
-        <div className="messages" aria-live="polite" ref={messagesContainerRef} onScroll={handleMessagesScroll}>
-          {activeAgent && isLoadingChat ? <p className="muted centered">{t('chat.loading')}</p> : null}
-          {(!activeAgent || !isLoadingChat) && visibleMessages.length === 0 ? (
-            <EmptyState
-              icon={activeAgent ? <MessageSquare size={34} /> : <Bot size={34} />}
-              title={activeAgent ? t('chat.emptyTitle') : t('chat.noAgent')}
-              description={activeAgent ? t('chat.emptyHint') : t('chat.noAgentHint')}
-            />
-          ) : null}
-          {visibleMessages.map((item, index) => {
-            if ('type' in item && item.type === 'tool_call') {
-              const toolMsg = item as ToolCallMessage;
-              return (
-                <div key={toolMsg.call_id} className="message-row assistant message-row--tool">
-                  {!false && <MessageAvatar agent={activeAgent} settings={settings} isUser={false} />}
-                  <div className="message-body">
-                    <div className="message-meta"><strong>{activeAgent ? agentDisplayName(activeAgent, t) : 'Assistant'}</strong></div>
-                    <div className="message-bubble message-bubble--tool">
-                      <ToolCallCard
-                        agentId={activeAgent?.id ?? ''}
-                        callId={toolMsg.call_id}
-                        name={toolMsg.name}
-                        arguments={toolMsg.arguments}
-                        status={toolMsg.status}
-                        result={toolMsg.result}
-                        permissionMode={toolMsg.permission_mode ?? terminalPermissionMode}
-                        onApprove={async (decision) => {
-                          const approvalId = toolMsg.arguments.approval_id;
-                          if (!approvalId) return;
-                          try {
-                            const approvalAgentId = toolMsg.arguments.agent_id || activeAgent?.id;
-                            if (!approvalAgentId) return;
-                            await approveToolCall(approvalId, approvalAgentId, decision);
-                          } catch (e) {
-                            toast.error(e instanceof Error ? e.message : t('error.unknown'));
-                            throw e;
-                          }
-                        }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              );
-            }
-            const msg = item as UiMessage;
-            const prev = visibleMessages[index - 1];
-            const prevUi = prev && 'role' in prev ? prev as UiMessage : undefined;
-            return (
-              <MessageRow
-                key={msg.clientId}
-                anchorId={`message-anchor-${index}`}
-                message={msg}
-                showTimeSeparator={shouldShowTimeSeparator(msg, prevUi)}
-                timeSeparatorLabel={formatTimelineTime(msg.created_at)}
-                participantName={msg.role === 'user' ? t('chat.you') : activeAgent ? agentDisplayName(activeAgent, t) : 'Assistant'}
-                agent={activeAgent}
-                settings={settings}
-                failedLabel={t('chat.failed')}
-                actionsDisabled={isSending}
-                onRestart={handleRestartMessage}
-              />
-            );
-          })}
-          {activeAgent && shouldShowAgentWaitingBubble(visibleMessages, isSending, runPhase) ? (
-            <article className="message-row assistant is-streaming is-waiting" aria-live="polite">
-              <MessageAvatar agent={activeAgent} settings={settings} isUser={false} />
-              <div className="message-body">
-                <div className="message-meta">
-                  <strong>{activeAgent ? agentDisplayName(activeAgent, t) : 'Assistant'}</strong>
-                </div>
-                <div className="message-bubble">
-                  <TypingIndicator label={t('chat.sending')} />
-                </div>
-              </div>
-            </article>
-          ) : null}
-          <div ref={messagesEndRef} />
-        </div>
+        <MessageList
+          ref={messageListRef}
+          conversationId={activeConversationId}
+          messages={visibleMessages}
+          activeAgent={activeAgent}
+          settings={settings}
+          isLoading={isLoadingChat}
+          hasOlderMessages={hasOlderMessages}
+          isLoadingOlderMessages={isLoadingOlderMessages}
+          isSending={isSending}
+          runPhase={runPhase}
+          terminalPermissionMode={terminalPermissionMode}
+          timelineMessageIndexes={timelineMessageIndexes}
+          onLoadOlder={handleLoadOlderMessages}
+          onRestart={handleRestartMessage}
+          onApproveToolCall={handleApproveToolCall}
+          onActiveTimelineMessageChange={setActiveTimelineMessageIndex}
+          formatTimelineTime={formatTimelineTime}
+          onCreateAgent={onCreateAgent}
+        />
 
         {timelineItems.length > 1 ? (
-          <MessageTimeNavigator
+          <MessageTimeline
             items={timelineItems}
-            activeAnchor={activeTimelineAnchor}
-            wheelRef={timelineWheelRef}
+            activeMessageIndex={activeTimelineMessageIndex}
             label={t('chat.timeline')}
-            onSelect={scrollToTimelineMessage}
+            onSelect={handleTimelineSelect}
           />
         ) : null}
 
-        {isAwayFromBottom ? (
-          <button
-            className="scroll-to-bottom-button"
-            type="button"
-            onClick={() => scrollToBottom(true, 'smooth')}
-            aria-label={t('chat.scrollToBottom')}
-            title={t('chat.scrollToBottom')}
-          >
-            <ChevronDown size={22} strokeWidth={2.4} />
-          </button>
-        ) : null}
-
-        <form className="composer" ref={composerFormRef} onSubmit={handleSend}>
-          <div className="composer-box">
-            <textarea
-              ref={composerInputRef}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={handleComposerKeyDown}
-              placeholder={composerPlaceholder}
-              aria-label={t('chat.messageLabel')}
-              disabled={isComposerDisabled}
-              rows={1}
-            />
-            <div className="composer-toolbar">
-              <button
-                type="button"
-                className={`stream-switch${isStreamMode ? ' is-active' : ''}`}
-                role="switch"
-                aria-checked={isStreamMode}
-                aria-label={t('chat.stream')}
-                onClick={() => setIsStreamMode((current) => !current)}
-              >
-                <span className="stream-switch-track" aria-hidden="true"><span /></span>
-                <span>{t('chat.stream')}</span>
-              </button>
-              <div className="composer-actions">
-                <Button
-                  className={`send-button${isSending ? ' is-stopping' : ''}`}
-                  variant={isSending ? 'danger' : 'primary'}
-                  type={isSending ? 'button' : 'submit'}
-                  onClick={isSending ? cancelActiveSend : undefined}
-                  disabled={isComposerDisabled || (!isSending && (isModelSavePending || isSavingModel || !draft.trim()))}
-                  icon={isSending ? <Square className="stop-icon" size={16} /> : <Send size={17} />}
-                >
-                  {isSending ? t('chat.stop') : t('chat.send')}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </form>
+        <ChatComposer
+          disabled={isComposerDisabled}
+          placeholder={composerPlaceholder}
+          draftKey={`${activeAgent?.id ?? 'none'}:${activeConversationId || 'new'}`}
+          isSending={isSending}
+          isSavingModel={isSavingModel}
+          isModelSavePending={isModelSavePending}
+          isStreamMode={isStreamMode}
+          onStreamModeChange={setIsStreamMode}
+          onSend={handleSendMessage}
+          onStop={cancelActiveSend}
+        />
       </section>
     </>
   );
 }
-
-
-function shouldShowAgentWaitingBubble(
-  messages: UiMessageItem[],
-  isSending: boolean,
-  runPhase: AgentRunPhase,
-): boolean {
-  if (!isSending) return false;
-  if (runPhase === 'waiting_for_approval') return false;
-
-  const last = messages[messages.length - 1];
-  if (!last) return true;
-
-  // Tool agent-loop: keep a typing bubble under tool cards, except while waiting for user approval.
-  if ('type' in last && last.type === 'tool_call') {
-    return last.status !== 'pending_approval';
-  }
-
-  if ('role' in last && last.role === 'assistant') {
-    // Empty streaming assistant already renders dots inside the bubble.
-    // Streaming text already communicates progress.
-    // Finalized assistant content should not flash a trailing waiting bubble before `done`.
-    return last.status !== 'streaming' && runPhase === 'executing_tool';
-  }
-
-  // e.g. last item is a user message and the optimistic assistant bubble is missing.
-  return true;
-}
-
-type MessageTimelineItem = {
-  anchorId: string;
-  dateLabel: string;
-  timeLabel: string;
-  preview: string;
-};
-
-function MessageTimeNavigator({
-  items,
-  activeAnchor,
-  wheelRef,
-  label,
-  onSelect,
-}: {
-  items: MessageTimelineItem[];
-  activeAnchor: string;
-  wheelRef: RefObject<HTMLDivElement | null>;
-  label: string;
-  onSelect: (anchorId: string) => void;
-}) {
-  const dragStateRef = useRef<{
-    pointerId: number;
-    startY: number;
-    startScrollTop: number;
-    moved: boolean;
-  } | null>(null);
-  const suppressClickRef = useRef(false);
-  const [isDragging, setIsDragging] = useState(false);
-
-  function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.button !== 0 || !wheelRef.current) return;
-    dragStateRef.current = {
-      pointerId: event.pointerId,
-      startY: event.clientY,
-      startScrollTop: wheelRef.current.scrollTop,
-      moved: false,
-    };
-    wheelRef.current.setPointerCapture(event.pointerId);
-    setIsDragging(true);
-  }
-
-  function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    const dragState = dragStateRef.current;
-    const wheel = wheelRef.current;
-    if (!dragState || !wheel || dragState.pointerId !== event.pointerId) return;
-    const delta = event.clientY - dragState.startY;
-    if (Math.abs(delta) > 3) dragState.moved = true;
-    if (dragState.moved) event.preventDefault();
-    wheel.scrollTop = dragState.startScrollTop - delta;
-  }
-
-  function finishPointerDrag(event: ReactPointerEvent<HTMLDivElement>) {
-    const dragState = dragStateRef.current;
-    const wheel = wheelRef.current;
-    if (!dragState || !wheel || dragState.pointerId !== event.pointerId) return;
-    if (wheel.hasPointerCapture(event.pointerId)) wheel.releasePointerCapture(event.pointerId);
-    dragStateRef.current = null;
-    setIsDragging(false);
-    if (!dragState.moved) return;
-
-    suppressClickRef.current = true;
-    window.setTimeout(() => { suppressClickRef.current = false; }, 0);
-    const wheelCenter = wheel.getBoundingClientRect().top + (wheel.clientHeight / 2);
-    const options = Array.from(wheel.querySelectorAll<HTMLElement>('[data-timeline-target]'));
-    const closest = options.reduce<HTMLElement | null>((best, option) => {
-      if (!best) return option;
-      const optionCenter = option.getBoundingClientRect().top + (option.offsetHeight / 2);
-      const bestCenter = best.getBoundingClientRect().top + (best.offsetHeight / 2);
-      return Math.abs(optionCenter - wheelCenter) < Math.abs(bestCenter - wheelCenter) ? option : best;
-    }, null);
-    const anchorId = closest?.dataset.timelineTarget;
-    if (anchorId) onSelect(anchorId);
-  }
-
-  return (
-    <aside className={`message-time-navigator${isDragging ? ' is-dragging' : ''}`} aria-label={label}>
-      <div className="message-time-navigator__marker" aria-hidden="true">
-        <Clock3 size={13} />
-        <span />
-      </div>
-      <div
-        className="message-time-wheel"
-        ref={wheelRef}
-        role="listbox"
-        aria-label={label}
-        tabIndex={0}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={finishPointerDrag}
-        onPointerCancel={finishPointerDrag}
-      >
-        {items.map((item) => (
-          <button
-            key={item.anchorId}
-            className={`message-time-option${activeAnchor === item.anchorId ? ' is-active' : ''}`}
-            type="button"
-            role="option"
-            aria-selected={activeAnchor === item.anchorId}
-            data-timeline-target={item.anchorId}
-            title={item.preview || `${item.dateLabel} ${item.timeLabel}`}
-            onClick={() => {
-              if (suppressClickRef.current) {
-                suppressClickRef.current = false;
-                return;
-              }
-              onSelect(item.anchorId);
-            }}
-          >
-            <span>{item.dateLabel}</span>
-            <strong>{item.timeLabel}</strong>
-          </button>
-        ))}
-      </div>
-    </aside>
-  );
-}
-
-function TypingIndicator({ label }: { label: string }) {
-  return (
-    <div className="typing-indicator" role="status" aria-label={label}>
-      <span />
-      <span />
-      <span />
-    </div>
-  );
-}
-
-const MessageRow = memo(function MessageRow({
-  anchorId,
-  message,
-  showTimeSeparator,
-  timeSeparatorLabel,
-  participantName,
-  agent,
-  settings,
-  failedLabel,
-  actionsDisabled,
-  onRestart,
-}: {
-  anchorId: string;
-  message: UiMessage;
-  showTimeSeparator: boolean;
-  timeSeparatorLabel: string;
-  participantName: string;
-  agent?: Agent;
-  settings: AppSettings;
-  failedLabel: string;
-  actionsDisabled: boolean;
-  onRestart: (messageId: string, content: string) => void;
-}) {
-  const { t } = useI18n();
-  const isUser = message.role === 'user';
-  const [isEditing, setIsEditing] = useState(false);
-  const [editDraft, setEditDraft] = useState(message.content);
-  const editInputRef = useRef<HTMLTextAreaElement>(null);
-  const canRestart = isUser && Boolean(message.id) && message.status !== 'streaming';
-
-  useLayoutEffect(() => {
-    if (!isEditing) return;
-    const input = editInputRef.current;
-    if (!input) return;
-    input.style.height = 'auto';
-    input.style.height = `${Math.min(Math.max(input.scrollHeight, 72), 240)}px`;
-    input.focus();
-    input.setSelectionRange(input.value.length, input.value.length);
-  }, [editDraft, isEditing]);
-
-  function beginEditing() {
-    setEditDraft(message.content);
-    setIsEditing(true);
-  }
-
-  function cancelEditing() {
-    setEditDraft(message.content);
-    setIsEditing(false);
-  }
-
-  function submitEdit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const content = editDraft.trim();
-    if (!content || actionsDisabled || !message.id) return;
-    setIsEditing(false);
-    onRestart(message.id, content);
-  }
-
-  function handleEditKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelEditing();
-      return;
-    }
-    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
-    event.preventDefault();
-    event.currentTarget.form?.requestSubmit();
-  }
-
-  return (
-    <>
-      {showTimeSeparator ? (
-        <div className="message-time-separator">
-          <time dateTime={message.created_at}>{timeSeparatorLabel}</time>
-        </div>
-      ) : null}
-      <article
-        className={[
-          'message-row',
-          message.role,
-          message.status === 'streaming' ? 'is-streaming' : '',
-          isEditing ? 'is-editing' : '',
-        ].filter(Boolean).join(' ')}
-        data-message-anchor={anchorId}
-      >
-        {!isUser ? <MessageAvatar agent={agent} settings={settings} isUser={false} /> : null}
-        <div className="message-body">
-          <div className="message-meta">
-            <strong>{participantName}</strong>
-          </div>
-          {isEditing ? (
-            <form className="message-edit-form" onSubmit={submitEdit}>
-              <div className="message-bubble message-edit-bubble">
-                <textarea
-                  ref={editInputRef}
-                  className="message-edit-textarea"
-                  value={editDraft}
-                  onChange={(event) => setEditDraft(event.target.value)}
-                  onKeyDown={handleEditKeyDown}
-                  aria-label={t('chat.editMessage')}
-                  disabled={actionsDisabled}
-                  rows={3}
-                />
-              </div>
-              <div className="message-actions message-edit-actions">
-                <button
-                  className="message-action-button"
-                  type="button"
-                  onClick={cancelEditing}
-                  aria-label={t('chat.cancelEdit')}
-                  title={t('chat.cancelEdit')}
-                >
-                  <X size={14} />
-                  <span>{t('chat.cancelEdit')}</span>
-                </button>
-                <button
-                  className="message-action-button is-primary"
-                  type="submit"
-                  disabled={actionsDisabled || !editDraft.trim()}
-                  aria-label={t('chat.sendEdit')}
-                  title={t('chat.sendEdit')}
-                >
-                  <Send size={14} />
-                  <span>{t('chat.sendEdit')}</span>
-                </button>
-              </div>
-            </form>
-          ) : (
-            <>
-              <div className="message-bubble">
-                <MessageContent message={message} />
-                {message.status === 'failed' ? <span className="message-status error">{failedLabel}</span> : null}
-              </div>
-              {canRestart ? (
-                <div className="message-actions">
-                  <button
-                    className="message-action-button"
-                    type="button"
-                    onClick={beginEditing}
-                    disabled={actionsDisabled}
-                    aria-label={t('chat.editMessage')}
-                    title={t('chat.editMessage')}
-                  >
-                    <Pencil size={15} />
-                  </button>
-                  <button
-                    className="message-action-button"
-                    type="button"
-                    onClick={() => onRestart(message.id, message.content)}
-                    disabled={actionsDisabled}
-                    aria-label={t('chat.retryMessage')}
-                    title={t('chat.retryMessage')}
-                  >
-                    <RotateCcw size={15} />
-                  </button>
-                </div>
-              ) : null}
-            </>
-          )}
-        </div>
-        {isUser ? <MessageAvatar agent={agent} settings={settings} isUser /> : null}
-      </article>
-    </>
-  );
-});
-
-function MessageAvatar({ agent, settings, isUser }: { agent?: Agent; settings: AppSettings; isUser: boolean }) {
-  if (isUser) {
-    return <AvatarBadge icon={settings.avatar_icon} color={settings.avatar_color} size={23} className="chat-avatar" />;
-  }
-
-  if (agent) {
-    return <AvatarBadge icon={agent.avatar_icon} color={agent.avatar_color} size={23} className="chat-avatar" />;
-  }
-
-  return <span className="chat-avatar avatar-muted"><Bot size={23} /></span>;
-}
-
-function MessageContent({ message }: { message: UiMessage }) {
-  const { t } = useI18n();
-
-  if (message.status === 'streaming' && !message.content) {
-    return <TypingIndicator label={t('chat.sending')} />;
-  }
-
-  if (message.status === 'streaming') {
-    return (
-      <div className="message-markdown streaming-content">
-        <MarkdownContent content={message.content} />
-      </div>
-    );
-  }
-
-  return (
-    <div className="message-markdown">
-      <MarkdownContent content={message.content} />
-    </div>
-  );
-}
-
-function CodeBlock({ children }: { children?: ReactNode }) {
-  const { t } = useI18n();
-  const [copied, setCopied] = useState(false);
-  const text = extractText(children);
-  const language = extractLanguage(children);
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    } catch {
-      setCopied(false);
-    }
-  }
-
-  return (
-    <div className="code-block-wrap">
-      <span className="code-language-label">{language}</span>
-      <button className="code-copy-button" type="button" onClick={handleCopy} disabled={!text} aria-label={t('chat.copyCode')}>
-        {copied ? <Check size={14} /> : <Clipboard size={14} />}
-        <span>{copied ? t('chat.copied') : t('chat.copy')}</span>
-      </button>
-      <pre>{children}</pre>
-    </div>
-  );
-}
-
-function extractLanguage(node: ReactNode): string {
-  const className = findCodeClassName(node);
-  const raw = className?.match(/language-([\w-]+)/)?.[1] ?? 'text';
-  return formatLanguage(raw);
-}
-
-function findCodeClassName(node: ReactNode): string | undefined {
-  if (Array.isArray(node)) {
-    return node.map(findCodeClassName).find(Boolean);
-  }
-  if (!isValidElement<{ className?: string; children?: ReactNode }>(node)) {
-    return undefined;
-  }
-  return node.props.className ?? findCodeClassName(node.props.children);
-}
-
-function formatLanguage(language: string): string {
-  const normalized = language.toLowerCase();
-  const labels: Record<string, string> = {
-    js: 'JS',
-    javascript: 'JS',
-    jsx: 'JSX',
-    ts: 'TS',
-    typescript: 'TS',
-    tsx: 'TSX',
-    html: 'HTML',
-    css: 'CSS',
-    json: 'JSON',
-    md: 'MD',
-    markdown: 'MD',
-    py: 'Python',
-    python: 'Python',
-    rs: 'Rust',
-    rust: 'Rust',
-    sh: 'Shell',
-    bash: 'Shell',
-    powershell: 'PowerShell',
-    ps1: 'PowerShell',
-    text: 'Text',
-    txt: 'Text',
-  };
-  return labels[normalized] ?? normalized.toUpperCase();
-}
-
-function extractText(node: ReactNode): string {
-  if (typeof node === 'string' || typeof node === 'number') return String(node);
-  if (Array.isArray(node)) return node.map(extractText).join('');
-  if (isValidElement<{ children?: ReactNode }>(node)) return extractText(node.props.children);
-  return '';
-}
-
-const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkCjkFriendly, remarkMath]}
-      rehypePlugins={[rehypeKatex, rehypeHighlight]}
-      components={{ pre: CodeBlock }}
-    >
-      {normalizeMathMarkdown(normalizeLooseStrongMarkdown(content))}
-    </ReactMarkdown>
-  );
-});
-
-function normalizeLooseStrongMarkdown(content: string): string {
-  const parts = content.split(/(\r\n|\r|\n)/);
-  let fence: { marker: string; length: number } | null = null;
-
-  for (let index = 0; index < parts.length; index += 2) {
-    const line = parts[index];
-    const fenceMatch = line.match(/^(?: {0,3}>[ \t]?)* {0,3}(`{3,}|~{3,})/);
-
-    if (fence) {
-      if (
-        fenceMatch
-        && fenceMatch[1][0] === fence.marker
-        && fenceMatch[1].length >= fence.length
-        && line.slice(fenceMatch[0].length).trim() === ''
-      ) {
-        fence = null;
-      }
-      continue;
-    }
-
-    if (fenceMatch) {
-      fence = { marker: fenceMatch[1][0], length: fenceMatch[1].length };
-      continue;
-    }
-
-    parts[index] = normalizeInlineStrongSpacing(line);
-  }
-
-  return parts.join('');
-}
-
-function normalizeInlineStrongSpacing(line: string): string {
-  let result = '';
-  let plainStart = 0;
-  let cursor = 0;
-
-  while (cursor < line.length) {
-    if (line[cursor] !== '`' || isEscapedMarkdownCharacter(line, cursor)) {
-      cursor += 1;
-      continue;
-    }
-
-    const openingStart = cursor;
-    while (line[cursor] === '`') cursor += 1;
-    const markerLength = cursor - openingStart;
-    const closingEnd = findClosingBacktickRun(line, cursor, markerLength);
-
-    if (closingEnd === -1) continue;
-
-    result += normalizeStrongSpacing(line.slice(plainStart, openingStart));
-    result += line.slice(openingStart, closingEnd);
-    plainStart = closingEnd;
-    cursor = closingEnd;
-  }
-
-  return result + normalizeStrongSpacing(line.slice(plainStart));
-}
-
-function findClosingBacktickRun(line: string, start: number, markerLength: number): number {
-  let cursor = start;
-
-  while (cursor < line.length) {
-    if (line[cursor] !== '`') {
-      cursor += 1;
-      continue;
-    }
-
-    const runStart = cursor;
-    while (line[cursor] === '`') cursor += 1;
-    if (cursor - runStart === markerLength) return cursor;
-  }
-
-  return -1;
-}
-
-function isEscapedMarkdownCharacter(value: string, index: number): boolean {
-  let slashCount = 0;
-  for (let cursor = index - 1; cursor >= 0 && value[cursor] === '\\'; cursor -= 1) {
-    slashCount += 1;
-  }
-  return slashCount % 2 === 1;
-}
-
-function normalizeStrongSpacing(value: string): string {
-  return value
-    .replace(/(?<![\\*])\*\*(?!\*)((?:(?!\*\*).)*?\S)([ \t]+)\*\*(?!\*)/g, '**$1**$2')
-    .replace(/(?<![\\*])\*\*(?!\*)([ \t]+)((?:(?!\*\*).)*?\S)\*\*(?!\*)/g, '$1**$2**');
-}
-
-function normalizeMathMarkdown(content: string): string {
-  return content.replace(/\\\[([\s\S]*?)\\\]/g, (_match, formula: string) => {
-    return `$$\n${formula.trim()}\n$$`;
-  }).replace(/\\\(([\s\S]*?)\\\)/g, (_match, formula: string) => `$${formula.trim()}$`);
-}
-
 function ConversationRow({
   conversation,
   active,

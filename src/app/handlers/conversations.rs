@@ -18,8 +18,9 @@ use crate::{
         run_manager::SequencedRunEvent,
     },
     domain::{
-        AgentRun, AgentRunStatus, ChatMessage, Conversation, CreateConversationRequest,
-        SendMessageRequest, SendMessageResponse, UpdateConversationRequest,
+        AgentRun, AgentRunStatus, ChatMessage, Conversation, ConversationMessagePage,
+        CreateConversationRequest, SendMessageRequest, SendMessageResponse,
+        UpdateConversationRequest,
     },
     error::AppResult,
     llm::client::RequestOptions,
@@ -137,6 +138,29 @@ pub async fn read_conversation_messages(
             .read_conversation_messages(conversation_id)
             .await?,
     ))
+}
+
+pub async fn read_conversation_message_page(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+    Query(query): Query<ConversationMessagesQuery>,
+) -> AppResult<Json<ConversationMessagePage>> {
+    Ok(Json(
+        state
+            .store
+            .read_conversation_message_page(
+                conversation_id,
+                query.before,
+                query.limit.unwrap_or(80).clamp(20, 200),
+            )
+            .await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConversationMessagesQuery {
+    before: Option<Uuid>,
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -456,14 +480,16 @@ fn agent_event_to_sse(event: AgentRunEvent) -> Event {
             phase,
             iteration,
             call_id,
-        } => json_event(
-            "phase",
-            &serde_json::json!({
+        } => {
+            let mut data = serde_json::json!({
                 "phase": phase,
                 "iteration": iteration,
-                "call_id": call_id,
-            }),
-        ),
+            });
+            if let Some(call_id) = call_id {
+                data["call_id"] = serde_json::Value::String(call_id);
+            }
+            json_event("phase", &data)
+        }
         AgentRunEvent::ToolCall {
             call_id,
             name,
@@ -492,20 +518,24 @@ fn agent_event_to_sse(event: AgentRunEvent) -> Event {
             permission,
             justification,
             background,
-        } => json_event(
-            "approval_required",
-            &serde_json::json!({
+        } => {
+            let mut data = serde_json::json!({
                 "call_id": call_id,
                 "agent_id": agent_id,
                 "command": command,
                 "approval_id": approval_id,
-                "cwd": cwd,
                 "runtime": runtime,
                 "permission": permission,
-                "justification": justification,
                 "background": background,
-            }),
-        ),
+            });
+            if let Some(cwd) = cwd {
+                data["cwd"] = serde_json::Value::String(cwd);
+            }
+            if let Some(justification) = justification {
+                data["justification"] = serde_json::Value::String(justification);
+            }
+            json_event("approval_required", &data)
+        }
         AgentRunEvent::Done => Event::default().event("done").data("ok"),
         AgentRunEvent::Cancelled => Event::default().event("cancelled").data("ok"),
         AgentRunEvent::Error(error) => Event::default().event("error").data(error),

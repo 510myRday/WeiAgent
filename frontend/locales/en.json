@@ -6,7 +6,6 @@
   "nav": {
     "chat": "Chat",
     "agents": "Agents",
-    "groups": "Groups",
     "tools": "Tools",
     "settings": "Settings"
   },
@@ -23,7 +22,8 @@
     "cancel": "Cancel",
     "confirm": "Confirm",
     "delete": "Delete",
-    "close": "Close"
+    "close": "Close",
+    "retry": "Retry"
   },
   "dialog": {
     "confirmTitle": "Please confirm"
@@ -62,7 +62,20 @@
     "selectAgent": "Select an agent to configure",
     "noAgents": "No agents yet. Create one to get started.",
     "avatarChange": "Choose Avatar Style",
-    "avatarPreview": "Agent avatar"
+    "avatarPreview": "Agent avatar",
+    "sectionsLabel": "Agent configuration sections",
+    "section": {
+      "basic": "Basic info",
+      "model": "Model",
+      "prompt": "Personality & instructions",
+      "memory": "Memory",
+      "tools": "Tool permissions"
+    },
+    "modelHint": "Choose the model service this agent uses for conversations and tasks.",
+    "promptHint": "Define the agent's role, tone, and operating rules.",
+    "memoryHint": "Keep background information that should remain available in later conversations.",
+    "noProviders": "No model service is configured. Add a provider before creating or running an agent.",
+    "configureProvider": "Configure model service"
   },
   "chat": {
     "selectAgent": "Select Agent",
@@ -97,35 +110,26 @@
     "scrollToBottom": "Scroll to latest message",
     "timeline": "Message timeline"
   },
-  "history": {
-    "title": "Conversation History",
-    "empty": "No conversations yet.",
-    "messages": "{count} messages",
-    "view": "View",
-    "back": "Back to history"
-  },
   "conversation": {
     "select": "Select conversation",
     "create": "New conversation",
     "newTitle": "New conversation",
     "empty": "No conversations yet.",
     "search": "Search conversations",
+    "loading": "Loading conversations...",
+    "loadEarlier": "Load earlier messages",
+    "loadingEarlier": "Loading...",
+    "loadFailed": "Conversations failed to load",
+    "noSearchResults": "No matching conversations",
     "runStatus": "Generating",
     "pin": "Pin conversation",
     "unpin": "Unpin conversation",
     "delete": "Delete conversation",
     "deleteConfirm": "Delete this conversation?"
   },
-  "groups": {
-    "title": "Groups",
-    "description": "Reserved for multi-agent collaboration",
-    "entryTitle": "Agent group chat",
-    "entryHint": "Later, multiple agents can share one conversation context",
-    "emptyTitle": "Group chat reserved",
-    "emptyHint": "This phase keeps the product entry without adding backend models."
-  },
   "settings": {
     "title": "Backend Settings",
+    "areaTitle": "Application & Service Settings",
     "description": "Runtime host, port, and logging configuration.",
     "host": "Host",
     "port": "Port",
@@ -192,7 +196,20 @@
     "invalidJson": "Extra Body must be valid JSON.",
     "validation": "Name, provider and model are required.",
     "providerValidation": "Provider name, Base URL, API key and models are required.",
-    "avatarDuplicate": "Another Agent already uses the same avatar icon and color."
+    "avatarDuplicate": "Another Agent already uses the same avatar icon and color.",
+    "appCrashedTitle": "The application hit an error",
+    "appCrashedMessage": "Rendering was interrupted. Reload the application to continue.",
+    "featureCrashedTitle": "This area is temporarily unavailable",
+    "featureCrashedMessage": "This feature hit an error. Other areas remain available.",
+    "reloadApp": "Reload",
+    "initialLoadFailed": "Application data failed to load.",
+    "retryConnection": "Check that the service is running, then try again.",
+    "agentActionFailed": "The agent configuration action failed.",
+    "conversationActionFailed": "The conversation action failed.",
+    "settingsSaveFailed": "Application settings failed to save.",
+    "providerSaveFailed": "The model service failed to save.",
+    "providerDeleteFailed": "The model service failed to delete.",
+    "checkProviderFields": "Check the service URL, API key, and model list, then try again."
   },
   "deleteConfirm": {
     "title": "Delete Agent",
@@ -200,6 +217,7 @@
   },
   "tools": {
     "title": "Tool Management",
+    "areaTitle": "Tools & Execution Environment",
     "description": "Configure global defaults and runtime state for built-in tools.",
     "builtinBadge": "Built-in",
     "agentToolsTitle": "Tool Configuration",
@@ -303,7 +321,7 @@
     "backToAgent": "Back to Agent Config"
   },
   "model": {
-    "loadFailed": "Model list failed to load. You can type a model ID manually."
+    "loadFailed": "The model list could not be loaded. Check the service URL and API key, then try again; you can also enter model IDs manually."
   },
   "mobile": {},
   "lang": {
@@ -344,6 +362,7 @@
     "conversationUnpinned": "Conversation unpinned.",
     "conversationDeleted": "Conversation deleted.",
     "toolSettingsSaved": "Tool settings saved.",
+    "copyFailed": "Copy failed. Check clipboard permission and try again.",
     "runtimeInstalled": "Codex runtime installed.",
     "runtimeUpdated": "Codex runtime updated.",
     "logDeleted": "Debug log deleted."

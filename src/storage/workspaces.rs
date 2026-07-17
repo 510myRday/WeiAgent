@@ -30,12 +30,12 @@ impl JsonStore {
     ) -> AppResult<AgentWorkspace> {
         self.get_agent(id).await?;
         let _guard = self.lock.lock().await;
-        self.write_workspace_text_unlocked(id, WORKSPACE_PERSONALITY, &request.personality)
-            .await?;
-        self.write_workspace_text_unlocked(id, WORKSPACE_MEMORY, &request.memory)
-            .await?;
-        self.write_workspace_text_unlocked(id, WORKSPACE_INSTRUCTIONS, &request.instructions)
-            .await?;
+        let workspace = AgentWorkspace {
+            personality: request.personality,
+            memory: request.memory,
+            instructions: request.instructions,
+        };
+        self.write_agent_workspace_unlocked(id, &workspace).await?;
         self.read_agent_workspace_unlocked(id).await
     }
 
@@ -115,6 +115,19 @@ impl JsonStore {
                 .read_workspace_text_unlocked(id, WORKSPACE_INSTRUCTIONS)
                 .await?,
         })
+    }
+
+    pub(super) async fn write_agent_workspace_unlocked(
+        &self,
+        id: Uuid,
+        workspace: &AgentWorkspace,
+    ) -> AppResult<()> {
+        self.write_workspace_text_unlocked(id, WORKSPACE_PERSONALITY, &workspace.personality)
+            .await?;
+        self.write_workspace_text_unlocked(id, WORKSPACE_MEMORY, &workspace.memory)
+            .await?;
+        self.write_workspace_text_unlocked(id, WORKSPACE_INSTRUCTIONS, &workspace.instructions)
+            .await
     }
 
     pub async fn read_tool_defaults(&self) -> AppResult<crate::domain::AgentToolsConfig> {

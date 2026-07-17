@@ -683,7 +683,6 @@
 }
 
 .list-stack,
-.history-list,
 .agent-list,
 .settings-section-list {
   display: flex;
@@ -701,8 +700,7 @@
 .list-item,
 .list-row,
 .agent-item,
-.settings-section-item,
-.history-card {
+.settings-section-item {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr) auto;
   align-items: center;
@@ -733,9 +731,7 @@
 .agent-item.active,
 .settings-section-item:hover,
 .settings-section-item:focus-visible,
-.settings-section-item.active,
-.history-card:hover,
-.history-card:focus-visible {
+.settings-section-item.active {
   border-color: var(--color-primary-border);
   background: var(--surface-active);
 }
@@ -751,8 +747,7 @@
 .list-item-body,
 .row-main,
 .agent-item span,
-.settings-section-item span,
-.history-card > div {
+.settings-section-item span {
   min-width: 0;
 }
 
@@ -763,9 +758,7 @@
 .agent-item strong,
 .agent-item small,
 .settings-section-item strong,
-.settings-section-item small,
-.history-card strong,
-.history-card small {
+.settings-section-item small {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -775,8 +768,7 @@
 .list-item-body strong,
 .row-main strong,
 .agent-item strong,
-.settings-section-item strong,
-.history-card strong {
+.settings-section-item strong {
   font-size: 14px;
   font-weight: 720;
 }
@@ -801,8 +793,7 @@
 .list-item-body small,
 .row-main small,
 .agent-item small,
-.settings-section-item small,
-.history-card small {
+.settings-section-item small {
   margin-top: 3px;
   color: var(--color-muted);
   font-size: 12px;
@@ -932,13 +923,6 @@
   position: relative;
 }
 
-.popover-backdrop,
-.avatar-picker-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-backdrop);
-}
-
 .avatar-popover-panel,
 .avatar-picker {
   position: absolute;
@@ -975,10 +959,13 @@
 .avatar-editor-preview {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
+  min-height: 42px;
   color: var(--color-text-soft);
   font-size: 13px;
   font-weight: 720;
+  text-align: center;
 }
 
 .avatar-editor-grid,
@@ -2107,12 +2094,6 @@
   color: var(--color-warning);
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.history-panel {
-  height: 100%;
-  padding: 22px;
-  overflow-y: auto;
 }
 
 /* ---- LLM Logs ---- */
@@ -3378,10 +3359,10 @@
   overflow: auto;
   margin-top: 10px;
   padding: 10px;
-  border: 1px solid #283548;
+  border: 1px solid var(--border-terminal);
   border-radius: var(--radius-xs);
-  background: #111827;
-  color: #d1fae5;
+  background: var(--surface-terminal);
+  color: var(--text-terminal);
   font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
   line-height: 1.55;
@@ -3390,9 +3371,9 @@
 }
 
 .tool-process-row .tool-card__error {
-  border-color: #7f1d1d;
-  background: #1c1013;
-  color: #fecaca;
+  border-color: var(--border-terminal-error);
+  background: var(--surface-terminal-error);
+  color: var(--text-terminal-error);
 }
 
 .tool-process-row small {
@@ -3423,9 +3404,9 @@
 }
 
 .tool-card__status-badge--missing {
-  color: #b45309;
-  background: #fffbeb;
-  border-color: #fde68a;
+  color: var(--status-running);
+  background: var(--status-running-soft);
+  border-color: var(--status-running-border);
 }
 .tool-card--running {
   display: block;

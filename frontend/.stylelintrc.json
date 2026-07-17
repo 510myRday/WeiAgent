@@ -1,0 +1,21 @@
+{
+  "rules": {
+    "color-no-hex": true,
+    "declaration-no-important": true,
+    "no-duplicate-selectors": true,
+    "selector-max-specificity": "0,5,0"
+  },
+  "overrides": [
+    {
+      "files": [
+        "src/styles/tokens.css",
+        "src/styles/components.css"
+      ],
+      "rules": {
+        "color-no-hex": null,
+        "no-duplicate-selectors": null,
+        "selector-max-specificity": null
+      }
+    }
+  ]
+}

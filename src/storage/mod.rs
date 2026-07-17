@@ -27,8 +27,8 @@ mod tests {
     use super::*;
     use crate::domain::{
         ChatMessage, ChatMessageStatus, ChatRole, CreateAgentRequest, CreateConversationRequest,
-        CreateModelProviderRequest, ProviderType, UpdateAgentRequest, UpdateAgentWorkspaceRequest,
-        UpdateConversationRequest, UpdateModelProviderRequest,
+        CreateModelProviderRequest, ProviderType, UpdateAgentProfileRequest, UpdateAgentRequest,
+        UpdateAgentWorkspaceRequest, UpdateConversationRequest, UpdateModelProviderRequest,
     };
 
     fn provider_request(name: &str, model: &str) -> CreateModelProviderRequest {
@@ -195,6 +195,76 @@ mod tests {
                 .await
                 .unwrap(),
             vec![message]
+        );
+    }
+
+    #[tokio::test]
+    async fn paginates_messages_on_user_turn_boundaries() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let provider = store
+            .create_model_provider(provider_request("OpenAI", "gpt-4o-mini"))
+            .await
+            .unwrap();
+        let agent = store
+            .create_agent(CreateAgentRequest {
+                name: "Planner".to_string(),
+                description: "Plans the work.".to_string(),
+                model_provider_id: provider.id,
+                model_id: "gpt-4o-mini".to_string(),
+                avatar_icon: Some("sparkles".to_string()),
+                avatar_color: Some("#3b82f6".to_string()),
+            })
+            .await
+            .unwrap();
+        let conversation = store
+            .create_conversation(agent.id, CreateConversationRequest { title: None })
+            .await
+            .unwrap();
+        let mut messages = Vec::new();
+        for turn in 0..6 {
+            for role in [ChatRole::User, ChatRole::Assistant] {
+                messages.push(ChatMessage {
+                    id: Uuid::new_v4(),
+                    agent_id: agent.id,
+                    conversation_id: conversation.id,
+                    role,
+                    content: format!("turn {turn}"),
+                    status: ChatMessageStatus::Done,
+                    created_at: Utc::now(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+        }
+        store
+            .append_conversation_messages(conversation.id, &messages)
+            .await
+            .unwrap();
+
+        let latest = store
+            .read_conversation_message_page(conversation.id, None, 5)
+            .await
+            .unwrap();
+        assert_eq!(latest.messages.len(), 6);
+        assert_eq!(latest.messages[0].role, ChatRole::User);
+        assert!(latest.has_more);
+
+        let older = store
+            .read_conversation_message_page(conversation.id, latest.next_cursor, 5)
+            .await
+            .unwrap();
+        assert_eq!(older.messages.len(), 6);
+        assert_eq!(older.messages[0].role, ChatRole::User);
+        assert!(!older.has_more);
+        assert_eq!(
+            older
+                .messages
+                .iter()
+                .chain(latest.messages.iter())
+                .map(|message| message.id)
+                .collect::<Vec<_>>(),
+            messages.iter().map(|message| message.id).collect::<Vec<_>>()
         );
     }
 
@@ -466,6 +536,87 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(prompt, again);
+    }
+
+    #[tokio::test]
+    async fn updates_agent_profile_and_workspace_together() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let provider = store
+            .create_model_provider(provider_request("Local", "local-model"))
+            .await
+            .unwrap();
+        let agent = store
+            .create_agent(CreateAgentRequest {
+                name: "Operator".to_string(),
+                description: "Original description".to_string(),
+                model_provider_id: provider.id,
+                model_id: "local-model".to_string(),
+                avatar_icon: Some("brain".to_string()),
+                avatar_color: Some("#8b5cf6".to_string()),
+            })
+            .await
+            .unwrap();
+
+        let updated = store
+            .update_agent_profile(
+                agent.id,
+                UpdateAgentProfileRequest {
+                    agent: UpdateAgentRequest {
+                        name: Some("Planner".to_string()),
+                        description: Some("Updated description".to_string()),
+                        model_provider_id: None,
+                        model_id: None,
+                        avatar_icon: None,
+                        avatar_color: None,
+                    },
+                    workspace: UpdateAgentWorkspaceRequest {
+                        personality: "Calm".to_string(),
+                        memory: "Project context".to_string(),
+                        instructions: "Make a plan".to_string(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.agent.name, "Planner");
+        assert_eq!(updated.workspace.instructions, "Make a plan");
+        assert_eq!(
+            store.read_agent_workspace(agent.id).await.unwrap(),
+            updated.workspace
+        );
+
+        let rejected = store
+            .update_agent_profile(
+                agent.id,
+                UpdateAgentProfileRequest {
+                    agent: UpdateAgentRequest {
+                        name: Some("Invalid".to_string()),
+                        description: None,
+                        model_provider_id: None,
+                        model_id: Some("missing-model".to_string()),
+                        avatar_icon: None,
+                        avatar_color: None,
+                    },
+                    workspace: UpdateAgentWorkspaceRequest {
+                        personality: "Should not persist".to_string(),
+                        memory: String::new(),
+                        instructions: String::new(),
+                    },
+                },
+            )
+            .await;
+        assert!(rejected.is_err());
+        assert_eq!(store.get_agent(agent.id).await.unwrap().name, "Planner");
+        assert_eq!(
+            store
+                .read_agent_workspace(agent.id)
+                .await
+                .unwrap()
+                .personality,
+            "Calm"
+        );
     }
 
     #[tokio::test]

@@ -6,7 +6,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        ChatMessage, ChatRole, Conversation, CreateConversationRequest, UpdateConversationRequest,
+        ChatMessage, ChatRole, Conversation, ConversationMessagePage, CreateConversationRequest,
+        UpdateConversationRequest,
     },
     error::{AppError, AppResult},
     storage::{files::write_json, json_store::JsonStore},
@@ -184,6 +185,35 @@ impl JsonStore {
         self.get_conversation(conversation_id).await?;
         self.read_conversation_messages_unchecked(conversation_id)
             .await
+    }
+
+    pub async fn read_conversation_message_page(
+        &self,
+        conversation_id: Uuid,
+        before: Option<Uuid>,
+        limit: usize,
+    ) -> AppResult<ConversationMessagePage> {
+        self.get_conversation(conversation_id).await?;
+        let messages = self
+            .read_conversation_messages_unchecked(conversation_id)
+            .await?;
+        let end = match before {
+            Some(cursor) => messages
+                .iter()
+                .position(|message| message.id == cursor)
+                .ok_or_else(|| AppError::BadRequest("message cursor was not found".to_string()))?,
+            None => messages.len(),
+        };
+        let mut start = end.saturating_sub(limit);
+        while start > 0 && messages[start].role != ChatRole::User {
+            start -= 1;
+        }
+        let has_more = start > 0;
+        Ok(ConversationMessagePage {
+            messages: messages[start..end].to_vec(),
+            next_cursor: has_more.then(|| messages[start].id),
+            has_more,
+        })
     }
 
     pub async fn append_conversation_messages(

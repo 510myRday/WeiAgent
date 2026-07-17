@@ -11,8 +11,8 @@ use crate::{
         client::{ChatClient, ChatStream, RequestOptions},
         http::StreamLineParser,
         protocol::common::{
-            ProtocolAdapter, ProtocolClient, default_models, merge_extra_body, message_tool_calls,
-            parse_json_object, validate_tool_calls,
+            ProtocolAdapter, ProtocolClient, add_query_parameter, default_models, merge_extra_body,
+            message_tool_calls, parse_json_object, validate_tool_calls,
         },
         types::{
             ChatCompletionOutput, StreamEvent, ToolCall, ToolCallFunction, ToolDefinition,
@@ -137,6 +137,31 @@ impl ProtocolAdapter for AnthropicAdapter {
 
     fn append_models(&self, value: &Value, models: &mut Vec<String>) {
         default_models(value, models);
+    }
+
+    fn next_models_url(
+        &self,
+        provider: &ModelProvider,
+        value: &Value,
+        pages: u8,
+    ) -> AppResult<Option<String>> {
+        if !value["has_more"].as_bool().unwrap_or(false) {
+            return Ok(None);
+        }
+        if pages >= 100 {
+            return Err(AppError::Llm(
+                "Anthropic model list exceeded 100 pages".to_string(),
+            ));
+        }
+        let cursor = value["last_id"]
+            .as_str()
+            .filter(|cursor| !cursor.is_empty())
+            .ok_or_else(|| {
+                AppError::Llm(
+                    "Anthropic model list indicated another page without last_id".to_string(),
+                )
+            })?;
+        add_query_parameter(&self.models_url(provider), "after_id", cursor).map(Some)
     }
 }
 
@@ -540,5 +565,57 @@ mod tests {
         );
         let events = parser.parse_line(r#"data: {"type":"message_stop"}"#);
         assert!(events.into_iter().next().unwrap().is_err());
+    }
+
+    #[test]
+    fn model_list_follows_anthropic_cursor_pagination() {
+        let provider = ModelProvider {
+            id: Uuid::new_v4(),
+            provider_type: crate::domain::ProviderType::AnthropicMessages,
+            name: "Anthropic".to_string(),
+            base_url: "https://api.anthropic.com/v1".to_string(),
+            api_key: "test-key".to_string(),
+            models: Vec::new(),
+            extra_body: Value::Null,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let adapter = AnthropicAdapter;
+
+        let next = adapter
+            .next_models_url(
+                &provider,
+                &json!({
+                    "data": [{"id": "claude-a"}],
+                    "has_more": true,
+                    "last_id": "claude/a"
+                }),
+                1,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            next,
+            "https://api.anthropic.com/v1/models?after_id=claude%2Fa"
+        );
+        assert!(
+            adapter
+                .next_models_url(
+                    &provider,
+                    &json!({"data": [], "has_more": false, "last_id": null}),
+                    2,
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            adapter
+                .next_models_url(
+                    &provider,
+                    &json!({"data": [], "has_more": true, "last_id": null}),
+                    2,
+                )
+                .is_err()
+        );
     }
 }

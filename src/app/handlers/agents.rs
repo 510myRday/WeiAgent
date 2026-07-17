@@ -7,8 +7,8 @@ use uuid::Uuid;
 use crate::{
     app::AppState,
     domain::{
-        AgentResponse, AgentWorkspace, CreateAgentRequest, UpdateAgentRequest,
-        UpdateAgentWorkspaceRequest,
+        AgentProfileResponse, AgentResponse, AgentWorkspace, CreateAgentRequest,
+        UpdateAgentProfileRequest, UpdateAgentRequest, UpdateAgentWorkspaceRequest,
     },
     error::{AppError, AppResult},
 };
@@ -30,6 +30,16 @@ pub async fn update_agent(
     Json(request): Json<UpdateAgentRequest>,
 ) -> AppResult<Json<AgentResponse>> {
     Ok(Json(state.store.update_agent(agent_id, request).await?))
+}
+
+pub async fn update_agent_profile(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+    Json(request): Json<UpdateAgentProfileRequest>,
+) -> AppResult<Json<AgentProfileResponse>> {
+    Ok(Json(
+        state.store.update_agent_profile(agent_id, request).await?,
+    ))
 }
 
 pub async fn delete_agent(

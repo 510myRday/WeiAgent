@@ -109,6 +109,12 @@ export type ChatMessage = {
   tool_call_id?: string;
 };
 
+export type ConversationMessagePage = {
+  messages: ChatMessage[];
+  next_cursor?: string | null;
+  has_more: boolean;
+};
+
 export type UiMessage = ChatMessage & { clientId: string };
 
 export type CreateAgentPayload = {
@@ -123,6 +129,16 @@ export type CreateAgentPayload = {
 export type UpdateAgentPayload = Partial<CreateAgentPayload>;
 
 export type UpdateAgentWorkspacePayload = Pick<AgentWorkspace, 'personality' | 'memory' | 'instructions'>;
+
+export type UpdateAgentProfilePayload = {
+  agent: UpdateAgentPayload;
+  workspace: UpdateAgentWorkspacePayload;
+};
+
+export type AgentProfile = {
+  agent: Agent;
+  workspace: AgentWorkspace;
+};
 
 export type CreateConversationPayload = {
   title?: string;
@@ -139,13 +155,13 @@ export type AgentRunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 export type AgentRun = {
   id: string;
   conversation_id: string;
-  user_message_id?: string;
+  user_message_id?: string | null;
   status: AgentRunStatus;
-  phase?: Exclude<AgentRunPhase, 'idle'>;
+  phase?: Exclude<AgentRunPhase, 'idle'> | null;
   latest_sequence: number;
-  error?: string;
+  error?: string | null;
   created_at: string;
-  finished_at?: string;
+  finished_at?: string | null;
 };
 
 export type ToolResultData = {
@@ -161,11 +177,13 @@ export type ToolResultData = {
   runtime?: string;
 };
 
+export type ToolArguments = Record<string, unknown>;
+
 export type ToolCallMessage = {
   type: 'tool_call';
   call_id: string;
   name: string;
-  arguments: Record<string, any>;
+  arguments: ToolArguments;
   permission_mode?: 'request_approval' | 'full_access';
   status: ToolCallStatus;
   result?: ToolResultData;
@@ -195,7 +213,7 @@ export type StreamEvent =
       data: {
         call_id: string;
         name: string;
-        arguments: Record<string, any>;
+        arguments: ToolArguments;
         permission_mode: 'request_approval' | 'full_access';
       };
     }
@@ -216,7 +234,7 @@ export type StreamEvent =
       };
     };
 
-export type NavKey = 'chat' | 'agents' | 'groups' | 'tools' | 'settings';
+export type NavKey = 'chat' | 'agents' | 'tools' | 'settings';
 
 export type MobileView = 'list' | 'main';
 

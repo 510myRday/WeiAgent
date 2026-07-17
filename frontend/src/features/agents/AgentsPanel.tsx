@@ -1,8 +1,16 @@
-import { useState, useEffect, useRef, FormEvent } from 'react';
-import { ArrowLeft, Plus, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { useState, useEffect, useRef, FormEvent, type KeyboardEvent } from 'react';
+import { ArrowLeft, Brain, FileText, IdCard, Plus, SlidersHorizontal, Trash2, Wrench } from 'lucide-react';
 
-import type { Agent, AgentWorkspace, ModelProvider, CreateAgentPayload } from '../../types';
-import { readAgentWorkspace, updateAgentWorkspace } from '../../api';
+import type {
+  Agent,
+  AgentProfile,
+  AgentWorkspace,
+  ModelProvider,
+  CreateAgentPayload,
+  UpdateAgentWorkspacePayload,
+} from '../../types';
+import { readAgentWorkspace } from '../../api';
+import { useBeforeUnloadGuard } from '../../hooks';
 import { useI18n } from '../../i18n';
 import { defaultAvatarColor } from '../../avatarPresets';
 import { AvatarBadge } from '../../components/AvatarPicker';
@@ -10,6 +18,7 @@ import { AgentListItem, agentDisplayDescription, agentDisplayName } from '../../
 import { PanelShell } from '../../components/layout';
 import { AutoSaveIndicator, AvatarPopover, Button, FormField, IconButton, PaneHeader, useFeedback } from '../../components/ui';
 import { TerminalToolSettings } from '../settings/TerminalToolSettings';
+import { userErrorMessage } from '../../utils/userError';
 
 interface AgentsPanelProps {
   agents: Agent[];
@@ -18,7 +27,11 @@ interface AgentsPanelProps {
   isLoadingAgents: boolean;
   onAgentChange: (id: string) => void;
   onAgentAdd: (payload: CreateAgentPayload) => Promise<Agent>;
-  onAgentEdit: (id: string, payload: Partial<CreateAgentPayload>) => Promise<Agent>;
+  onAgentProfileSave: (
+    id: string,
+    payload: Partial<CreateAgentPayload>,
+    workspace: UpdateAgentWorkspacePayload,
+  ) => Promise<AgentProfile>;
   onAgentRemove: (id: string) => Promise<void>;
   onOpenProviderSettings: () => void;
   onOpenMain: () => void;
@@ -40,8 +53,8 @@ const defaultWorkspaceForm: Pick<AgentWorkspace, 'personality' | 'memory' | 'ins
   instructions: '',
 };
 
-type WorkspaceField = keyof typeof defaultWorkspaceForm;
 type AgentAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+type AgentConfigSection = 'basic' | 'prompt' | 'memory' | 'tools';
 type PendingAgentSave = {
   agentId: string;
   serialized: string;
@@ -49,7 +62,16 @@ type PendingAgentSave = {
   workspace: typeof defaultWorkspaceForm;
 };
 
-const workspaceTabs: WorkspaceField[] = ['personality', 'memory', 'instructions'];
+const agentConfigSections: {
+  key: AgentConfigSection;
+  icon: typeof IdCard;
+  requiresAgent?: boolean;
+}[] = [
+  { key: 'basic', icon: IdCard },
+  { key: 'prompt', icon: FileText, requiresAgent: true },
+  { key: 'memory', icon: Brain, requiresAgent: true },
+  { key: 'tools', icon: Wrench, requiresAgent: true },
+];
 const AGENT_AUTO_SAVE_DELAY_MS = 600;
 const AGENT_AUTO_SAVE_RETRY_DELAY_MS = 1200;
 const AGENT_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
@@ -61,7 +83,7 @@ export function AgentsPanel({
   isLoadingAgents,
   onAgentChange,
   onAgentAdd,
-  onAgentEdit,
+  onAgentProfileSave,
   onAgentRemove,
   onOpenProviderSettings,
   onOpenMain,
@@ -71,7 +93,7 @@ export function AgentsPanel({
   const { confirm, toast } = useFeedback();
   const [agentForm, setAgentForm] = useState<CreateAgentPayload>(defaultAgentForm);
   const [workspaceForm, setWorkspaceForm] = useState(defaultWorkspaceForm);
-  const [activeWorkspaceField, setActiveWorkspaceField] = useState<WorkspaceField>('personality');
+  const [activeSection, setActiveSection] = useState<AgentConfigSection>('basic');
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(false);
   const [agentFormDirty, setAgentFormDirty] = useState(false);
   const [isSubmittingAgent, setIsSubmittingAgent] = useState(false);
@@ -83,6 +105,7 @@ export function AgentsPanel({
   const persistedSerializedRef = useRef('');
   const pendingSaveRef = useRef<PendingAgentSave | null>(null);
   const saveInFlightRef = useRef(false);
+  const savePromiseRef = useRef<Promise<boolean> | null>(null);
   const saveRetryCountRef = useRef(0);
   const saveTimerRef = useRef<number | undefined>(undefined);
   const retryTimerRef = useRef<number | undefined>(undefined);
@@ -90,18 +113,34 @@ export function AgentsPanel({
   const isMountedRef = useRef(true);
   activeAgentIdRef.current = activeAgentId;
 
-  useEffect(() => () => {
-    isMountedRef.current = false;
-    if (saveTimerRef.current !== undefined) {
-      window.clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = undefined;
-    }
-    void flushAgentSaveQueue();
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (saveTimerRef.current !== undefined) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = undefined;
+      }
+      void flushAgentSaveQueue();
+    };
   }, []);
+
+  useBeforeUnloadGuard(
+    agentFormDirty
+    || autoSaveStatus === 'pending'
+    || autoSaveStatus === 'saving'
+    || autoSaveStatus === 'error',
+  );
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const selectedAgentProvider = providers.find((provider) => provider.id === agentForm.model_provider_id);
-  const activeWorkspaceLabel = t(`agentConfig.${activeWorkspaceField}`);
+  const visibleSections = agentConfigSections.filter((section) => activeAgent || !section.requiresAgent);
+  const displayedAgentName = activeAgent?.is_builtin
+    ? agentDisplayName(activeAgent, t)
+    : agentForm.name;
+  const displayedAgentDescription = activeAgent?.is_builtin
+    ? agentDisplayDescription(activeAgent, t)
+    : agentForm.description;
 
   useEffect(() => {
     if (!activeAgent) {
@@ -111,14 +150,15 @@ export function AgentsPanel({
       setWorkspaceForm(defaultWorkspaceForm);
       setAgentFormDirty(false);
       setAutoSaveStatus('idle');
+      setActiveSection('basic');
       return;
     }
     if (loadedAgentIdRef.current === activeAgent.id) return;
     loadedAgentIdRef.current = activeAgent.id;
     loadedWorkspaceAgentIdRef.current = '';
     setAgentForm({
-      name: agentDisplayName(activeAgent, t),
-      description: agentDisplayDescription(activeAgent, t),
+      name: activeAgent.name,
+      description: activeAgent.description,
       model_provider_id: activeAgent.model_provider_id,
       model_id: activeAgent.model_id,
       avatar_icon: activeAgent.avatar_icon,
@@ -127,7 +167,8 @@ export function AgentsPanel({
     setWorkspaceForm(defaultWorkspaceForm);
     setAgentFormDirty(false);
     setAutoSaveStatus('idle');
-  }, [activeAgent?.id, t]);
+    setActiveSection('basic');
+  }, [activeAgent]);
 
   useEffect(() => {
     let cancelled = false;
@@ -155,7 +196,7 @@ export function AgentsPanel({
         setAgentFormDirty(false);
         setAutoSaveStatus('idle');
       })
-      .catch((cause) => toast.error(cause instanceof Error ? cause.message : t('error.unknown')))
+      .catch((cause) => toast.error(agentActionError(cause)))
       .finally(() => {
         if (!cancelled) setIsLoadingWorkspace(false);
       });
@@ -226,85 +267,115 @@ export function AgentsPanel({
     }, AGENT_AUTO_SAVE_DELAY_MS);
   }, [activeAgent, agentForm, agentFormDirty, agents, isLoadingWorkspace, t, toast, workspaceForm]);
 
-  async function flushAgentSaveQueue() {
-    if (saveInFlightRef.current || !pendingSaveRef.current) return;
+  async function flushAgentSaveQueue(): Promise<boolean> {
+    if (savePromiseRef.current) return savePromiseRef.current;
+    if (!pendingSaveRef.current) return true;
     const pending = pendingSaveRef.current;
     pendingSaveRef.current = null;
-    saveInFlightRef.current = true;
-    if (isMountedRef.current && activeAgentIdRef.current === pending.agentId) {
-      setAutoSaveStatus('saving');
-    }
-
-    let retryDelay = 0;
-    try {
-      await onAgentEdit(pending.agentId, pending.payload);
-      await updateAgentWorkspace(pending.agentId, pending.workspace);
-      persistedSerializedRef.current = pending.serialized;
-      saveRetryCountRef.current = 0;
-      if (
-        isMountedRef.current
-        && activeAgentIdRef.current === pending.agentId
-        && latestSerializedRef.current === pending.serialized
-      ) {
-        const queuedSave = pendingSaveRef.current as PendingAgentSave | null;
-        if (queuedSave?.serialized === pending.serialized) {
-          pendingSaveRef.current = null;
-        }
-        if (saveTimerRef.current !== undefined) {
-          window.clearTimeout(saveTimerRef.current);
-          saveTimerRef.current = undefined;
-        }
-        setAgentFormDirty(false);
-        setAutoSaveStatus('saved');
-      }
-    } catch (cause) {
-      const attempt = saveRetryCountRef.current + 1;
-      saveRetryCountRef.current = attempt;
-      if (latestSerializedRef.current === pending.serialized) {
-        pendingSaveRef.current = pending;
-        retryDelay = Math.min(
-          AGENT_AUTO_SAVE_MAX_RETRY_DELAY_MS,
-          AGENT_AUTO_SAVE_RETRY_DELAY_MS * (2 ** Math.min(attempt - 1, 5)),
-        );
-      }
+    const operation = (async () => {
+      saveInFlightRef.current = true;
       if (isMountedRef.current && activeAgentIdRef.current === pending.agentId) {
-        setAutoSaveStatus('error');
-        if (attempt === 1) {
-          toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+        setAutoSaveStatus('saving');
+      }
+
+      let retryDelay = 0;
+      let saved = false;
+      try {
+        await onAgentProfileSave(pending.agentId, pending.payload, pending.workspace);
+        saved = true;
+        persistedSerializedRef.current = pending.serialized;
+        saveRetryCountRef.current = 0;
+        if (
+          isMountedRef.current
+          && activeAgentIdRef.current === pending.agentId
+          && latestSerializedRef.current === pending.serialized
+        ) {
+          const queuedSave = pendingSaveRef.current as PendingAgentSave | null;
+          if (queuedSave?.serialized === pending.serialized) {
+            pendingSaveRef.current = null;
+          }
+          if (saveTimerRef.current !== undefined) {
+            window.clearTimeout(saveTimerRef.current);
+            saveTimerRef.current = undefined;
+          }
+          setAgentFormDirty(false);
+          setAutoSaveStatus('saved');
+        }
+      } catch (cause) {
+        const attempt = saveRetryCountRef.current + 1;
+        saveRetryCountRef.current = attempt;
+        if (latestSerializedRef.current === pending.serialized) {
+          pendingSaveRef.current = pending;
+          retryDelay = Math.min(
+            AGENT_AUTO_SAVE_MAX_RETRY_DELAY_MS,
+            AGENT_AUTO_SAVE_RETRY_DELAY_MS * (2 ** Math.min(attempt - 1, 5)),
+          );
+        }
+        if (isMountedRef.current && activeAgentIdRef.current === pending.agentId) {
+          setAutoSaveStatus('error');
+          if (attempt === 1) {
+            toast.error(agentActionError(cause));
+          }
+        }
+      } finally {
+        saveInFlightRef.current = false;
+        if (pendingSaveRef.current) {
+          if (retryTimerRef.current !== undefined) {
+            window.clearTimeout(retryTimerRef.current);
+          }
+          retryTimerRef.current = window.setTimeout(() => {
+            retryTimerRef.current = undefined;
+            void flushAgentSaveQueue();
+          }, retryDelay);
         }
       }
+      return saved;
+    })();
+    savePromiseRef.current = operation;
+    try {
+      return await operation;
     } finally {
-      saveInFlightRef.current = false;
-      if (pendingSaveRef.current) {
-        if (retryTimerRef.current !== undefined) {
-          window.clearTimeout(retryTimerRef.current);
-        }
-        retryTimerRef.current = window.setTimeout(() => {
-          retryTimerRef.current = undefined;
-          void flushAgentSaveQueue();
-        }, retryDelay);
-      }
+      if (savePromiseRef.current === operation) savePromiseRef.current = null;
     }
   }
 
-  function flushAgentSaveNow() {
+  async function flushAgentSaveNow(): Promise<boolean> {
     if (saveTimerRef.current !== undefined) {
       window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = undefined;
     }
-    void flushAgentSaveQueue();
+    if (retryTimerRef.current !== undefined) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = undefined;
+    }
+    let saved = await flushAgentSaveQueue();
+    while (saved && pendingSaveRef.current) {
+      if (retryTimerRef.current !== undefined) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = undefined;
+      }
+      saved = await flushAgentSaveQueue();
+    }
+    return saved;
   }
 
-  function switchAgent(id: string) {
-    flushAgentSaveNow();
+  async function switchAgent(id: string) {
+    if (!await flushAgentSaveNow()) return;
     onAgentChange(id);
+    onOpenMain();
+  }
+
+  async function startCreatingAgent() {
+    if (!await flushAgentSaveNow()) return;
+    onAgentChange('');
+    setAgentFormDirty(false);
     onOpenMain();
   }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (activeAgent) {
-      flushAgentSaveNow();
+      await flushAgentSaveNow();
       return;
     }
     const payload = {
@@ -316,6 +387,7 @@ export function AgentsPanel({
       avatar_color: agentForm.avatar_color,
     };
     if (!payload.name || !payload.description || !payload.model_provider_id || !payload.model_id) {
+      setActiveSection('basic');
       toast.warning(t('error.validation'));
       return;
     }
@@ -332,7 +404,7 @@ export function AgentsPanel({
       toast.success(t('notification.agentCreated'));
       setAgentFormDirty(false);
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      toast.error(agentActionError(cause));
     } finally {
       setIsSubmittingAgent(false);
     }
@@ -357,8 +429,15 @@ export function AgentsPanel({
       setAgentFormDirty(false);
       toast.success(t('notification.agentDeleted'));
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      toast.error(agentActionError(cause));
     }
+  }
+
+  function agentActionError(cause: unknown) {
+    return userErrorMessage(cause, {
+      summary: t('error.agentActionFailed'),
+      recovery: t('error.retryConnection'),
+    });
   }
 
   return (
@@ -373,7 +452,7 @@ export function AgentsPanel({
               <IconButton
                 variant="ghost"
                 type="button"
-                onClick={() => { flushAgentSaveNow(); onAgentChange(''); setAgentFormDirty(false); onOpenMain(); }}
+                onClick={() => void startCreatingAgent()}
                 label={t('agentConfig.create')}
               >
                 <Plus size={17} />
@@ -382,13 +461,20 @@ export function AgentsPanel({
           />
           <div className="list-stack">
             {isLoadingAgents && agents.length === 0 ? <p className="muted">{t('chat.loading')}</p> : null}
-            {!isLoadingAgents && agents.length === 0 ? <p className="muted">{t('agentConfig.noAgents')}</p> : null}
+            {!isLoadingAgents && agents.length === 0 ? (
+              <div className="list-empty-action">
+                <p className="muted centered">{t('agentConfig.noAgents')}</p>
+                <Button variant="primary" type="button" onClick={() => void startCreatingAgent()} icon={<Plus size={16} />}>
+                  {t('agentConfig.create')}
+                </Button>
+              </div>
+            ) : null}
             {agents.map((agent) => (
               <AgentListItem
                 key={agent.id}
                 agent={agent}
                 active={agent.id === activeAgentId}
-                onClick={() => switchAgent(agent.id)}
+                onClick={() => void switchAgent(agent.id)}
               />
             ))}
           </div>
@@ -404,7 +490,7 @@ export function AgentsPanel({
             description={activeAgent ? agentDisplayDescription(activeAgent, t) : t('agentConfig.selectAgent')}
             actions={(
               <>
-                {activeAgent ? <AutoSaveIndicator status={autoSaveStatus} t={t} /> : null}
+                {activeAgent ? <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={() => void flushAgentSaveNow()} /> : null}
                 {activeAgent?.is_builtin ? <span className="model-note-badge">{t('agentConfig.coreAgentModelHint')}</span> : null}
                 {!activeAgent ? <span className="model-note-badge">{t('agentConfig.workspaceCreateHint')}</span> : null}
                 {activeAgent && !activeAgent.is_builtin ? (
@@ -416,141 +502,200 @@ export function AgentsPanel({
             )}
           />
 
-          <form className="form-card entity-form" onSubmit={handleSubmit}>
-            <div className="agent-basics-layout">
-              <div className="agent-avatar-field">
-                <FormField label={t('agentConfig.avatar')}>
-                  <AvatarPopover
-                    className="agent-avatar-popover"
-                    icon={agentForm.avatar_icon}
-                    color={agentForm.avatar_color}
-                    title={t('agentConfig.avatarPreview')}
-                    pickerTitle={t('agentConfig.avatarChange')}
-                    onChange={(next) => {
-                      setAgentForm({ ...agentForm, avatar_icon: next.icon, avatar_color: next.color });
-                      setAgentFormDirty(true);
-                    }}
-                    trigger={(open) => (
-                      <button
-                        type="button"
-                        className="agent-avatar-trigger"
-                        aria-expanded={open}
-                        aria-label={t('agentConfig.avatarChange')}
-                      >
-                        <AvatarBadge
+          <AgentConfigTabs
+            sections={visibleSections}
+            activeSection={activeSection}
+            label={t('agentConfig.sectionsLabel')}
+            getLabel={(section) => t(`agentConfig.section.${section}`)}
+            onChange={setActiveSection}
+          />
+
+          <form className="entity-form agent-config-form" onSubmit={handleSubmit} noValidate>
+            {activeSection === 'basic' ? (
+              <section
+                id="agent-config-panel-basic"
+                className="agent-section-panel agent-basic-section"
+                role="tabpanel"
+                aria-labelledby="agent-config-tab-basic"
+              >
+                <div className="form-card">
+                  <div className="agent-basics-layout">
+                    <div className="agent-avatar-field">
+                      <FormField label={t('agentConfig.avatar')}>
+                        <AvatarPopover
+                          className="agent-avatar-popover"
                           icon={agentForm.avatar_icon}
                           color={agentForm.avatar_color}
-                          size={48}
-                          className="agent-avatar-preview"
+                          title={t('agentConfig.avatarPreview')}
+                          pickerTitle={t('agentConfig.avatarChange')}
+                          onChange={(next) => {
+                            setAgentForm({ ...agentForm, avatar_icon: next.icon, avatar_color: next.color });
+                            setAgentFormDirty(true);
+                          }}
+                          trigger={(open) => (
+                            <button
+                              type="button"
+                              className="agent-avatar-trigger"
+                              aria-expanded={open}
+                              aria-label={t('agentConfig.avatarChange')}
+                            >
+                              <AvatarBadge
+                                icon={agentForm.avatar_icon}
+                                color={agentForm.avatar_color}
+                                size={48}
+                                className="agent-avatar-preview"
+                              />
+                              <span className="agent-avatar-change">{t('agentConfig.avatarChange')}</span>
+                            </button>
+                          )}
                         />
-                        <span className="agent-avatar-change">{t('agentConfig.avatarChange')}</span>
-                      </button>
-                    )}
-                  />
-                </FormField>
-              </div>
+                      </FormField>
+                    </div>
 
-              <div className="agent-config-details">
-                <FormField label={t('agentConfig.name')} htmlFor="agent-name" required>
-                  <input
-                    id="agent-name"
-                    value={agentForm.name}
-                    onChange={(e) => { setAgentForm({ ...agentForm, name: e.target.value }); setAgentFormDirty(true); }}
-                    placeholder={t('agentConfig.placeholder_name')}
-                    disabled={isSubmittingAgent || activeAgent?.is_builtin}
-                  />
-                </FormField>
-
-                <div className="agent-model-row">
-                  <FormField label={t('agentConfig.provider')} htmlFor="agent-provider" required>
-                    <select
-                      id="agent-provider"
-                      value={agentForm.model_provider_id}
-                      onChange={(e) => {
-                        const provider = providers.find((p) => p.id === e.target.value);
-                        setAgentForm({ ...agentForm, model_provider_id: e.target.value, model_id: provider?.models[0] ?? '' });
-                        setAgentFormDirty(true);
-                      }}
-                      disabled={isSubmittingAgent}
-                    >
-                      <option value="">{t('agentConfig.placeholder_provider')}</option>
-                      {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-                    </select>
-                  </FormField>
-                  <FormField
-                    label={t('agentConfig.model')}
-                    htmlFor="agent-model"
-                    required
-                    action={(
-                      <IconButton variant="ghost" type="button" onClick={onOpenProviderSettings} label={t('agentConfig.openProviderSettings')}>
-                        <SlidersHorizontal size={16} />
-                      </IconButton>
-                    )}
-                  >
-                    <select
-                      id="agent-model"
-                      value={agentForm.model_id}
-                      onChange={(e) => { setAgentForm({ ...agentForm, model_id: e.target.value }); setAgentFormDirty(true); }}
-                      disabled={isSubmittingAgent || !selectedAgentProvider}
-                    >
-                      <option value="">{t('agentConfig.placeholder_model')}</option>
-                      {selectedAgentProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}
-                    </select>
-                  </FormField>
+                    <div className="agent-config-details agent-basic-fields">
+                      <FormField label={t('agentConfig.name')} htmlFor="agent-name" required>
+                        <input
+                          id="agent-name"
+                          value={displayedAgentName}
+                          onChange={(e) => { setAgentForm({ ...agentForm, name: e.target.value }); setAgentFormDirty(true); }}
+                          placeholder={t('agentConfig.placeholder_name')}
+                          disabled={isSubmittingAgent || activeAgent?.is_builtin}
+                          required
+                        />
+                      </FormField>
+                      <FormField label={t('agentConfig.description')} htmlFor="agent-description" required>
+                        <textarea
+                          id="agent-description"
+                          value={displayedAgentDescription}
+                          onChange={(e) => { setAgentForm({ ...agentForm, description: e.target.value }); setAgentFormDirty(true); }}
+                          placeholder={t('agentConfig.placeholder_description')}
+                          disabled={isSubmittingAgent || activeAgent?.is_builtin}
+                          rows={7}
+                          required
+                        />
+                      </FormField>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="agent-description-field">
-                  <FormField label={t('agentConfig.description')} htmlFor="agent-description" required>
+                <div className="form-card agent-model-card">
+                  <PaneHeader compact title={t('agentConfig.section.model')} description={t('agentConfig.modelHint')} />
+                  {providers.length === 0 ? (
+                    <div className="agent-inline-notice">
+                      <p>{t('agentConfig.noProviders')}</p>
+                      <Button variant="primary" type="button" onClick={onOpenProviderSettings} icon={<SlidersHorizontal size={16} />}>
+                        {t('agentConfig.configureProvider')}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="agent-model-row">
+                      <FormField label={t('agentConfig.provider')} htmlFor="agent-provider" required>
+                        <select
+                          id="agent-provider"
+                          value={agentForm.model_provider_id}
+                          onChange={(e) => {
+                            const provider = providers.find((p) => p.id === e.target.value);
+                            setAgentForm({ ...agentForm, model_provider_id: e.target.value, model_id: provider?.models[0] ?? '' });
+                            setAgentFormDirty(true);
+                          }}
+                          disabled={isSubmittingAgent}
+                          required
+                        >
+                          <option value="">{t('agentConfig.placeholder_provider')}</option>
+                          {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                        </select>
+                      </FormField>
+                      <FormField
+                        label={t('agentConfig.model')}
+                        htmlFor="agent-model"
+                        required
+                        action={(
+                          <IconButton variant="ghost" type="button" onClick={onOpenProviderSettings} label={t('agentConfig.openProviderSettings')}>
+                            <SlidersHorizontal size={16} />
+                          </IconButton>
+                        )}
+                      >
+                        <select
+                          id="agent-model"
+                          value={agentForm.model_id}
+                          onChange={(e) => { setAgentForm({ ...agentForm, model_id: e.target.value }); setAgentFormDirty(true); }}
+                          disabled={isSubmittingAgent || !selectedAgentProvider}
+                          required
+                        >
+                          <option value="">{t('agentConfig.placeholder_model')}</option>
+                          {selectedAgentProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}
+                        </select>
+                      </FormField>
+                    </div>
+                  )}
+                </div>
+              </section>
+            ) : null}
+
+            {activeAgent && activeSection === 'prompt' ? (
+              <section
+                id="agent-config-panel-prompt"
+                className="form-card agent-section-panel"
+                role="tabpanel"
+                aria-labelledby="agent-config-tab-prompt"
+              >
+                <PaneHeader compact title={t('agentConfig.section.prompt')} description={isLoadingWorkspace ? t('chat.loading') : t('agentConfig.promptHint')} />
+                <div className="form-grid two-column agent-prompt-grid">
+                  <FormField label={t('agentConfig.personality')} htmlFor="agent-personality">
                     <textarea
-                      id="agent-description"
-                      value={agentForm.description}
-                      onChange={(e) => { setAgentForm({ ...agentForm, description: e.target.value }); setAgentFormDirty(true); }}
-                      placeholder={t('agentConfig.placeholder_description')}
-                      disabled={isSubmittingAgent || activeAgent?.is_builtin}
-                      rows={3}
-                      required
+                      id="agent-personality"
+                      value={workspaceForm.personality}
+                      onChange={(e) => { setWorkspaceForm({ ...workspaceForm, personality: e.target.value }); setAgentFormDirty(true); }}
+                      rows={12}
+                      disabled={isSubmittingAgent || isLoadingWorkspace}
                     />
                   </FormField>
-                </div>
-              </div>
-            </div>
-            {activeAgent ? (
-              <>
-                <div className="workspace-editor">
-                  <PaneHeader compact title={t('agentConfig.workspace')} description={isLoadingWorkspace ? t('chat.loading') : t('agentConfig.workspaceHint')} />
-                  <div className="workspace-tabs" role="tablist" aria-label={t('agentConfig.workspace')}>
-                    {workspaceTabs.map((field) => (
-                      <button
-                        key={field}
-                        type="button"
-                        className={`workspace-tab${activeWorkspaceField === field ? ' active' : ''}`}
-                        role="tab"
-                        aria-selected={activeWorkspaceField === field}
-                        aria-controls="agent-workspace-field"
-                        onClick={() => setActiveWorkspaceField(field)}
-                      >
-                        {t(`agentConfig.${field}`)}
-                      </button>
-                    ))}
-                  </div>
-                  <FormField label={activeWorkspaceLabel} htmlFor="agent-workspace-field">
+                  <FormField label={t('agentConfig.instructions')} htmlFor="agent-instructions">
                     <textarea
-                      id="agent-workspace-field"
-                      role="tabpanel"
-                      value={workspaceForm[activeWorkspaceField]}
-                      onChange={(e) => { setWorkspaceForm({ ...workspaceForm, [activeWorkspaceField]: e.target.value }); setAgentFormDirty(true); }}
+                      id="agent-instructions"
+                      value={workspaceForm.instructions}
+                      onChange={(e) => { setWorkspaceForm({ ...workspaceForm, instructions: e.target.value }); setAgentFormDirty(true); }}
                       rows={12}
                       disabled={isSubmittingAgent || isLoadingWorkspace}
                     />
                   </FormField>
                 </div>
-                <div className="agent-tools-section">
-                  <TerminalToolSettings scope="agent" agentId={activeAgent.id} />
-                </div>
-              </>
+              </section>
             ) : null}
+
+            {activeAgent && activeSection === 'memory' ? (
+              <section
+                id="agent-config-panel-memory"
+                className="form-card agent-section-panel"
+                role="tabpanel"
+                aria-labelledby="agent-config-tab-memory"
+              >
+                <PaneHeader compact title={t('agentConfig.section.memory')} description={isLoadingWorkspace ? t('chat.loading') : t('agentConfig.memoryHint')} />
+                <FormField label={t('agentConfig.memory')} htmlFor="agent-memory">
+                  <textarea
+                    id="agent-memory"
+                    value={workspaceForm.memory}
+                    onChange={(e) => { setWorkspaceForm({ ...workspaceForm, memory: e.target.value }); setAgentFormDirty(true); }}
+                    rows={16}
+                    disabled={isSubmittingAgent || isLoadingWorkspace}
+                  />
+                </FormField>
+              </section>
+            ) : null}
+
+            {activeAgent && activeSection === 'tools' ? (
+              <section
+                id="agent-config-panel-tools"
+                className="agent-tools-section"
+                role="tabpanel"
+                aria-labelledby="agent-config-tab-tools"
+              >
+                <TerminalToolSettings scope="agent" agentId={activeAgent.id} />
+              </section>
+            ) : null}
+
             {!activeAgent ? (
-              <div className="form-actions">
+              <div className="form-actions agent-create-actions">
                 <Button variant="primary" type="submit" disabled={isSubmittingAgent} icon={<Plus size={17} />}>
                   {t('agentConfig.create')}
                 </Button>
@@ -560,6 +705,62 @@ export function AgentsPanel({
         </div>
       )}
     />
+  );
+}
+
+function AgentConfigTabs({
+  sections,
+  activeSection,
+  label,
+  getLabel,
+  onChange,
+}: {
+  sections: typeof agentConfigSections;
+  activeSection: AgentConfigSection;
+  label: string;
+  getLabel: (section: AgentConfigSection) => string;
+  onChange: (section: AgentConfigSection) => void;
+}) {
+  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>, section: AgentConfigSection) {
+    const currentIndex = sections.findIndex((item) => item.key === section);
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % sections.length;
+    if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + sections.length) % sections.length;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = sections.length - 1;
+    if (nextIndex === null) return;
+
+    event.preventDefault();
+    const nextSection = sections[nextIndex].key;
+    onChange(nextSection);
+    event.currentTarget.parentElement
+      ?.querySelector<HTMLElement>(`#agent-config-tab-${nextSection}`)
+      ?.focus();
+  }
+
+  return (
+    <div className="agent-config-tabs" role="tablist" aria-label={label}>
+      {sections.map(({ key, icon: Icon }) => {
+        const active = activeSection === key;
+        return (
+          <button
+            key={key}
+            id={`agent-config-tab-${key}`}
+            className={`agent-config-tab${active ? ' is-active' : ''}`}
+            type="button"
+            role="tab"
+            tabIndex={active ? 0 : -1}
+            aria-selected={active}
+            aria-controls={`agent-config-panel-${key}`}
+            onClick={() => onChange(key)}
+            onKeyDown={(event) => handleKeyDown(event, key)}
+          >
+            <Icon size={16} aria-hidden="true" />
+            <span>{getLabel(key)}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
