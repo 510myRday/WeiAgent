@@ -183,6 +183,7 @@ impl CodexRuntimeManager {
                 RuntimeComponentKind::Node,
                 RuntimeComponentKind::Python,
                 RuntimeComponentKind::Uv,
+                RuntimeComponentKind::Git,
             ] {
                 if let Err(error) = manager.refresh_component(component).await {
                     tracing::warn!(?component, %error, "failed to check runtime component version");
@@ -833,9 +834,13 @@ fn parse_codex_version(value: &str) -> Result<Version, String> {
 }
 
 fn parse_component_version(value: &str) -> Option<Version> {
-    value
-        .split_whitespace()
-        .find_map(|part| Version::parse(part.trim_start_matches('v')).ok())
+    value.split_whitespace().find_map(|part| {
+        let part = part.trim_start_matches('v');
+        Version::parse(part).ok().or_else(|| {
+            let version = part.split_once(".windows.").map(|(version, _)| version)?;
+            Version::parse(version).ok()
+        })
+    })
 }
 
 fn component_update_available(detected: Option<&str>, target: Option<&str>) -> bool {
@@ -1367,6 +1372,14 @@ mod tests {
         assert!(!component_update_available(
             Some("uv 0.11.29"),
             Some("0.11.29")
+        ));
+        assert!(!component_update_available(
+            Some("git version 2.55.0.windows.3"),
+            Some("2.55.0")
+        ));
+        assert!(component_update_available(
+            Some("git version 2.54.0.windows.1"),
+            Some("2.55.0")
         ));
         assert!(!component_update_available(None, Some("24.18.0")));
     }

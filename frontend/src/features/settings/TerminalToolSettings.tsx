@@ -899,7 +899,7 @@ function normalizeRuntimeComponents(runtime: CodexRuntimeStatus | null): Runtime
       update_available: runtime?.update_available === true,
       error: runtime?.error,
     },
-    ...(['node', 'python', 'uv'] as const).map((kind) => ({
+    ...(['node', 'python', 'uv', 'git'] as const).map((kind) => ({
       kind,
       available: false,
       required: false,
@@ -932,6 +932,7 @@ function RuntimeComponentRow({
     node: '/tool-icons/nodejs.svg',
     python: '/tool-icons/python.svg',
     uv: '/tool-icons/uv.svg',
+    git: '/tool-icons/git.svg',
   }[component.kind];
   const source = component.source ? t(`tools.terminal.runtimeSource.${component.source}`) : '';
   const latest = component.target_version

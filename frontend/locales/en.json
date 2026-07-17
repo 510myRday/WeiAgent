@@ -301,7 +301,8 @@
         "codex": "Codex Client",
         "node": "Node.js",
         "python": "Python",
-        "uv": "uv"
+        "uv": "uv",
+        "git": "Git"
       },
       "runtimeReadyDesc": "The terminal is ready. Agents will work within the access settings below.",
       "runtimeMissingDesc": "Install the runtime environment to let agents use the terminal.",
@@ -375,7 +376,8 @@
     "empty": "No logs yet. Enable LLM debug logs in settings, then send a message.",
     "request": "Request",
     "response": "Response",
-    "streamChunks": "Stream chunks",
+    "aggregatedResponse": "Aggregated response (JSON)",
+    "streamChunks": "Raw stream",
     "error": "Error",
     "agent": "Agent",
     "model": "Model",

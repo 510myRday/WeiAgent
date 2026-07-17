@@ -262,7 +262,7 @@ export type CodexRuntimeStatus = {
 };
 
 export type RuntimeComponentStatus = {
-  kind: 'codex' | 'node' | 'python' | 'uv';
+  kind: 'codex' | 'node' | 'python' | 'uv' | 'git';
   available: boolean;
   required: boolean;
   managed_installed: boolean;

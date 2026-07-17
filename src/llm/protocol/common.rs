@@ -24,6 +24,7 @@ pub(crate) trait ProtocolAdapter: Clone + Send + Sync + 'static {
         format!("{}/models", provider.base_url.trim_end_matches('/'))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_request(
         &self,
         agent: &Agent,

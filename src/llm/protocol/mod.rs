@@ -220,7 +220,14 @@ mod tests {
             on_retry: None,
         };
         let complete = client
-            .complete(&agent, &provider, &messages, "system", options, None)
+            .complete(
+                &agent,
+                &provider,
+                &messages,
+                "system",
+                options.clone(),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(complete.content, "complete");
@@ -322,4 +329,3 @@ mod tests {
         }
     }
 }
-

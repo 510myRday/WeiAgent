@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Copy, FileText, RefreshCw, Trash2 } from 'lucide-react';
 import type { LlmLogDetail, LlmLogEntry } from '../../types';
 import { listLlmLogs, getLlmLog, deleteLlmLog } from '../../api';
 import { useI18n } from '../../i18n';
 import { useClipboard } from '../../hooks';
 import { Button, Dialog, IconButton, useFeedback } from '../../components/ui';
+import { formatLlmResponse, formatRawJson } from './llmLogFormatting';
 
 interface LlmLogsModalProps {
   onClose: () => void;
@@ -34,6 +35,10 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
   useEffect(() => {
     void loadLogs();
   }, [loadLogs]);
+
+  const formattedResponse = useMemo(() => (
+    selectedLog?.raw_response ? formatLlmResponse(selectedLog.raw_response) : null
+  ), [selectedLog?.raw_response]);
 
   async function handleViewLog(logId: string) {
     try {
@@ -65,19 +70,10 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
     }
   }
 
-  function formatRaw(raw: string | undefined): string {
-    if (!raw) return '';
-    try {
-      return JSON.stringify(JSON.parse(raw), null, 2);
-    } catch {
-      return raw;
-    }
-  }
-
   function handleCopy() {
     const text = activeTab === 'request'
-      ? formatRaw(selectedLog?.raw_request)
-      : (selectedLog?.raw_response ? formatRaw(selectedLog.raw_response) : selectedLog?.error || '');
+      ? formatRawJson(selectedLog?.raw_request)
+      : (selectedLog?.raw_response ? formatRawJson(selectedLog.raw_response) : selectedLog?.error || '');
     if (!text) return;
     void copy(text);
   }
@@ -193,13 +189,30 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
                     </Button>
                   </div>
 
-                  <pre className="llm-logs-content">
-                    {activeTab === 'request'
-                      ? formatRaw(selectedLog.raw_request)
-                      : (selectedLog.raw_response
-                          ? formatRaw(selectedLog.raw_response)
-                          : (selectedLog.error || '(empty)'))}
-                  </pre>
+                  {activeTab === 'request' ? (
+                    <pre className="llm-logs-content">
+                      {formatRawJson(selectedLog.raw_request)}
+                    </pre>
+                  ) : formattedResponse?.isStreaming ? (
+                    <div className="llm-logs-response-content">
+                      <section className="llm-logs-content-section">
+                        <h3 className="llm-logs-content-label">{t('llmLogs.aggregatedResponse')}</h3>
+                        <pre className="llm-logs-content llm-logs-content-block">
+                          {formattedResponse.formatted}
+                        </pre>
+                      </section>
+                      <section className="llm-logs-content-section">
+                        <h3 className="llm-logs-content-label">{t('llmLogs.streamChunks')}</h3>
+                        <pre className="llm-logs-content llm-logs-content-block">
+                          {formattedResponse.raw}
+                        </pre>
+                      </section>
+                    </div>
+                  ) : (
+                    <pre className="llm-logs-content">
+                      {formattedResponse?.formatted || selectedLog.error || '(empty)'}
+                    </pre>
+                  )}
                 </>
               ) : (
                 <p className="muted llm-logs-select-hint">

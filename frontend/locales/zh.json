@@ -196,7 +196,8 @@
         "codex": "Codex Client",
         "node": "Node.js",
         "python": "Python",
-        "uv": "uv"
+        "uv": "uv",
+        "git": "Git"
       },
       "runtimeReadyDesc": "终端已经准备好，智能体会按照下方的访问范围执行任务。",
       "runtimeMissingDesc": "完成运行环境安装后，智能体就可以使用终端处理任务。",
@@ -375,7 +376,8 @@
     "empty": "暂无日志记录。请在设置中开启 LLM 调试日志，然后发送消息。",
     "request": "请求",
     "response": "响应",
-    "streamChunks": "流式片段",
+    "aggregatedResponse": "聚合响应（JSON）",
+    "streamChunks": "原始流式内容",
     "error": "错误",
     "agent": "Agent",
     "model": "模型",

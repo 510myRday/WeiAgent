@@ -233,6 +233,11 @@
   height: 28px;
 }
 
+.runtime-component-row__icon.is-git img {
+  width: 29px;
+  height: 29px;
+}
+
 .runtime-component-row__details {
   display: grid;
   gap: 4px;

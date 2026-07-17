@@ -60,7 +60,8 @@ projects.
 - Node.js mark: official Node.js branding asset
 - Python mark: official Python community logo asset
 - uv mark: official Astral uv documentation asset
+- Git mark: official Git project logo asset
 
-OpenAI, Node.js, Python, uv, and their respective marks are trademarks or
+OpenAI, Node.js, Python, uv, Git, and their respective marks are trademarks or
 project identifiers of their respective owners. Their inclusion does not imply
 endorsement of WeiAgent.

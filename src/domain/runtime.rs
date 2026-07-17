@@ -15,6 +15,7 @@ pub enum RuntimeComponentKind {
     Node,
     Python,
     Uv,
+    Git,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

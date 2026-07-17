@@ -1,0 +1,151 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-24.04
+            artifact: weiagent-linux-x64
+            executable: target/release/WeiAgent
+            archive: tar
+            target: ""
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+            artifact: weiagent-linux-arm64
+            executable: target/release/WeiAgent
+            archive: tar
+            target: ""
+          - name: Linux musl x64
+            os: ubuntu-24.04
+            artifact: weiagent-linux-musl-x64
+            executable: target/x86_64-unknown-linux-musl/release/WeiAgent
+            archive: tar
+            target: x86_64-unknown-linux-musl
+          - name: Linux musl ARM64
+            os: ubuntu-24.04-arm
+            artifact: weiagent-linux-musl-arm64
+            executable: target/aarch64-unknown-linux-musl/release/WeiAgent
+            archive: tar
+            target: aarch64-unknown-linux-musl
+          - name: macOS Intel
+            os: macos-15-intel
+            artifact: weiagent-macos-x64
+            executable: target/release/WeiAgent
+            archive: tar
+            target: ""
+          - name: macOS Apple Silicon
+            os: macos-15
+            artifact: weiagent-macos-arm64
+            executable: target/release/WeiAgent
+            archive: tar
+            target: ""
+          - name: Windows x64
+            os: windows-2025
+            artifact: weiagent-windows-x64
+            executable: target/release/WeiAgent.exe
+            archive: zip
+            target: ""
+          - name: Windows ARM64
+            os: windows-11-arm
+            artifact: weiagent-windows-arm64
+            executable: target/release/WeiAgent.exe
+            archive: zip
+            target: ""
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install musl toolchain
+        if: matrix.target != ''
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install musl Rust target
+        if: matrix.target != ''
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Build release
+        if: matrix.target == ''
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+          WEIAGENT_FORCE_FRONTEND_BUILD: "1"
+        run: cargo build --release --locked
+
+      - name: Build musl release
+        if: matrix.target != ''
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+          WEIAGENT_FORCE_FRONTEND_BUILD: "1"
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package Unix release
+        if: matrix.archive == 'tar'
+        shell: bash
+        run: |
+          mkdir -p package
+          cp "${{ matrix.executable }}" package/weiagent
+          cp THIRD_PARTY_NOTICES.md package/
+          tar -C package -czf "${{ matrix.artifact }}.tar.gz" weiagent THIRD_PARTY_NOTICES.md
+          shasum -a 256 "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.tar.gz.sha256"
+
+      - name: Package Windows release
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path package | Out-Null
+          Copy-Item -LiteralPath "${{ matrix.executable }}" -Destination package/weiagent.exe
+          Copy-Item -LiteralPath THIRD_PARTY_NOTICES.md -Destination package/
+          Compress-Archive -Path package/* -DestinationPath "${{ matrix.artifact }}.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.artifact }}.zip").Hash.ToLowerInvariant()
+          "$hash  ${{ matrix.artifact }}.zip" | Set-Content -Encoding ascii "${{ matrix.artifact }}.zip.sha256"
+
+      - name: Upload release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.*
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

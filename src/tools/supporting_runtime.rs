@@ -53,6 +53,11 @@ struct PythonReleaseCycle {
     latest: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GithubTag {
+    name: String,
+}
+
 pub async fn latest_component_version(
     kind: RuntimeComponentKind,
     client: &reqwest::Client,
@@ -66,7 +71,8 @@ pub async fn latest_component_version(
                 .find(|release| {
                     !release.lts.is_null()
                         && release.lts != false
-                        && release.files.iter().any(|file| file == index_file)
+                        && (node_uses_unofficial_builds()
+                            || release.files.iter().any(|file| file == index_file))
                 })
                 .map(|release| release.version.trim_start_matches('v').to_string())
                 .ok_or_else(|| {
@@ -95,6 +101,13 @@ pub async fn latest_component_version(
                 .map(|release| release.latest)
                 .ok_or_else(|| AppError::Process("no stable Python release was found".to_string()))
         }
+        RuntimeComponentKind::Git => fetch_git_tags(client)
+            .await?
+            .into_iter()
+            .filter_map(|tag| stable_git_version(&tag.name))
+            .max()
+            .map(|version| version.to_string())
+            .ok_or_else(|| AppError::Process("no stable Git release was found".to_string())),
         RuntimeComponentKind::Codex => Err(AppError::BadRequest(
             "Codex version is managed by the terminal runtime manager".to_string(),
         )),
@@ -123,7 +136,13 @@ pub async fn detect_components(
         installing == Some(RuntimeComponentKind::Uv),
     )
     .await;
-    vec![node, python, uv]
+    let git = detect_component(
+        RuntimeComponentKind::Git,
+        git_candidates(runtimes_root).await,
+        installing == Some(RuntimeComponentKind::Git),
+    )
+    .await;
+    vec![node, python, uv, git]
 }
 
 pub async fn managed_bin_paths(runtimes_root: &Path) -> Vec<PathBuf> {
@@ -131,6 +150,7 @@ pub async fn managed_bin_paths(runtimes_root: &Path) -> Vec<PathBuf> {
         (runtimes_root.join("node").join("current"), node_program()),
         (runtimes_root.join("python"), python_program()),
         (runtimes_root.join("uv").join("current"), uv_program()),
+        (runtimes_root.join("git").join("current"), git_program()),
     ];
     let mut paths = Vec::new();
     for (root, program) in managed_programs {
@@ -156,6 +176,7 @@ pub async fn install_component(
     match kind {
         RuntimeComponentKind::Node => install_node(runtimes_root, client).await,
         RuntimeComponentKind::Uv => install_uv(runtimes_root, client).await,
+        RuntimeComponentKind::Git => install_git(runtimes_root, client).await,
         RuntimeComponentKind::Python => {
             if component_missing(
                 &detect_components(runtimes_root, Some(RuntimeComponentKind::Python)).await,
@@ -262,6 +283,12 @@ async fn uv_candidates(root: &Path) -> Vec<ProbeCandidate> {
     candidates
 }
 
+async fn git_candidates(root: &Path) -> Vec<ProbeCandidate> {
+    let mut candidates = managed_programs(&root.join("git").join("current"), git_program()).await;
+    candidates.push(system_candidate(git_program(), &["--version"]));
+    candidates
+}
+
 async fn python_candidates(root: &Path) -> Vec<ProbeCandidate> {
     let mut candidates = managed_programs(&root.join("python"), python_program()).await;
     if cfg!(windows) {
@@ -362,7 +389,8 @@ async fn install_node(root: &Path, client: &reqwest::Client) -> AppResult<()> {
         .find(|release| {
             !release.lts.is_null()
                 && release.lts != false
-                && release.files.iter().any(|file| file == index_file)
+                && (node_uses_unofficial_builds()
+                    || release.files.iter().any(|file| file == index_file))
         })
         .ok_or_else(|| {
             AppError::Process("no compatible Node.js LTS release was found".to_string())
@@ -370,7 +398,11 @@ async fn install_node(root: &Path, client: &reqwest::Client) -> AppResult<()> {
     let version = release.version.trim_start_matches('v');
     let extension = if cfg!(windows) { "zip" } else { "tar.gz" };
     let asset_name = format!("node-v{version}-{asset_suffix}.{extension}");
-    let base_url = format!("https://nodejs.org/dist/v{version}");
+    let base_url = if node_uses_unofficial_builds() {
+        format!("https://unofficial-builds.nodejs.org/download/release/v{version}")
+    } else {
+        format!("https://nodejs.org/dist/v{version}")
+    };
     let checksums = client
         .get(format!("{base_url}/SHASUMS256.txt"))
         .send()
@@ -428,6 +460,184 @@ async fn install_uv(root: &Path, client: &reqwest::Client) -> AppResult<()> {
     .await
 }
 
+async fn install_git(root: &Path, client: &reqwest::Client) -> AppResult<()> {
+    if cfg!(target_os = "linux") {
+        return install_git_with_linux_package_manager().await;
+    }
+    if cfg!(target_os = "macos") {
+        let brew = macos_brew_program();
+        return install_git_with_package_manager(&brew, &["install", "git"], false).await;
+    }
+
+    install_git_for_windows(root, client).await
+}
+
+async fn install_git_for_windows(root: &Path, client: &reqwest::Client) -> AppResult<()> {
+    let asset_suffix = git_asset_suffix().ok_or_else(unsupported_platform)?;
+    let release = fetch_git_for_windows_release(client).await?;
+    let package_version = git_for_windows_package_version(&release.tag_name).ok_or_else(|| {
+        AppError::Process(format!(
+            "Git for Windows returned an unrecognized release '{}'",
+            release.tag_name
+        ))
+    })?;
+    let asset_name = format!("MinGit-{package_version}-{asset_suffix}.zip");
+    let asset = release
+        .assets
+        .into_iter()
+        .find(|asset| asset.name == asset_name)
+        .ok_or_else(|| {
+            AppError::Process(format!(
+                "Git for Windows {} did not provide {asset_name}",
+                release.tag_name
+            ))
+        })?;
+    let checksum = asset
+        .digest
+        .as_deref()
+        .and_then(|digest| digest.strip_prefix("sha256:"))
+        .ok_or_else(|| {
+            AppError::Process(
+                "Git for Windows release did not provide a SHA-256 digest".to_string(),
+            )
+        })?;
+    install_archive(
+        root,
+        "git",
+        client,
+        &asset.browser_download_url,
+        &asset_name,
+        checksum,
+        git_program(),
+    )
+    .await
+}
+
+async fn install_git_with_linux_package_manager() -> AppResult<()> {
+    let Some((program, args)) = linux_git_package_manager(|program| {
+        std::process::Command::new(program)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }) else {
+        return Err(AppError::Process(
+            "no supported Linux package manager was found (apt, dnf, yum, zypper, pacman, or apk)"
+                .to_string(),
+        ));
+    };
+    install_git_with_package_manager(program, args, true).await
+}
+
+fn macos_brew_program() -> String {
+    let candidates = [
+        std::env::var_os("HOMEBREW_PREFIX")
+            .map(PathBuf::from)
+            .map(|prefix| prefix.join("bin").join("brew")),
+        Some(PathBuf::from("/opt/homebrew/bin/brew")),
+        Some(PathBuf::from("/usr/local/bin/brew")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|program| program.is_file())
+        .map(|program| program.to_string_lossy().to_string())
+        .unwrap_or_else(|| "brew".to_string())
+}
+
+async fn install_git_with_package_manager(
+    program: &str,
+    args: &[&str],
+    elevate: bool,
+) -> AppResult<()> {
+    let is_root = if elevate {
+        current_user_is_root().await
+    } else {
+        true
+    };
+    let mut command = if elevate && !is_root {
+        let use_pkexec = executable_is_available("pkexec").await;
+        let mut command = Command::new(if use_pkexec { "pkexec" } else { "sudo" });
+        if use_pkexec {
+            command.arg(program);
+        } else {
+            command.args(["-n", program]);
+        }
+        command
+    } else {
+        Command::new(program)
+    };
+    let output = tokio::time::timeout(
+        Duration::from_secs(15 * 60),
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| AppError::Process(format!("{program} Git installation timed out")))?
+    .map_err(|error| {
+        AppError::Process(format!(
+            "failed to start {program} for Git installation: {error}"
+        ))
+    })?;
+    if !output.status.success() {
+        return Err(AppError::Process(format!(
+            "{program} Git installation failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    probe_version(Path::new(git_program()), &["--version"])
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            AppError::Process(format!(
+                "{program} completed but Git was not available: {error}"
+            ))
+        })
+}
+
+async fn current_user_is_root() -> bool {
+    Command::new("id")
+        .arg("-u")
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .is_ok_and(|output| output.status.success() && output.stdout == b"0\n")
+}
+
+async fn executable_is_available(program: &str) -> bool {
+    Command::new(program)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|status| status.success())
+}
+
+fn linux_git_package_manager(
+    mut available: impl FnMut(&str) -> bool,
+) -> Option<(&'static str, &'static [&'static str])> {
+    const CANDIDATES: [(&str, &[&str]); 6] = [
+        ("apt-get", &["install", "-y", "git"]),
+        ("dnf", &["install", "-y", "git"]),
+        ("yum", &["install", "-y", "git"]),
+        ("zypper", &["--non-interactive", "install", "git"]),
+        ("pacman", &["--noconfirm", "-S", "git"]),
+        ("apk", &["add", "git"]),
+    ];
+    CANDIDATES
+        .into_iter()
+        .find(|(program, _)| available(program))
+}
+
 async fn install_python(root: &Path, client: &reqwest::Client) -> AppResult<()> {
     let uv = uv_candidates(root)
         .await
@@ -482,6 +692,32 @@ async fn fetch_node_releases(client: &reqwest::Client) -> AppResult<Vec<NodeRele
 async fn fetch_uv_release(client: &reqwest::Client) -> AppResult<GithubRelease> {
     client
         .get("https://api.github.com/repos/astral-sh/uv/releases/latest")
+        .send()
+        .await
+        .map_err(download_error)?
+        .error_for_status()
+        .map_err(download_error)?
+        .json::<GithubRelease>()
+        .await
+        .map_err(download_error)
+}
+
+async fn fetch_git_tags(client: &reqwest::Client) -> AppResult<Vec<GithubTag>> {
+    client
+        .get("https://api.github.com/repos/git/git/tags?per_page=20")
+        .send()
+        .await
+        .map_err(download_error)?
+        .error_for_status()
+        .map_err(download_error)?
+        .json::<Vec<GithubTag>>()
+        .await
+        .map_err(download_error)
+}
+
+async fn fetch_git_for_windows_release(client: &reqwest::Client) -> AppResult<GithubRelease> {
+    client
+        .get("https://api.github.com/repos/git-for-windows/git/releases/latest")
         .send()
         .await
         .map_err(download_error)?
@@ -669,6 +905,10 @@ fn uv_program() -> &'static str {
     if cfg!(windows) { "uv.exe" } else { "uv" }
 }
 
+fn git_program() -> &'static str {
+    if cfg!(windows) { "git.exe" } else { "git" }
+}
+
 fn python_program() -> &'static str {
     if cfg!(windows) {
         "python.exe"
@@ -678,7 +918,23 @@ fn python_program() -> &'static str {
 }
 
 fn node_asset_suffix() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
+    node_asset_suffix_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        target_environment(),
+    )
+}
+
+fn node_asset_suffix_for(os: &str, arch: &str, environment: &str) -> Option<&'static str> {
+    match (os, arch, environment) {
+        ("linux", "x86_64", "musl") => Some("linux-x64-musl"),
+        ("linux", "aarch64", "musl") => Some("linux-arm64-musl"),
+        (os, arch, _) => node_glibc_asset_suffix_for(os, arch),
+    }
+}
+
+fn node_glibc_asset_suffix_for(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
         ("windows", "x86_64") => Some("win-x64"),
         ("windows", "aarch64") => Some("win-arm64"),
         ("linux", "x86_64") => Some("linux-x64"),
@@ -690,27 +946,83 @@ fn node_asset_suffix() -> Option<&'static str> {
 }
 
 fn node_index_file() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86_64") => Some("win-x64-zip"),
-        ("windows", "aarch64") => Some("win-arm64-zip"),
-        ("linux", "x86_64") => Some("linux-x64"),
-        ("linux", "aarch64") => Some("linux-arm64"),
-        ("macos", "x86_64") => Some("osx-x64-tar"),
-        ("macos", "aarch64") => Some("osx-arm64-tar"),
+    node_index_file_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        target_environment(),
+    )
+}
+
+fn node_index_file_for(os: &str, arch: &str, environment: &str) -> Option<&'static str> {
+    match (os, arch, environment) {
+        ("linux", "x86_64", "musl") => Some("linux-x64-musl"),
+        ("linux", "aarch64", "musl") => Some("linux-arm64-musl"),
+        ("windows", "x86_64", _) => Some("win-x64-zip"),
+        ("windows", "aarch64", _) => Some("win-arm64-zip"),
+        ("linux", "x86_64", _) => Some("linux-x64"),
+        ("linux", "aarch64", _) => Some("linux-arm64"),
+        ("macos", "x86_64", _) => Some("osx-x64-tar"),
+        ("macos", "aarch64", _) => Some("osx-arm64-tar"),
         _ => None,
     }
 }
 
+fn node_uses_unofficial_builds() -> bool {
+    cfg!(all(target_os = "linux", target_env = "musl"))
+}
+
+fn target_environment() -> &'static str {
+    if cfg!(target_env = "musl") {
+        "musl"
+    } else {
+        "gnu"
+    }
+}
+
 fn uv_target() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
-        ("windows", "aarch64") => Some("aarch64-pc-windows-msvc"),
-        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
-        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
-        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
-        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+    uv_target_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        target_environment(),
+    )
+}
+
+fn uv_target_for(os: &str, arch: &str, environment: &str) -> Option<&'static str> {
+    match (os, arch, environment) {
+        ("linux", "x86_64", "musl") => Some("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64", "musl") => Some("aarch64-unknown-linux-musl"),
+        ("windows", "x86_64", _) => Some("x86_64-pc-windows-msvc"),
+        ("windows", "aarch64", _) => Some("aarch64-pc-windows-msvc"),
+        ("linux", "x86_64", _) => Some("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64", _) => Some("aarch64-unknown-linux-gnu"),
+        ("macos", "x86_64", _) => Some("x86_64-apple-darwin"),
+        ("macos", "aarch64", _) => Some("aarch64-apple-darwin"),
         _ => None,
     }
+}
+
+fn git_asset_suffix() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => Some("64-bit"),
+        ("windows", "aarch64") => Some("arm64"),
+        _ => None,
+    }
+}
+
+fn stable_git_version(tag: &str) -> Option<Version> {
+    let version = tag.trim_start_matches('v');
+    Version::parse(version)
+        .ok()
+        .filter(|version| version.pre.is_empty() && version.build.is_empty())
+}
+
+fn git_for_windows_package_version(tag: &str) -> Option<String> {
+    let (version, build) = tag.trim_start_matches('v').split_once(".windows.")?;
+    Version::parse(version).ok()?;
+    build
+        .chars()
+        .all(|character| character.is_ascii_digit())
+        .then(|| format!("{version}.{build}"))
 }
 
 fn unsupported_platform() -> AppError {
@@ -726,10 +1038,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn node_and_uv_targets_cover_supported_platforms() {
+    fn managed_runtime_targets_cover_supported_platforms() {
         assert!(node_asset_suffix().is_some());
         assert!(node_index_file().is_some());
         assert!(uv_target().is_some());
+        if cfg!(windows) {
+            assert!(git_asset_suffix().is_some());
+        }
+    }
+
+    #[test]
+    fn linux_runtime_targets_distinguish_glibc_and_musl() {
+        assert_eq!(
+            node_asset_suffix_for("linux", "x86_64", "gnu"),
+            Some("linux-x64")
+        );
+        assert_eq!(
+            node_asset_suffix_for("linux", "aarch64", "musl"),
+            Some("linux-arm64-musl")
+        );
+        assert_eq!(
+            node_index_file_for("windows", "x86_64", "gnu"),
+            Some("win-x64-zip")
+        );
+        assert_eq!(
+            node_index_file_for("macos", "aarch64", "gnu"),
+            Some("osx-arm64-tar")
+        );
+        assert_eq!(
+            uv_target_for("linux", "x86_64", "musl"),
+            Some("x86_64-unknown-linux-musl")
+        );
+        assert_eq!(
+            uv_target_for("linux", "aarch64", "gnu"),
+            Some("aarch64-unknown-linux-gnu")
+        );
+    }
+
+    #[test]
+    fn git_release_versions_are_normalized_for_comparison_and_assets() {
+        assert_eq!(stable_git_version("v2.55.0"), Some(Version::new(2, 55, 0)));
+        assert_eq!(stable_git_version("v2.55.0-rc1"), None);
+        assert_eq!(
+            git_for_windows_package_version("v2.55.0.windows.3"),
+            Some("2.55.0.3".to_string())
+        );
+    }
+
+    #[test]
+    fn linux_git_install_uses_the_available_distribution_package_manager() {
+        let selected = linux_git_package_manager(|program| program == "apk").unwrap();
+        assert_eq!(selected, ("apk", &["add", "git"][..]));
+
+        let selected = linux_git_package_manager(|program| program == "pacman").unwrap();
+        assert_eq!(selected, ("pacman", &["--noconfirm", "-S", "git"][..]));
     }
 
     #[test]
@@ -758,6 +1120,10 @@ mod tests {
                 .iter()
                 .filter(|status| status.kind != RuntimeComponentKind::Python)
                 .all(|status| !status.installing)
+        );
+        assert_eq!(
+            statuses.last().map(|status| status.kind),
+            Some(RuntimeComponentKind::Git)
         );
     }
 
