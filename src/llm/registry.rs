@@ -78,6 +78,7 @@ mod tests {
                 base_url: "https://example.test/v1".to_string(),
                 api_key: "test-key".to_string(),
                 models: vec!["test-model".to_string()],
+                model_configs: Vec::new(),
                 extra_body: serde_json::Value::Null,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),

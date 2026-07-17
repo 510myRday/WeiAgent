@@ -38,6 +38,7 @@ mod tests {
             base_url: "https://example.test/v1".to_string(),
             api_key: "sk-test".to_string(),
             models: vec![model.to_string()],
+            model_configs: Vec::new(),
             extra_body: serde_json::Value::Null,
         }
     }
@@ -140,6 +141,7 @@ mod tests {
                     base_url: None,
                     api_key: Some(String::new()),
                     models: None,
+                    model_configs: None,
                     extra_body: None,
                 },
             )

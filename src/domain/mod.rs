@@ -18,8 +18,8 @@ pub use conversations::{
     Conversation, ConversationMessagePage, CreateConversationRequest, UpdateConversationRequest,
 };
 pub use providers::{
-    CreateModelProviderRequest, FetchProviderModelsRequest, ModelProvider, ModelProviderResponse,
-    ProviderType, UpdateModelProviderRequest,
+    CreateModelProviderRequest, FetchProviderModelsRequest, ModelConfig, ModelProvider,
+    ModelProviderResponse, ProviderType, UpdateModelProviderRequest,
 };
 pub use runtime::{
     CodexRuntimeSource, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus,

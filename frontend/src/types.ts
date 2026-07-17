@@ -18,9 +18,20 @@ export type ModelProvider = {
   has_api_key: boolean;
   masked_api_key: string;
   models: string[];
+  model_configs: ModelConfig[];
   extra_body: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+};
+
+export type ModelConfig = {
+  model_id: string;
+  multimodal: boolean;
+  thinking: boolean;
+  input_price?: number;
+  output_price?: number;
+  cache_write_price?: number;
+  cache_read_price?: number;
 };
 
 export type ProviderType =
@@ -35,6 +46,7 @@ export type ModelProviderPayload = {
   base_url: string;
   api_key: string;
   models: string[];
+  model_configs: ModelConfig[];
   extra_body?: Record<string, unknown>;
 };
 

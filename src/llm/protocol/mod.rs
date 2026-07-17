@@ -91,6 +91,7 @@ mod tests {
             base_url: base_url.into(),
             api_key: "key".to_string(),
             models: vec!["model".to_string()],
+            model_configs: Vec::new(),
             extra_body: Value::Null,
             created_at: Utc::now(),
             updated_at: Utc::now(),

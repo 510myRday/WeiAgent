@@ -1,9 +1,10 @@
 use chrono::Utc;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::{
     domain::{
-        CreateModelProviderRequest, ModelProvider, ModelProviderResponse,
+        CreateModelProviderRequest, ModelConfig, ModelProvider, ModelProviderResponse,
         UpdateModelProviderRequest,
     },
     error::{AppError, AppResult},
@@ -31,6 +32,7 @@ impl JsonStore {
         let base_url = validate_non_empty("base_url", &request.base_url)?;
         let api_key = validate_non_empty("api_key", &request.api_key)?;
         let models = normalize_models(request.models)?;
+        let model_configs = normalize_model_configs(&models, request.model_configs)?;
         validate_extra_body(&request.extra_body)?;
 
         let _guard = self.lock.lock().await;
@@ -43,6 +45,7 @@ impl JsonStore {
             base_url,
             api_key,
             models,
+            model_configs,
             extra_body: request.extra_body,
             created_at: now,
             updated_at: now,
@@ -82,6 +85,7 @@ impl JsonStore {
         {
             provider.api_key = api_key.trim().to_string();
         }
+        let requested_model_configs = request.model_configs;
         if let Some(models) = request.models {
             let models = normalize_models(models)?;
             for agent in agents
@@ -96,6 +100,10 @@ impl JsonStore {
             }
             provider.models = models;
         }
+        provider.model_configs = normalize_model_configs(
+            &provider.models,
+            requested_model_configs.unwrap_or_else(|| provider.model_configs.clone()),
+        )?;
         if let Some(extra_body) = request.extra_body {
             validate_extra_body(&extra_body)?;
             provider.extra_body = extra_body;
@@ -144,6 +152,55 @@ impl JsonStore {
     }
 }
 
+fn normalize_model_configs(
+    models: &[String],
+    configs: Vec<ModelConfig>,
+) -> AppResult<Vec<ModelConfig>> {
+    let mut configs_by_id = configs
+        .into_iter()
+        .map(|mut config| {
+            config.model_id = config.model_id.trim().to_string();
+            (config.model_id.clone(), config)
+        })
+        .filter(|(model_id, _)| !model_id.is_empty())
+        .collect::<HashMap<_, _>>();
+
+    models
+        .iter()
+        .map(|model_id| {
+            let config = configs_by_id
+                .remove(model_id)
+                .unwrap_or_else(|| default_model_config(model_id));
+            validate_model_price("input_price", config.input_price)?;
+            validate_model_price("output_price", config.output_price)?;
+            validate_model_price("cache_write_price", config.cache_write_price)?;
+            validate_model_price("cache_read_price", config.cache_read_price)?;
+            Ok(config)
+        })
+        .collect()
+}
+
+fn default_model_config(model_id: &str) -> ModelConfig {
+    ModelConfig {
+        model_id: model_id.to_string(),
+        multimodal: false,
+        thinking: false,
+        input_price: None,
+        output_price: None,
+        cache_write_price: None,
+        cache_read_price: None,
+    }
+}
+
+fn validate_model_price(field: &str, price: Option<f64>) -> AppResult<()> {
+    if price.is_none_or(|value| value.is_finite() && value >= 0.0) {
+        return Ok(());
+    }
+    Err(AppError::BadRequest(format!(
+        "{field} must be a non-negative finite number"
+    )))
+}
+
 fn validate_extra_body(extra_body: &serde_json::Value) -> AppResult<()> {
     if extra_body.is_null() || extra_body.is_object() {
         return Ok(());
@@ -155,7 +212,8 @@ fn validate_extra_body(extra_body: &serde_json::Value) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_extra_body;
+    use super::{normalize_model_configs, validate_extra_body};
+    use crate::domain::ModelConfig;
 
     #[test]
     fn extra_body_accepts_objects_and_null() {
@@ -166,5 +224,49 @@ mod tests {
     #[test]
     fn extra_body_rejects_non_objects() {
         assert!(validate_extra_body(&serde_json::json!(["invalid"])).is_err());
+    }
+
+    #[test]
+    fn model_configs_follow_the_model_list_and_fill_defaults() {
+        let configs = normalize_model_configs(
+            &["model-a".to_string(), "model-b".to_string()],
+            vec![ModelConfig {
+                model_id: "model-b".to_string(),
+                multimodal: true,
+                thinking: false,
+                input_price: Some(0.25),
+                output_price: Some(1.5),
+                cache_write_price: Some(0.08),
+                cache_read_price: Some(0.05),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].model_id, "model-a");
+        assert!(!configs[0].multimodal);
+        assert_eq!(configs[1].model_id, "model-b");
+        assert!(configs[1].multimodal);
+        assert_eq!(configs[1].output_price, Some(1.5));
+        assert_eq!(configs[1].cache_write_price, Some(0.08));
+        assert_eq!(configs[1].cache_read_price, Some(0.05));
+    }
+
+    #[test]
+    fn model_configs_reject_invalid_prices() {
+        let result = normalize_model_configs(
+            &["model-a".to_string()],
+            vec![ModelConfig {
+                model_id: "model-a".to_string(),
+                multimodal: false,
+                thinking: false,
+                input_price: Some(-0.01),
+                output_price: None,
+                cache_write_price: None,
+                cache_read_price: None,
+            }],
+        );
+
+        assert!(result.is_err());
     }
 }

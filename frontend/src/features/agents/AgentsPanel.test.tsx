@@ -57,6 +57,7 @@ test('built-in agent fields follow the current locale without changing the store
             has_api_key: true,
             masked_api_key: '****',
             models: ['model-1'],
+            model_configs: [],
             extra_body: {},
             created_at: '2026-01-01T00:00:00Z',
             updated_at: '2026-01-01T00:00:00Z',

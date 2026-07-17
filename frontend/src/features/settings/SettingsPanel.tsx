@@ -16,6 +16,7 @@ import {
 
 import type {
   AppSettings,
+  ModelConfig,
   ModelProvider,
   ModelProviderPayload,
   ProviderType,
@@ -56,6 +57,7 @@ type ProviderForm = {
   base_url: string;
   api_key: string;
   modelsText: string;
+  modelConfigs: ModelConfig[];
   extraBodyText: string;
 };
 
@@ -108,6 +110,7 @@ const defaultProviderForm: ProviderForm = {
   base_url: protocolPresetByType.openai_compatible.defaultBaseUrl,
   api_key: '',
   modelsText: '',
+  modelConfigs: [],
   extraBodyText: '',
 };
 
@@ -118,7 +121,60 @@ const RUNTIME_AUTO_SAVE_RETRY_DELAY_MS = 1200;
 const RUNTIME_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
 
 function parseModels(value: string): string[] {
-  return Array.from(new Set(value.split(/\r?\n|,/).map((model) => model.trim()).filter(Boolean))).sort();
+  return Array.from(new Set(value.split(/\r?\n|,/).map((model) => model.trim()).filter(Boolean)));
+}
+
+function defaultModelConfig(modelId: string): ModelConfig {
+  return {
+    model_id: modelId,
+    multimodal: false,
+    thinking: false,
+  };
+}
+
+function normalizeModelConfig(modelId: string, config: ModelConfig): ModelConfig {
+  const legacyConfig = config as ModelConfig & { cache_price?: number };
+  return {
+    model_id: modelId,
+    multimodal: Boolean(config.multimodal),
+    thinking: Boolean(config.thinking),
+    input_price: config.input_price,
+    output_price: config.output_price,
+    cache_write_price: config.cache_write_price,
+    cache_read_price: config.cache_read_price ?? legacyConfig.cache_price,
+  };
+}
+
+function syncModelConfigs(models: string[], current: ModelConfig[]): ModelConfig[] {
+  const exactMatches = new Map(current.map((config) => [config.model_id, config]));
+  const nextModelSet = new Set(models);
+  const usedConfigIds = new Set<string>();
+
+  return models.map((modelId, index) => {
+    const exact = exactMatches.get(modelId);
+    if (exact) {
+      usedConfigIds.add(exact.model_id);
+      return normalizeModelConfig(modelId, exact);
+    }
+
+    const sameRow = current[index];
+    if (
+      sameRow
+      && !nextModelSet.has(sameRow.model_id)
+      && !usedConfigIds.has(sameRow.model_id)
+    ) {
+      usedConfigIds.add(sameRow.model_id);
+      return normalizeModelConfig(modelId, sameRow);
+    }
+
+    return defaultModelConfig(modelId);
+  });
+}
+
+function parseOptionalPrice(value: string): number | undefined {
+  if (!value.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function isValidRuntimeSettings(settings: AppSettings): boolean {
@@ -237,6 +293,7 @@ export function SettingsPanel({
       base_url: activeProvider.base_url,
       api_key: '',
       modelsText: activeProvider.models.join('\n'),
+      modelConfigs: syncModelConfigs(activeProvider.models, activeProvider.model_configs ?? []),
       extraBodyText: activeProvider.extra_body && Object.keys(activeProvider.extra_body).length > 0
         ? JSON.stringify(activeProvider.extra_body, null, 2)
         : '',
@@ -397,6 +454,10 @@ export function SettingsPanel({
       base_url: providerForm.base_url.trim(),
       api_key: providerForm.api_key.trim(),
       models: parseModels(providerForm.modelsText),
+      model_configs: syncModelConfigs(
+        parseModels(providerForm.modelsText),
+        providerForm.modelConfigs,
+      ),
       extra_body: extraBody,
     };
     if (!payload.name || !payload.base_url || (!activeProvider && !payload.api_key) || payload.models.length === 0) {
@@ -476,7 +537,11 @@ export function SettingsPanel({
           api_key: apiKey,
           extra_body: extraBody,
         });
-      setProviderForm((current) => ({ ...current, modelsText: models.join('\n') }));
+      setProviderForm((current) => ({
+        ...current,
+        modelsText: models.join('\n'),
+        modelConfigs: syncModelConfigs(models, current.modelConfigs),
+      }));
       toast.success(t('notification.modelsLoaded', { count: models.length }));
     } catch (cause) {
       toast.error(userErrorMessage(cause, {
@@ -499,6 +564,23 @@ export function SettingsPanel({
           : current.base_url,
       };
     });
+  }
+
+  function handleModelsTextChange(modelsText: string) {
+    setProviderForm((current) => ({
+      ...current,
+      modelsText,
+      modelConfigs: syncModelConfigs(parseModels(modelsText), current.modelConfigs),
+    }));
+  }
+
+  function patchModelConfig(modelId: string, patch: Partial<ModelConfig>) {
+    setProviderForm((current) => ({
+      ...current,
+      modelConfigs: current.modelConfigs.map((config) => (
+        config.model_id === modelId ? { ...config, ...patch } : config
+      )),
+    }));
   }
 
   return (
@@ -717,41 +799,125 @@ export function SettingsPanel({
                 </section>
 
                 <section className="provider-form-section">
-                  <FormField
-                    label={t('provider.models')}
-                    htmlFor="provider-models"
-                    required
-                    action={(
-                      <div className="provider-field-actions">
-                        <span className={`mini-status-badge${modelCount === 0 ? ' is-required' : ''}`}>
-                          {modelCount === 0
-                            ? t('provider.modelsRequired')
-                            : t('provider.modelCount', { count: modelCount })}
-                        </span>
-                        <Button
-                          className="inline-action"
-                          variant="ghost"
-                          type="button"
-                          disabled={fetchingModels}
-                          onClick={handleFetchModels}
-                          icon={<Download size={14} />}
-                        >
-                          {fetchingModels ? t('provider.fetchingModels') : t('provider.fetchModels')}
-                        </Button>
-                      </div>
-                    )}
-                  >
-                    <textarea
-                      id="provider-models"
-                      value={providerForm.modelsText}
-                      onChange={(e) => setProviderForm({ ...providerForm, modelsText: e.target.value })}
-                      rows={6}
+                  <div className="provider-model-section-heading">
+                    <div>
+                      <h3>{t('provider.models')}</h3>
+                      <p>{t('provider.modelsDescription')}</p>
+                    </div>
+                    <div className="provider-field-actions">
+                      <span className={`mini-status-badge${modelCount === 0 ? ' is-required' : ''}`}>
+                        {modelCount === 0
+                          ? t('provider.modelsRequired')
+                          : t('provider.modelCount', { count: modelCount })}
+                      </span>
+                      <Button
+                        className="inline-action"
+                        variant="ghost"
+                        type="button"
+                        disabled={fetchingModels}
+                        onClick={handleFetchModels}
+                        icon={<Download size={14} />}
+                      >
+                        {fetchingModels ? t('provider.fetchingModels') : t('provider.fetchModels')}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="provider-model-workspace">
+                    <FormField
+                      label={t('provider.modelIds')}
+                      htmlFor="provider-models"
                       required
-                      aria-required="true"
-                      placeholder={t('provider.modelsPlaceholder')}
-                      disabled={isSubmittingProvider || fetchingModels}
-                    />
-                  </FormField>
+                    >
+                      <textarea
+                        id="provider-models"
+                        value={providerForm.modelsText}
+                        onChange={(event) => handleModelsTextChange(event.target.value)}
+                        rows={Math.max(8, Math.min(14, modelCount + 3))}
+                        required
+                        aria-required="true"
+                        placeholder={t('provider.modelsPlaceholder')}
+                        disabled={isSubmittingProvider || fetchingModels}
+                      />
+                    </FormField>
+
+                    <div className="provider-model-config">
+                      <div className="provider-model-config__label">
+                        {t('provider.modelConfiguration')}
+                        <span>（{t('provider.priceUnit')}）</span>
+                      </div>
+                      <div className="model-config-list">
+                        {providerForm.modelConfigs.length === 0 ? (
+                          <div className="model-config-empty">{t('provider.modelConfigurationEmpty')}</div>
+                        ) : (
+                          <>
+                            <div className="model-config-header" aria-hidden="true">
+                              <span>{t('provider.model')}</span>
+                              <span>{t('provider.capabilities')}</span>
+                              <span>{t('provider.inputPrice')}</span>
+                              <span>{t('provider.outputPrice')}</span>
+                              <span>{t('provider.cacheWritePrice')}</span>
+                              <span>{t('provider.cacheReadPrice')}</span>
+                            </div>
+                            {providerForm.modelConfigs.map((config, index) => (
+                              <div className="model-config-row" key={config.model_id}>
+                                <strong className="model-config-name" title={config.model_id}>
+                                  {config.model_id}
+                                </strong>
+                                <div className="model-capabilities">
+                                  {([
+                                    ['multimodal', 'provider.multimodal'],
+                                    ['thinking', 'provider.thinking'],
+                                  ] as const).map(([field, labelKey]) => (
+                                    <label className="model-capability-toggle" key={field}>
+                                      <span>{t(labelKey)}</span>
+                                      <input
+                                        type="checkbox"
+                                        checked={config[field]}
+                                        onChange={(event) => patchModelConfig(config.model_id, {
+                                          [field]: event.target.checked,
+                                        })}
+                                        disabled={isSubmittingProvider}
+                                        aria-label={`${config.model_id} ${t(labelKey)}`}
+                                      />
+                                      <span className="model-capability-toggle__track" aria-hidden="true" />
+                                    </label>
+                                  ))}
+                                </div>
+                                {([
+                                  ['input_price', 'provider.inputPrice'],
+                                  ['output_price', 'provider.outputPrice'],
+                                  ['cache_write_price', 'provider.cacheWritePrice'],
+                                  ['cache_read_price', 'provider.cacheReadPrice'],
+                                ] as const).map(([field, labelKey]) => (
+                                  <label className="model-price-field" key={field}>
+                                    <span className="model-price-field__mobile-label">{t(labelKey)}</span>
+                                    <span className="model-price-field__input">
+                                      <span aria-hidden="true">$</span>
+                                      <input
+                                        id={`provider-model-${index}-${field}`}
+                                        type="number"
+                                        min="0"
+                                        step="0.000001"
+                                        inputMode="decimal"
+                                        value={config[field] ?? ''}
+                                        placeholder="0.00"
+                                        onChange={(event) => patchModelConfig(config.model_id, {
+                                          [field]: parseOptionalPrice(event.target.value),
+                                        })}
+                                        disabled={isSubmittingProvider}
+                                        aria-label={`${config.model_id} ${t(labelKey)}`}
+                                      />
+                                    </span>
+                                  </label>
+                                ))}
+                              </div>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 </section>
 
                 <details

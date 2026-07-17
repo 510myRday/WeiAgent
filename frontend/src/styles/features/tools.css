@@ -1,7 +1,3 @@
-.tools-panel .config-main > * {
-  width: min(100%, 1040px);
-}
-
 .tools-panel .config-page-header {
   margin-bottom: 22px;
 }

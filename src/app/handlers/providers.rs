@@ -37,6 +37,7 @@ pub async fn fetch_provider_models(
         base_url: request.base_url,
         api_key: request.api_key,
         models: Vec::new(),
+        model_configs: Vec::new(),
         extra_body: request.extra_body,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

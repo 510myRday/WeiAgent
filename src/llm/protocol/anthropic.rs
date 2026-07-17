@@ -576,6 +576,7 @@ mod tests {
             base_url: "https://api.anthropic.com/v1".to_string(),
             api_key: "test-key".to_string(),
             models: Vec::new(),
+            model_configs: Vec::new(),
             extra_body: Value::Null,
             created_at: Utc::now(),
             updated_at: Utc::now(),
