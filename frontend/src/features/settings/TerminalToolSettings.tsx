@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, BadgeCheck, CircleAlert, CircleCheck, Clock, Download, FolderLock, Hand, Pencil, Plus, RefreshCw, Shield, ShieldAlert, ShieldCheck, Square, Terminal, Trash2 } from 'lucide-react';
+import { ArrowLeft, BadgeCheck, Braces, CircleAlert, CircleCheck, Clock, Code2, Download, FolderLock, Gauge, Hand, Pencil, Plus, RefreshCw, Shield, ShieldAlert, ShieldCheck, Square, Terminal, Trash2 } from 'lucide-react';
 
-import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, CodexRuntimeStatus, ToolProcessInfo } from '../../api';
+import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, ToolProcessInfo } from '../../api';
 import {
-  installCodexRuntime,
+  installRuntimeComponent,
   listToolProcesses,
   readAgentToolsConfig,
   readCodexRuntime,
   readToolDefaults,
-  refreshCodexRuntime,
+  refreshRuntimeComponent,
   stopToolProcess,
   updateAgentToolsConfig,
   updateToolDefaults,
@@ -62,8 +62,8 @@ export function TerminalToolSettings({
   const [isLoading, setIsLoading] = useState(true);
   const [autoSaveStatus, setAutoSaveStatus] = useState<TerminalAutoSaveStatus>('idle');
   const [agentToolView, setAgentToolView] = useState<AgentToolView>('list');
-  const [isInstallingRuntime, setIsInstallingRuntime] = useState(false);
-  const [isRefreshingRuntime, setIsRefreshingRuntime] = useState(false);
+  const [installingRuntimeComponent, setInstallingRuntimeComponent] = useState<RuntimeComponentKind | null>(null);
+  const [refreshingRuntimeComponent, setRefreshingRuntimeComponent] = useState<RuntimeComponentKind | null>(null);
   const [processes, setProcesses] = useState<ToolProcessInfo[]>([]);
   const [isStoppingProcess, setIsStoppingProcess] = useState('');
   const [rootInput, setRootInput] = useState('');
@@ -299,11 +299,11 @@ export function TerminalToolSettings({
     }
   }
 
-  async function handleInstallRuntime() {
-    const wasUpdate = runtime?.update_available === true;
-    setIsInstallingRuntime(true);
+  async function handleInstallRuntime(component: RuntimeComponentStatus) {
+    const wasUpdate = component.available;
+    setInstallingRuntimeComponent(component.kind);
     try {
-      setRuntime(await installCodexRuntime());
+      setRuntime(await installRuntimeComponent(component.kind));
       toast.success(t(wasUpdate ? 'notification.runtimeUpdated' : 'notification.runtimeInstalled'));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('tools.terminal.runtimeInstallFailed'));
@@ -313,18 +313,18 @@ export function TerminalToolSettings({
         // Keep the original installation failure as the visible error.
       }
     } finally {
-      setIsInstallingRuntime(false);
+      setInstallingRuntimeComponent(null);
     }
   }
 
-  async function handleRefreshRuntime() {
-    setIsRefreshingRuntime(true);
+  async function handleRefreshRuntime(component: RuntimeComponentKind) {
+    setRefreshingRuntimeComponent(component);
     try {
-      setRuntime(await refreshCodexRuntime());
+      setRuntime(await refreshRuntimeComponent(component));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('tools.terminal.runtimeRefreshFailed'));
     } finally {
-      setIsRefreshingRuntime(false);
+      setRefreshingRuntimeComponent(null);
     }
   }
 
@@ -438,6 +438,7 @@ export function TerminalToolSettings({
   const fieldInherited = (field: OverrideField) => isAgentScope && overrides?.terminal[field] === undefined;
   const sandboxAvailable = runtime?.available === true;
   const terminalUnavailable = !sandboxAvailable;
+  const runtimeComponents = normalizeRuntimeComponents(runtime);
 
   if (isAgentScope && agentToolView === 'list') {
     return (
@@ -517,50 +518,27 @@ export function TerminalToolSettings({
       ) : null}
 
       <div className={`${isAgentScope ? '' : 'form-card '}terminal-settings-form`}>
-      {scope === 'defaults' ? <section className={`settings-card runtime-card ${sandboxAvailable ? 'runtime-card--ready' : 'warning-card'}`}>
-        <div className="runtime-card__body">
-          <div className={`runtime-card__icon ${sandboxAvailable ? 'is-ready' : 'is-missing'}`}>
-            {sandboxAvailable ? <CircleCheck size={20} /> : <CircleAlert size={20} />}
+      {scope === 'defaults' ? <section className="settings-card runtime-card">
+        <div className="card-header">
+          <Terminal size={20} />
+          <h3>{t('tools.terminal.runtimeTitle')}</h3>
+        </div>
+        <div className="card-body runtime-card__body">
+          <div className="runtime-component-list">
+            {runtimeComponents.map((component) => (
+              <RuntimeComponentRow
+                key={component.kind}
+                component={component}
+                installing={installingRuntimeComponent === component.kind}
+                refreshing={refreshingRuntimeComponent === component.kind}
+                actionsDisabled={installingRuntimeComponent === component.kind || refreshingRuntimeComponent === component.kind || runtime?.supported === false}
+                onInstall={() => handleInstallRuntime(component)}
+                onRefresh={() => handleRefreshRuntime(component.kind)}
+                t={t}
+              />
+            ))}
           </div>
-          <div className="runtime-card__details">
-            <div className="runtime-card__title">
-              <h3>{t('tools.terminal.runtimeTitle')}</h3>
-              <span className={`runtime-status ${sandboxAvailable ? 'is-ready' : 'is-missing'}`}>
-                {t(sandboxAvailable ? 'tools.terminal.runtimeReady' : 'tools.terminal.runtimeMissing')}
-              </span>
-            </div>
-            <p>{t(sandboxAvailable ? 'tools.terminal.runtimeReadyDesc' : 'tools.terminal.runtimeMissingDesc')}</p>
-            <small>
-              {runtime?.detected_version || runtime?.target_version || ''}
-              {runtime?.source ? ` · ${t(`tools.terminal.runtimeSource.${runtime.source}`)}` : ''}
-              {runtime?.platform ? ` · ${runtime.platform}` : ''}
-              {runtime?.update_available ? ` · ${t('tools.terminal.runtimeUpdateAvailable', { version: runtime.target_version })}` : ''}
-            </small>
-            {runtime?.error ? <code className="runtime-card__error">{runtime.error}</code> : null}
-          </div>
-          <div className="runtime-card__actions">
-            <IconButton
-              type="button"
-              variant="ghost"
-              onClick={handleRefreshRuntime}
-              disabled={isRefreshingRuntime || isInstallingRuntime}
-              label={t('tools.terminal.runtimeRefresh')}
-            >
-              <RefreshCw size={17} className={isRefreshingRuntime ? 'is-spinning' : ''} />
-            </IconButton>
-            {!sandboxAvailable || runtime?.update_available ? (
-              <Button
-                variant="primary"
-                onClick={handleInstallRuntime}
-                disabled={isInstallingRuntime || runtime?.supported === false}
-                icon={<Download size={17} />}
-              >
-                {isInstallingRuntime
-                  ? t(runtime?.update_available ? 'tools.terminal.runtimeUpdating' : 'tools.terminal.runtimeInstalling')
-                  : t(runtime?.update_available ? 'tools.terminal.runtimeUpdate' : 'tools.terminal.runtimeInstall')}
-              </Button>
-            ) : null}
-          </div>
+          {runtime?.error ? <code className="runtime-card__error">{runtime.error}</code> : null}
         </div>
       </section> : null}
 
@@ -698,6 +676,113 @@ export function TerminalToolSettings({
           </div>
         </section>
       ) : null}
+      </div>
+    </div>
+  );
+}
+
+function normalizeRuntimeComponents(runtime: CodexRuntimeStatus | null): RuntimeComponentStatus[] {
+  if (runtime?.components?.length) return runtime.components;
+  return [
+    {
+      kind: 'codex',
+      available: runtime?.available === true,
+      required: true,
+      managed_installed: runtime?.managed_installed === true,
+      installing: runtime?.installing === true,
+      source: runtime?.source,
+      detected_version: runtime?.detected_version,
+      target_version: runtime?.target_version,
+      update_available: runtime?.update_available === true,
+      error: runtime?.error,
+    },
+    ...(['node', 'python', 'uv'] as const).map((kind) => ({
+      kind,
+      available: false,
+      required: false,
+      managed_installed: false,
+      installing: runtime?.installing === true,
+      update_available: false,
+    })),
+  ];
+}
+
+function RuntimeComponentRow({
+  component,
+  installing,
+  refreshing,
+  actionsDisabled,
+  onInstall,
+  onRefresh,
+  t,
+}: {
+  component: RuntimeComponentStatus;
+  installing: boolean;
+  refreshing: boolean;
+  actionsDisabled: boolean;
+  onInstall: () => void;
+  onRefresh: () => void;
+  t: (key: string, values?: Record<string, string | number>) => string;
+}) {
+  const icon = {
+    codex: <Terminal size={19} />,
+    node: <Braces size={19} />,
+    python: <Code2 size={19} />,
+    uv: <Gauge size={19} />,
+  }[component.kind];
+  const source = component.source ? t(`tools.terminal.runtimeSource.${component.source}`) : '';
+  const latest = component.target_version
+    ? t('tools.terminal.runtimeLatestVersion', { version: component.target_version })
+    : t('tools.terminal.runtimeLatestUnknown');
+  const meta = [component.detected_version, latest, source].filter(Boolean).join(' · ');
+  const statusLabel = !component.available
+    ? t('tools.terminal.runtimeMissing')
+    : component.update_available
+      ? t('tools.terminal.runtimeUpdateAvailable', { version: component.target_version ?? '' })
+      : component.target_version
+        ? t('tools.terminal.runtimeLatest')
+        : t('tools.terminal.runtimeAvailable');
+
+  return (
+    <div className="runtime-component-row">
+      <span className="runtime-component-row__icon">{icon}</span>
+      <div className="runtime-component-row__details">
+        <div className="runtime-component-row__title">
+          <strong>{t(`tools.terminal.runtimeComponent.${component.kind}`)}</strong>
+          <span className={`runtime-status ${component.available && !component.update_available ? 'is-ready' : 'is-missing'}`}>
+            {statusLabel}
+          </span>
+          {component.required ? <span className="runtime-required">{t('tools.terminal.runtimeRequired')}</span> : null}
+        </div>
+        <small>{meta || t('tools.terminal.runtimeNotDetected')}</small>
+        {component.error ? <code className="runtime-component-row__error">{component.error}</code> : null}
+      </div>
+      <div className="runtime-component-row__actions">
+        {!component.available || component.update_available ? (
+          <Button
+            variant="secondary"
+            onClick={onInstall}
+            disabled={actionsDisabled}
+            icon={<Download size={16} />}
+          >
+            {installing
+              ? t(component.available ? 'tools.terminal.runtimeUpdating' : 'tools.terminal.runtimeInstalling')
+              : component.update_available && component.target_version
+                ? t('tools.terminal.runtimeUpdateTo', { version: component.target_version })
+                : t('tools.terminal.runtimeInstall')}
+          </Button>
+        ) : null}
+        <IconButton
+          type="button"
+          variant="ghost"
+          onClick={onRefresh}
+          disabled={actionsDisabled}
+          label={t('tools.terminal.runtimeRefreshComponent', {
+            name: t(`tools.terminal.runtimeComponent.${component.kind}`),
+          })}
+        >
+          <RefreshCw size={17} className={refreshing ? 'is-spinning' : ''} />
+        </IconButton>
       </div>
     </div>
   );

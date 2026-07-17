@@ -9,7 +9,7 @@ use crate::{
     app::AppState,
     domain::{
         AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision,
-        ApprovalRequest, ApprovalResponse, CodexRuntimeStatus, ProcessInfo,
+        ApprovalRequest, ApprovalResponse, CodexRuntimeStatus, ProcessInfo, RuntimeComponentKind,
     },
     error::{AppError, AppResult},
     tools::approval::ApprovalResolution,
@@ -63,7 +63,28 @@ pub async fn refresh_codex_runtime(
 pub async fn install_codex_runtime(
     State(state): State<AppState>,
 ) -> AppResult<Json<CodexRuntimeStatus>> {
-    Ok(Json(state.codex_runtime.install().await?))
+    Ok(Json(
+        state
+            .codex_runtime
+            .install(RuntimeComponentKind::Codex)
+            .await?,
+    ))
+}
+
+pub async fn install_runtime_component(
+    State(state): State<AppState>,
+    Path(component): Path<RuntimeComponentKind>,
+) -> AppResult<Json<CodexRuntimeStatus>> {
+    Ok(Json(state.codex_runtime.install(component).await?))
+}
+
+pub async fn refresh_runtime_component(
+    State(state): State<AppState>,
+    Path(component): Path<RuntimeComponentKind>,
+) -> AppResult<Json<CodexRuntimeStatus>> {
+    Ok(Json(
+        state.codex_runtime.refresh_component(component).await?,
+    ))
 }
 
 pub async fn approve_tool_call(

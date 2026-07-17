@@ -3,4 +3,5 @@ pub mod codex_app_server;
 pub mod prompt;
 pub mod registry;
 pub mod runtime;
+mod supporting_runtime;
 pub mod terminal;

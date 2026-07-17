@@ -24,9 +24,13 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    domain::{CodexRuntimeSource, CodexRuntimeStatus},
+    domain::{
+        CodexRuntimeSource, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus,
+    },
     error::{AppError, AppResult},
 };
+
+use super::supporting_runtime;
 
 pub const FALLBACK_CODEX_VERSION: &str = "0.137.0";
 pub const MIN_SUPPORTED_CODEX_VERSION: &str = "0.137.0";
@@ -84,6 +88,7 @@ struct ProbedRuntime {
 }
 
 pub struct CodexRuntimeManager {
+    runtimes_root: PathBuf,
     runtime_root: PathBuf,
     codex_home: PathBuf,
     client: reqwest::Client,
@@ -116,6 +121,7 @@ impl CodexRuntimeManager {
             detected_version: Some("codex-cli test".to_string()),
             executable: Some(program.to_string()),
             error: None,
+            components: Vec::new(),
         });
         Ok(manager)
     }
@@ -124,8 +130,9 @@ impl CodexRuntimeManager {
         data_dir: impl AsRef<Path>,
         allow_system_discovery: bool,
     ) -> AppResult<Self> {
-        let runtime_root = data_dir.as_ref().join("runtimes").join("codex");
-        let codex_home = data_dir.as_ref().join("runtimes").join("codex-home");
+        let runtimes_root = data_dir.as_ref().join("runtimes");
+        let runtime_root = runtimes_root.join("codex");
+        let codex_home = runtimes_root.join("codex-home");
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(15 * 60))
@@ -136,6 +143,7 @@ impl CodexRuntimeManager {
             })?;
         let platform = platform_package_suffix().map(str::to_string);
         Ok(Self {
+            runtimes_root,
             runtime_root,
             codex_home,
             client,
@@ -151,6 +159,7 @@ impl CodexRuntimeManager {
                 detected_version: None,
                 executable: None,
                 error: None,
+                components: Vec::new(),
             }),
             recommended_version: RwLock::new(FALLBACK_CODEX_VERSION.to_string()),
             install_lock: Mutex::new(()),
@@ -174,6 +183,15 @@ impl CodexRuntimeManager {
             }
             if let Err(error) = manager.refresh_local().await {
                 tracing::warn!(%error, "failed to refresh Codex runtime after update check");
+            }
+            for component in [
+                RuntimeComponentKind::Node,
+                RuntimeComponentKind::Python,
+                RuntimeComponentKind::Uv,
+            ] {
+                if let Err(error) = manager.refresh_component(component).await {
+                    tracing::warn!(?component, %error, "failed to check runtime component version");
+                }
             }
         });
         Ok(status)
@@ -207,6 +225,47 @@ impl CodexRuntimeManager {
             tracing::warn!(%error, "failed to refresh the recommended Codex version");
         }
         self.refresh_local().await
+    }
+
+    pub async fn refresh_component(
+        &self,
+        component: RuntimeComponentKind,
+    ) -> AppResult<CodexRuntimeStatus> {
+        if component == RuntimeComponentKind::Codex {
+            return self.refresh().await;
+        }
+        let _guard = self.latest_check_lock.lock().await;
+        let mut status = self.refresh_local().await?;
+        match supporting_runtime::latest_component_version(component, &self.client).await {
+            Ok(target) => {
+                if let Some(component_status) = status
+                    .components
+                    .iter_mut()
+                    .find(|status| status.kind == component)
+                {
+                    component_status.update_available = component_status
+                        .detected_version
+                        .as_deref()
+                        .and_then(parse_component_version)
+                        .is_some_and(|current| {
+                            Version::parse(&target).is_ok_and(|latest| current < latest)
+                        });
+                    component_status.target_version = Some(target);
+                    component_status.error = None;
+                }
+            }
+            Err(error) => {
+                if let Some(component_status) = status
+                    .components
+                    .iter_mut()
+                    .find(|status| status.kind == component)
+                {
+                    component_status.error = Some(error.to_string());
+                }
+            }
+        }
+        *self.status.write().await = status.clone();
+        Ok(status)
     }
 
     async fn refresh_local(&self) -> AppResult<CodexRuntimeStatus> {
@@ -257,7 +316,9 @@ impl CodexRuntimeManager {
                 detected_version: Some(probed.display_version),
                 executable: Some(program.to_string_lossy().to_string()),
                 error: None,
+                components: Vec::new(),
             };
+            let status = self.with_components(status).await;
             *self.status.write().await = status.clone();
             return Ok(status);
         }
@@ -274,39 +335,103 @@ impl CodexRuntimeManager {
             detected_version: None,
             executable: None,
             error: last_error,
+            components: Vec::new(),
         };
+        let status = self.with_components(status).await;
         *self.status.write().await = status.clone();
         Ok(status)
     }
 
-    pub async fn install(self: &Arc<Self>) -> AppResult<CodexRuntimeStatus> {
+    async fn with_components(&self, mut status: CodexRuntimeStatus) -> CodexRuntimeStatus {
+        let mut components = vec![RuntimeComponentStatus {
+            kind: RuntimeComponentKind::Codex,
+            available: status.available,
+            required: true,
+            managed_installed: status.managed_installed,
+            installing: status.installing,
+            source: status.source.clone(),
+            detected_version: status.detected_version.clone(),
+            target_version: Some(status.target_version.clone()),
+            update_available: status.update_available,
+            error: status.error.clone(),
+        }];
+        let previous_components = self.status.read().await.components.clone();
+        let mut supporting =
+            supporting_runtime::detect_components(&self.runtimes_root, status.installing).await;
+        for component in &mut supporting {
+            if let Some(previous) = previous_components
+                .iter()
+                .find(|previous| previous.kind == component.kind)
+            {
+                component.target_version = previous.target_version.clone();
+                component.update_available = previous.update_available;
+            }
+        }
+        components.extend(supporting);
+        status.components = components;
+        status
+    }
+
+    pub async fn install(
+        self: &Arc<Self>,
+        component: RuntimeComponentKind,
+    ) -> AppResult<CodexRuntimeStatus> {
         let _guard = self.install_lock.try_lock().map_err(|_| {
-            AppError::Conflict("Codex runtime installation is already in progress".to_string())
-        })?;
-        let package_suffix = platform_package_suffix().ok_or_else(|| {
-            AppError::BadRequest(
-                "managed Codex runtime is not available for this platform".to_string(),
-            )
+            AppError::Conflict("runtime installation is already in progress".to_string())
         })?;
         self.installing.store(true, Ordering::SeqCst);
         {
             let mut status = self.status.write().await;
             status.installing = true;
             status.error = None;
+            if let Some(status) = status
+                .components
+                .iter_mut()
+                .find(|status| status.kind == component)
+            {
+                status.installing = true;
+                status.error = None;
+            }
         }
 
-        if let Err(error) = self.update_recommended_version(true).await {
-            tracing::warn!(%error, "using the cached or fallback Codex version for installation");
+        let result = async {
+            if component == RuntimeComponentKind::Codex {
+                let package_suffix = platform_package_suffix().ok_or_else(|| {
+                    AppError::BadRequest(
+                        "managed Codex runtime is not available for this platform".to_string(),
+                    )
+                })?;
+                if let Err(error) = self.update_recommended_version(true).await {
+                    tracing::warn!(%error, "using the cached or fallback Codex version for installation");
+                }
+                let target_version = self.recommended_version.read().await.clone();
+                self.install_inner(package_suffix, &target_version).await
+            } else {
+                supporting_runtime::install_component(
+                    component,
+                    &self.runtimes_root,
+                    &self.client,
+                )
+                .await
+            }
         }
-        let target_version = self.recommended_version.read().await.clone();
-        let result = self.install_inner(package_suffix, &target_version).await;
+        .await;
         self.installing.store(false, Ordering::SeqCst);
         match result {
             Ok(()) => self.refresh_local().await,
             Err(error) => {
+                let _ = self.refresh_local().await;
                 let mut status = self.status.write().await;
                 status.installing = false;
                 status.error = Some(error.to_string());
+                if let Some(component_status) = status
+                    .components
+                    .iter_mut()
+                    .find(|status| status.kind == component)
+                {
+                    component_status.installing = false;
+                    component_status.error = Some(error.to_string());
+                }
                 Err(error)
             }
         }
@@ -645,6 +770,12 @@ fn parse_codex_version(value: &str) -> Result<Version, String> {
         .split_whitespace()
         .find_map(|part| Version::parse(part.trim_start_matches('v')).ok())
         .ok_or_else(|| format!("Codex returned an unrecognized version '{value}'"))
+}
+
+fn parse_component_version(value: &str) -> Option<Version> {
+    value
+        .split_whitespace()
+        .find_map(|part| Version::parse(part.trim_start_matches('v')).ok())
 }
 
 fn latest_cache_is_fresh(cache: &LatestVersionCache) -> bool {

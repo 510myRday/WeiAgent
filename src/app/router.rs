@@ -122,6 +122,14 @@ fn api_router() -> Router<AppState> {
             "/api/tools/codex-runtime/refresh",
             post(tools::refresh_codex_runtime),
         )
+        .route(
+            "/api/tools/runtime/{component}",
+            post(tools::install_runtime_component),
+        )
+        .route(
+            "/api/tools/runtime/{component}/refresh",
+            post(tools::refresh_runtime_component),
+        )
         .route("/api/tools/approve", post(tools::approve_tool_call))
         .route("/api/tools/processes", get(tools::list_tool_processes))
         .route(

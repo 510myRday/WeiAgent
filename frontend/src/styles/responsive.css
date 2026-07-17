@@ -271,10 +271,22 @@
   }
 
   .terminal-tool-settings-v2 .setting-row > input,
-  .timeout-input,
-  .runtime-card__actions {
+  .timeout-input {
     width: 100%;
     max-width: none;
+  }
+
+  .runtime-card > .card-header {
+    flex-wrap: wrap;
+  }
+
+  .runtime-component-row {
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+
+  .runtime-component-row__actions {
+    grid-column: 2;
+    justify-content: flex-start;
   }
 }
 

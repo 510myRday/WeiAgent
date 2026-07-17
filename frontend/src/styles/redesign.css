@@ -1573,8 +1573,9 @@
 
 .terminal-tool-settings-v2.is-default-scope .runtime-card {
   grid-area: runtime;
-  padding: 16px 20px;
-  background: var(--surface-subtle);
+  margin: 0;
+  padding: 20px 22px 22px;
+  background: transparent;
 }
 
 .terminal-tool-settings-v2.is-default-scope .basic-settings-card {
@@ -1653,12 +1654,9 @@
   margin-bottom: 10px;
 }
 
-.terminal-tool-settings-v2.is-default-scope .runtime-card__details p {
-  font-size: 12.5px;
-}
-
-.terminal-tool-settings-v2.is-default-scope .runtime-card__details small {
-  font-size: 11px;
+.terminal-tool-settings-v2.is-default-scope .runtime-card > .card-header {
+  min-height: 40px;
+  padding-bottom: 12px;
 }
 
 .terminal-tool-settings-v2.is-agent-scope {

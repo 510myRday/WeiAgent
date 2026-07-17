@@ -237,7 +237,23 @@ export type CodexRuntimeStatus = {
   detected_version?: string;
   executable?: string;
   error?: string;
+  components?: RuntimeComponentStatus[];
 };
+
+export type RuntimeComponentStatus = {
+  kind: 'codex' | 'node' | 'python' | 'uv';
+  available: boolean;
+  required: boolean;
+  managed_installed: boolean;
+  installing: boolean;
+  source?: 'managed' | 'environment' | 'system';
+  detected_version?: string;
+  target_version?: string;
+  update_available: boolean;
+  error?: string;
+};
+
+export type RuntimeComponentKind = RuntimeComponentStatus['kind'];
 
 export type ToolProcessStatus = 'running' | 'completed' | 'failed' | 'stopped';
 
@@ -318,6 +334,28 @@ export async function installCodexRuntime(): Promise<CodexRuntimeStatus> {
     throw new Error(await readError(response));
   }
   return response.json() as Promise<CodexRuntimeStatus>;
+}
+
+export async function installRuntimeComponent(
+  component: RuntimeComponentKind,
+): Promise<CodexRuntimeStatus> {
+  const response = await fetch(`/api/tools/runtime/${component}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    signal: AbortSignal.timeout(15 * 60 * 1000),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  return response.json() as Promise<CodexRuntimeStatus>;
+}
+
+export function refreshRuntimeComponent(
+  component: RuntimeComponentKind,
+): Promise<CodexRuntimeStatus> {
+  return request<CodexRuntimeStatus>(`/api/tools/runtime/${component}/refresh`, {
+    method: 'POST',
+  });
 }
 
 
