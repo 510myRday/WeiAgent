@@ -13,8 +13,8 @@ use uuid::Uuid;
 use crate::{
     app::{AppState, chat::PreparedChat},
     domain::{
-        ChatMessage, ChatMessageStatus, ChatRole, SendMessageResponse, TerminalPermissionMode,
-        ToolResult,
+        ChatMessage, ChatMessageStatus, ChatRole, ModelUsage, SendMessageResponse,
+        TerminalPermissionMode, TokenUsage, ToolResult,
     },
     error::{AppError, AppResult},
     llm::{
@@ -45,6 +45,7 @@ pub enum AgentRunEvent {
     User(ChatMessage),
     Assistant(ChatMessage),
     Delta(String),
+    ReasoningDelta(String),
     Phase {
         phase: AgentRunPhase,
         iteration: usize,
@@ -151,6 +152,8 @@ pub async fn run_agent(
             conversation_id: user_message.conversation_id,
             role: ChatRole::Assistant,
             content: output.output.content.clone(),
+            reasoning_content: (!output.output.reasoning_content.is_empty())
+                .then_some(output.output.reasoning_content.clone()),
             status: ChatMessageStatus::Done,
             created_at: output.created_at,
             tool_calls: (!output.output.tool_calls.is_empty()).then(|| {
@@ -160,6 +163,8 @@ pub async fn run_agent(
                 )
             }),
             tool_call_id: None,
+            attachments: Vec::new(),
+            usage: Some(model_usage(&prepared, &output.output.usage)),
         };
         state
             .store
@@ -175,7 +180,7 @@ pub async fn run_agent(
             });
         }
 
-        if !assistant_message.content.is_empty() {
+        if !assistant_message.content.is_empty() || assistant_message.reasoning_content.is_some() {
             emit(&events, AgentRunEvent::Assistant(assistant_message.clone())).await?;
         }
         messages.push(assistant_message);
@@ -222,10 +227,13 @@ async fn persist_run_failure(runtime: &AgentRuntime<'_>, error: &AppError) {
         conversation_id: runtime.prepared.user_message.conversation_id,
         role: ChatRole::Assistant,
         content: format!("Agent run stopped: {error}"),
+        reasoning_content: None,
         status: ChatMessageStatus::Failed,
         created_at: Utc::now(),
         tool_calls: None,
         tool_call_id: None,
+        attachments: Vec::new(),
+        usage: None,
     };
     let _ = runtime
         .state
@@ -248,10 +256,13 @@ async fn finalize_after_budget(
         content: format!(
             "System notice: tool-capable iterations reached the configured limit of {max_llm_iterations}. Do not call tools. Summarize completed work, failures, and remaining steps."
         ),
+        reasoning_content: None,
         status: ChatMessageStatus::Done,
         created_at: Utc::now(),
         tool_calls: None,
         tool_call_id: None,
+        attachments: Vec::new(),
+        usage: None,
     };
     // Keep the budget notice in the in-memory LLM context only.
     messages.push(budget_notice);
@@ -280,10 +291,14 @@ async fn finalize_after_budget(
         conversation_id: runtime.prepared.user_message.conversation_id,
         role: ChatRole::Assistant,
         content,
+        reasoning_content: (!output.output.reasoning_content.is_empty())
+            .then_some(output.output.reasoning_content),
         status: ChatMessageStatus::Done,
         created_at: output.created_at,
         tool_calls: None,
         tool_call_id: None,
+        attachments: Vec::new(),
+        usage: Some(model_usage(runtime.prepared, &output.output.usage)),
     };
     runtime
         .state
@@ -498,11 +513,13 @@ async fn stream_llm_iteration(
     let message_id = Uuid::new_v4();
     let created_at = Utc::now();
     let mut content = String::new();
+    let mut reasoning_content = String::new();
     let mut persisted = false;
     let mut persisted_bytes = 0_usize;
     let mut last_save = Instant::now();
     let mut calls: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
     let mut finished_with_tool_calls = None;
+    let mut usage = TokenUsage::default();
     let mut stream = runtime
         .client
         .stream(
@@ -526,6 +543,7 @@ async fn stream_llm_iteration(
                         message_id,
                         created_at,
                         &content,
+                        &reasoning_content,
                         persisted,
                     )
                         .await;
@@ -542,7 +560,13 @@ async fn stream_llm_iteration(
             Ok(event) => event,
             Err(error) => {
                 return Err(fail_stream_iteration(
-                    runtime, message_id, created_at, &content, persisted, error,
+                    runtime,
+                    message_id,
+                    created_at,
+                    &content,
+                    &reasoning_content,
+                    persisted,
+                    error,
                 )
                 .await);
             }
@@ -555,6 +579,7 @@ async fn stream_llm_iteration(
                         message_id,
                         created_at,
                         &content,
+                        &reasoning_content,
                         persisted,
                         AppError::Llm(format!(
                             "streamed response exceeded {MAX_STREAM_CONTENT_BYTES} bytes"
@@ -573,17 +598,24 @@ async fn stream_llm_iteration(
                         message_id,
                         created_at,
                         &content,
+                        &reasoning_content,
                         persisted,
                     )
                     .await;
                     return Err(AppError::Llm("stream client disconnected".to_string()));
                 }
+                let streamed_bytes = content.len().saturating_add(reasoning_content.len());
                 if !persisted
-                    || content.len().saturating_sub(persisted_bytes) >= STREAM_SAVE_BYTES
+                    || streamed_bytes.saturating_sub(persisted_bytes) >= STREAM_SAVE_BYTES
                     || last_save.elapsed() >= STREAM_SAVE_INTERVAL
                 {
-                    let message =
-                        partial_assistant(runtime.prepared, message_id, created_at, &content);
+                    let message = partial_assistant(
+                        runtime.prepared,
+                        message_id,
+                        created_at,
+                        &content,
+                        &reasoning_content,
+                    );
                     if let Err(error) = runtime
                         .state
                         .store
@@ -591,12 +623,84 @@ async fn stream_llm_iteration(
                         .await
                     {
                         return Err(fail_stream_iteration(
-                            runtime, message_id, created_at, &content, persisted, error,
+                            runtime,
+                            message_id,
+                            created_at,
+                            &content,
+                            &reasoning_content,
+                            persisted,
+                            error,
                         )
                         .await);
                     }
                     persisted = true;
-                    persisted_bytes = content.len();
+                    persisted_bytes = streamed_bytes;
+                    last_save = Instant::now();
+                }
+            }
+            StreamEvent::ReasoningDelta(delta) => {
+                if reasoning_content.len().saturating_add(delta.len()) > MAX_STREAM_CONTENT_BYTES {
+                    return Err(fail_stream_iteration(
+                        runtime,
+                        message_id,
+                        created_at,
+                        &content,
+                        &reasoning_content,
+                        persisted,
+                        AppError::Llm(format!(
+                            "streamed reasoning exceeded {MAX_STREAM_CONTENT_BYTES} bytes"
+                        )),
+                    )
+                    .await);
+                }
+                reasoning_content.push_str(&delta);
+                if emit(runtime.events, AgentRunEvent::ReasoningDelta(delta))
+                    .await
+                    .is_err()
+                {
+                    mark_interrupted(
+                        runtime.state,
+                        runtime.prepared,
+                        message_id,
+                        created_at,
+                        &content,
+                        &reasoning_content,
+                        persisted,
+                    )
+                    .await;
+                    return Err(AppError::Llm("stream client disconnected".to_string()));
+                }
+                let streamed_bytes = content.len().saturating_add(reasoning_content.len());
+                if !persisted
+                    || streamed_bytes.saturating_sub(persisted_bytes) >= STREAM_SAVE_BYTES
+                    || last_save.elapsed() >= STREAM_SAVE_INTERVAL
+                {
+                    let message = partial_assistant(
+                        runtime.prepared,
+                        message_id,
+                        created_at,
+                        &content,
+                        &reasoning_content,
+                    );
+                    if let Err(error) = runtime
+                        .state
+                        .store
+                        .upsert_conversation_message(message.conversation_id, message)
+                        .await
+                    {
+                        return Err(fail_stream_iteration(
+                            runtime,
+                            message_id,
+                            created_at,
+                            &content,
+                            &reasoning_content,
+                            persisted,
+                            error,
+                        )
+                        .await);
+                    }
+                    persisted = true;
+                    persisted_bytes = streamed_bytes;
                     last_save = Instant::now();
                 }
             }
@@ -614,6 +718,7 @@ async fn stream_llm_iteration(
                         message_id,
                         created_at,
                         &content,
+                        &reasoning_content,
                         persisted,
                         AppError::Llm(format!(
                             "tool arguments exceeded {MAX_TOOL_ARGUMENT_BYTES} bytes"
@@ -623,13 +728,14 @@ async fn stream_llm_iteration(
                 }
                 builder.arguments.push_str(&arguments);
             }
+            StreamEvent::Usage(value) => {
+                usage = value;
+            }
             StreamEvent::FinishedWithToolCalls => {
                 finished_with_tool_calls = Some(true);
-                break;
             }
             StreamEvent::Finished => {
-                finished_with_tool_calls = Some(false);
-                break;
+                finished_with_tool_calls.get_or_insert(false);
             }
         }
     }
@@ -641,6 +747,7 @@ async fn stream_llm_iteration(
             message_id,
             created_at,
             &content,
+            &reasoning_content,
             persisted,
         )
         .await;
@@ -670,7 +777,13 @@ async fn stream_llm_iteration(
         Ok(tool_calls) => tool_calls,
         Err(error) => {
             return Err(fail_stream_iteration(
-                runtime, message_id, created_at, &content, persisted, error,
+                runtime,
+                message_id,
+                created_at,
+                &content,
+                &reasoning_content,
+                persisted,
+                error,
             )
             .await);
         }
@@ -681,6 +794,7 @@ async fn stream_llm_iteration(
             message_id,
             created_at,
             &content,
+            &reasoning_content,
             persisted,
             AppError::Llm(
                 "LLM reported tool calls but did not provide a complete tool call".to_string(),
@@ -694,7 +808,9 @@ async fn stream_llm_iteration(
         created_at,
         output: ChatCompletionOutput {
             content,
+            reasoning_content,
             tool_calls,
+            usage,
         },
     })
 }
@@ -795,10 +911,13 @@ async fn persist_tool_result(
         conversation_id: prepared.user_message.conversation_id,
         role: ChatRole::Tool,
         content: serde_json::to_string(result)?,
+        reasoning_content: None,
         status: ChatMessageStatus::Done,
         created_at: Utc::now(),
         tool_calls: None,
         tool_call_id: Some(call_id.to_string()),
+        attachments: Vec::new(),
+        usage: None,
     };
     state
         .store
@@ -816,6 +935,7 @@ fn partial_assistant(
     message_id: Uuid,
     created_at: chrono::DateTime<Utc>,
     content: &str,
+    reasoning_content: &str,
 ) -> ChatMessage {
     ChatMessage {
         id: message_id,
@@ -823,10 +943,46 @@ fn partial_assistant(
         conversation_id: prepared.user_message.conversation_id,
         role: ChatRole::Assistant,
         content: content.to_string(),
+        reasoning_content: (!reasoning_content.is_empty()).then(|| reasoning_content.to_string()),
         status: ChatMessageStatus::Streaming,
         created_at,
         tool_calls: None,
         tool_call_id: None,
+        attachments: Vec::new(),
+        usage: None,
+    }
+}
+
+fn model_usage(prepared: &PreparedChat, tokens: &TokenUsage) -> ModelUsage {
+    let config = prepared
+        .provider
+        .model_configs
+        .iter()
+        .find(|config| config.model_id == prepared.agent.model_id);
+    let prices = config.map(|config| {
+        [
+            (tokens.input_tokens, config.input_price),
+            (tokens.output_tokens, config.output_price),
+            (tokens.cache_write_tokens, config.cache_write_price),
+            (tokens.cache_read_tokens, config.cache_read_price),
+        ]
+    });
+    let cost_usd = prices.and_then(|prices| {
+        let mut cost = 0.0;
+        for (token_count, price) in prices {
+            if token_count == 0 {
+                continue;
+            }
+            cost += token_count as f64 * price? / 1_000_000.0;
+        }
+        Some(cost)
+    });
+    ModelUsage {
+        tokens: tokens.clone(),
+        total_tokens: tokens.total_tokens(),
+        cost_usd,
+        provider_id: prepared.provider.id,
+        model_id: prepared.agent.model_id.clone(),
     }
 }
 
@@ -836,12 +992,19 @@ async fn mark_interrupted(
     message_id: Uuid,
     created_at: chrono::DateTime<Utc>,
     content: &str,
+    reasoning_content: &str,
     persisted: bool,
 ) {
-    if !persisted && content.is_empty() {
+    if !persisted && content.is_empty() && reasoning_content.is_empty() {
         return;
     }
-    let mut message = partial_assistant(prepared, message_id, created_at, content);
+    let mut message = partial_assistant(
+        prepared,
+        message_id,
+        created_at,
+        content,
+        reasoning_content,
+    );
     message.status = ChatMessageStatus::Failed;
     let _ = state
         .store
@@ -854,6 +1017,7 @@ async fn fail_stream_iteration(
     message_id: Uuid,
     created_at: chrono::DateTime<Utc>,
     content: &str,
+    reasoning_content: &str,
     persisted: bool,
     error: AppError,
 ) -> AppError {
@@ -863,6 +1027,7 @@ async fn fail_stream_iteration(
         message_id,
         created_at,
         content,
+        reasoning_content,
         persisted,
     )
     .await;

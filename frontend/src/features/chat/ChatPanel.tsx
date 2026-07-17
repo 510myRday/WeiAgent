@@ -10,7 +10,9 @@ import type {
   Agent,
   AppSettings,
   Conversation,
+  ImageAttachment,
   ModelProvider,
+  ThinkingLevel,
   UiMessageItem,
   UpdateAgentPayload,
 } from '../../types';
@@ -20,6 +22,7 @@ import { useConversations, usePageVisibility } from '../../hooks';
 import { AgentListItem, agentDisplayName } from '../../components/AgentListItem';
 import { Button, IconButton, ListItem, PaneHeader, SearchInput, useFeedback } from '../../components/ui';
 import { ChatComposer } from './ChatComposer';
+import { ChatAgentSelect } from './ChatAgentSelect';
 import { MessageAvatar, MessageList, type MessageListHandle } from './MessageList';
 import { MessageTimeline, type MessageTimelineItem } from './MessageTimeline';
 import { userErrorMessage } from '../../utils/userError';
@@ -71,6 +74,7 @@ export function ChatPanel({
     activeConversationId,
     selectConversation,
     messages,
+    conversationUsage,
     hasOlderMessages,
     isLoadingOlderMessages,
     isLoadingConversations,
@@ -99,6 +103,8 @@ export function ChatPanel({
   });
 
   const [isStreamMode, setIsStreamMode] = useState(true);
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>('off');
+  const [modelTargetAgentId, setModelTargetAgentId] = useState('');
   const [selectedModelValue, setSelectedModelValue] = useState('');
   const [isModelSavePending, setIsModelSavePending] = useState(false);
   const [isSavingModel, setIsSavingModel] = useState(false);
@@ -115,6 +121,31 @@ export function ChatPanel({
   const pendingModelSaveRef = useRef<PendingModelSave | null>(null);
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  const conversationAgentIdKey = useMemo(() => {
+    const agentIds = new Set<string>();
+    if (activeAgentId) agentIds.add(activeAgentId);
+    for (const item of messages) {
+      if ('role' in item && item.agent_id) agentIds.add(item.agent_id);
+    }
+    return [...agentIds].join('\n');
+  }, [activeAgentId, messages]);
+  const conversationAgents = useMemo(() => {
+    return conversationAgentIdKey
+      .split('\n')
+      .filter(Boolean)
+      .map((agentId) => agents.find((agent) => agent.id === agentId))
+      .filter((agent): agent is Agent => Boolean(agent));
+  }, [agents, conversationAgentIdKey]);
+  const modelTargetAgent = conversationAgents.find((agent) => agent.id === modelTargetAgentId)
+    ?? activeAgent;
+  const activeProvider = providers.find(
+    (provider) => provider.id === modelTargetAgent?.model_provider_id,
+  );
+  const activeModelConfig = activeProvider?.model_configs.find(
+    (config) => config.model_id === modelTargetAgent?.model_id,
+  );
+  const supportsImages = activeModelConfig?.multimodal === true;
+  const supportsThinking = activeModelConfig?.thinking === true;
   const modelOptions = useMemo<ModelOption[]>(() => providers.flatMap((provider) =>
     provider.models.map((model) => ({
       value: JSON.stringify([provider.id, model]),
@@ -123,8 +154,8 @@ export function ChatPanel({
       label: `${provider.name} | ${model}`,
     })),
   ), [providers]);
-  const activeModelValue = activeAgent
-    ? JSON.stringify([activeAgent.model_provider_id, activeAgent.model_id])
+  const activeModelValue = modelTargetAgent
+    ? JSON.stringify([modelTargetAgent.model_provider_id, modelTargetAgent.model_id])
     : '';
   const hasProvider = Boolean(activeAgent?.model_provider_id);
   const hasModel = Boolean(activeAgent?.model_id);
@@ -192,6 +223,14 @@ export function ChatPanel({
   );
 
   useEffect(() => {
+    setModelTargetAgentId((current) => (
+      conversationAgents.some((agent) => agent.id === current)
+        ? current
+        : conversationAgents[0]?.id ?? ''
+    ));
+  }, [activeConversationId, conversationAgents]);
+
+  useEffect(() => {
     const pending = pendingModelSaveRef.current;
     if (pending) {
       pendingModelSaveRef.current = null;
@@ -210,7 +249,8 @@ export function ChatPanel({
     setSelectedModelValue(activeModelValue);
     setIsModelSavePending(false);
     setIsSavingModel(false);
-  }, [activeAgentId, activeModelValue]);
+    setThinkingLevel('off');
+  }, [activeModelValue, modelTargetAgentId]);
 
   useEffect(() => () => {
     const pending = pendingModelSaveRef.current;
@@ -294,13 +334,29 @@ export function ChatPanel({
     onOpenMain();
   }
 
-  const handleRestartMessage = useCallback((messageId: string, content: string) => {
-    if (!activeAgent || isSending || !messageId || !content.trim()) return;
-    void send(content.trim(), activeAgent.id, isStreamMode, messageId);
-  }, [activeAgent, isSending, isStreamMode, send]);
+  const handleRestartMessage = useCallback((
+    messageId: string,
+    content: string,
+    attachments: ImageAttachment[] = [],
+  ) => {
+    if (
+      !activeAgent
+      || isSending
+      || !messageId
+      || (!content.trim() && attachments.length === 0)
+    ) return;
+    void send(
+      content.trim(),
+      activeAgent.id,
+      isStreamMode,
+      attachments,
+      supportsThinking ? thinkingLevel : 'off',
+      messageId,
+    );
+  }, [activeAgent, isSending, isStreamMode, send, supportsThinking, thinkingLevel]);
 
   async function handleModelChange(value: string) {
-    if (!activeAgent || isSavingModel || isSending) return;
+    if (!modelTargetAgent || isSavingModel || isSending) return;
     const selection = modelOptions.find((option) => option.value === value);
     if (!selection) return;
 
@@ -321,7 +377,7 @@ export function ChatPanel({
     modelSaveRequestRef.current = requestId;
     pendingModelSaveRef.current = {
       requestId,
-      agentId: activeAgent.id,
+      agentId: modelTargetAgent.id,
       selection,
       previousValue: activeModelValue,
     };
@@ -414,10 +470,28 @@ export function ChatPanel({
     }
   }
 
-  const handleSendMessage = useCallback((content: string, streamMode: boolean) => {
+  const handleSendMessage = useCallback((
+    content: string,
+    streamMode: boolean,
+    attachments: ImageAttachment[],
+  ) => {
     if (!activeAgent || isSending || isModelSavePending || isSavingModel) return;
-    void send(content, activeAgent.id, streamMode);
-  }, [activeAgent, isModelSavePending, isSavingModel, isSending, send]);
+    void send(
+      content,
+      activeAgent.id,
+      streamMode,
+      attachments,
+      supportsThinking ? thinkingLevel : 'off',
+    );
+  }, [
+    activeAgent,
+    isModelSavePending,
+    isSavingModel,
+    isSending,
+    send,
+    supportsThinking,
+    thinkingLevel,
+  ]);
 
   const handleLoadOlderMessages = useCallback(async () => {
     if (!activeConversationId || isLoadingOlderMessages) return false;
@@ -587,20 +661,28 @@ export function ChatPanel({
             </div>
           </div>
           {activeAgent ? (
-            <select
-              className="chat-model-select"
-              value={selectedModelValue}
-              aria-label={t('chat.selectModel')}
-              aria-busy={isModelSavePending || isSavingModel}
-              disabled={modelOptions.length === 0 || isSavingModel || isSending}
-              title={t('chat.selectModel')}
-              onChange={(event) => void handleModelChange(event.target.value)}
-            >
-              <option value="" disabled>{t('chat.selectModel')}</option>
-              {modelOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
+            <div className="chat-header-controls">
+              <ChatAgentSelect
+                agents={conversationAgents}
+                value={modelTargetAgent?.id ?? ''}
+                disabled={isSavingModel}
+                onChange={setModelTargetAgentId}
+              />
+              <select
+                className="chat-model-select"
+                value={selectedModelValue}
+                aria-label={t('chat.selectModel')}
+                aria-busy={isModelSavePending || isSavingModel}
+                disabled={modelOptions.length === 0 || isSavingModel || isSending}
+                title={t('chat.selectModel')}
+                onChange={(event) => void handleModelChange(event.target.value)}
+              >
+                <option value="" disabled>{t('chat.selectModel')}</option>
+                {modelOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
           ) : null}
         </header>
         <MessageList
@@ -642,6 +724,12 @@ export function ChatPanel({
           isModelSavePending={isModelSavePending}
           isStreamMode={isStreamMode}
           onStreamModeChange={setIsStreamMode}
+          supportsImages={supportsImages}
+          supportsThinking={supportsThinking}
+          thinkingLevel={thinkingLevel}
+          onThinkingLevelChange={setThinkingLevel}
+          usage={conversationUsage}
+          onUnsupportedImage={() => toast.warning(t('chat.imageUnsupportedModel'))}
           onSend={handleSendMessage}
           onStop={cancelActiveSend}
         />

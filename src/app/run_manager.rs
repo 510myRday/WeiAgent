@@ -304,7 +304,9 @@ fn run_event_size(event: &AgentRunEvent) -> usize {
                     .as_ref()
                     .map_or(0, |calls| calls.to_string().len())
         }
-        AgentRunEvent::Delta(delta) | AgentRunEvent::Error(delta) => delta.len(),
+        AgentRunEvent::Delta(delta)
+        | AgentRunEvent::ReasoningDelta(delta)
+        | AgentRunEvent::Error(delta) => delta.len(),
         AgentRunEvent::ToolCall {
             call_id,
             name,

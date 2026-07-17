@@ -5,7 +5,7 @@ use reqwest::RequestBuilder;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    domain::{Agent, ChatMessage, ChatRole, ModelProvider},
+    domain::{Agent, ChatMessage, ChatRole, ModelProvider, ThinkingLevel},
     error::{AppError, AppResult},
     llm::{
         client::{ChatClient, ChatStream, RequestOptions},
@@ -16,7 +16,7 @@ use crate::{
         },
         types::{
             ChatCompletionOutput, StreamEvent, ToolCall, ToolCallFunction, ToolDefinition,
-            select_context_messages,
+            openai_image_url, select_context_messages,
         },
     },
     storage::LlmLogger,
@@ -97,8 +97,17 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         system_prompt: &str,
         extra_body: &Value,
         tools: Option<Vec<ToolDefinition>>,
+        thinking_level: Option<ThinkingLevel>,
     ) -> AppResult<Value> {
-        build_openai_responses_request(agent, messages, stream, system_prompt, extra_body, tools)
+        build_openai_responses_request(
+            agent,
+            messages,
+            stream,
+            system_prompt,
+            extra_body,
+            tools,
+            thinking_level,
+        )
     }
 
     fn authenticated_post(
@@ -140,14 +149,35 @@ fn build_openai_responses_request(
     system_prompt: &str,
     extra_body: &Value,
     tools: Option<Vec<ToolDefinition>>,
+    thinking_level: Option<ThinkingLevel>,
 ) -> AppResult<Value> {
     let mut input = Vec::new();
     for message in select_context_messages(messages) {
         match message.role {
-            ChatRole::User => input.push(json!({
-                "role": "user",
-                "content": message.content,
-            })),
+            ChatRole::User => {
+                let content = if message.attachments.is_empty() {
+                    Value::String(message.content.clone())
+                } else {
+                    let mut blocks = Vec::new();
+                    if !message.content.is_empty() {
+                        blocks.push(json!({
+                            "type": "input_text",
+                            "text": message.content,
+                        }));
+                    }
+                    blocks.extend(message.attachments.iter().map(|attachment| {
+                        json!({
+                            "type": "input_image",
+                            "image_url": openai_image_url(attachment),
+                        })
+                    }));
+                    Value::Array(blocks)
+                };
+                input.push(json!({
+                    "role": "user",
+                    "content": content,
+                }));
+            }
             ChatRole::Assistant => {
                 if !message.content.is_empty() {
                     input.push(json!({
@@ -182,6 +212,26 @@ fn build_openai_responses_request(
     body.insert("instructions".to_string(), json!(system_prompt));
     body.insert("input".to_string(), Value::Array(input));
     body.insert("stream".to_string(), Value::Bool(stream));
+    if let Some(level) = thinking_level {
+        let mut reasoning = Map::new();
+        reasoning.insert(
+            "effort".to_string(),
+            json!(match level {
+                ThinkingLevel::Off => "none",
+                ThinkingLevel::Low => "low",
+                ThinkingLevel::Medium => "medium",
+                ThinkingLevel::High => "high",
+                ThinkingLevel::XHigh => "xhigh",
+            }),
+        );
+        if level != ThinkingLevel::Off {
+            reasoning.insert("summary".to_string(), Value::String("auto".to_string()));
+        }
+        body.insert(
+            "reasoning".to_string(),
+            Value::Object(reasoning),
+        );
+    }
     if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
         body.insert(
             "tools".to_string(),
@@ -203,7 +253,14 @@ fn build_openai_responses_request(
     merge_extra_body(
         body,
         extra_body,
-        &["model", "instructions", "input", "stream", "tools"],
+        &[
+            "model",
+            "instructions",
+            "input",
+            "stream",
+            "tools",
+            "reasoning",
+        ],
     )
 }
 
@@ -211,6 +268,7 @@ fn parse_openai_responses_output(value: &Value) -> AppResult<ChatCompletionOutpu
     validate_openai_responses_status(value)?;
 
     let mut content = String::new();
+    let mut reasoning_content = String::new();
     let mut tool_calls = Vec::new();
     for item in value["output"].as_array().into_iter().flatten() {
         match item["type"].as_str() {
@@ -237,6 +295,13 @@ fn parse_openai_responses_output(value: &Value) -> AppResult<ChatCompletionOutpu
                     },
                 });
             }
+            Some("reasoning") => {
+                for summary in item["summary"].as_array().into_iter().flatten() {
+                    if let Some(text) = summary["text"].as_str() {
+                        reasoning_content.push_str(text);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -245,9 +310,14 @@ fn parse_openai_responses_output(value: &Value) -> AppResult<ChatCompletionOutpu
     {
         content.push_str(output_text);
     }
+    let usage = serde_json::from_value::<crate::llm::types::OpenAiUsage>(value["usage"].clone())
+        .map(|usage| usage.normalized())
+        .unwrap_or_default();
     validate_tool_calls(tool_calls).map(|tool_calls| ChatCompletionOutput {
         content,
+        reasoning_content,
         tool_calls,
+        usage,
     })
 }
 
@@ -298,6 +368,14 @@ impl OpenAiResponsesStreamParser {
                 .filter(|delta| !delta.is_empty())
                 .map(|delta| vec![Ok(StreamEvent::TextDelta(delta.to_string()))])
                 .unwrap_or_default(),
+            Some(
+                "response.reasoning_summary_text.delta"
+                | "response.reasoning_text.delta",
+            ) => value["delta"]
+                .as_str()
+                .filter(|delta| !delta.is_empty())
+                .map(|delta| vec![Ok(StreamEvent::ReasoningDelta(delta.to_string()))])
+                .unwrap_or_default(),
             Some("response.output_item.added") => self.function_item(value, false),
             Some("response.output_item.done") => self.function_item(value, true),
             Some("response.function_call_arguments.delta") => {
@@ -313,7 +391,22 @@ impl OpenAiResponsesStreamParser {
                     arguments: arguments.to_string(),
                 })]
             }
-            Some("response.completed") => self.finish(),
+            Some("response.completed") => {
+                let mut events = Vec::new();
+                let usage_value = value
+                    .get("response")
+                    .and_then(|response| response.get("usage"))
+                    .or_else(|| value.get("usage"));
+                if let Some(usage_value) = usage_value
+                    && let Ok(usage) = serde_json::from_value::<crate::llm::types::OpenAiUsage>(
+                        usage_value.clone(),
+                    )
+                {
+                    events.push(Ok(StreamEvent::Usage(usage.normalized())));
+                }
+                events.extend(self.finish());
+                events
+            }
             Some("response.failed" | "response.incomplete" | "error") => {
                 let message = value["error"]["message"]
                     .as_str()
@@ -423,10 +516,20 @@ mod tests {
                 conversation_id,
                 role: ChatRole::User,
                 content: "run it".to_string(),
+                reasoning_content: None,
                 status: ChatMessageStatus::Done,
                 created_at: now,
                 tool_calls: None,
                 tool_call_id: None,
+                attachments: vec![crate::domain::ImageAttachment {
+                    id: "image-1".to_string(),
+                    name: "sample.png".to_string(),
+                    media_type: "image/png".to_string(),
+                    source: crate::domain::ImageSource::Url {
+                        url: "https://example.test/sample.png".to_string(),
+                    },
+                }],
+                usage: None,
             },
             ChatMessage {
                 id: Uuid::new_v4(),
@@ -434,6 +537,7 @@ mod tests {
                 conversation_id,
                 role: ChatRole::Assistant,
                 content: String::new(),
+                reasoning_content: None,
                 status: ChatMessageStatus::Done,
                 created_at: now,
                 tool_calls: Some(json!([{
@@ -442,6 +546,8 @@ mod tests {
                     "function": {"name": "run", "arguments": "{}"}
                 }])),
                 tool_call_id: None,
+                attachments: Vec::new(),
+                usage: None,
             },
             ChatMessage {
                 id: Uuid::new_v4(),
@@ -449,10 +555,13 @@ mod tests {
                 conversation_id,
                 role: ChatRole::Tool,
                 content: "ok".to_string(),
+                reasoning_content: None,
                 status: ChatMessageStatus::Done,
                 created_at: now,
                 tool_calls: None,
                 tool_call_id: Some("call-1".to_string()),
+                attachments: Vec::new(),
+                usage: None,
             },
         ];
         (agent, messages)
@@ -460,30 +569,59 @@ mod tests {
 
     #[test]
     fn request_maps_tool_history() {
-        let (agent, messages) = fixture();
-        let request =
-            build_openai_responses_request(&agent, &messages, true, "system", &Value::Null, None)
-                .unwrap();
+        let (agent, mut messages) = fixture();
+        messages[1].reasoning_content =
+            Some("saved-reasoning-must-not-be-sent".to_string());
+        let request = build_openai_responses_request(
+            &agent,
+            &messages,
+            true,
+            "system",
+            &Value::Null,
+            None,
+            Some(ThinkingLevel::XHigh),
+        )
+        .unwrap();
         assert_eq!(request["model"], "test-model");
         assert_eq!(request["stream"], true);
+        assert_eq!(request["reasoning"]["effort"], "xhigh");
+        assert_eq!(request["reasoning"]["summary"], "auto");
+        assert!(request["input"].as_array().unwrap().iter().any(|item| {
+            item["content"].as_array().is_some_and(|blocks| {
+                blocks.iter().any(|block| {
+                    block["type"] == "input_image"
+                        && block["image_url"] == "https://example.test/sample.png"
+                })
+            })
+        }));
         assert!(
             request["input"].as_array().unwrap().iter().any(|item| {
                 item["type"] == "function_call_output" && item["call_id"] == "call-1"
             })
         );
+        assert!(!request.to_string().contains("saved-reasoning-must-not-be-sent"));
     }
 
     #[test]
     fn parses_output_and_stream_events() {
         let output = parse_openai_responses_output(&json!({
+            "usage": {
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "input_tokens_details": {"cached_tokens": 20}
+            },
             "output": [
+                {"type":"reasoning","summary":[{"type":"summary_text","text":"considering"}]},
                 {"type":"message","content":[{"type":"output_text","text":"hello"}]},
                 {"type":"function_call","call_id":"call-r","name":"run","arguments":"{}"}
             ]
         }))
         .unwrap();
         assert_eq!(output.content, "hello");
+        assert_eq!(output.reasoning_content, "considering");
         assert_eq!(output.tool_calls[0].id, "call-r");
+        assert_eq!(output.usage.input_tokens, 100);
+        assert_eq!(output.usage.cache_read_tokens, 20);
 
         let mut parser = OpenAiResponsesStreamParser::new();
         let events =
@@ -491,6 +629,14 @@ mod tests {
         assert!(matches!(
             events.into_iter().next().unwrap().unwrap(),
             StreamEvent::TextDelta(text) if text == "hello"
+        ));
+
+        let events = parser.parse_line(
+            r#"data: {"type":"response.reasoning_summary_text.delta","delta":"plan"}"#,
+        );
+        assert!(matches!(
+            events.into_iter().next().unwrap().unwrap(),
+            StreamEvent::ReasoningDelta(text) if text == "plan"
         ));
     }
 

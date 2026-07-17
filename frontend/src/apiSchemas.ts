@@ -51,22 +51,56 @@ const chatToolCallSchema = looseObject({
   }),
 });
 
+const imageAttachmentSchema = looseObject({
+  id: string(),
+  name: string(),
+  media_type: picklist(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
+  source_type: picklist(['base64', 'url']),
+  data: optional(string()),
+  url: optional(string()),
+});
+
+const tokenUsageFields = {
+  input_tokens: number(),
+  output_tokens: number(),
+  cache_write_tokens: number(),
+  cache_read_tokens: number(),
+};
+
+const modelUsageSchema = looseObject({
+  ...tokenUsageFields,
+  total_tokens: number(),
+  cost_usd: optional(nullable(number())),
+  provider_id: string(),
+  model_id: string(),
+});
+
+const conversationUsageSchema = looseObject({
+  ...tokenUsageFields,
+  total_tokens: number(),
+  cost_usd: optional(nullable(number())),
+});
+
 export const chatMessageSchema = looseObject({
   id: string(),
   agent_id: string(),
   conversation_id: string(),
   role: picklist(['user', 'assistant', 'tool']),
   content: string(),
+  reasoning_content: optional(string()),
   status: optional(picklist(['done', 'streaming', 'failed'])),
   created_at: string(),
   tool_calls: optional(array(chatToolCallSchema)),
   tool_call_id: optional(string()),
+  attachments: optional(array(imageAttachmentSchema)),
+  usage: optional(modelUsageSchema),
 });
 
 export const conversationMessagePageSchema = looseObject({
   messages: array(chatMessageSchema),
   next_cursor: optional(nullable(string())),
   has_more: boolean(),
+  usage: optional(conversationUsageSchema),
 });
 
 export const agentRunSchema = looseObject({

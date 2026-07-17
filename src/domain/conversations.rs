@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::ChatMessage;
+use super::{ChatMessage, ConversationUsage};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Conversation {
@@ -32,4 +32,5 @@ pub struct ConversationMessagePage {
     pub messages: Vec<ChatMessage>,
     pub next_cursor: Option<Uuid>,
     pub has_more: bool,
+    pub usage: ConversationUsage,
 }

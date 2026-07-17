@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures_util::Stream;
 
 use crate::{
-    domain::{Agent, ChatMessage, ModelProvider},
+    domain::{Agent, ChatMessage, ModelProvider, ThinkingLevel},
     error::AppResult,
     llm::types::{ChatCompletionOutput, StreamEvent, ToolDefinition},
 };
@@ -15,6 +15,7 @@ pub type ChatStream = Pin<Box<dyn Stream<Item = AppResult<StreamEvent>> + Send>>
 pub struct RequestOptions {
     pub timeout: Duration,
     pub retry_attempts: u32,
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 #[async_trait]

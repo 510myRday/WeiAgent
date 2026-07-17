@@ -3,12 +3,91 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImageAttachment {
+    pub id: String,
+    pub name: String,
+    pub media_type: String,
+    #[serde(flatten)]
+    pub source: ImageSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "source_type", rename_all = "snake_case")]
+pub enum ImageSource {
+    Base64 { data: String },
+    Url { url: String },
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingLevel {
+    #[default]
+    Off,
+    Low,
+    Medium,
+    High,
+    XHigh,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct TokenUsage {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cache_write_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+}
+
+impl TokenUsage {
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.output_tokens)
+            .saturating_add(self.cache_write_tokens)
+            .saturating_add(self.cache_read_tokens)
+    }
+
+    pub fn add_assign(&mut self, other: &Self) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.cache_write_tokens = self
+            .cache_write_tokens
+            .saturating_add(other.cache_write_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(other.cache_read_tokens);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelUsage {
+    #[serde(flatten)]
+    pub tokens: TokenUsage,
+    pub total_tokens: u64,
+    pub cost_usd: Option<f64>,
+    pub provider_id: Uuid,
+    pub model_id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ConversationUsage {
+    #[serde(flatten)]
+    pub tokens: TokenUsage,
+    pub total_tokens: u64,
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChatMessage {
     pub id: Uuid,
     pub agent_id: Uuid,
     pub conversation_id: Uuid,
     pub role: ChatRole,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(default)]
     pub status: ChatMessageStatus,
     pub created_at: DateTime<Utc>,
@@ -17,6 +96,10 @@ pub struct ChatMessage {
     /// Present when role = Tool, links to the tool_call_id from assistant's tool_calls
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ImageAttachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ModelUsage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,6 +132,10 @@ impl ChatRole {
 #[derive(Debug, Deserialize)]
 pub struct SendMessageRequest {
     pub content: String,
+    #[serde(default)]
+    pub attachments: Vec<ImageAttachment>,
+    #[serde(default)]
+    pub thinking_level: ThinkingLevel,
     #[serde(default = "default_stream_response")]
     pub stream: bool,
     #[serde(default)]

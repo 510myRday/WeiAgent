@@ -11,8 +11,9 @@ pub use agents::{
     UpdateAgentProfileRequest, UpdateAgentRequest, UpdateAgentWorkspaceRequest,
 };
 pub use chat::{
-    AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, SendMessageRequest,
-    SendMessageResponse,
+    AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, ConversationUsage,
+    ImageAttachment, ImageSource, ModelUsage, SendMessageRequest, SendMessageResponse,
+    ThinkingLevel, TokenUsage,
 };
 pub use conversations::{
     Conversation, ConversationMessagePage, CreateConversationRequest, UpdateConversationRequest,

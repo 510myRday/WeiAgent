@@ -75,10 +75,13 @@ mod tests {
             conversation_id,
             role: ChatRole::User,
             content: "run it".to_string(),
+            reasoning_content: None,
             status: ChatMessageStatus::Done,
             created_at: now,
             tool_calls: None,
             tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
         }];
         (agent, messages)
     }
@@ -213,6 +216,7 @@ mod tests {
         let options = RequestOptions {
             timeout: std::time::Duration::from_secs(5),
             retry_attempts: 1,
+            thinking_level: None,
         };
         let complete = client
             .complete(&agent, &provider, &messages, "system", options, None)

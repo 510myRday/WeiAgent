@@ -27,6 +27,7 @@ import type {
   Agent,
   AgentRunPhase,
   AppSettings,
+  ImageAttachment,
   ToolCallMessage,
   UiMessage,
   UiMessageItem,
@@ -37,6 +38,7 @@ import { agentDisplayName } from '../../components/AgentListItem';
 import { Button, EmptyState, useFeedback } from '../../components/ui';
 import { useI18n } from '../../i18n';
 import { MarkdownContent } from './MarkdownContent';
+import { ReasoningDisclosure } from './ReasoningDisclosure';
 
 interface MessageListProps {
   conversationId: string;
@@ -51,7 +53,7 @@ interface MessageListProps {
   terminalPermissionMode?: 'request_approval' | 'full_access' | null;
   timelineMessageIndexes: readonly number[];
   onLoadOlder: () => Promise<boolean>;
-  onRestart: (messageId: string, content: string) => void;
+  onRestart: (messageId: string, content: string, attachments?: ImageAttachment[]) => void;
   onApproveToolCall: (
     approvalId: string,
     agentId: string,
@@ -432,7 +434,7 @@ const MessageListItem = memo(function MessageListItem({
   settings: AppSettings;
   terminalPermissionMode?: 'request_approval' | 'full_access' | null;
   isSending: boolean;
-  onRestart: (messageId: string, content: string) => void;
+  onRestart: MessageListProps['onRestart'];
   onApproveToolCall: MessageListProps['onApproveToolCall'];
   formatTimelineTime: (value: string) => string;
 }) {
@@ -576,7 +578,7 @@ const MessageRow = memo(function MessageRow({
   settings: AppSettings;
   failedLabel: string;
   actionsDisabled: boolean;
-  onRestart: (messageId: string, content: string) => void;
+  onRestart: MessageListProps['onRestart'];
 }) {
   const { t } = useI18n();
   const isUser = message.role === 'user';
@@ -608,9 +610,9 @@ const MessageRow = memo(function MessageRow({
   function submitEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const content = editDraft.trim();
-    if (!content || actionsDisabled || !message.id) return;
+    if ((!content && !message.attachments?.length) || actionsDisabled || !message.id) return;
     setIsEditing(false);
-    onRestart(message.id, content);
+    onRestart(message.id, content, message.attachments);
   }
 
   function handleEditKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -672,7 +674,7 @@ const MessageRow = memo(function MessageRow({
                 <button
                   className="message-action-button is-primary"
                   type="submit"
-                  disabled={actionsDisabled || !editDraft.trim()}
+                  disabled={actionsDisabled || (!editDraft.trim() && !message.attachments?.length)}
                   aria-label={t('chat.sendEdit')}
                   title={t('chat.sendEdit')}
                 >
@@ -702,7 +704,7 @@ const MessageRow = memo(function MessageRow({
                   <button
                     className="message-action-button"
                     type="button"
-                    onClick={() => onRestart(message.id, message.content)}
+                    onClick={() => onRestart(message.id, message.content, message.attachments)}
                     disabled={actionsDisabled}
                     aria-label={t('chat.retryMessage')}
                     title={t('chat.retryMessage')}
@@ -740,14 +742,42 @@ export function MessageAvatar({
 
 function MessageContent({ message }: { message: UiMessage }) {
   const { t } = useI18n();
-  if (message.status === 'streaming' && !message.content) {
+  if (message.status === 'streaming' && !message.content && !message.reasoning_content) {
     return <TypingIndicator label={t('chat.sending')} />;
   }
   return (
-    <div className={`message-markdown${message.status === 'streaming' ? ' streaming-content' : ''}`}>
-      <MarkdownContent content={message.content} />
-    </div>
+    <>
+      {message.attachments?.length ? (
+        <div className="message-image-grid">
+          {message.attachments.map((attachment) => (
+            <img
+              key={attachment.id}
+              src={attachmentImageUrl(attachment)}
+              alt={attachment.name}
+              loading="lazy"
+            />
+          ))}
+        </div>
+      ) : null}
+      {message.reasoning_content ? (
+        <ReasoningDisclosure
+          content={message.reasoning_content}
+          isStreaming={message.status === 'streaming'}
+        />
+      ) : null}
+      {message.content ? (
+        <div className={`message-markdown${message.status === 'streaming' ? ' streaming-content' : ''}`}>
+          <MarkdownContent content={message.content} />
+        </div>
+      ) : null}
+    </>
   );
+}
+
+function attachmentImageUrl(attachment: ImageAttachment): string {
+  return attachment.source_type === 'base64'
+    ? `data:${attachment.media_type};base64,${attachment.data}`
+    : attachment.url;
 }
 
 function TypingIndicator({ label }: { label: string }) {

@@ -12,6 +12,7 @@ use crate::{
             LlmHttp, MAX_LLM_LOG_BYTES, MAX_SSE_LINE_BUFFER_BYTES, decode_remaining_sse_line,
             drain_sse_line, read_response_body_limited, spawn_log,
         },
+        protocol::common::request_json_for_log,
         sse::{openai_finish_event, parse_sse_line},
         types::{
             ChatCompletionOutput, ChatCompletionResponse, ModelsListResponse, ToolDefinition,
@@ -74,9 +75,11 @@ impl ChatClient for OpenAiChatClient {
             system_prompt,
             &provider.extra_body,
             tools,
+            options.thinking_level,
         );
-        let request_json =
-            serde_json::to_string_pretty(&request).unwrap_or_else(|_| format!("{request:?}"));
+        let request_json = serde_json::to_value(&request)
+            .map(|value| request_json_for_log(&value))
+            .unwrap_or_else(|_| format!("{request:?}"));
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let chat_url = self.chat_url(provider);
         let log_enabled = self.http.log_enabled();
@@ -155,6 +158,11 @@ impl ChatClient for OpenAiChatClient {
                 AppError::Llm(error.to_string())
             })?;
 
+        let usage = response_parsed
+            .usage
+            .as_ref()
+            .map(crate::llm::types::OpenAiUsage::normalized)
+            .unwrap_or_default();
         let choice = response_parsed.choices.into_iter().next().ok_or_else(|| {
             self.http.spawn_log(
                 log_enabled,
@@ -186,8 +194,9 @@ impl ChatClient for OpenAiChatClient {
         }
 
         let content = choice.message.content.unwrap_or_default();
+        let reasoning_content = choice.message.reasoning_content.unwrap_or_default();
         let tool_calls = choice.message.tool_calls.unwrap_or_default();
-        if content.is_empty() && tool_calls.is_empty() {
+        if content.is_empty() && reasoning_content.is_empty() && tool_calls.is_empty() {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
@@ -214,7 +223,9 @@ impl ChatClient for OpenAiChatClient {
 
         Ok(ChatCompletionOutput {
             content,
+            reasoning_content,
             tool_calls,
+            usage,
         })
     }
 
@@ -234,9 +245,11 @@ impl ChatClient for OpenAiChatClient {
             system_prompt,
             &provider.extra_body,
             tools,
+            options.thinking_level,
         );
-        let request_json =
-            serde_json::to_string_pretty(&request).unwrap_or_else(|_| format!("{request:?}"));
+        let request_json = serde_json::to_value(&request)
+            .map(|value| request_json_for_log(&value))
+            .unwrap_or_else(|_| format!("{request:?}"));
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let chat_url = self.chat_url(provider);
         let log_enabled = self.http.log_enabled();
@@ -580,10 +593,20 @@ mod tests {
             conversation_id: Uuid::new_v4(),
             role: ChatRole::User,
             content: "hello".to_string(),
+            reasoning_content: Some("saved-reasoning-must-not-be-sent".to_string()),
             status: ChatMessageStatus::Done,
             created_at: now,
             tool_calls: None,
             tool_call_id: None,
+            attachments: vec![crate::domain::ImageAttachment {
+                id: "image-1".to_string(),
+                name: "sample.png".to_string(),
+                media_type: "image/png".to_string(),
+                source: crate::domain::ImageSource::Base64 {
+                    data: "aGVsbG8=".to_string(),
+                },
+            }],
+            usage: None,
         }];
 
         let request = build_chat_request(
@@ -593,12 +616,27 @@ mod tests {
             "You write Rust.",
             &serde_json::Value::Null,
             None,
+            Some(crate::domain::ThinkingLevel::High),
         );
 
         assert_eq!(request.model, "gpt-4o-mini");
         assert!(request.stream);
         assert_eq!(request.messages[0].role, "system");
         assert_eq!(request.messages[1].role, "user");
+        assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            request.messages[1].content[1]["image_url"]["url"],
+            "data:image/png;base64,aGVsbG8="
+        );
+        assert_eq!(
+            request.stream_options.as_ref().unwrap()["include_usage"],
+            true
+        );
+        assert!(
+            !serde_json::to_string(&request)
+                .unwrap()
+                .contains("saved-reasoning-must-not-be-sent")
+        );
     }
 
     #[test]

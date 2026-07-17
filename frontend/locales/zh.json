@@ -79,6 +79,7 @@
   },
   "chat": {
     "selectAgent": "选择智能体",
+    "currentAgent": "当前智能体",
     "selectModel": "选择模型",
     "noAgent": "未选择智能体",
     "noAgentHint": "在「智能体」页面创建 Agent，再回到这里对话。",
@@ -108,7 +109,27 @@
     "copyCode": "复制代码",
     "ariaLabel": "对话",
     "scrollToBottom": "滚动到最新消息",
-    "timeline": "时间定位"
+    "timeline": "时间定位",
+    "addImage": "添加图片",
+    "removeImage": "移除图片",
+    "pastedImage": "粘贴的图片",
+    "imageUnsupportedModel": "当前模型不是多模态模型，不能发送图片。",
+    "imageTypeUnsupported": "目前仅支持 PNG、JPEG、WEBP 和 GIF 图片。",
+    "imageTooLarge": "单张图片不能超过 {size} MB。",
+    "imageCountLimit": "每条消息最多添加 {count} 张图片。",
+    "thinking": "思考",
+    "thinkingInProgress": "正在思考",
+    "thoughtProcess": "思考过程",
+    "thinkingLevelLabel": "思考·{level}",
+    "thinkingLevel": {
+      "off": "关闭",
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "x_high": "超高"
+    },
+    "tokens": "tokens",
+    "usageDetail": "输入 {input} · 输出 {output} · 缓存写入 {cacheWrite} · 缓存读取 {cacheRead}"
   },
   "conversation": {
     "select": "选择会话",

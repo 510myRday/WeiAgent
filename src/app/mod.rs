@@ -63,6 +63,8 @@ mod tests {
         ) -> AppResult<ChatCompletionOutput> {
             Ok(ChatCompletionOutput {
                 content: format!("{} via {}", agent.model_id, provider.name),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: Vec::new(),
             })
         }
@@ -77,7 +79,7 @@ mod tests {
             _tools: Option<Vec<ToolDefinition>>,
         ) -> AppResult<ChatStream> {
             Ok(Box::pin(stream::iter(vec![
-                Ok(StreamEvent::TextDelta("mock ".to_string())),
+                Ok(StreamEvent::TextDelta("mock\n\n".to_string())),
                 Ok(StreamEvent::TextDelta("stream".to_string())),
                 Ok(StreamEvent::Finished),
             ])))
@@ -368,7 +370,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(text.contains("event: assistant"));
-        assert!(text.contains("mock stream"));
+        assert!(text.contains(r#"data: {"text":"mock\n\n"}"#));
+        assert!(text.contains(r#""content":"mock\n\nstream""#));
         assert!(text.contains("event: done"));
     }
 
@@ -428,7 +431,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(text.contains("event: delta"));
-        assert!(text.contains("mock stream"));
+        assert!(text.contains(r#"data: {"text":"mock\n\n"}"#));
+        assert!(text.contains(r#""content":"mock\n\nstream""#));
         assert!(text.contains("event: done"));
         assert!(text.contains("id: "));
     }
@@ -584,6 +588,8 @@ mod tests {
         let outputs = vec![
             ChatCompletionOutput {
                 content: String::new(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-1",
                     "execute_terminal",
@@ -592,6 +598,8 @@ mod tests {
             },
             ChatCompletionOutput {
                 content: String::new(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-2",
                     "execute_terminal",
@@ -600,6 +608,8 @@ mod tests {
             },
             ChatCompletionOutput {
                 content: "all tool rounds completed".to_string(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: Vec::new(),
             },
         ];
@@ -644,6 +654,8 @@ mod tests {
     async fn llm_error_after_tool_result_is_persisted_as_failed_assistant_message() {
         let outputs = vec![ChatCompletionOutput {
             content: String::new(),
+            reasoning_content: String::new(),
+            usage: Default::default(),
             tool_calls: vec![scripted_tool_call(
                 "call-before-error",
                 "execute_terminal",
@@ -691,6 +703,8 @@ mod tests {
         let outputs = vec![
             ChatCompletionOutput {
                 content: String::new(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: vec![crate::llm::types::ToolCall {
                     id: "invalid-args-call".to_string(),
                     kind: "function".to_string(),
@@ -702,6 +716,8 @@ mod tests {
             },
             ChatCompletionOutput {
                 content: "handled invalid arguments".to_string(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: Vec::new(),
             },
         ];
@@ -735,6 +751,8 @@ mod tests {
         let outputs = vec![
             ChatCompletionOutput {
                 content: String::new(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-background",
                     "execute_terminal",
@@ -743,6 +761,8 @@ mod tests {
             },
             ChatCompletionOutput {
                 content: "background process started".to_string(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: Vec::new(),
             },
         ];
@@ -819,6 +839,8 @@ mod tests {
         let outputs = vec![
             ChatCompletionOutput {
                 content: String::new(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-approval-1",
                     "execute_terminal",
@@ -831,10 +853,14 @@ mod tests {
             },
             ChatCompletionOutput {
                 content: "approved once".to_string(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: Vec::new(),
             },
             ChatCompletionOutput {
                 content: String::new(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-approval-2",
                     "execute_terminal",
@@ -847,6 +873,8 @@ mod tests {
             },
             ChatCompletionOutput {
                 content: "approved permanently".to_string(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: Vec::new(),
             },
         ];
@@ -986,6 +1014,8 @@ mod tests {
         let outputs = vec![
             ChatCompletionOutput {
                 content: String::new(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-blocked",
                     "execute_terminal",
@@ -997,6 +1027,8 @@ mod tests {
             },
             ChatCompletionOutput {
                 content: "invalid escalation rejected".to_string(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: Vec::new(),
             },
         ];
@@ -1047,6 +1079,8 @@ mod tests {
         let outputs = vec![
             ChatCompletionOutput {
                 content: String::new(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-explicit-background",
                     "execute_terminal",
@@ -1055,6 +1089,8 @@ mod tests {
             },
             ChatCompletionOutput {
                 content: "service started".to_string(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: Vec::new(),
             },
         ];
@@ -1211,6 +1247,8 @@ mod tests {
         let outputs = vec![
             ChatCompletionOutput {
                 content: String::new(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-budget-1",
                     "execute_terminal",
@@ -1219,6 +1257,8 @@ mod tests {
             },
             ChatCompletionOutput {
                 content: String::new(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-budget-2",
                     "execute_terminal",
@@ -1227,6 +1267,8 @@ mod tests {
             },
             ChatCompletionOutput {
                 content: "budget summary ready".to_string(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
                 tool_calls: Vec::new(),
             },
         ];

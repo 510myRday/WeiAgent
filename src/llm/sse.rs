@@ -21,7 +21,15 @@ pub fn parse_sse_line(line: &str) -> Vec<AppResult<StreamEvent>> {
     match parsed {
         Ok(chunk) => {
             let mut events = Vec::new();
+            if let Some(usage) = chunk.usage {
+                events.push(Ok(StreamEvent::Usage(usage.normalized())));
+            }
             for choice in &chunk.choices {
+                if let Some(ref reasoning) = choice.delta.reasoning_content
+                    && !reasoning.is_empty()
+                {
+                    events.push(Ok(StreamEvent::ReasoningDelta(reasoning.clone())));
+                }
                 // Text content delta
                 if let Some(ref content) = choice.delta.content
                     && !content.is_empty()
@@ -93,6 +101,19 @@ mod tests {
         let events: Vec<_> = parsed.into_iter().map(Result::unwrap).collect();
         assert!(matches!(&events[0], StreamEvent::TextDelta(s) if s == "hel"));
         assert!(matches!(&events[1], StreamEvent::TextDelta(s) if s == "lo"));
+        assert!(matches!(&events[2], StreamEvent::Finished));
+    }
+
+    #[test]
+    fn parses_reasoning_deltas_separately_from_answer_text() {
+        let parsed = parse_sse_chunk(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"plan\"}}]}\n\
+             data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\
+             data: [DONE]\n",
+        );
+        let events: Vec<_> = parsed.into_iter().map(Result::unwrap).collect();
+        assert!(matches!(&events[0], StreamEvent::ReasoningDelta(s) if s == "plan"));
+        assert!(matches!(&events[1], StreamEvent::TextDelta(s) if s == "answer"));
         assert!(matches!(&events[2], StreamEvent::Finished));
     }
 

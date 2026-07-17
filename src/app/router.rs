@@ -16,14 +16,14 @@ use crate::app::{
 pub fn build_router(state: AppState) -> Router {
     api_router()
         .fallback(|uri: axum::http::Uri| async move { serve_frontend(uri).await })
-        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(DefaultBodyLimit::max(48 * 1024 * 1024))
         .layer(ConcurrencyLimitLayer::new(64))
         .with_state(state)
 }
 
 pub fn build_router_dev(state: AppState) -> Router {
     api_router()
-        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(DefaultBodyLimit::max(48 * 1024 * 1024))
         .layer(ConcurrencyLimitLayer::new(64))
         .with_state(state)
 }
@@ -93,6 +93,10 @@ fn api_router() -> Router<AppState> {
         .route(
             "/api/conversations/{conversation_id}/messages/page",
             get(conversations::read_conversation_message_page),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/usage",
+            get(conversations::read_conversation_usage),
         )
         .route(
             "/api/conversations/{conversation_id}/messages/stream",

@@ -32,6 +32,7 @@ pub(crate) trait ProtocolAdapter: Clone + Send + Sync + 'static {
         system_prompt: &str,
         extra_body: &Value,
         tools: Option<Vec<ToolDefinition>>,
+        thinking_level: Option<crate::domain::ThinkingLevel>,
     ) -> AppResult<Value>;
 
     fn authenticated_post(
@@ -97,9 +98,9 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
             system_prompt,
             &provider.extra_body,
             tools,
+            options.thinking_level,
         )?;
-        let request_json =
-            serde_json::to_string_pretty(&request).unwrap_or_else(|_| request.to_string());
+        let request_json = request_json_for_log(&request);
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let url = self.adapter.completion_url(provider, agent, false);
         let log_enabled = self.http.log_enabled();
@@ -209,9 +210,9 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
             system_prompt,
             &provider.extra_body,
             tools,
+            options.thinking_level,
         )?;
-        let request_json =
-            serde_json::to_string_pretty(&request).unwrap_or_else(|_| request.to_string());
+        let request_json = request_json_for_log(&request);
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let url = self.adapter.completion_url(provider, agent, true);
         let log_enabled = self.http.log_enabled();
@@ -409,4 +410,35 @@ pub(crate) fn bearer_post(
 
 pub(crate) fn bearer_get(http: &reqwest::Client, url: &str, api_key: &str) -> RequestBuilder {
     http.get(url).bearer_auth(api_key)
+}
+
+pub(crate) fn request_json_for_log(request: &Value) -> String {
+    let mut redacted = request.clone();
+    redact_image_payloads(&mut redacted);
+    serde_json::to_string_pretty(&redacted).unwrap_or_else(|_| redacted.to_string())
+}
+
+fn redact_image_payloads(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, value) in map {
+                if key == "data" && value.as_str().is_some_and(|data| data.len() > 256) {
+                    let length = value.as_str().map_or(0, str::len);
+                    *value = Value::String(format!("[base64 image omitted: {length} chars]"));
+                } else {
+                    redact_image_payloads(value);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                redact_image_payloads(value);
+            }
+        }
+        Value::String(text) if text.starts_with("data:image/") && text.len() > 256 => {
+            let length = text.len();
+            *text = format!("[data URL image omitted: {length} chars]");
+        }
+        _ => {}
+    }
 }

@@ -79,6 +79,7 @@
   },
   "chat": {
     "selectAgent": "Select Agent",
+    "currentAgent": "Current agent",
     "selectModel": "Select model",
     "noAgent": "No Agent Selected",
     "noAgentHint": "Create an agent in the Agents tab, then come back here to chat.",
@@ -108,7 +109,27 @@
     "copyCode": "Copy code",
     "ariaLabel": "Conversation",
     "scrollToBottom": "Scroll to latest message",
-    "timeline": "Message timeline"
+    "timeline": "Message timeline",
+    "addImage": "Add image",
+    "removeImage": "Remove image",
+    "pastedImage": "Pasted image",
+    "imageUnsupportedModel": "The current model is not multimodal and cannot receive images.",
+    "imageTypeUnsupported": "Only PNG, JPEG, WEBP, and GIF images are supported.",
+    "imageTooLarge": "Each image must be {size} MB or smaller.",
+    "imageCountLimit": "Each message can contain up to {count} images.",
+    "thinking": "Thinking",
+    "thinkingInProgress": "Thinking",
+    "thoughtProcess": "Thought process",
+    "thinkingLevelLabel": "Thinking · {level}",
+    "thinkingLevel": {
+      "off": "Off",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "x_high": "Extra high"
+    },
+    "tokens": "tokens",
+    "usageDetail": "Input {input} · Output {output} · Cache write {cacheWrite} · Cache read {cacheRead}"
   },
   "conversation": {
     "select": "Select conversation",

@@ -4,6 +4,9 @@ import type {
   AgentRunPhase,
   ChatMessage,
   Conversation,
+  ConversationUsage,
+  ImageAttachment,
+  ThinkingLevel,
   ToolCallMessage,
   ToolCallStatus,
   ToolArguments,
@@ -20,9 +23,19 @@ import {
   deleteConversation,
   readConversationMessages,
   readActiveConversationRun,
+  readConversationUsage,
   streamRunEvents,
   updateConversation,
 } from '../api';
+
+const EMPTY_USAGE: ConversationUsage = {
+  input_tokens: 0,
+  output_tokens: 0,
+  cache_write_tokens: 0,
+  cache_read_tokens: 0,
+  total_tokens: 0,
+  cost_usd: 0,
+};
 
 function genClientId(): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -102,7 +115,7 @@ function interruptActiveRun(
   if (assistantIndex < 0) return next;
   const assistant = next[assistantIndex];
   if (!('role' in assistant)) return next;
-  if (!assistant.content) {
+  if (!assistant.content && !assistant.reasoning_content) {
     return next.filter((_, index) => index !== assistantIndex);
   }
   return next.map((item, index) => (
@@ -120,7 +133,7 @@ function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
 
   for (const msg of raw) {
     if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-      if (msg.content.trim()) {
+      if (msg.content.trim() || msg.reasoning_content?.trim()) {
         items.push(toUiMessage({ ...msg, role: 'assistant', tool_calls: undefined }));
       }
       for (const call of msg.tool_calls) {
@@ -203,6 +216,7 @@ export function useConversations({
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [runPhase, setRunPhase] = useState<AgentRunPhase>('idle');
+  const [conversationUsage, setConversationUsage] = useState<ConversationUsage>(EMPTY_USAGE);
   const [runningConversationIds, setRunningConversationIds] = useState<Set<string>>(() => new Set());
 
   const loadChatIdRef = useRef(0);
@@ -227,6 +241,7 @@ export function useConversations({
     ++resumeRequestIdRef.current;
     setActiveConversationId(conversationId);
     setMessages([]);
+    setConversationUsage(EMPTY_USAGE);
     setHasOlderMessages(false);
     setIsLoadingOlderMessages(false);
     olderMessagesCursorRef.current = '';
@@ -287,6 +302,7 @@ export function useConversations({
       const page = await readConversationMessages(conversationId);
       if (requestId !== loadChatIdRef.current) return false;
       setMessages(toUiMessageItems(page.messages));
+      setConversationUsage(page.usage ?? EMPTY_USAGE);
       olderMessagesCursorRef.current = page.next_cursor ?? '';
       setHasOlderMessages(page.has_more);
       return true;
@@ -309,6 +325,7 @@ export function useConversations({
     setConversations([]);
     setActiveConversationId('');
     setMessages([]);
+    setConversationUsage(EMPTY_USAGE);
     setHasOlderMessages(false);
     setIsLoadingOlderMessages(false);
     olderMessagesCursorRef.current = '';
@@ -339,6 +356,7 @@ export function useConversations({
       const page = await readConversationMessages(conversationId, cursor);
       if (requestId !== olderMessagesRequestIdRef.current) return false;
       setMessages((current) => [...toUiMessageItems(page.messages), ...current]);
+      if (page.usage) setConversationUsage(page.usage);
       olderMessagesCursorRef.current = page.next_cursor ?? '';
       setHasOlderMessages(page.has_more);
       return true;
@@ -379,6 +397,42 @@ export function useConversations({
           conversation_id: prevUi?.conversation_id ?? activeStreamRef.current.conversationId,
           role: 'assistant' as const,
           content: delta,
+          status: 'streaming' as const,
+          created_at: new Date().toISOString(),
+          clientId: genClientId(),
+        },
+      ];
+    });
+  }, []);
+
+  const applyReasoningDelta = useCallback((delta: string) => {
+    setMessages((current) => {
+      const last = current[current.length - 1];
+      if (
+        last
+        && 'role' in last
+        && last.role === 'assistant'
+        && last.status === 'streaming'
+      ) {
+        return [
+          ...current.slice(0, -1),
+          {
+            ...last,
+            reasoning_content: (last.reasoning_content ?? '') + delta,
+            status: 'streaming' as const,
+          },
+        ];
+      }
+      const prevUi = last && 'role' in last ? last : undefined;
+      return [
+        ...current,
+        {
+          id: '',
+          agent_id: prevUi?.agent_id ?? activeStreamRef.current.agentId,
+          conversation_id: prevUi?.conversation_id ?? activeStreamRef.current.conversationId,
+          role: 'assistant' as const,
+          content: '',
+          reasoning_content: delta,
           status: 'streaming' as const,
           created_at: new Date().toISOString(),
           clientId: genClientId(),
@@ -436,7 +490,12 @@ export function useConversations({
         return next;
       });
       void cancelMessageRun(runId)
-        .then(() => {
+        .then(async () => {
+          try {
+            setConversationUsage(await readConversationUsage(conversationId));
+          } catch {
+            // Usage refresh will retry when the conversation is opened again.
+          }
           if (agentId) void loadConversationsForAgent(agentId);
         })
         .catch((cause) => {
@@ -470,7 +529,7 @@ export function useConversations({
         setMessages((current) => {
           const last = current[current.length - 1];
           if (last && 'role' in last && last.role === 'assistant' && last.status === 'streaming') {
-            if (!last.content) {
+            if (!last.content && !last.reasoning_content) {
               return current.slice(0, -1);
             }
             return [...current.slice(0, -1), { ...last, status: 'done' as const }];
@@ -508,6 +567,10 @@ export function useConversations({
         appendDelta(evt.data as string);
         return;
       }
+      if (evt.event === 'reasoning_delta') {
+        applyReasoningDelta(evt.data as string);
+        return;
+      }
       if (evt.event === 'assistant') {
         const msg = toUiMessage(evt.data as Parameters<typeof toUiMessage>[0]);
         setMessages((current) => {
@@ -521,6 +584,7 @@ export function useConversations({
                 && item.role === 'assistant'
                 && item.status === 'streaming'
                 && !item.content
+                && !item.reasoning_content
               );
             });
             const withFailedPartial = withoutEmptyStreaming.map((item, index) => {
@@ -546,6 +610,8 @@ export function useConversations({
                 ...last,
                 id: msg.id || last.id,
                 content: msg.content || last.content,
+                reasoning_content: msg.reasoning_content || last.reasoning_content,
+                usage: msg.usage ?? last.usage,
                 status: msg.status ?? 'done',
               },
             ];
@@ -568,7 +634,14 @@ export function useConversations({
         setMessages((current) => {
           const withoutEmptyAssistant = current.filter((item, index) => {
             const isLast = index === current.length - 1;
-            return !(isLast && 'role' in item && item.role === 'assistant' && item.status === 'streaming' && !item.content);
+            return !(
+              isLast
+              && 'role' in item
+              && item.role === 'assistant'
+              && item.status === 'streaming'
+              && !item.content
+              && !item.reasoning_content
+            );
           });
           const existingIndex = withoutEmptyAssistant.findIndex(
             (item) => 'type' in item && item.type === 'tool_call' && item.call_id === d.call_id,
@@ -604,7 +677,13 @@ export function useConversations({
         return;
       }
     },
-    [appendDelta, flushPendingDelta, runCancelledMessage, runInterruptedMessage],
+    [
+      appendDelta,
+      applyReasoningDelta,
+      flushPendingDelta,
+      runCancelledMessage,
+      runInterruptedMessage,
+    ],
   );
 
   const followRun = useCallback(async (
@@ -638,6 +717,11 @@ export function useConversations({
         controller.signal,
       );
       await loadConversationsForAgent(agentId);
+      try {
+        setConversationUsage(await readConversationUsage(run.conversation_id));
+      } catch {
+        // Message history remains usable when an older backend lacks usage data.
+      }
       if (requestId === sendRequestIdRef.current) {
         setRunningConversationIds((current) => {
           const next = new Set(current);
@@ -701,6 +785,8 @@ export function useConversations({
       content: string,
       agentId: string,
       isStreamMode: boolean,
+      attachments: ImageAttachment[],
+      thinkingLevel: ThinkingLevel,
       restartFromMessageId?: string,
     ) => {
       const requestId = ++sendRequestIdRef.current;
@@ -726,6 +812,7 @@ export function useConversations({
             conversation_id: activeConversationId,
             role: 'user' as const,
             content,
+            attachments,
             status: 'done' as const,
             created_at: new Date().toISOString(),
             clientId: optimisticUserClientId,
@@ -736,6 +823,7 @@ export function useConversations({
             conversation_id: activeConversationId,
             role: 'assistant' as const,
             content: '',
+            reasoning_content: '',
             status: 'streaming' as const,
             created_at: new Date().toISOString(),
             clientId: optimisticAssistantClientId,
@@ -747,7 +835,7 @@ export function useConversations({
         let conversationId = activeConversationId;
         if (!conversationId) {
           const created = await createConversation(agentId, {
-            title: content.slice(0, 40) || newConversationTitle,
+            title: content.slice(0, 40) || attachments[0]?.name || newConversationTitle,
           });
           setConversations((current) => [created, ...current]);
           suppressNextLoadConversationIdRef.current = created.id;
@@ -765,10 +853,19 @@ export function useConversations({
           conversationId,
           content,
           isStreamMode,
+          attachments,
+          thinkingLevel,
           restartFromMessageId,
           controller.signal,
         );
         if (requestId !== sendRequestIdRef.current) return;
+        if (restartFromMessageId) {
+          try {
+            setConversationUsage(await readConversationUsage(conversationId));
+          } catch {
+            // The final run refresh below will update the usage summary.
+          }
+        }
         await followRun(run, agentId, controller, requestId, false);
       } catch (cause) {
         if (requestId === sendRequestIdRef.current) {
@@ -813,6 +910,7 @@ export function useConversations({
       if (conversationId === activeConversationId) {
         setActiveConversationId('');
         setMessages([]);
+        setConversationUsage(EMPTY_USAGE);
         setHasOlderMessages(false);
         olderMessagesCursorRef.current = '';
       }
@@ -853,6 +951,7 @@ export function useConversations({
     selectConversation,
     messages,
     setMessages,
+    conversationUsage,
     hasOlderMessages,
     isLoadingOlderMessages,
     isLoadingConversations,

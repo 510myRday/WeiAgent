@@ -5,6 +5,7 @@ import type {
   AgentWorkspace,
   AppSettings,
   Conversation,
+  ConversationUsage,
   ConversationMessagePage,
   CreateAgentPayload,
   CreateConversationPayload,
@@ -13,6 +14,8 @@ import type {
   LlmLogEntry,
   ModelProvider,
   ModelProviderPayload,
+  ImageAttachment,
+  ThinkingLevel,
   StreamEvent,
   UpdateAgentWorkspacePayload,
   UpdateAgentProfilePayload,
@@ -444,6 +447,8 @@ export function createMessageRun(
   conversationId: string,
   content: string,
   streamOutput: boolean,
+  attachments: ImageAttachment[],
+  thinkingLevel: ThinkingLevel,
   restartFromMessageId?: string,
   signal?: AbortSignal,
 ): Promise<AgentRun> {
@@ -451,11 +456,17 @@ export function createMessageRun(
     method: 'POST',
     body: JSON.stringify({
       content,
+      attachments,
+      thinking_level: thinkingLevel,
       stream: streamOutput,
       ...(restartFromMessageId ? { restart_from_message_id: restartFromMessageId } : {}),
     }),
     signal,
   }, agentRunRuntimeSchema);
+}
+
+export function readConversationUsage(conversationId: string): Promise<ConversationUsage> {
+  return request<ConversationUsage>(`/api/conversations/${conversationId}/usage`);
 }
 
 export function readActiveConversationRun(conversationId: string): Promise<AgentRun | null> {
@@ -560,7 +571,12 @@ function dispatchStreamEvent(
   }
 
   if (event === 'delta') {
-    onEvent({ event: 'delta', data, sequence });
+    onEvent({ event: 'delta', data: decodeTextStreamData(data), sequence });
+    return;
+  }
+
+  if (event === 'reasoning_delta') {
+    onEvent({ event: 'reasoning_delta', data: decodeTextStreamData(data), sequence });
     return;
   }
 
@@ -578,6 +594,23 @@ function dispatchStreamEvent(
       state.sawError = true;
       onEvent({ event: 'error', data: `Invalid ${event} stream event`, sequence });
     }
+  }
+}
+
+function decodeTextStreamData(data: string): string {
+  try {
+    const decoded: unknown = JSON.parse(data);
+    if (
+      decoded
+      && typeof decoded === 'object'
+      && !Array.isArray(decoded)
+      && typeof (decoded as { text?: unknown }).text === 'string'
+    ) {
+      return (decoded as { text: string }).text;
+    }
+    return data;
+  } catch {
+    return data;
   }
 }
 

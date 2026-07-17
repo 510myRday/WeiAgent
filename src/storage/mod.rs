@@ -181,10 +181,13 @@ mod tests {
             conversation_id: conversation.id,
             role: ChatRole::User,
             content: "hello".to_string(),
+            reasoning_content: None,
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
             tool_calls: None,
             tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
         };
         store
             .append_conversation_messages(conversation.id, std::slice::from_ref(&message))
@@ -232,10 +235,13 @@ mod tests {
                     conversation_id: conversation.id,
                     role,
                     content: format!("turn {turn}"),
+                    reasoning_content: None,
                     status: ChatMessageStatus::Done,
                     created_at: Utc::now(),
                     tool_calls: None,
                     tool_call_id: None,
+                    attachments: Vec::new(),
+                    usage: None,
                 });
             }
         }
@@ -266,7 +272,10 @@ mod tests {
                 .chain(latest.messages.iter())
                 .map(|message| message.id)
                 .collect::<Vec<_>>(),
-            messages.iter().map(|message| message.id).collect::<Vec<_>>()
+            messages
+                .iter()
+                .map(|message| message.id)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -304,10 +313,13 @@ mod tests {
             conversation_id: conversation.id,
             role: ChatRole::User,
             content: "  这是第一条用户消息\n用于生成标题  ".to_string(),
+            reasoning_content: None,
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
             tool_calls: None,
             tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
         };
 
         store

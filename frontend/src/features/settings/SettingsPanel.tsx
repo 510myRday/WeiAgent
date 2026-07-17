@@ -50,6 +50,12 @@ type PendingRuntimeSave = {
   serialized: string;
   payload: AppSettings;
 };
+type ProviderAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+type PendingProviderSave = {
+  providerId: string;
+  serialized: string;
+  payload: ModelProviderPayload;
+};
 
 type ProviderForm = {
   provider_type: ProviderType;
@@ -119,6 +125,9 @@ const VALID_LOG_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error']);
 const RUNTIME_AUTO_SAVE_DELAY_MS = 600;
 const RUNTIME_AUTO_SAVE_RETRY_DELAY_MS = 1200;
 const RUNTIME_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
+const PROVIDER_AUTO_SAVE_DELAY_MS = 600;
+const PROVIDER_AUTO_SAVE_RETRY_DELAY_MS = 1200;
+const PROVIDER_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
 
 function parseModels(value: string): string[] {
   return Array.from(new Set(value.split(/\r?\n|,/).map((model) => model.trim()).filter(Boolean)));
@@ -214,6 +223,68 @@ function serializeRuntimeSettings(settings: AppSettings): string {
   });
 }
 
+function providerToForm(provider: ModelProvider): ProviderForm {
+  return {
+    provider_type: provider.provider_type,
+    name: provider.name,
+    base_url: provider.base_url,
+    api_key: '',
+    modelsText: provider.models.join('\n'),
+    modelConfigs: syncModelConfigs(provider.models, provider.model_configs ?? []),
+    extraBodyText: provider.extra_body && Object.keys(provider.extra_body).length > 0
+      ? JSON.stringify(provider.extra_body, null, 2)
+      : '',
+  };
+}
+
+function buildProviderPayload(
+  form: ProviderForm,
+  requireApiKey: boolean,
+): ModelProviderPayload | null {
+  let extraBody: Record<string, unknown> | undefined;
+  if (form.extraBodyText.trim()) {
+    try {
+      extraBody = JSON.parse(form.extraBodyText) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  const models = parseModels(form.modelsText);
+  const payload: ModelProviderPayload = {
+    provider_type: form.provider_type,
+    name: form.name.trim(),
+    base_url: form.base_url.trim(),
+    api_key: form.api_key.trim(),
+    models,
+    model_configs: syncModelConfigs(models, form.modelConfigs),
+    extra_body: extraBody,
+  };
+
+  if (
+    !payload.name
+    || !payload.base_url
+    || (requireApiKey && !payload.api_key)
+    || payload.models.length === 0
+  ) {
+    return null;
+  }
+  return payload;
+}
+
+function serializeProviderForm(form: ProviderForm): string {
+  const models = parseModels(form.modelsText);
+  return JSON.stringify({
+    provider_type: form.provider_type,
+    name: form.name.trim(),
+    base_url: form.base_url.trim(),
+    api_key: form.api_key.trim(),
+    models,
+    model_configs: syncModelConfigs(models, form.modelConfigs),
+    extra_body_text: form.extraBodyText.trim(),
+  });
+}
+
 export function SettingsPanel({
   settingsForm,
   onSettingsFormChange,
@@ -238,6 +309,8 @@ export function SettingsPanel({
   const [showLlmLogs, setShowLlmLogs] = useState(false);
   const [runtimeDirty, setRuntimeDirty] = useState(false);
   const [autoSaveStatus, setAutoSaveStatus] = useState<RuntimeAutoSaveStatus>('idle');
+  const [providerDirty, setProviderDirty] = useState(false);
+  const [providerAutoSaveStatus, setProviderAutoSaveStatus] = useState<ProviderAutoSaveStatus>('idle');
 
   const latestSerializedRef = useRef('');
   const persistedSerializedRef = useRef('');
@@ -248,14 +321,30 @@ export function SettingsPanel({
   const retryTimerRef = useRef<number | undefined>(undefined);
   const isMountedRef = useRef(true);
   const onSettingsSaveRef = useRef(onSettingsSave);
+  const providerLoadedIdRef = useRef<string | null>(null);
+  const activeProviderIdRef = useRef(activeProviderId);
+  const providerLatestSerializedByIdRef = useRef(new Map<string, string>());
+  const providerPersistedSerializedByIdRef = useRef(new Map<string, string>());
+  const pendingProviderSaveRef = useRef<PendingProviderSave | null>(null);
+  const providerSaveInFlightRef = useRef(false);
+  const providerSaveRetryCountRef = useRef(0);
+  const providerSaveTimerRef = useRef<number | undefined>(undefined);
+  const providerRetryTimerRef = useRef<number | undefined>(undefined);
+  const onProviderEditRef = useRef(onProviderEdit);
 
   onSettingsSaveRef.current = onSettingsSave;
+  onProviderEditRef.current = onProviderEdit;
+  activeProviderIdRef.current = activeProviderId;
 
   useBeforeUnloadGuard(
     runtimeDirty
     || autoSaveStatus === 'pending'
     || autoSaveStatus === 'saving'
-    || autoSaveStatus === 'error',
+    || autoSaveStatus === 'error'
+    || providerDirty
+    || providerAutoSaveStatus === 'pending'
+    || providerAutoSaveStatus === 'saving'
+    || providerAutoSaveStatus === 'error',
   );
 
   const activeProvider = providers.find((provider) => provider.id === activeProviderId);
@@ -273,7 +362,16 @@ export function SettingsPanel({
         window.clearTimeout(retryTimerRef.current);
         retryTimerRef.current = undefined;
       }
+      if (providerSaveTimerRef.current !== undefined) {
+        window.clearTimeout(providerSaveTimerRef.current);
+        providerSaveTimerRef.current = undefined;
+      }
+      if (providerRetryTimerRef.current !== undefined) {
+        window.clearTimeout(providerRetryTimerRef.current);
+        providerRetryTimerRef.current = undefined;
+      }
       void flushRuntimeSaveQueue();
+      void flushProviderSaveQueue();
     };
   }, []);
 
@@ -282,24 +380,35 @@ export function SettingsPanel({
   }, [initialSection]);
 
   useEffect(() => {
+    if (providerLoadedIdRef.current === activeProviderId) return;
+    if (activeProviderId && !activeProvider) return;
+    providerLoadedIdRef.current = activeProviderId;
+
+    if (providerSaveTimerRef.current !== undefined) {
+      window.clearTimeout(providerSaveTimerRef.current);
+      providerSaveTimerRef.current = undefined;
+    }
+    if (providerRetryTimerRef.current !== undefined) {
+      window.clearTimeout(providerRetryTimerRef.current);
+      providerRetryTimerRef.current = undefined;
+    }
+
     if (!activeProvider) {
       setProviderForm(defaultProviderForm);
       setShowApiKey(false);
+      setProviderDirty(false);
+      setProviderAutoSaveStatus('idle');
       return;
     }
-    setProviderForm({
-      provider_type: activeProvider.provider_type,
-      name: activeProvider.name,
-      base_url: activeProvider.base_url,
-      api_key: '',
-      modelsText: activeProvider.models.join('\n'),
-      modelConfigs: syncModelConfigs(activeProvider.models, activeProvider.model_configs ?? []),
-      extraBodyText: activeProvider.extra_body && Object.keys(activeProvider.extra_body).length > 0
-        ? JSON.stringify(activeProvider.extra_body, null, 2)
-        : '',
-    });
+    const nextForm = providerToForm(activeProvider);
+    const serialized = serializeProviderForm(nextForm);
+    setProviderForm(nextForm);
     setShowApiKey(false);
-  }, [activeProvider]);
+    setProviderDirty(false);
+    setProviderAutoSaveStatus('idle');
+    providerLatestSerializedByIdRef.current.set(activeProvider.id, serialized);
+    providerPersistedSerializedByIdRef.current.set(activeProvider.id, serialized);
+  }, [activeProvider, activeProviderId]);
 
   // Seed persisted snapshot once settings become valid (initial load / external refresh).
   useEffect(() => {
@@ -358,6 +467,50 @@ export function SettingsPanel({
       void flushRuntimeSaveQueue();
     }, RUNTIME_AUTO_SAVE_DELAY_MS);
   }, [runtimeDirty, settingsForm]);
+
+  useEffect(() => {
+    if (!providerDirty || !activeProviderId) return;
+
+    const serialized = serializeProviderForm(providerForm);
+    if (providerLatestSerializedByIdRef.current.get(activeProviderId) !== serialized) {
+      providerSaveRetryCountRef.current = 0;
+    }
+    providerLatestSerializedByIdRef.current.set(activeProviderId, serialized);
+
+    if (providerPersistedSerializedByIdRef.current.get(activeProviderId) === serialized) {
+      pendingProviderSaveRef.current = null;
+      setProviderDirty(false);
+      setProviderAutoSaveStatus('saved');
+      return;
+    }
+
+    const payload = buildProviderPayload(providerForm, false);
+    if (!payload) {
+      setProviderAutoSaveStatus('pending');
+      if (providerSaveTimerRef.current !== undefined) {
+        window.clearTimeout(providerSaveTimerRef.current);
+        providerSaveTimerRef.current = undefined;
+      }
+      if (pendingProviderSaveRef.current?.providerId === activeProviderId) {
+        pendingProviderSaveRef.current = null;
+      }
+      return;
+    }
+
+    pendingProviderSaveRef.current = {
+      providerId: activeProviderId,
+      serialized,
+      payload,
+    };
+    setProviderAutoSaveStatus('pending');
+    if (providerSaveTimerRef.current !== undefined) {
+      window.clearTimeout(providerSaveTimerRef.current);
+    }
+    providerSaveTimerRef.current = window.setTimeout(() => {
+      providerSaveTimerRef.current = undefined;
+      void flushProviderSaveQueue();
+    }, PROVIDER_AUTO_SAVE_DELAY_MS);
+  }, [activeProviderId, providerDirty, providerForm]);
 
   async function flushRuntimeSaveQueue() {
     if (saveInFlightRef.current || !pendingSaveRef.current) return;
@@ -432,47 +585,129 @@ export function SettingsPanel({
     void flushRuntimeSaveQueue();
   }
 
+  async function flushProviderSaveQueue() {
+    if (providerSaveInFlightRef.current || !pendingProviderSaveRef.current) return;
+    const pending = pendingProviderSaveRef.current;
+    pendingProviderSaveRef.current = null;
+    providerSaveInFlightRef.current = true;
+    if (isMountedRef.current) {
+      setIsSubmittingProvider(true);
+      if (activeProviderIdRef.current === pending.providerId) {
+        setProviderAutoSaveStatus('saving');
+      }
+    }
+
+    let retryDelay = 0;
+    try {
+      const updated = await onProviderEditRef.current(pending.providerId, pending.payload);
+      const savedForm = providerToForm(updated);
+      const savedSerialized = serializeProviderForm(savedForm);
+      providerPersistedSerializedByIdRef.current.set(pending.providerId, savedSerialized);
+      providerSaveRetryCountRef.current = 0;
+
+      if (
+        isMountedRef.current
+        && activeProviderIdRef.current === pending.providerId
+        && providerLatestSerializedByIdRef.current.get(pending.providerId) === pending.serialized
+      ) {
+        providerLatestSerializedByIdRef.current.set(pending.providerId, savedSerialized);
+        const queuedSave = pendingProviderSaveRef.current as PendingProviderSave | null;
+        if (queuedSave?.serialized === pending.serialized) {
+          pendingProviderSaveRef.current = null;
+        }
+        if (providerSaveTimerRef.current !== undefined) {
+          window.clearTimeout(providerSaveTimerRef.current);
+          providerSaveTimerRef.current = undefined;
+        }
+        setProviderForm(savedForm);
+        setShowApiKey(false);
+        setProviderDirty(false);
+        setProviderAutoSaveStatus('saved');
+      }
+    } catch (cause) {
+      const attempt = providerSaveRetryCountRef.current + 1;
+      providerSaveRetryCountRef.current = attempt;
+      if (providerLatestSerializedByIdRef.current.get(pending.providerId) === pending.serialized) {
+        pendingProviderSaveRef.current = pending;
+        retryDelay = Math.min(
+          PROVIDER_AUTO_SAVE_MAX_RETRY_DELAY_MS,
+          PROVIDER_AUTO_SAVE_RETRY_DELAY_MS * (2 ** Math.min(attempt - 1, 5)),
+        );
+      }
+      if (isMountedRef.current && activeProviderIdRef.current === pending.providerId) {
+        setProviderAutoSaveStatus('error');
+        if (attempt === 1) {
+          toast.error(userErrorMessage(cause, {
+            summary: t('error.providerSaveFailed'),
+            recovery: t('error.checkProviderFields'),
+          }));
+        }
+      }
+    } finally {
+      providerSaveInFlightRef.current = false;
+      if (isMountedRef.current) {
+        setIsSubmittingProvider(false);
+      }
+      if (pendingProviderSaveRef.current) {
+        if (providerRetryTimerRef.current !== undefined) {
+          window.clearTimeout(providerRetryTimerRef.current);
+        }
+        providerRetryTimerRef.current = window.setTimeout(() => {
+          providerRetryTimerRef.current = undefined;
+          void flushProviderSaveQueue();
+        }, retryDelay);
+      }
+    }
+  }
+
+  function retryProviderSaveNow() {
+    if (providerSaveTimerRef.current !== undefined) {
+      window.clearTimeout(providerSaveTimerRef.current);
+      providerSaveTimerRef.current = undefined;
+    }
+    if (providerRetryTimerRef.current !== undefined) {
+      window.clearTimeout(providerRetryTimerRef.current);
+      providerRetryTimerRef.current = undefined;
+    }
+    void flushProviderSaveQueue();
+  }
+
   function patchRuntimeSettings(patch: Partial<AppSettings>) {
     onSettingsFormChange({ ...settingsForm, ...patch });
     setRuntimeDirty(true);
   }
 
+  function changeProviderForm(updater: (current: ProviderForm) => ProviderForm) {
+    setProviderForm(updater);
+    if (activeProviderIdRef.current) {
+      setProviderDirty(true);
+    }
+  }
+
+  function handleProviderChange(id: string) {
+    if (providerSaveTimerRef.current !== undefined) {
+      window.clearTimeout(providerSaveTimerRef.current);
+      providerSaveTimerRef.current = undefined;
+      void flushProviderSaveQueue();
+    }
+    onProviderChange(id);
+  }
+
   async function handleProviderSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    let extraBody: Record<string, unknown> | undefined;
-    if (providerForm.extraBodyText.trim()) {
-      try {
-        extraBody = JSON.parse(providerForm.extraBodyText);
-      } catch {
-        toast.warning(t('error.invalidJson'));
-        return;
-      }
+    if (activeProvider) {
+      retryProviderSaveNow();
+      return;
     }
-    const payload = {
-      provider_type: providerForm.provider_type,
-      name: providerForm.name.trim(),
-      base_url: providerForm.base_url.trim(),
-      api_key: providerForm.api_key.trim(),
-      models: parseModels(providerForm.modelsText),
-      model_configs: syncModelConfigs(
-        parseModels(providerForm.modelsText),
-        providerForm.modelConfigs,
-      ),
-      extra_body: extraBody,
-    };
-    if (!payload.name || !payload.base_url || (!activeProvider && !payload.api_key) || payload.models.length === 0) {
+    const payload = buildProviderPayload(providerForm, true);
+    if (!payload) {
       toast.warning(t('error.providerValidation'));
       return;
     }
     setIsSubmittingProvider(true);
     try {
-      if (activeProvider) {
-        await onProviderEdit(activeProvider.id, payload);
-        toast.success(t('notification.providerSaved'));
-      } else {
-        await onProviderAdd(payload);
-        toast.success(t('notification.providerCreated'));
-      }
+      await onProviderAdd(payload);
+      toast.success(t('notification.providerCreated'));
       setProviderForm((current) => ({ ...current, api_key: '' }));
     } catch (cause) {
       toast.error(userErrorMessage(cause, {
@@ -537,7 +772,7 @@ export function SettingsPanel({
           api_key: apiKey,
           extra_body: extraBody,
         });
-      setProviderForm((current) => ({
+      changeProviderForm((current) => ({
         ...current,
         modelsText: models.join('\n'),
         modelConfigs: syncModelConfigs(models, current.modelConfigs),
@@ -553,7 +788,7 @@ export function SettingsPanel({
   }
 
   function handleProtocolChange(providerType: ProviderType) {
-    setProviderForm((current) => {
+    changeProviderForm((current) => {
       const currentDefault = protocolPresetByType[current.provider_type].defaultBaseUrl;
       const nextDefault = protocolPresetByType[providerType].defaultBaseUrl;
       return {
@@ -567,7 +802,7 @@ export function SettingsPanel({
   }
 
   function handleModelsTextChange(modelsText: string) {
-    setProviderForm((current) => ({
+    changeProviderForm((current) => ({
       ...current,
       modelsText,
       modelConfigs: syncModelConfigs(parseModels(modelsText), current.modelConfigs),
@@ -575,7 +810,7 @@ export function SettingsPanel({
   }
 
   function patchModelConfig(modelId: string, patch: Partial<ModelConfig>) {
-    setProviderForm((current) => ({
+    changeProviderForm((current) => ({
       ...current,
       modelConfigs: current.modelConfigs.map((config) => (
         config.model_id === modelId ? { ...config, ...patch } : config
@@ -630,7 +865,7 @@ export function SettingsPanel({
             description={activeSection === 'runtime' ? t('settings.description') : t('provider.description')}
             actions={activeSection === 'runtime'
               ? <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryRuntimeSaveNow} />
-              : null}
+              : <AutoSaveIndicator status={providerAutoSaveStatus} t={t} onRetry={retryProviderSaveNow} />}
           />
 
           {activeSection === 'runtime' ? (
@@ -715,7 +950,7 @@ export function SettingsPanel({
                   <select
                     id="provider-picker"
                     value={activeProviderId}
-                    onChange={(event) => onProviderChange(event.target.value)}
+                    onChange={(event) => handleProviderChange(event.target.value)}
                   >
                     {!activeProvider ? (
                       <option value="">{t('provider.newTitle')}</option>
@@ -727,9 +962,22 @@ export function SettingsPanel({
                     ))}
                   </select>
                 </FormField>
-                <Button variant="secondary" type="button" onClick={() => onProviderChange('')} icon={<Plus size={16} />}>
-                  {t('provider.create')}
-                </Button>
+                <div className="provider-picker-actions">
+                  <Button variant="secondary" type="button" onClick={() => handleProviderChange('')} icon={<Plus size={16} />}>
+                    {t('provider.create')}
+                  </Button>
+                  {activeProvider ? (
+                    <Button
+                      variant="danger"
+                      type="button"
+                      disabled={isSubmittingProvider}
+                      onClick={handleDeleteProvider}
+                      icon={<Trash2 size={16} />}
+                    >
+                      {t('common.delete')}
+                    </Button>
+                  ) : null}
+                </div>
               </div>
 
               <form className="form-card entity-form provider-editor" onSubmit={handleProviderSubmit}>
@@ -753,7 +1001,7 @@ export function SettingsPanel({
                   />
                   <div className="form-grid two-column provider-connection-grid">
                     <FormField label={t('provider.name')} htmlFor="provider-name" required>
-                      <input id="provider-name" value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} disabled={isSubmittingProvider} required />
+                      <input id="provider-name" value={providerForm.name} onChange={(e) => changeProviderForm((current) => ({ ...current, name: e.target.value }))} disabled={isSubmittingProvider} required />
                     </FormField>
                     <FormField label={t('provider.apiMode')} htmlFor="provider-api-mode" required>
                       <select
@@ -771,7 +1019,7 @@ export function SettingsPanel({
                       </select>
                     </FormField>
                     <FormField label={t('provider.baseUrl')} htmlFor="provider-base-url" required>
-                      <input id="provider-base-url" value={providerForm.base_url} onChange={(e) => setProviderForm({ ...providerForm, base_url: e.target.value })} disabled={isSubmittingProvider} required />
+                      <input id="provider-base-url" value={providerForm.base_url} onChange={(e) => changeProviderForm((current) => ({ ...current, base_url: e.target.value }))} disabled={isSubmittingProvider} required />
                     </FormField>
                     <FormField label={t('provider.apiKey')} htmlFor="provider-api-key" required={!activeProvider}>
                       <div className="provider-secret-input">
@@ -779,7 +1027,7 @@ export function SettingsPanel({
                           id="provider-api-key"
                           type={showApiKey ? 'text' : 'password'}
                           value={providerForm.api_key}
-                          onChange={(e) => setProviderForm({ ...providerForm, api_key: e.target.value })}
+                          onChange={(e) => changeProviderForm((current) => ({ ...current, api_key: e.target.value }))}
                           placeholder={activeProvider?.has_api_key ? activeProvider.masked_api_key : ''}
                           disabled={isSubmittingProvider}
                           required={!activeProvider}
@@ -942,7 +1190,7 @@ export function SettingsPanel({
                     <textarea
                       id="provider-extra-body"
                       value={providerForm.extraBodyText}
-                      onChange={(e) => setProviderForm({ ...providerForm, extraBodyText: e.target.value })}
+                      onChange={(e) => changeProviderForm((current) => ({ ...current, extraBodyText: e.target.value }))}
                       rows={5}
                       placeholder='{"temperature": 0.7}'
                       disabled={isSubmittingProvider}
@@ -950,16 +1198,13 @@ export function SettingsPanel({
                   </FormField>
                 </details>
 
-                <div className="form-actions provider-form-actions">
-                  {activeProvider ? (
-                    <Button variant="danger" type="button" onClick={handleDeleteProvider} icon={<Trash2 size={16} />}>
-                      {t('common.delete')}
+                {!activeProvider ? (
+                  <div className="form-actions provider-form-actions">
+                    <Button variant="primary" type="submit" disabled={isSubmittingProvider} icon={<Save size={17} />}>
+                      {t('provider.create')}
                     </Button>
-                  ) : null}
-                  <Button variant="primary" type="submit" disabled={isSubmittingProvider} icon={<Save size={17} />}>
-                    {activeProvider ? t('provider.save') : t('provider.create')}
-                  </Button>
-                </div>
+                  </div>
+                ) : null}
               </form>
             </div>
           )}

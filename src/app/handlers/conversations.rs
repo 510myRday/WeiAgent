@@ -19,7 +19,7 @@ use crate::{
     },
     domain::{
         AgentRun, AgentRunStatus, ChatMessage, Conversation, ConversationMessagePage,
-        CreateConversationRequest, SendMessageRequest, SendMessageResponse,
+        ConversationUsage, CreateConversationRequest, SendMessageRequest, SendMessageResponse,
         UpdateConversationRequest,
     },
     error::AppResult,
@@ -68,10 +68,14 @@ impl Drop for ProcessCleanupGuard {
     }
 }
 
-fn request_options(settings: &crate::domain::AppSettings) -> RequestOptions {
+fn request_options(
+    settings: &crate::domain::AppSettings,
+    thinking_level: Option<crate::domain::ThinkingLevel>,
+) -> RequestOptions {
     RequestOptions {
         timeout: Duration::from_secs(settings.request_timeout_seconds.max(1)),
         retry_attempts: settings.request_retry_attempts.max(1),
+        thinking_level,
     }
 }
 
@@ -157,6 +161,15 @@ pub async fn read_conversation_message_page(
     ))
 }
 
+pub async fn read_conversation_usage(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+) -> AppResult<Json<ConversationUsage>> {
+    Ok(Json(
+        state.store.read_conversation_usage(conversation_id).await?,
+    ))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ConversationMessagesQuery {
     before: Option<Uuid>,
@@ -181,6 +194,8 @@ pub async fn create_message_run(
         &state,
         conversation_id,
         &request.content,
+        &request.attachments,
+        request.thinking_level,
         request.restart_from_message_id,
     )
     .await
@@ -197,7 +212,7 @@ pub async fn create_message_run(
         .run_manager
         .set_user_message(run_id, prepared.user_message.id);
     let info = state.run_manager.get(run_id)?;
-    let options = request_options(&settings);
+    let options = request_options(&settings, prepared.thinking_level);
     let use_streaming_llm = request.stream;
     let manager = state.run_manager.clone();
     let terminal_manager = state.terminal_manager.clone();
@@ -207,18 +222,33 @@ pub async fn create_message_run(
     let event_manager = manager.clone();
     let forwarding = tokio::spawn(async move {
         let mut pending_delta = String::new();
+        let mut pending_reasoning_delta = String::new();
         let mut flush_interval = tokio::time::interval(Duration::from_millis(32));
         flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
-                _ = flush_interval.tick(), if !pending_delta.is_empty() => {
-                    event_manager.record_event(
-                        run_id,
-                        AgentRunEvent::Delta(std::mem::take(&mut pending_delta)),
-                    );
+                _ = flush_interval.tick(), if !pending_delta.is_empty() || !pending_reasoning_delta.is_empty() => {
+                    if !pending_reasoning_delta.is_empty() {
+                        event_manager.record_event(
+                            run_id,
+                            AgentRunEvent::ReasoningDelta(std::mem::take(&mut pending_reasoning_delta)),
+                        );
+                    }
+                    if !pending_delta.is_empty() {
+                        event_manager.record_event(
+                            run_id,
+                            AgentRunEvent::Delta(std::mem::take(&mut pending_delta)),
+                        );
+                    }
                 }
                 event = event_receiver.recv() => {
                     let Some(event) = event else {
+                        if !pending_reasoning_delta.is_empty() {
+                            event_manager.record_event(
+                                run_id,
+                                AgentRunEvent::ReasoningDelta(std::mem::take(&mut pending_reasoning_delta)),
+                            );
+                        }
                         if !pending_delta.is_empty() {
                             event_manager.record_event(
                                 run_id,
@@ -237,7 +267,22 @@ pub async fn create_message_run(
                                 );
                             }
                         }
+                        AgentRunEvent::ReasoningDelta(delta) => {
+                            pending_reasoning_delta.push_str(&delta);
+                            if pending_reasoning_delta.len() >= 8 * 1024 {
+                                event_manager.record_event(
+                                    run_id,
+                                    AgentRunEvent::ReasoningDelta(std::mem::take(&mut pending_reasoning_delta)),
+                                );
+                            }
+                        }
                         event => {
+                            if !pending_reasoning_delta.is_empty() {
+                                event_manager.record_event(
+                                    run_id,
+                                    AgentRunEvent::ReasoningDelta(std::mem::take(&mut pending_reasoning_delta)),
+                                );
+                            }
                             if !pending_delta.is_empty() {
                                 event_manager.record_event(
                                     run_id,
@@ -384,15 +429,18 @@ pub async fn send_message_complete(
         &state,
         conversation_id,
         &request.content,
+        &request.attachments,
+        request.thinking_level,
         request.restart_from_message_id,
     )
     .await?;
     let settings = state.store.read_settings().await?;
     let terminal_manager = state.terminal_manager.clone();
     let mut cleanup_guard = ProcessCleanupGuard::new(terminal_manager.clone(), conversation_id);
+    let options = request_options(&settings, prepared.thinking_level);
     let result = tokio::time::timeout(
         MAX_AGENT_RUN_DURATION,
-        run_agent(state, prepared, request_options(&settings), false, None),
+        run_agent(state, prepared, options, false, None),
     )
     .await;
     match result {
@@ -423,11 +471,13 @@ pub async fn send_message_stream(
         &state,
         conversation_id,
         &request.content,
+        &request.attachments,
+        request.thinking_level,
         request.restart_from_message_id,
     )
     .await?;
     let settings = state.store.read_settings().await?;
-    let options = request_options(&settings);
+    let options = request_options(&settings, prepared.thinking_level);
     let use_streaming_llm = request.stream;
     let (sender, mut receiver) = mpsc::channel(256);
     let error_sender = sender.clone();
@@ -475,7 +525,10 @@ fn agent_event_to_sse(event: AgentRunEvent) -> Event {
     match event {
         AgentRunEvent::User(message) => json_event("user", &message),
         AgentRunEvent::Assistant(message) => json_event("assistant", &message),
-        AgentRunEvent::Delta(delta) => Event::default().event("delta").data(delta),
+        AgentRunEvent::Delta(delta) => json_event("delta", &serde_json::json!({ "text": delta })),
+        AgentRunEvent::ReasoningDelta(delta) => {
+            json_event("reasoning_delta", &serde_json::json!({ "text": delta }))
+        }
         AgentRunEvent::Phase {
             phase,
             iteration,

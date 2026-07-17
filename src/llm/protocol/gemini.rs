@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use crate::{
-    domain::{Agent, ChatMessage, ChatRole, ModelProvider},
+    domain::{Agent, ChatMessage, ChatRole, ImageSource, ModelProvider, ThinkingLevel, TokenUsage},
     error::{AppError, AppResult},
     llm::{
         client::{ChatClient, ChatStream, RequestOptions},
@@ -109,8 +109,16 @@ impl ProtocolAdapter for GeminiAdapter {
         system_prompt: &str,
         extra_body: &Value,
         tools: Option<Vec<ToolDefinition>>,
+        thinking_level: Option<ThinkingLevel>,
     ) -> AppResult<Value> {
-        build_gemini_request(messages, system_prompt, extra_body, tools)
+        build_gemini_request(
+            &_agent.model_id,
+            messages,
+            system_prompt,
+            extra_body,
+            tools,
+            thinking_level,
+        )
     }
 
     fn authenticated_post(
@@ -183,10 +191,12 @@ impl ProtocolAdapter for GeminiAdapter {
 }
 
 fn build_gemini_request(
+    model_id: &str,
     messages: &[ChatMessage],
     system_prompt: &str,
     extra_body: &Value,
     tools: Option<Vec<ToolDefinition>>,
+    thinking_level: Option<ThinkingLevel>,
 ) -> AppResult<Value> {
     let selected = select_context_messages(messages);
     let mut call_names = HashMap::new();
@@ -199,7 +209,29 @@ fn build_gemini_request(
     let mut contents: Vec<Value> = Vec::new();
     for message in selected {
         let (role, parts) = match message.role {
-            ChatRole::User => ("user", vec![json!({"text": message.content})]),
+            ChatRole::User => {
+                let mut parts = Vec::new();
+                if !message.content.is_empty() {
+                    parts.push(json!({"text": message.content}));
+                }
+                parts.extend(message.attachments.iter().map(
+                    |attachment| match &attachment.source {
+                        ImageSource::Base64 { data } => json!({
+                            "inlineData": {
+                                "mimeType": attachment.media_type,
+                                "data": data,
+                            }
+                        }),
+                        ImageSource::Url { url } => json!({
+                            "fileData": {
+                                "mimeType": attachment.media_type,
+                                "fileUri": url,
+                            }
+                        }),
+                    },
+                ));
+                ("user", parts)
+            }
             ChatRole::Assistant => {
                 let mut parts = Vec::new();
                 if !message.content.is_empty() {
@@ -250,6 +282,40 @@ fn build_gemini_request(
         json!({"parts": [{"text": system_prompt}]}),
     );
     body.insert("contents".to_string(), Value::Array(contents));
+    let mut generation_config = extra_body
+        .get("generationConfig")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(level) = thinking_level {
+        let thinking_config = if model_id.to_ascii_lowercase().contains("2.5") {
+            json!({
+                "thinkingBudget": match level {
+                    ThinkingLevel::Off => 0,
+                    ThinkingLevel::Low => 1024,
+                    ThinkingLevel::Medium => 4096,
+                    ThinkingLevel::High => 8192,
+                    ThinkingLevel::XHigh => 16384,
+                }
+            })
+        } else {
+            json!({
+                "thinkingLevel": match level {
+                    ThinkingLevel::Off | ThinkingLevel::Low => "MINIMAL",
+                    ThinkingLevel::Medium => "LOW",
+                    ThinkingLevel::High => "MEDIUM",
+                    ThinkingLevel::XHigh => "HIGH",
+                }
+            })
+        };
+        generation_config.insert("thinkingConfig".to_string(), thinking_config);
+    }
+    if !generation_config.is_empty() {
+        body.insert(
+            "generationConfig".to_string(),
+            Value::Object(generation_config),
+        );
+    }
     if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
         body.insert(
             "tools".to_string(),
@@ -268,7 +334,7 @@ fn build_gemini_request(
     merge_extra_body(
         body,
         extra_body,
-        &["systemInstruction", "contents", "tools"],
+        &["systemInstruction", "contents", "tools", "generationConfig"],
     )
 }
 
@@ -304,6 +370,7 @@ fn parse_gemini_output(value: &Value) -> AppResult<ChatCompletionOutput> {
     validate_gemini_finish_reason(candidate["finishReason"].as_str())?;
 
     let mut content = String::new();
+    let mut reasoning_content = String::new();
     let mut tool_calls = Vec::new();
     for part in candidate["content"]["parts"]
         .as_array()
@@ -311,7 +378,11 @@ fn parse_gemini_output(value: &Value) -> AppResult<ChatCompletionOutput> {
         .flatten()
     {
         if let Some(text) = part["text"].as_str() {
-            content.push_str(text);
+            if part["thought"].as_bool().unwrap_or(false) {
+                reasoning_content.push_str(text);
+            } else {
+                content.push_str(text);
+            }
         }
         if let Some(call) = part.get("functionCall") {
             tool_calls.push(ToolCall {
@@ -330,8 +401,24 @@ fn parse_gemini_output(value: &Value) -> AppResult<ChatCompletionOutput> {
     }
     validate_tool_calls(tool_calls).map(|tool_calls| ChatCompletionOutput {
         content,
+        reasoning_content,
         tool_calls,
+        usage: parse_gemini_usage(&value["usageMetadata"]),
     })
+}
+
+fn parse_gemini_usage(value: &Value) -> TokenUsage {
+    let cached = value["cachedContentTokenCount"].as_u64().unwrap_or(0);
+    let prompt = value["promptTokenCount"].as_u64().unwrap_or(0);
+    TokenUsage {
+        input_tokens: prompt.saturating_sub(cached),
+        output_tokens: value["candidatesTokenCount"]
+            .as_u64()
+            .unwrap_or(0)
+            .saturating_add(value["thoughtsTokenCount"].as_u64().unwrap_or(0)),
+        cache_write_tokens: 0,
+        cache_read_tokens: cached,
+    }
 }
 
 fn validate_gemini_finish_reason(reason: Option<&str>) -> AppResult<()> {
@@ -374,6 +461,7 @@ struct GeminiStreamParser {
     saw_tool_calls: bool,
     finished: bool,
     next_tool_index: usize,
+    usage: TokenUsage,
 }
 
 impl GeminiStreamParser {
@@ -382,10 +470,14 @@ impl GeminiStreamParser {
             saw_tool_calls: false,
             finished: false,
             next_tool_index: 0,
+            usage: TokenUsage::default(),
         }
     }
 
     fn parse_chunk(&mut self, value: &Value) -> Vec<AppResult<StreamEvent>> {
+        if value.get("usageMetadata").is_some() {
+            self.usage = parse_gemini_usage(&value["usageMetadata"]);
+        }
         let Some(candidate) = value["candidates"]
             .as_array()
             .and_then(|candidates| candidates.first())
@@ -404,7 +496,11 @@ impl GeminiStreamParser {
             .flatten()
         {
             if let Some(text) = part["text"].as_str().filter(|text| !text.is_empty()) {
-                events.push(Ok(StreamEvent::TextDelta(text.to_string())));
+                events.push(Ok(if part["thought"].as_bool().unwrap_or(false) {
+                    StreamEvent::ReasoningDelta(text.to_string())
+                } else {
+                    StreamEvent::TextDelta(text.to_string())
+                }));
             }
             if let Some(call) = part.get("functionCall") {
                 let index = self.next_tool_index;
@@ -439,11 +535,14 @@ impl GeminiStreamParser {
             return Vec::new();
         }
         self.finished = true;
-        vec![Ok(if self.saw_tool_calls {
-            StreamEvent::FinishedWithToolCalls
-        } else {
-            StreamEvent::Finished
-        })]
+        vec![
+            Ok(StreamEvent::Usage(self.usage.clone())),
+            Ok(if self.saw_tool_calls {
+                StreamEvent::FinishedWithToolCalls
+            } else {
+                StreamEvent::Finished
+            }),
+        ]
     }
 }
 
@@ -485,6 +584,7 @@ mod tests {
                 conversation_id,
                 role: ChatRole::Assistant,
                 content: String::new(),
+                reasoning_content: None,
                 status: ChatMessageStatus::Done,
                 created_at: now,
                 tool_calls: Some(json!([{
@@ -493,6 +593,8 @@ mod tests {
                     "function": {"name": "run", "arguments": "{}"}
                 }])),
                 tool_call_id: None,
+                attachments: Vec::new(),
+                usage: None,
             },
             ChatMessage {
                 id: Uuid::new_v4(),
@@ -500,17 +602,59 @@ mod tests {
                 conversation_id,
                 role: ChatRole::Tool,
                 content: "{\"status\":\"ok\"}".to_string(),
+                reasoning_content: None,
                 status: ChatMessageStatus::Done,
                 created_at: now,
                 tool_calls: None,
                 tool_call_id: Some("call-1".to_string()),
+                attachments: Vec::new(),
+                usage: None,
             },
         ]
     }
 
     #[test]
     fn request_maps_function_response() {
-        let request = build_gemini_request(&fixture(), "system", &Value::Null, None).unwrap();
+        let mut messages = fixture();
+        messages[0].reasoning_content =
+            Some("saved-reasoning-must-not-be-sent".to_string());
+        messages.insert(
+            0,
+            ChatMessage {
+                id: Uuid::new_v4(),
+                agent_id: messages[0].agent_id,
+                conversation_id: messages[0].conversation_id,
+                role: ChatRole::User,
+                content: "inspect".to_string(),
+                reasoning_content: None,
+                status: ChatMessageStatus::Done,
+                created_at: Utc::now(),
+                tool_calls: None,
+                tool_call_id: None,
+                attachments: vec![crate::domain::ImageAttachment {
+                    id: "image-1".to_string(),
+                    name: "sample.png".to_string(),
+                    media_type: "image/png".to_string(),
+                    source: ImageSource::Url {
+                        url: "https://example.test/sample.png".to_string(),
+                    },
+                }],
+                usage: None,
+            },
+        );
+        let request = build_gemini_request(
+            "gemini-3-pro",
+            &messages,
+            "system",
+            &Value::Null,
+            None,
+            Some(ThinkingLevel::XHigh),
+        )
+        .unwrap();
+        assert_eq!(
+            request["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "HIGH"
+        );
         assert!(
             request["contents"]
                 .as_array()
@@ -522,19 +666,41 @@ mod tests {
                     .iter()
                     .any(|part| part.get("functionResponse").is_some()))
         );
+        assert!(
+            request["contents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| {
+                    message["parts"].as_array().unwrap().iter().any(|part| {
+                        part["fileData"]["fileUri"] == "https://example.test/sample.png"
+                    })
+                })
+        );
+        assert!(!request.to_string().contains("saved-reasoning-must-not-be-sent"));
     }
 
     #[test]
     fn parses_output_and_stream_events() {
         let output = parse_gemini_output(&json!({
+            "usageMetadata": {
+                "promptTokenCount": 120,
+                "candidatesTokenCount": 30,
+                "thoughtsTokenCount": 10,
+                "cachedContentTokenCount": 20
+            },
             "candidates": [{"content":{"parts":[
+                {"thought":true,"text":"considering"},
                 {"text":"hey"},
                 {"functionCall":{"id":"call-g","name":"run","args":{"x":2}}}
             ]}}]
         }))
         .unwrap();
         assert_eq!(output.content, "hey");
+        assert_eq!(output.reasoning_content, "considering");
         assert_eq!(output.tool_calls[0].id, "call-g");
+        assert_eq!(output.usage.input_tokens, 100);
+        assert_eq!(output.usage.output_tokens, 40);
 
         let mut parser = GeminiStreamParser::new();
         let events = parser.parse_line(

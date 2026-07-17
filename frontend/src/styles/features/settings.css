@@ -41,6 +41,12 @@
   width: 100%;
 }
 
+.provider-picker-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .provider-page-title {
   display: inline-flex;
   align-items: center;

@@ -98,6 +98,35 @@ export type Conversation = {
 };
 
 export type ChatRole = 'user' | 'assistant' | 'tool';
+export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'x_high';
+
+export type ImageAttachment = {
+  id: string;
+  name: string;
+  media_type: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+} & (
+  | { source_type: 'base64'; data: string }
+  | { source_type: 'url'; url: string }
+);
+
+export type TokenUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_write_tokens: number;
+  cache_read_tokens: number;
+};
+
+export type ModelUsage = TokenUsage & {
+  total_tokens: number;
+  cost_usd?: number | null;
+  provider_id: string;
+  model_id: string;
+};
+
+export type ConversationUsage = TokenUsage & {
+  total_tokens: number;
+  cost_usd?: number | null;
+};
 
 export type ChatToolCall = {
   id: string;
@@ -115,16 +144,20 @@ export type ChatMessage = {
   conversation_id: string;
   role: ChatRole;
   content: string;
+  reasoning_content?: string;
   status?: 'done' | 'streaming' | 'failed';
   created_at: string;
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
+  attachments?: ImageAttachment[];
+  usage?: ModelUsage;
 };
 
 export type ConversationMessagePage = {
   messages: ChatMessage[];
   next_cursor?: string | null;
   has_more: boolean;
+  usage?: ConversationUsage;
 };
 
 export type UiMessage = ChatMessage & { clientId: string };
@@ -207,6 +240,7 @@ export type StreamEvent =
   | { event: 'user'; data: ChatMessage; sequence?: number }
   | { event: 'assistant'; data: ChatMessage; sequence?: number }
   | { event: 'delta'; data: string; sequence?: number }
+  | { event: 'reasoning_delta'; data: string; sequence?: number }
   | { event: 'done'; data: string; sequence?: number }
   | { event: 'cancelled'; data: string; sequence?: number }
   | { event: 'error'; data: string; sequence?: number }

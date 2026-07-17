@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        ChatMessage, ChatRole, Conversation, ConversationMessagePage, CreateConversationRequest,
-        UpdateConversationRequest,
+        ChatMessage, ChatRole, Conversation, ConversationMessagePage, ConversationUsage,
+        CreateConversationRequest, UpdateConversationRequest,
     },
     error::{AppError, AppResult},
     storage::{files::write_json, json_store::JsonStore},
@@ -209,11 +209,24 @@ impl JsonStore {
             start -= 1;
         }
         let has_more = start > 0;
+        let usage = conversation_usage(&messages);
         Ok(ConversationMessagePage {
             messages: messages[start..end].to_vec(),
             next_cursor: has_more.then(|| messages[start].id),
             has_more,
+            usage,
         })
+    }
+
+    pub async fn read_conversation_usage(
+        &self,
+        conversation_id: Uuid,
+    ) -> AppResult<ConversationUsage> {
+        self.get_conversation(conversation_id).await?;
+        let messages = self
+            .read_conversation_messages_unchecked(conversation_id)
+            .await?;
+        Ok(conversation_usage(&messages))
     }
 
     pub async fn append_conversation_messages(
@@ -363,10 +376,13 @@ impl JsonStore {
                     "reason": "Run cancelled"
                 })
                 .to_string(),
+                reasoning_content: None,
                 status: crate::domain::ChatMessageStatus::Done,
                 created_at: Utc::now(),
                 tool_calls: None,
                 tool_call_id: Some(call_id),
+                attachments: Vec::new(),
+                usage: None,
             });
             changed = true;
         }
@@ -378,4 +394,20 @@ impl JsonStore {
         }
         Ok(())
     }
+}
+
+fn conversation_usage(messages: &[ChatMessage]) -> ConversationUsage {
+    let mut summary = ConversationUsage {
+        cost_usd: Some(0.0),
+        ..ConversationUsage::default()
+    };
+    for usage in messages.iter().filter_map(|message| message.usage.as_ref()) {
+        summary.tokens.add_assign(&usage.tokens);
+        summary.cost_usd = match (summary.cost_usd, usage.cost_usd) {
+            (Some(total), Some(cost)) => Some(total + cost),
+            _ => None,
+        };
+    }
+    summary.total_tokens = summary.tokens.total_tokens();
+    summary
 }

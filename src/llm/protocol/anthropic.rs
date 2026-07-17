@@ -5,7 +5,7 @@ use reqwest::RequestBuilder;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    domain::{Agent, ChatMessage, ChatRole, ModelProvider},
+    domain::{Agent, ChatMessage, ChatRole, ImageSource, ModelProvider, ThinkingLevel, TokenUsage},
     error::{AppError, AppResult},
     llm::{
         client::{ChatClient, ChatStream, RequestOptions},
@@ -99,8 +99,17 @@ impl ProtocolAdapter for AnthropicAdapter {
         system_prompt: &str,
         extra_body: &Value,
         tools: Option<Vec<ToolDefinition>>,
+        thinking_level: Option<ThinkingLevel>,
     ) -> AppResult<Value> {
-        build_anthropic_request(agent, messages, stream, system_prompt, extra_body, tools)
+        build_anthropic_request(
+            agent,
+            messages,
+            stream,
+            system_prompt,
+            extra_body,
+            tools,
+            thinking_level,
+        )
     }
 
     fn authenticated_post(
@@ -172,6 +181,7 @@ fn build_anthropic_request(
     system_prompt: &str,
     extra_body: &Value,
     tools: Option<Vec<ToolDefinition>>,
+    thinking_level: Option<ThinkingLevel>,
 ) -> AppResult<Value> {
     let selected = select_context_messages(messages);
     let mut call_names = HashMap::new();
@@ -184,10 +194,32 @@ fn build_anthropic_request(
     let mut anthropic_messages: Vec<Value> = Vec::new();
     for message in selected {
         let (role, blocks) = match message.role {
-            ChatRole::User => (
-                "user",
-                vec![json!({"type": "text", "text": message.content})],
-            ),
+            ChatRole::User => {
+                let mut blocks = Vec::new();
+                if !message.content.is_empty() {
+                    blocks.push(json!({"type": "text", "text": message.content}));
+                }
+                blocks.extend(message.attachments.iter().map(
+                    |attachment| match &attachment.source {
+                        ImageSource::Base64 { data } => json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": attachment.media_type,
+                                "data": data,
+                            }
+                        }),
+                        ImageSource::Url { url } => json!({
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": url,
+                            }
+                        }),
+                    },
+                ));
+                ("user", blocks)
+            }
             ChatRole::Assistant => {
                 let mut blocks = Vec::new();
                 if !message.content.is_empty() {
@@ -232,10 +264,52 @@ fn build_anthropic_request(
 
     let mut body = Map::new();
     body.insert("model".to_string(), json!(agent.model_id));
-    body.insert("max_tokens".to_string(), json!(4096));
+    body.insert(
+        "max_tokens".to_string(),
+        json!(
+            if thinking_level.is_some_and(|level| level != ThinkingLevel::Off) {
+                32768
+            } else {
+                4096
+            }
+        ),
+    );
     body.insert("system".to_string(), json!(system_prompt));
     body.insert("messages".to_string(), Value::Array(anthropic_messages));
     body.insert("stream".to_string(), Value::Bool(stream));
+    if let Some(level) = thinking_level {
+        if level == ThinkingLevel::Off {
+            body.insert("thinking".to_string(), json!({"type": "disabled"}));
+        } else if supports_adaptive_thinking(&agent.model_id) {
+            body.insert("thinking".to_string(), json!({"type": "adaptive"}));
+            body.insert(
+                "output_config".to_string(),
+                json!({
+                    "effort": match level {
+                        ThinkingLevel::Low => "low",
+                        ThinkingLevel::Medium => "medium",
+                        ThinkingLevel::High => "high",
+                        ThinkingLevel::XHigh => "max",
+                        ThinkingLevel::Off => unreachable!(),
+                    }
+                }),
+            );
+        } else {
+            body.insert(
+                "thinking".to_string(),
+                json!({
+                    "type": "enabled",
+                    "budget_tokens": match level {
+                        ThinkingLevel::Low => 1024,
+                        ThinkingLevel::Medium => 4096,
+                        ThinkingLevel::High => 8192,
+                        ThinkingLevel::XHigh => 16384,
+                        ThinkingLevel::Off => unreachable!(),
+                    }
+                }),
+            );
+        }
+    }
     if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
         body.insert(
             "tools".to_string(),
@@ -256,8 +330,21 @@ fn build_anthropic_request(
     merge_extra_body(
         body,
         extra_body,
-        &["model", "system", "messages", "stream", "tools"],
+        &[
+            "model",
+            "system",
+            "messages",
+            "stream",
+            "tools",
+            "thinking",
+            "output_config",
+        ],
     )
+}
+
+fn supports_adaptive_thinking(model_id: &str) -> bool {
+    let normalized = model_id.to_ascii_lowercase();
+    normalized.contains("4-6") || normalized.contains("4.6")
 }
 
 fn append_content_blocks(messages: &mut Vec<Value>, role: &str, blocks: Vec<Value>) {
@@ -275,6 +362,7 @@ fn parse_anthropic_output(value: &Value) -> AppResult<ChatCompletionOutput> {
     validate_anthropic_stop_reason(value["stop_reason"].as_str())?;
 
     let mut content = String::new();
+    let mut reasoning_content = String::new();
     let mut tool_calls = Vec::new();
     for block in value["content"].as_array().into_iter().flatten() {
         match block["type"].as_str() {
@@ -292,13 +380,29 @@ fn parse_anthropic_output(value: &Value) -> AppResult<ChatCompletionOutput> {
                         .unwrap_or_else(|_| "{}".to_string()),
                 },
             }),
+            Some("thinking") => {
+                if let Some(thinking) = block["thinking"].as_str() {
+                    reasoning_content.push_str(thinking);
+                }
+            }
             _ => {}
         }
     }
     validate_tool_calls(tool_calls).map(|tool_calls| ChatCompletionOutput {
         content,
+        reasoning_content,
         tool_calls,
+        usage: parse_anthropic_usage(&value["usage"]),
     })
+}
+
+fn parse_anthropic_usage(value: &Value) -> TokenUsage {
+    TokenUsage {
+        input_tokens: value["input_tokens"].as_u64().unwrap_or(0),
+        output_tokens: value["output_tokens"].as_u64().unwrap_or(0),
+        cache_write_tokens: value["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+        cache_read_tokens: value["cache_read_input_tokens"].as_u64().unwrap_or(0),
+    }
 }
 
 fn validate_anthropic_stop_reason(reason: Option<&str>) -> AppResult<()> {
@@ -326,6 +430,7 @@ struct AnthropicStreamParser {
     saw_tool_calls: bool,
     finished: bool,
     stop_reason: Option<String>,
+    usage: TokenUsage,
 }
 
 impl AnthropicStreamParser {
@@ -334,11 +439,16 @@ impl AnthropicStreamParser {
             saw_tool_calls: false,
             finished: false,
             stop_reason: None,
+            usage: TokenUsage::default(),
         }
     }
 
     fn parse_event(&mut self, value: &Value) -> Vec<AppResult<StreamEvent>> {
         match value["type"].as_str() {
+            Some("message_start") => {
+                self.usage = parse_anthropic_usage(&value["message"]["usage"]);
+                Vec::new()
+            }
             Some("content_block_start") => {
                 let block = &value["content_block"];
                 let index = value["index"].as_u64().unwrap_or(0) as usize;
@@ -347,6 +457,13 @@ impl AnthropicStreamParser {
                         .as_str()
                         .filter(|text| !text.is_empty())
                         .map(|text| vec![Ok(StreamEvent::TextDelta(text.to_string()))])
+                        .unwrap_or_default(),
+                    Some("thinking") => block["thinking"]
+                        .as_str()
+                        .filter(|thinking| !thinking.is_empty())
+                        .map(|thinking| {
+                            vec![Ok(StreamEvent::ReasoningDelta(thinking.to_string()))]
+                        })
                         .unwrap_or_default(),
                     Some("tool_use") => {
                         self.saw_tool_calls = true;
@@ -375,6 +492,13 @@ impl AnthropicStreamParser {
                     .filter(|text| !text.is_empty())
                     .map(|text| vec![Ok(StreamEvent::TextDelta(text.to_string()))])
                     .unwrap_or_default(),
+                Some("thinking_delta") => value["delta"]["thinking"]
+                    .as_str()
+                    .filter(|thinking| !thinking.is_empty())
+                    .map(|thinking| {
+                        vec![Ok(StreamEvent::ReasoningDelta(thinking.to_string()))]
+                    })
+                    .unwrap_or_default(),
                 Some("input_json_delta") => {
                     let index = value["index"].as_u64().unwrap_or(0) as usize;
                     let Some(arguments) = value["delta"]["partial_json"]
@@ -394,6 +518,10 @@ impl AnthropicStreamParser {
             Some("message_delta") => {
                 if let Some(reason) = value["delta"]["stop_reason"].as_str() {
                     self.stop_reason = Some(reason.to_string());
+                }
+                let usage = parse_anthropic_usage(&value["usage"]);
+                if usage.output_tokens > 0 {
+                    self.usage.output_tokens = usage.output_tokens;
                 }
                 Vec::new()
             }
@@ -416,11 +544,14 @@ impl AnthropicStreamParser {
         if let Err(error) = validate_anthropic_stop_reason(self.stop_reason.as_deref()) {
             return vec![Err(error)];
         }
-        vec![Ok(if self.saw_tool_calls {
-            StreamEvent::FinishedWithToolCalls
-        } else {
-            StreamEvent::Finished
-        })]
+        vec![
+            Ok(StreamEvent::Usage(self.usage.clone())),
+            Ok(if self.saw_tool_calls {
+                StreamEvent::FinishedWithToolCalls
+            } else {
+                StreamEvent::Finished
+            }),
+        ]
     }
 }
 
@@ -474,6 +605,7 @@ mod tests {
                 conversation_id,
                 role: ChatRole::Assistant,
                 content: String::new(),
+                reasoning_content: None,
                 status: ChatMessageStatus::Done,
                 created_at: now,
                 tool_calls: Some(json!([{
@@ -482,6 +614,8 @@ mod tests {
                     "function": {"name": "run", "arguments": "{}"}
                 }])),
                 tool_call_id: None,
+                attachments: Vec::new(),
+                usage: None,
             },
             ChatMessage {
                 id: Uuid::new_v4(),
@@ -489,10 +623,13 @@ mod tests {
                 conversation_id,
                 role: ChatRole::Tool,
                 content: "ok".to_string(),
+                reasoning_content: None,
                 status: ChatMessageStatus::Done,
                 created_at: now,
                 tool_calls: None,
                 tool_call_id: Some("call-1".to_string()),
+                attachments: Vec::new(),
+                usage: None,
             },
         ];
         (agent, messages)
@@ -500,7 +637,33 @@ mod tests {
 
     #[test]
     fn request_maps_tools_and_allows_max_tokens_override() {
-        let (agent, messages) = fixture();
+        let (agent, mut messages) = fixture();
+        messages[0].reasoning_content =
+            Some("saved-reasoning-must-not-be-sent".to_string());
+        messages.insert(
+            0,
+            ChatMessage {
+                id: Uuid::new_v4(),
+                agent_id: agent.id,
+                conversation_id: messages[0].conversation_id,
+                role: ChatRole::User,
+                content: "inspect".to_string(),
+                reasoning_content: None,
+                status: ChatMessageStatus::Done,
+                created_at: Utc::now(),
+                tool_calls: None,
+                tool_call_id: None,
+                attachments: vec![crate::domain::ImageAttachment {
+                    id: "image-1".to_string(),
+                    name: "sample.png".to_string(),
+                    media_type: "image/png".to_string(),
+                    source: ImageSource::Base64 {
+                        data: "aGVsbG8=".to_string(),
+                    },
+                }],
+                usage: None,
+            },
+        );
         let request = build_anthropic_request(
             &agent,
             &messages,
@@ -508,9 +671,24 @@ mod tests {
             "system",
             &json!({"max_tokens": 8192}),
             None,
+            Some(ThinkingLevel::High),
         )
         .unwrap();
         assert_eq!(request["max_tokens"], 8192);
+        assert_eq!(request["thinking"]["type"], "enabled");
+        assert_eq!(request["thinking"]["budget_tokens"], 8192);
+        assert!(!request.to_string().contains("saved-reasoning-must-not-be-sent"));
+        assert!(
+            request["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| {
+                    message["content"].as_array().unwrap().iter().any(|block| {
+                        block["type"] == "image" && block["source"]["type"] == "base64"
+                    })
+                })
+        );
         assert!(
             request["messages"]
                 .as_array()
@@ -527,14 +705,23 @@ mod tests {
     #[test]
     fn parses_output_and_stream_events() {
         let output = parse_anthropic_output(&json!({
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 30,
+                "cache_creation_input_tokens": 10,
+                "cache_read_input_tokens": 20
+            },
             "content": [
+                {"type":"thinking","thinking":"considering"},
                 {"type":"text","text":"hi"},
                 {"type":"tool_use","id":"call-a","name":"run","input":{"x":1}}
             ]
         }))
         .unwrap();
         assert_eq!(output.content, "hi");
+        assert_eq!(output.reasoning_content, "considering");
         assert_eq!(output.tool_calls[0].function.arguments, "{\"x\":1}");
+        assert_eq!(output.usage.total_tokens(), 160);
 
         let mut parser = AnthropicStreamParser::new();
         let events = parser.parse_line(
@@ -543,6 +730,14 @@ mod tests {
         assert!(matches!(
             events.into_iter().next().unwrap().unwrap(),
             StreamEvent::ToolCallArgsDelta { index: 0, .. }
+        ));
+
+        let events = parser.parse_line(
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"plan"}}"#,
+        );
+        assert!(matches!(
+            events.into_iter().next().unwrap().unwrap(),
+            StreamEvent::ReasoningDelta(text) if text == "plan"
         ));
     }
 

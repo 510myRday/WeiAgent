@@ -153,12 +153,23 @@
 
   .composer-toolbar {
     align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .composer-controls {
+    flex: 1 1 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
   }
 
   .composer-actions {
-    width: auto;
+    width: 100%;
     margin-left: auto;
     justify-content: flex-end;
+  }
+
+  .conversation-usage {
+    margin-right: auto;
   }
 
   .stream-switch {
@@ -167,6 +178,10 @@
 
   .send-button {
     min-height: 40px;
+  }
+
+  .message-image-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .scroll-to-bottom-button {
@@ -366,9 +381,29 @@
     padding-inline: 14px;
   }
 
+  .chat-main-header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px 10px;
+  }
+
+  .chat-main-identity {
+    grid-column: 2;
+  }
+
+  .chat-header-controls {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+    width: 100%;
+  }
+
+  .chat-agent-select,
   .chat-model-select {
-    width: min(38vw, 190px);
-    flex-basis: min(38vw, 190px);
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    flex-basis: auto;
   }
 
   .form-card,
@@ -393,6 +428,10 @@
 
   .provider-picker-bar select {
     width: 100%;
+  }
+
+  .provider-picker-actions {
+    justify-content: flex-end;
   }
 
   .agent-model-row {

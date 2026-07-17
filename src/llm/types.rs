@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{Agent, ChatMessage};
+use crate::domain::{
+    Agent, ChatMessage, ChatRole, ImageAttachment, ImageSource, ThinkingLevel, TokenUsage,
+};
 
 const MAX_CONTEXT_MESSAGES: usize = 200;
-const MAX_CONTEXT_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CONTEXT_MESSAGE_BYTES: usize = 44 * 1024 * 1024;
 
 // ─── Tool Calling Types ───
 
@@ -38,7 +40,9 @@ pub struct ToolCallFunction {
 #[derive(Debug, Clone)]
 pub struct ChatCompletionOutput {
     pub content: String,
+    pub reasoning_content: String,
     pub tool_calls: Vec<ToolCall>,
+    pub usage: TokenUsage,
 }
 
 // ─── Structured Stream Events ───
@@ -46,6 +50,7 @@ pub struct ChatCompletionOutput {
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     TextDelta(String),
+    ReasoningDelta(String),
     ToolCallStart {
         index: usize,
         id: String,
@@ -55,6 +60,7 @@ pub enum StreamEvent {
         index: usize,
         arguments: String,
     },
+    Usage(TokenUsage),
     FinishedWithToolCalls,
     Finished,
 }
@@ -69,6 +75,10 @@ pub struct ChatCompletionRequest {
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<serde_json::Value>,
     #[serde(flatten)]
     pub extra_body: serde_json::Value,
 }
@@ -76,8 +86,7 @@ pub struct ChatCompletionRequest {
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenAiMessage {
     pub role: String,
-    #[serde(default)]
-    pub content: String,
+    pub content: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,18 +100,19 @@ pub fn build_chat_request(
     system_prompt: &str,
     extra_body: &serde_json::Value,
     tools: Option<Vec<ToolDefinition>>,
+    thinking_level: Option<ThinkingLevel>,
 ) -> ChatCompletionRequest {
     let mut request_messages = Vec::with_capacity(messages.len() + 1);
     request_messages.push(OpenAiMessage {
         role: "system".to_string(),
-        content: system_prompt.to_string(),
+        content: serde_json::Value::String(system_prompt.to_string()),
         tool_calls: None,
         tool_call_id: None,
     });
     request_messages.extend(select_context_messages(messages).iter().map(|message| {
         OpenAiMessage {
             role: message.role.as_openai_role().to_string(),
-            content: message.content.clone(),
+            content: openai_message_content(message),
             tool_calls: message.tool_calls.clone(),
             tool_call_id: if message.role.as_openai_role() == "tool" {
                 message.tool_call_id.clone()
@@ -117,7 +127,66 @@ pub fn build_chat_request(
         messages: request_messages,
         stream,
         tools,
-        extra_body: extra_body.clone(),
+        reasoning_effort: thinking_level.map(|level| {
+            match level {
+                ThinkingLevel::Off => "none",
+                ThinkingLevel::Low => "low",
+                ThinkingLevel::Medium => "medium",
+                ThinkingLevel::High => "high",
+                ThinkingLevel::XHigh => "xhigh",
+            }
+            .to_string()
+        }),
+        stream_options: stream.then(|| serde_json::json!({"include_usage": true})),
+        extra_body: sanitized_openai_extra_body(extra_body),
+    }
+}
+
+fn sanitized_openai_extra_body(extra_body: &serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(mut extra) = extra_body.clone() else {
+        return extra_body.clone();
+    };
+    for key in [
+        "model",
+        "messages",
+        "stream",
+        "tools",
+        "reasoning_effort",
+        "stream_options",
+    ] {
+        extra.remove(key);
+    }
+    serde_json::Value::Object(extra)
+}
+
+fn openai_message_content(message: &ChatMessage) -> serde_json::Value {
+    if message.role != ChatRole::User || message.attachments.is_empty() {
+        return serde_json::Value::String(message.content.clone());
+    }
+    let mut content = Vec::new();
+    if !message.content.is_empty() {
+        content.push(serde_json::json!({
+            "type": "text",
+            "text": message.content,
+        }));
+    }
+    content.extend(message.attachments.iter().map(|attachment| {
+        serde_json::json!({
+            "type": "image_url",
+            "image_url": {
+                "url": openai_image_url(attachment),
+            },
+        })
+    }));
+    serde_json::Value::Array(content)
+}
+
+pub(crate) fn openai_image_url(attachment: &ImageAttachment) -> String {
+    match &attachment.source {
+        ImageSource::Base64 { data } => {
+            format!("data:{};base64,{data}", attachment.media_type)
+        }
+        ImageSource::Url { url } => url.clone(),
     }
 }
 
@@ -183,6 +252,14 @@ fn context_message_groups(messages: &[ChatMessage]) -> Vec<Vec<&ChatMessage>> {
 fn context_message_bytes(message: &ChatMessage) -> usize {
     message.content.len()
         + message
+            .attachments
+            .iter()
+            .map(|attachment| match &attachment.source {
+                ImageSource::Base64 { data } => data.len(),
+                ImageSource::Url { url } => url.len(),
+            })
+            .sum::<usize>()
+        + message
             .tool_call_id
             .as_ref()
             .map_or(0, |tool_call_id| tool_call_id.len())
@@ -195,6 +272,8 @@ fn context_message_bytes(message: &ChatMessage) -> usize {
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionResponse {
     pub choices: Vec<ChatCompletionChoice>,
+    #[serde(default)]
+    pub usage: Option<OpenAiUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,12 +288,17 @@ pub struct ChatCompletionMessage {
     #[serde(default)]
     pub content: Option<String>,
     #[serde(default)]
+    pub reasoning_content: Option<String>,
+    #[serde(default)]
     pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct StreamChunk {
+    #[serde(default)]
     pub choices: Vec<StreamChoice>,
+    #[serde(default)]
+    pub usage: Option<OpenAiUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -226,6 +310,8 @@ pub struct StreamChoice {
 #[derive(Debug, Deserialize)]
 pub struct StreamDelta {
     pub content: Option<String>,
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
     pub tool_calls: Option<Vec<StreamToolCallDelta>>,
 }
 
@@ -255,6 +341,37 @@ pub struct ModelEntry {
     pub id: String,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OpenAiUsage {
+    #[serde(default, alias = "input_tokens")]
+    pub prompt_tokens: u64,
+    #[serde(default, alias = "output_tokens")]
+    pub completion_tokens: u64,
+    #[serde(default, alias = "input_tokens_details")]
+    pub prompt_tokens_details: Option<OpenAiInputTokenDetails>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OpenAiInputTokenDetails {
+    #[serde(default)]
+    pub cached_tokens: u64,
+}
+
+impl OpenAiUsage {
+    pub fn normalized(&self) -> TokenUsage {
+        let cached = self
+            .prompt_tokens_details
+            .as_ref()
+            .map_or(0, |details| details.cached_tokens);
+        TokenUsage {
+            input_tokens: self.prompt_tokens.saturating_sub(cached),
+            output_tokens: self.completion_tokens,
+            cache_write_tokens: 0,
+            cache_read_tokens: cached,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
@@ -271,10 +388,13 @@ mod tests {
             conversation_id: Uuid::new_v4(),
             role,
             content: content.into(),
+            reasoning_content: None,
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
             tool_calls: None,
             tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
         }
     }
 
