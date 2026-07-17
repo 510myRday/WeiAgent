@@ -363,8 +363,10 @@
     "conversationDeleted": "Conversation deleted.",
     "toolSettingsSaved": "Tool settings saved.",
     "copyFailed": "Copy failed. Check clipboard permission and try again.",
-    "runtimeInstalled": "Codex runtime installed.",
-    "runtimeUpdated": "Codex runtime updated.",
+    "runtimeInstallStarted": "{name} download started and will continue after leaving this page.",
+    "runtimeUpdateStarted": "{name} update started and will continue after leaving this page.",
+    "runtimeInstalled": "{name} is installed and available to WeiAgent.",
+    "runtimeUpdated": "{name} is updated and available to WeiAgent.",
     "logDeleted": "Debug log deleted."
   },
   "toolCard": {

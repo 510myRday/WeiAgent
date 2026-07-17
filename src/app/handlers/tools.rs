@@ -66,7 +66,7 @@ pub async fn install_codex_runtime(
     Ok(Json(
         state
             .codex_runtime
-            .install(RuntimeComponentKind::Codex)
+            .start_install(RuntimeComponentKind::Codex)
             .await?,
     ))
 }
@@ -75,7 +75,7 @@ pub async fn install_runtime_component(
     State(state): State<AppState>,
     Path(component): Path<RuntimeComponentKind>,
 ) -> AppResult<Json<CodexRuntimeStatus>> {
-    Ok(Json(state.codex_runtime.install(component).await?))
+    Ok(Json(state.codex_runtime.start_install(component).await?))
 }
 
 pub async fn refresh_runtime_component(

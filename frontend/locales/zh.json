@@ -363,8 +363,10 @@
     "conversationDeleted": "会话已删除。",
     "toolSettingsSaved": "工具配置已保存。",
     "copyFailed": "复制失败，请检查浏览器剪贴板权限后重试。",
-    "runtimeInstalled": "Codex 运行时已安装。",
-    "runtimeUpdated": "Codex 运行时已更新。",
+    "runtimeInstallStarted": "{name} 已开始下载，离开此页面后仍会继续。",
+    "runtimeUpdateStarted": "{name} 已开始更新，离开此页面后仍会继续。",
+    "runtimeInstalled": "{name} 已安装并可供 WeiAgent 使用。",
+    "runtimeUpdated": "{name} 已更新并可供 WeiAgent 使用。",
     "logDeleted": "调试日志已删除。"
   },
   "toolCard": {

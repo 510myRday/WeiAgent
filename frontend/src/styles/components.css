@@ -3237,6 +3237,11 @@
   color: var(--color-warning);
 }
 
+.runtime-status.is-progress {
+  color: var(--color-primary-700);
+  background: var(--color-primary-50);
+}
+
 .runtime-required {
   color: var(--color-text-soft);
   font-size: 11px;

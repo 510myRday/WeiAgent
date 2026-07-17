@@ -148,6 +148,7 @@ impl CodexTerminalBackend {
             TerminalAccess::FullAccess => "codex_full_access",
         };
         let mut notifications = self.app_server.subscribe();
+        let environment = self.runtime.environment_overrides(runtime_label).await;
         let call = self.app_server.request(
             "command/exec",
             json!({
@@ -159,7 +160,7 @@ impl CodexTerminalBackend {
                 "disableOutputCap": true,
                 "timeoutMs": MAX_PROCESS_LIFETIME_MS,
                 "cwd": os_command_path(&request.cwd),
-                "env": crate::tools::runtime::sanitized_environment_overrides(runtime_label),
+                "env": environment,
                 "size": tty.then_some(json!({ "rows": 24, "cols": 120 })),
                 "sandboxPolicy": sandbox_policy,
             }),
@@ -222,7 +223,9 @@ impl CodexTerminalBackend {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(false);
-        crate::tools::runtime::sanitize_runtime_environment(&mut command, "codex_sandbox");
+        self.runtime
+            .apply_runtime_environment(&mut command, "codex_sandbox")
+            .await;
         let mut child = command.spawn().map_err(|error| {
             AppError::Process(format!("failed to start Codex sandbox: {error}"))
         })?;

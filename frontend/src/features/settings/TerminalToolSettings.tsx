@@ -87,6 +87,10 @@ export function TerminalToolSettings({
   const debounceContextRef = useRef('');
   const retryTimerRef = useRef<number | undefined>(undefined);
   const isMountedRef = useRef(true);
+  const installWatchRef = useRef<{
+    kind: RuntimeComponentKind;
+    wasUpdate: boolean;
+  } | null>(null);
 
   activeContextRef.current = contextKey;
 
@@ -220,6 +224,53 @@ export function TerminalToolSettings({
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [isPageVisible, processRequestKey, scope, t, toast]);
+
+  const runtimeInstalling = runtime?.installing === true;
+  useEffect(() => {
+    if (!runtimeInstalling || !isPageVisible) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    let failureCount = 0;
+    const refresh = async () => {
+      try {
+        const next = await readCodexRuntime();
+        if (cancelled) return;
+        failureCount = 0;
+        setRuntime(next);
+        setRuntimeLoadError('');
+        const watched = installWatchRef.current;
+        if (watched) {
+          const component = normalizeRuntimeComponents(next)
+            .find((item) => item.kind === watched.kind);
+          if (component && !component.installing) {
+            installWatchRef.current = null;
+            const name = t(`tools.terminal.runtimeComponent.${component.kind}`);
+            if (component.error) {
+              toast.error(component.error);
+            } else {
+              toast.success(t(
+                watched.wasUpdate ? 'notification.runtimeUpdated' : 'notification.runtimeInstalled',
+                { name },
+              ));
+            }
+          }
+        }
+        if (next.installing) {
+          timer = window.setTimeout(refresh, 1000);
+        }
+      } catch {
+        if (cancelled) return;
+        failureCount += 1;
+        const retryDelay = Math.min(10000, 1000 * (2 ** Math.min(failureCount - 1, 3)));
+        timer = window.setTimeout(refresh, retryDelay);
+      }
+    };
+    timer = window.setTimeout(refresh, 500);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [isPageVisible, runtimeInstalling, t, toast]);
 
   const config = scope === 'defaults' ? defaults : agentSettings?.effective ?? null;
   const overrides = agentSettings?.overrides;
@@ -377,9 +428,27 @@ export function TerminalToolSettings({
     const wasUpdate = component.available;
     setInstallingRuntimeComponent(component.kind);
     try {
-      setRuntime(await installRuntimeComponent(component.kind));
-      toast.success(t(wasUpdate ? 'notification.runtimeUpdated' : 'notification.runtimeInstalled'));
+      const next = await installRuntimeComponent(component.kind);
+      setRuntime(next);
+      const nextComponent = normalizeRuntimeComponents(next)
+        .find((item) => item.kind === component.kind);
+      const name = t(`tools.terminal.runtimeComponent.${component.kind}`);
+      if (nextComponent?.installing) {
+        installWatchRef.current = { kind: component.kind, wasUpdate };
+        toast.info(t(
+          wasUpdate ? 'notification.runtimeUpdateStarted' : 'notification.runtimeInstallStarted',
+          { name },
+        ));
+      } else if (nextComponent?.error) {
+        toast.error(nextComponent.error);
+      } else {
+        toast.success(t(
+          wasUpdate ? 'notification.runtimeUpdated' : 'notification.runtimeInstalled',
+          { name },
+        ));
+      }
     } catch (error) {
+      installWatchRef.current = null;
       toast.error(error instanceof Error ? error.message : t('tools.terminal.runtimeInstallFailed'));
       try {
         setRuntime(await readCodexRuntime());
@@ -633,9 +702,9 @@ export function TerminalToolSettings({
                 <RuntimeComponentRow
                   key={component.kind}
                   component={component}
-                  installing={installingRuntimeComponent === component.kind}
+                  installing={component.installing || installingRuntimeComponent === component.kind}
                   refreshing={refreshingRuntimeComponent === component.kind}
-                  actionsDisabled={installingRuntimeComponent === component.kind || refreshingRuntimeComponent === component.kind || runtime?.supported === false}
+                  actionsDisabled={runtime?.installing === true || installingRuntimeComponent !== null || refreshingRuntimeComponent !== null || runtime?.supported === false}
                   onInstall={() => handleInstallRuntime(component)}
                   onRefresh={() => handleRefreshRuntime(component.kind)}
                   t={t}
@@ -834,7 +903,7 @@ function normalizeRuntimeComponents(runtime: CodexRuntimeStatus | null): Runtime
       available: false,
       required: false,
       managed_installed: false,
-      installing: runtime?.installing === true,
+      installing: false,
       update_available: false,
     })),
   ];
@@ -868,7 +937,9 @@ function RuntimeComponentRow({
     ? t('tools.terminal.runtimeLatestVersion', { version: component.target_version })
     : t('tools.terminal.runtimeLatestUnknown');
   const meta = [component.detected_version, latest, source].filter(Boolean).join(' · ');
-  const statusLabel = !component.available
+  const statusLabel = installing
+    ? t(component.available ? 'tools.terminal.runtimeUpdating' : 'tools.terminal.runtimeInstalling')
+    : !component.available
     ? t('tools.terminal.runtimeMissing')
     : component.update_available
       ? t('tools.terminal.runtimeUpdateAvailable', { version: component.target_version ?? '' })
@@ -882,7 +953,7 @@ function RuntimeComponentRow({
       <div className="runtime-component-row__details">
         <div className="runtime-component-row__title">
           <strong>{t(`tools.terminal.runtimeComponent.${component.kind}`)}</strong>
-          <span className={`runtime-status ${component.available && !component.update_available ? 'is-ready' : 'is-missing'}`}>
+          <span className={`runtime-status ${installing ? 'is-progress' : component.available && !component.update_available ? 'is-ready' : 'is-missing'}`}>
             {statusLabel}
           </span>
           {component.required ? <span className="runtime-required">{t('tools.terminal.runtimeRequired')}</span> : null}
@@ -896,7 +967,9 @@ function RuntimeComponentRow({
             variant="secondary"
             onClick={onInstall}
             disabled={actionsDisabled}
-            icon={<Download size={16} />}
+            icon={installing
+              ? <RefreshCw size={16} className="is-spinning" />
+              : <Download size={16} />}
           >
             {installing
               ? t(component.available ? 'tools.terminal.runtimeUpdating' : 'tools.terminal.runtimeInstalling')

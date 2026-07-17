@@ -8,6 +8,7 @@ use std::{
 
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
+use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::{fs, io::AsyncWriteExt, process::Command};
@@ -102,27 +103,48 @@ pub async fn latest_component_version(
 
 pub async fn detect_components(
     runtimes_root: &Path,
-    installing: bool,
+    installing: Option<RuntimeComponentKind>,
 ) -> Vec<RuntimeComponentStatus> {
     let node = detect_component(
         RuntimeComponentKind::Node,
         node_candidates(runtimes_root).await,
-        installing,
+        installing == Some(RuntimeComponentKind::Node),
     )
     .await;
     let python = detect_component(
         RuntimeComponentKind::Python,
         python_candidates(runtimes_root).await,
-        installing,
+        installing == Some(RuntimeComponentKind::Python),
     )
     .await;
     let uv = detect_component(
         RuntimeComponentKind::Uv,
         uv_candidates(runtimes_root).await,
-        installing,
+        installing == Some(RuntimeComponentKind::Uv),
     )
     .await;
     vec![node, python, uv]
+}
+
+pub async fn managed_bin_paths(runtimes_root: &Path) -> Vec<PathBuf> {
+    let managed_programs = [
+        (runtimes_root.join("node").join("current"), node_program()),
+        (runtimes_root.join("python"), python_program()),
+        (runtimes_root.join("uv").join("current"), uv_program()),
+    ];
+    let mut paths = Vec::new();
+    for (root, program) in managed_programs {
+        for executable in find_named_files(&root, program).await {
+            let Some(parent) = executable.parent() else {
+                continue;
+            };
+            let parent = parent.to_path_buf();
+            if !paths.iter().any(|current| current == &parent) {
+                paths.push(parent);
+            }
+        }
+    }
+    paths
 }
 
 pub async fn install_component(
@@ -136,7 +158,7 @@ pub async fn install_component(
         RuntimeComponentKind::Uv => install_uv(runtimes_root, client).await,
         RuntimeComponentKind::Python => {
             if component_missing(
-                &detect_components(runtimes_root, true).await,
+                &detect_components(runtimes_root, Some(RuntimeComponentKind::Python)).await,
                 RuntimeComponentKind::Uv,
             ) {
                 install_uv(runtimes_root, client).await?;
@@ -294,10 +316,41 @@ async fn find_named_files(root: &Path, expected: &str) -> Vec<PathBuf> {
                 }
             }
         }
+        matches.sort_by(|left, right| {
+            version_hint_from_path(right)
+                .cmp(&version_hint_from_path(left))
+                .then_with(|| left.cmp(right))
+        });
         matches
     })
     .await
     .unwrap_or_default()
+}
+
+fn version_hint_from_path(path: &Path) -> Option<Version> {
+    for component in path.components().rev() {
+        let text = component.as_os_str().to_string_lossy();
+        for token in text.split(|character: char| !character.is_ascii_digit() && character != '.') {
+            let parts = token
+                .trim_matches('.')
+                .split('.')
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>();
+            if parts.len() < 2 || parts.iter().any(|part| part.parse::<u64>().is_err()) {
+                continue;
+            }
+            let normalized = format!(
+                "{}.{}.{}",
+                parts[0],
+                parts[1],
+                parts.get(2).copied().unwrap_or("0")
+            );
+            if let Ok(version) = Version::parse(&normalized) {
+                return Some(version);
+            }
+        }
+    }
+    None
 }
 
 async fn install_node(root: &Path, client: &reqwest::Client) -> AppResult<()> {
@@ -686,5 +739,47 @@ mod tests {
             checksum_for(checksums, "node-v1-win-x64.zip").unwrap(),
             "abc"
         );
+    }
+
+    #[tokio::test]
+    async fn installing_state_only_marks_the_active_component() {
+        let temp = tempfile::tempdir().unwrap();
+        let statuses = detect_components(temp.path(), Some(RuntimeComponentKind::Python)).await;
+
+        assert!(
+            statuses
+                .iter()
+                .find(|status| status.kind == RuntimeComponentKind::Python)
+                .unwrap()
+                .installing
+        );
+        assert!(
+            statuses
+                .iter()
+                .filter(|status| status.kind != RuntimeComponentKind::Python)
+                .all(|status| !status.installing)
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_python_paths_prefer_the_newest_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let older = temp
+            .path()
+            .join("python")
+            .join("cpython-3.13.7-windows-x86_64-none");
+        let newer = temp
+            .path()
+            .join("python")
+            .join("cpython-3.14.0-windows-x86_64-none");
+        fs::create_dir_all(&older).await.unwrap();
+        fs::create_dir_all(&newer).await.unwrap();
+        fs::write(older.join(python_program()), []).await.unwrap();
+        fs::write(newer.join(python_program()), []).await.unwrap();
+
+        let paths = managed_bin_paths(temp.path()).await;
+
+        assert_eq!(paths.first(), Some(&newer));
+        assert_eq!(paths.get(1), Some(&older));
     }
 }

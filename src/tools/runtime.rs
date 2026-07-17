@@ -2,10 +2,7 @@ use std::{
     ffi::OsStr,
     path::{Component, Path, PathBuf},
     process::Stdio,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
 
@@ -94,9 +91,8 @@ pub struct CodexRuntimeManager {
     client: reqwest::Client,
     status: RwLock<CodexRuntimeStatus>,
     recommended_version: RwLock<String>,
-    install_lock: Mutex<()>,
     latest_check_lock: Mutex<()>,
-    installing: AtomicBool,
+    active_install: RwLock<Option<RuntimeComponentKind>>,
     allow_system_discovery: bool,
 }
 
@@ -162,9 +158,8 @@ impl CodexRuntimeManager {
                 components: Vec::new(),
             }),
             recommended_version: RwLock::new(FALLBACK_CODEX_VERSION.to_string()),
-            install_lock: Mutex::new(()),
             latest_check_lock: Mutex::new(()),
-            installing: AtomicBool::new(false),
+            active_install: RwLock::new(None),
             allow_system_discovery,
         })
     }
@@ -243,13 +238,10 @@ impl CodexRuntimeManager {
                     .iter_mut()
                     .find(|status| status.kind == component)
                 {
-                    component_status.update_available = component_status
-                        .detected_version
-                        .as_deref()
-                        .and_then(parse_component_version)
-                        .is_some_and(|current| {
-                            Version::parse(&target).is_ok_and(|latest| current < latest)
-                        });
+                    component_status.update_available = component_update_available(
+                        component_status.detected_version.as_deref(),
+                        Some(&target),
+                    );
                     component_status.target_version = Some(target);
                     component_status.error = None;
                 }
@@ -270,6 +262,7 @@ impl CodexRuntimeManager {
 
     async fn refresh_local(&self) -> AppResult<CodexRuntimeStatus> {
         let platform = platform_package_suffix().map(str::to_string);
+        let active_install = *self.active_install.read().await;
         let candidates = self.candidates().await;
         let managed_installed = candidates
             .iter()
@@ -308,7 +301,7 @@ impl CodexRuntimeManager {
                 supported: platform.is_some(),
                 available: true,
                 managed_installed,
-                installing: self.installing.load(Ordering::SeqCst),
+                installing: active_install.is_some(),
                 target_version,
                 update_available,
                 platform,
@@ -318,7 +311,7 @@ impl CodexRuntimeManager {
                 error: None,
                 components: Vec::new(),
             };
-            let status = self.with_components(status).await;
+            let status = self.with_components(status, active_install).await;
             *self.status.write().await = status.clone();
             return Ok(status);
         }
@@ -327,7 +320,7 @@ impl CodexRuntimeManager {
             supported: platform.is_some(),
             available: false,
             managed_installed,
-            installing: self.installing.load(Ordering::SeqCst),
+            installing: active_install.is_some(),
             target_version,
             update_available: false,
             platform,
@@ -337,18 +330,22 @@ impl CodexRuntimeManager {
             error: last_error,
             components: Vec::new(),
         };
-        let status = self.with_components(status).await;
+        let status = self.with_components(status, active_install).await;
         *self.status.write().await = status.clone();
         Ok(status)
     }
 
-    async fn with_components(&self, mut status: CodexRuntimeStatus) -> CodexRuntimeStatus {
+    async fn with_components(
+        &self,
+        mut status: CodexRuntimeStatus,
+        active_install: Option<RuntimeComponentKind>,
+    ) -> CodexRuntimeStatus {
         let mut components = vec![RuntimeComponentStatus {
             kind: RuntimeComponentKind::Codex,
             available: status.available,
             required: true,
             managed_installed: status.managed_installed,
-            installing: status.installing,
+            installing: active_install == Some(RuntimeComponentKind::Codex),
             source: status.source.clone(),
             detected_version: status.detected_version.clone(),
             target_version: Some(status.target_version.clone()),
@@ -357,14 +354,17 @@ impl CodexRuntimeManager {
         }];
         let previous_components = self.status.read().await.components.clone();
         let mut supporting =
-            supporting_runtime::detect_components(&self.runtimes_root, status.installing).await;
+            supporting_runtime::detect_components(&self.runtimes_root, active_install).await;
         for component in &mut supporting {
             if let Some(previous) = previous_components
                 .iter()
                 .find(|previous| previous.kind == component.kind)
             {
                 component.target_version = previous.target_version.clone();
-                component.update_available = previous.update_available;
+                component.update_available = component_update_available(
+                    component.detected_version.as_deref(),
+                    component.target_version.as_deref(),
+                );
             }
         }
         components.extend(supporting);
@@ -372,14 +372,11 @@ impl CodexRuntimeManager {
         status
     }
 
-    pub async fn install(
+    pub async fn start_install(
         self: &Arc<Self>,
         component: RuntimeComponentKind,
     ) -> AppResult<CodexRuntimeStatus> {
-        let _guard = self.install_lock.try_lock().map_err(|_| {
-            AppError::Conflict("runtime installation is already in progress".to_string())
-        })?;
-        self.installing.store(true, Ordering::SeqCst);
+        self.begin_install(component).await?;
         {
             let mut status = self.status.write().await;
             status.installing = true;
@@ -394,6 +391,29 @@ impl CodexRuntimeManager {
             }
         }
 
+        let manager = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = manager.run_install(component).await {
+                tracing::warn!(?component, %error, "runtime installation failed");
+            }
+        });
+        Ok(self.status().await)
+    }
+
+    async fn begin_install(&self, component: RuntimeComponentKind) -> AppResult<()> {
+        {
+            let mut active_install = self.active_install.write().await;
+            if active_install.is_some() {
+                return Err(AppError::Conflict(
+                    "runtime installation is already in progress".to_string(),
+                ));
+            }
+            *active_install = Some(component);
+        }
+        Ok(())
+    }
+
+    async fn run_install(&self, component: RuntimeComponentKind) -> AppResult<CodexRuntimeStatus> {
         let result = async {
             if component == RuntimeComponentKind::Codex {
                 let package_suffix = platform_package_suffix().ok_or_else(|| {
@@ -416,7 +436,12 @@ impl CodexRuntimeManager {
             }
         }
         .await;
-        self.installing.store(false, Ordering::SeqCst);
+        {
+            let mut active_install = self.active_install.write().await;
+            if *active_install == Some(component) {
+                *active_install = None;
+            }
+        }
         match result {
             Ok(()) => self.refresh_local().await,
             Err(error) => {
@@ -435,6 +460,41 @@ impl CodexRuntimeManager {
                 Err(error)
             }
         }
+    }
+
+    pub async fn apply_runtime_environment(&self, command: &mut Command, runtime: &str) {
+        sanitize_runtime_environment(command, runtime);
+        if let Some(path) = self.runtime_path().await {
+            command.env("PATH", path);
+        }
+    }
+
+    pub async fn environment_overrides(
+        &self,
+        runtime: &str,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut overrides = sanitized_environment_overrides(runtime);
+        if let Some(path) = self.runtime_path().await {
+            overrides.insert(
+                "PATH".to_string(),
+                serde_json::Value::String(path.to_string_lossy().to_string()),
+            );
+        }
+        overrides
+    }
+
+    async fn runtime_path(&self) -> Option<std::ffi::OsString> {
+        let mut paths = supporting_runtime::managed_bin_paths(&self.runtimes_root).await;
+        if let Some(current) = std::env::var_os("PATH") {
+            for path in std::env::split_paths(&current) {
+                if !paths.iter().any(|managed| managed == &path) {
+                    paths.push(path);
+                }
+            }
+        }
+        (!paths.is_empty())
+            .then(|| std::env::join_paths(paths).ok())
+            .flatten()
     }
 
     async fn install_inner(&self, package_suffix: &str, target_version: &str) -> AppResult<()> {
@@ -776,6 +836,13 @@ fn parse_component_version(value: &str) -> Option<Version> {
     value
         .split_whitespace()
         .find_map(|part| Version::parse(part.trim_start_matches('v')).ok())
+}
+
+fn component_update_available(detected: Option<&str>, target: Option<&str>) -> bool {
+    detected
+        .and_then(parse_component_version)
+        .zip(target.and_then(|value| Version::parse(value).ok()))
+        .is_some_and(|(current, latest)| current < latest)
 }
 
 fn latest_cache_is_fresh(cache: &LatestVersionCache) -> bool {
@@ -1209,6 +1276,46 @@ mod tests {
         assert!(ensure_child_path(&root, &root.join("..").join("outside")).is_err());
     }
 
+    #[tokio::test]
+    async fn only_one_runtime_install_can_be_active() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexRuntimeManager::new_available_for_tests(temp.path()).unwrap();
+
+        manager
+            .begin_install(RuntimeComponentKind::Node)
+            .await
+            .unwrap();
+        let error = manager
+            .begin_install(RuntimeComponentKind::Python)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, AppError::Conflict(_)));
+        assert_eq!(
+            *manager.active_install.read().await,
+            Some(RuntimeComponentKind::Node)
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_runtime_bins_are_prepended_to_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexRuntimeManager::new_available_for_tests(temp.path()).unwrap();
+        let node_bin = temp.path().join("runtimes").join("node").join("current");
+        fs::create_dir_all(&node_bin).await.unwrap();
+        fs::write(
+            node_bin.join(if cfg!(windows) { "node.exe" } else { "node" }),
+            [],
+        )
+        .await
+        .unwrap();
+
+        let path = manager.runtime_path().await.unwrap();
+        let first = std::env::split_paths(&path).next().unwrap();
+
+        assert_eq!(first, node_bin);
+    }
+
     #[test]
     fn codex_version_output_is_parsed_as_semver() {
         assert_eq!(
@@ -1245,6 +1352,23 @@ mod tests {
         };
         assert!(latest_cache_is_fresh(&fresh));
         assert!(!latest_cache_is_fresh(&stale));
+    }
+
+    #[test]
+    fn supporting_component_update_state_uses_detected_and_target_versions() {
+        assert!(component_update_available(
+            Some("Python 3.13.2"),
+            Some("3.14.0")
+        ));
+        assert!(!component_update_available(
+            Some("Python 3.14.0"),
+            Some("3.14.0")
+        ));
+        assert!(!component_update_available(
+            Some("uv 0.11.29"),
+            Some("0.11.29")
+        ));
+        assert!(!component_update_available(None, Some("24.18.0")));
     }
 
     #[test]

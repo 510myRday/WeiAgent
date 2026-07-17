@@ -125,7 +125,9 @@ impl CodexAppServer {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        crate::tools::runtime::sanitize_runtime_environment(&mut command, "codex_app_server");
+        self.runtime
+            .apply_runtime_environment(&mut command, "codex_app_server")
+            .await;
         command.env("CODEX_HOME", app_server_home);
 
         let mut child = command.spawn().map_err(|error| {
