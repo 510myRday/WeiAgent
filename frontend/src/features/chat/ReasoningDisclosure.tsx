@@ -38,7 +38,7 @@ export function ReasoningDisclosure({
         <ChevronDown className="message-reasoning__chevron" size={15} aria-hidden="true" />
       </button>
       <div className="message-reasoning__region" hidden={!isOpen}>
-        <div className="message-reasoning__content">
+        <div className="message-reasoning__content message-markdown">
           <MarkdownContent content={content} />
         </div>
       </div>
