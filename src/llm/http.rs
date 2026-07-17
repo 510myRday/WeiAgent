@@ -58,7 +58,7 @@ impl LlmHttp {
         Ok(api_key)
     }
 
-    pub async fn retry_send<F>(&self, options: RequestOptions, request: F) -> AppResult<Response>
+    pub async fn retry_send<F>(&self, options: &RequestOptions, request: F) -> AppResult<Response>
     where
         F: Fn() -> RequestBuilder,
     {
@@ -76,6 +76,13 @@ impl LlmHttp {
                 }
             }
             if attempt < attempts {
+                let reason = last_error
+                    .as_ref()
+                    .map(|error| error.to_string())
+                    .unwrap_or_else(|| "request failed".to_string());
+                if let Some(on_retry) = options.on_retry.as_ref() {
+                    on_retry(attempt + 1, attempts, &reason);
+                }
                 tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
             }
         }
@@ -428,3 +435,4 @@ mod tests {
         server.abort();
     }
 }
+

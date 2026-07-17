@@ -217,6 +217,7 @@ mod tests {
             timeout: std::time::Duration::from_secs(5),
             retry_attempts: 1,
             thinking_level: None,
+            on_retry: None,
         };
         let complete = client
             .complete(&agent, &provider, &messages, "system", options, None)
@@ -321,3 +322,4 @@ mod tests {
         }
     }
 }
+

@@ -171,6 +171,7 @@ fn normalize_model_configs(
             let config = configs_by_id
                 .remove(model_id)
                 .unwrap_or_else(|| default_model_config(model_id));
+            validate_context_size(config.context_size)?;
             validate_model_price("input_price", config.input_price)?;
             validate_model_price("output_price", config.output_price)?;
             validate_model_price("cache_write_price", config.cache_write_price)?;
@@ -185,11 +186,21 @@ fn default_model_config(model_id: &str) -> ModelConfig {
         model_id: model_id.to_string(),
         multimodal: false,
         thinking: false,
+        context_size: 128_000,
         input_price: None,
         output_price: None,
         cache_write_price: None,
         cache_read_price: None,
     }
+}
+
+fn validate_context_size(context_size: u32) -> AppResult<()> {
+    if context_size == 0 {
+        return Err(AppError::BadRequest(
+            "context_size must be a positive integer".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_model_price(field: &str, price: Option<f64>) -> AppResult<()> {
@@ -234,6 +245,7 @@ mod tests {
                 model_id: "model-b".to_string(),
                 multimodal: true,
                 thinking: false,
+                context_size: 200_000,
                 input_price: Some(0.25),
                 output_price: Some(1.5),
                 cache_write_price: Some(0.08),
@@ -245,8 +257,10 @@ mod tests {
         assert_eq!(configs.len(), 2);
         assert_eq!(configs[0].model_id, "model-a");
         assert!(!configs[0].multimodal);
+        assert_eq!(configs[0].context_size, 128_000);
         assert_eq!(configs[1].model_id, "model-b");
         assert!(configs[1].multimodal);
+        assert_eq!(configs[1].context_size, 200_000);
         assert_eq!(configs[1].output_price, Some(1.5));
         assert_eq!(configs[1].cache_write_price, Some(0.08));
         assert_eq!(configs[1].cache_read_price, Some(0.05));
@@ -260,7 +274,27 @@ mod tests {
                 model_id: "model-a".to_string(),
                 multimodal: false,
                 thinking: false,
+                context_size: 128_000,
                 input_price: Some(-0.01),
+                output_price: None,
+                cache_write_price: None,
+                cache_read_price: None,
+            }],
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn model_configs_reject_zero_context_size() {
+        let result = normalize_model_configs(
+            &["model-a".to_string()],
+            vec![ModelConfig {
+                model_id: "model-a".to_string(),
+                multimodal: false,
+                thinking: false,
+                context_size: 0,
+                input_price: None,
                 output_price: None,
                 cache_write_price: None,
                 cache_read_price: None,

@@ -11,6 +11,7 @@ import {
   Plus,
   Save,
   Server,
+  Brain,
   Trash2,
 } from 'lucide-react';
 
@@ -44,7 +45,7 @@ interface SettingsPanelProps {
   onBackToList: () => void;
 }
 
-type SettingsSection = 'runtime' | 'providers';
+type SettingsSection = 'runtime' | 'agent' | 'providers';
 type RuntimeAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type PendingRuntimeSave = {
   serialized: string;
@@ -138,6 +139,7 @@ function defaultModelConfig(modelId: string): ModelConfig {
     model_id: modelId,
     multimodal: false,
     thinking: false,
+    context_size: 128000,
   };
 }
 
@@ -147,6 +149,9 @@ function normalizeModelConfig(modelId: string, config: ModelConfig): ModelConfig
     model_id: modelId,
     multimodal: Boolean(config.multimodal),
     thinking: Boolean(config.thinking),
+    context_size: Number.isFinite(config.context_size) && config.context_size > 0
+      ? Math.floor(config.context_size)
+      : 128000,
     input_price: config.input_price,
     output_price: config.output_price,
     cache_write_price: config.cache_write_price,
@@ -184,6 +189,13 @@ function parseOptionalPrice(value: string): number | undefined {
   if (!value.trim()) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseContextSize(value: string): number {
+  if (!value.trim()) return 128000;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 128000;
+  return Math.floor(parsed);
 }
 
 function isValidRuntimeSettings(settings: AppSettings): boolean {
@@ -839,6 +851,14 @@ export function SettingsPanel({
               />
               <ListItem
                 type="button"
+                active={activeSection === 'agent'}
+                title={t('settings.agentTitle')}
+                subtitle={t('settings.agentDescription')}
+                leading={<Brain size={18} />}
+                onClick={() => { setActiveSection('agent'); onOpenMain(); }}
+              />
+              <ListItem
+                type="button"
                 active={activeSection === 'providers'}
                 title={t('provider.title')}
                 subtitle={t('provider.description')}
@@ -854,18 +874,26 @@ export function SettingsPanel({
             className="config-page-header"
             leading={<Button className="main-back-button" variant="ghost" type="button" onClick={onBackToList} icon={<ArrowLeft size={17} />}>{t('common.back')}</Button>}
             eyebrow={t('settings.areaTitle')}
-            title={activeSection === 'runtime' ? t('settings.title') : (
-              <span className="provider-page-title">
-                {t('provider.title')}
-                <span className="mini-status-badge provider-title-count">
-                  {t('provider.configuredCount', { count: providers.length })}
-                </span>
-              </span>
-            )}
-            description={activeSection === 'runtime' ? t('settings.description') : t('provider.description')}
-            actions={activeSection === 'runtime'
-              ? <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryRuntimeSaveNow} />
-              : <AutoSaveIndicator status={providerAutoSaveStatus} t={t} onRetry={retryProviderSaveNow} />}
+            title={activeSection === 'runtime'
+              ? t('settings.title')
+              : activeSection === 'agent'
+                ? t('settings.agentTitle')
+                : (
+                  <span className="provider-page-title">
+                    {t('provider.title')}
+                    <span className="mini-status-badge provider-title-count">
+                      {t('provider.configuredCount', { count: providers.length })}
+                    </span>
+                  </span>
+                )}
+            description={activeSection === 'runtime'
+              ? t('settings.description')
+              : activeSection === 'agent'
+                ? t('settings.agentDescription')
+                : t('provider.description')}
+            actions={activeSection === 'providers'
+              ? <AutoSaveIndicator status={providerAutoSaveStatus} t={t} onRetry={retryProviderSaveNow} />
+              : <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryRuntimeSaveNow} />}
           />
 
           {activeSection === 'runtime' ? (
@@ -903,6 +931,12 @@ export function SettingsPanel({
                     {['trace', 'debug', 'info', 'warn', 'error'].map((level) => <option key={level} value={level}>{level}</option>)}
                   </select>
                 </FormField>
+              </div>
+              <p className="hint-text">{t('settings.restartHint')}</p>
+            </div>
+          ) : activeSection === 'agent' ? (
+            <div className="form-card entity-form narrow-form">
+              <div className="form-grid two-column">
                 <FormField label={t('settings.requestTimeout')} htmlFor="settings-timeout" required>
                   <input
                     id="settings-timeout"
@@ -926,6 +960,7 @@ export function SettingsPanel({
                   />
                 </FormField>
               </div>
+              <p className="hint-text small-hint">{t('settings.agentRetryHint')}</p>
               <div className="llm-log-toggle-row">
                 <label className="toggle-label">
                   <input
@@ -941,7 +976,6 @@ export function SettingsPanel({
                 </Button>
               </div>
               <p className="hint-text small-hint">{t('settings.llmLogHint')}</p>
-              <p className="hint-text">{t('settings.restartHint')}</p>
             </div>
           ) : (
             <div className="provider-page">
@@ -1102,6 +1136,7 @@ export function SettingsPanel({
                             <div className="model-config-header" aria-hidden="true">
                               <span>{t('provider.model')}</span>
                               <span>{t('provider.capabilities')}</span>
+                              <span>{t('provider.contextSize')}</span>
                               <span>{t('provider.inputPrice')}</span>
                               <span>{t('provider.outputPrice')}</span>
                               <span>{t('provider.cacheWritePrice')}</span>
@@ -1132,6 +1167,25 @@ export function SettingsPanel({
                                     </label>
                                   ))}
                                 </div>
+                                <label className="model-context-field">
+                                  <span className="model-price-field__mobile-label">{t('provider.contextSize')}</span>
+                                  <span className="model-context-field__input">
+                                    <input
+                                      id={`provider-model-${index}-context_size`}
+                                      type="number"
+                                      min="1"
+                                      step="1"
+                                      inputMode="numeric"
+                                      value={config.context_size}
+                                      placeholder="128000"
+                                      onChange={(event) => patchModelConfig(config.model_id, {
+                                        context_size: parseContextSize(event.target.value),
+                                      })}
+                                      disabled={isSubmittingProvider}
+                                      aria-label={`${config.model_id} ${t('provider.contextSize')}`}
+                                    />
+                                  </span>
+                                </label>
                                 {([
                                   ['input_price', 'provider.inputPrice'],
                                   ['output_price', 'provider.outputPrice'],
@@ -1215,3 +1269,5 @@ export function SettingsPanel({
     </>
   );
 }
+
+

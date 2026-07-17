@@ -331,6 +331,7 @@ fn run_event_size(event: &AgentRunEvent) -> usize {
                 + justification.as_deref().map_or(0, str::len)
         }
         AgentRunEvent::Phase { call_id, .. } => call_id.as_deref().map_or(0, str::len),
+        AgentRunEvent::Retry { reason, .. } => reason.len(),
         AgentRunEvent::Done | AgentRunEvent::Cancelled => 0,
     }
 }
@@ -430,3 +431,4 @@ mod tests {
         assert!(*registration.cancel.borrow());
     }
 }
+

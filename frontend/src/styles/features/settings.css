@@ -189,6 +189,7 @@
   grid-template-columns:
     minmax(112px, 1fr)
     minmax(130px, 0.95fr)
+    minmax(88px, 0.72fr)
     repeat(4, minmax(72px, 0.62fr));
   align-items: center;
   column-gap: 10px;
@@ -367,6 +368,56 @@
   appearance: none;
 }
 
+.model-context-field {
+  display: block;
+  min-width: 0;
+}
+
+.model-context-field__input {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 32px;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--surface-input);
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}
+
+.model-context-field__input:focus-within {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring-control);
+}
+
+.model-context-field__input input {
+  width: 10ch;
+  max-width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: var(--font-size-caption);
+  line-height: 30px;
+  text-align: center;
+  box-shadow: none;
+}
+
+.model-context-field__input input:focus {
+  box-shadow: none;
+}
+
+.model-context-field__input input::-webkit-inner-spin-button,
+.model-context-field__input input::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+}
+
+
 .model-config-empty {
   display: grid;
   min-height: 236px;
@@ -519,7 +570,7 @@
   }
 
   .model-config-row {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 12px 8px;
     padding: 13px;
   }

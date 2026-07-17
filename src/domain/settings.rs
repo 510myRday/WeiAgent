@@ -67,9 +67,10 @@ fn default_request_timeout_seconds() -> u64 {
 }
 
 fn default_request_retry_attempts() -> u32 {
-    3
+    5
 }
 
 fn default_llm_log_enabled() -> bool {
     false
 }
+

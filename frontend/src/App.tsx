@@ -13,7 +13,7 @@ const AgentsPanel = lazy(() => import('./features/agents/AgentsPanel').then((mod
 const ToolsPanel = lazy(() => import('./features/tools/ToolsPanel').then((module) => ({ default: module.ToolsPanel })));
 const SettingsPanel = lazy(() => import('./features/settings/SettingsPanel').then((module) => ({ default: module.SettingsPanel })));
 
-type SettingsSection = 'runtime' | 'providers';
+type SettingsSection = 'runtime' | 'agent' | 'providers';
 
 export function App() {
   const { t, locale, setLocaleStateOnly } = useI18n();
@@ -246,3 +246,4 @@ function PanelLoading({ label }: { label: string }) {
     </section>
   );
 }
+

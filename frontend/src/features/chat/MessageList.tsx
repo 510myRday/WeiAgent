@@ -50,6 +50,7 @@ interface MessageListProps {
   isLoadingOlderMessages: boolean;
   isSending: boolean;
   runPhase: AgentRunPhase;
+  retryStatus: { attempt: number; maxAttempts: number; reason: string } | null;
   terminalPermissionMode?: 'request_approval' | 'full_access' | null;
   timelineMessageIndexes: readonly number[];
   onLoadOlder: () => Promise<boolean>;
@@ -102,6 +103,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   isLoadingOlderMessages,
   isSending,
   runPhase,
+  retryStatus,
   terminalPermissionMode,
   timelineMessageIndexes,
   onLoadOlder,
@@ -136,7 +138,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
       next.push({ key: 'waiting', kind: 'waiting' });
     }
     return next;
-  }, [activeAgent, hasOlderMessages, isSending, messages, runPhase]);
+  }, [activeAgent, hasOlderMessages, isSending, messages, runPhase, retryStatus]);
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -383,7 +385,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                     </Button>
                   </div>
                 ) : row.kind === 'waiting' ? (
-                  <WaitingBubble agent={activeAgent} settings={settings} />
+                  <WaitingBubble agent={activeAgent} settings={settings} retryStatus={retryStatus} />
                 ) : (
                   <MessageListItem
                     item={row.item}
@@ -542,17 +544,47 @@ function shouldShowAgentWaitingBubble(
   return true;
 }
 
-function WaitingBubble({ agent, settings }: { agent?: Agent; settings: AppSettings }) {
+function WaitingBubble({
+  agent,
+  settings,
+  retryStatus,
+}: {
+  agent?: Agent;
+  settings: AppSettings;
+  retryStatus: { attempt: number; maxAttempts: number; reason: string } | null;
+}) {
   const { t } = useI18n();
+  const isRetrying = Boolean(retryStatus);
+  const label = isRetrying && retryStatus
+    ? t('chat.retrying', { attempt: retryStatus.attempt, max: retryStatus.maxAttempts })
+    : t('chat.sending');
   return (
-    <article className="message-row assistant is-streaming is-waiting" aria-live="polite">
+    <article
+      className={`message-row assistant is-streaming is-waiting${isRetrying ? ' is-retrying' : ''}`}
+      aria-live="polite"
+    >
       <MessageAvatar agent={agent} settings={settings} isUser={false} />
       <div className="message-body">
         <div className="message-meta">
           <strong>{agent ? agentDisplayName(agent, t) : 'Assistant'}</strong>
         </div>
         <div className="message-bubble">
-          <TypingIndicator label={t('chat.sending')} />
+          {isRetrying && retryStatus ? (
+            <div className="message-retry-status" role="status" aria-label={label}>
+              <span className="message-retry-spinner" aria-hidden="true">
+                <LoaderCircle size={14} />
+              </span>
+              <div className="message-retry-copy">
+                <span className="message-retry-title">{label}</span>
+                <span className="message-retry-hint">{t('chat.retryingHint')}</span>
+              </div>
+              <span className="message-retry-badge">
+                {retryStatus.attempt}/{retryStatus.maxAttempts}
+              </span>
+            </div>
+          ) : (
+            <TypingIndicator label={label} />
+          )}
         </div>
       </div>
     </article>

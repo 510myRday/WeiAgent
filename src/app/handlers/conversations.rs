@@ -76,6 +76,7 @@ fn request_options(
         timeout: Duration::from_secs(settings.request_timeout_seconds.max(1)),
         retry_attempts: settings.request_retry_attempts.max(1),
         thinking_level,
+        on_retry: None,
     }
 }
 
@@ -543,6 +544,18 @@ fn agent_event_to_sse(event: AgentRunEvent) -> Event {
             }
             json_event("phase", &data)
         }
+        AgentRunEvent::Retry {
+            attempt,
+            max_attempts,
+            reason,
+        } => json_event(
+            "retry",
+            &serde_json::json!({
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "reason": reason,
+            }),
+        ),
         AgentRunEvent::ToolCall {
             call_id,
             name,
@@ -616,3 +629,5 @@ fn json_event<T: serde::Serialize>(name: &'static str, value: &T) -> Event {
                 .data(format!("failed to serialize {name} event: {error}"))
         })
 }
+
+

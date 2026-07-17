@@ -216,6 +216,7 @@ export function useConversations({
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [runPhase, setRunPhase] = useState<AgentRunPhase>('idle');
+  const [retryStatus, setRetryStatus] = useState<{ attempt: number; maxAttempts: number; reason: string } | null>(null);
   const [conversationUsage, setConversationUsage] = useState<ConversationUsage>(EMPTY_USAGE);
   const [runningConversationIds, setRunningConversationIds] = useState<Set<string>>(() => new Set());
 
@@ -471,6 +472,7 @@ export function useConversations({
     activeRunIdRef.current = '';
     setRunPhase('idle');
     setIsSending(false);
+    setRetryStatus(null);
   }, [flushPendingDelta]);
 
   const cancelActiveSend = useCallback(() => {
@@ -507,6 +509,7 @@ export function useConversations({
     });
     setRunPhase('idle');
     setIsSending(false);
+    setRetryStatus(null);
   }, [flushPendingDelta, loadConversationsForAgent, runCancelledMessage]);
 
   const handleStreamEvent = useCallback(
@@ -517,6 +520,7 @@ export function useConversations({
       if (evt.event === 'error') {
         setIsSending(false);
         setRunPhase('idle');
+        setRetryStatus(null);
         setMessages((current) => {
           return interruptActiveRun(current, runInterruptedMessage, 'error');
         });
@@ -526,6 +530,7 @@ export function useConversations({
       if (evt.event === 'done') {
         setIsSending(false);
         setRunPhase('idle');
+        setRetryStatus(null);
         setMessages((current) => {
           const last = current[current.length - 1];
           if (last && 'role' in last && last.role === 'assistant' && last.status === 'streaming') {
@@ -541,6 +546,7 @@ export function useConversations({
       if (evt.event === 'cancelled') {
         setIsSending(false);
         setRunPhase('idle');
+        setRetryStatus(null);
         setMessages((current) => {
           return interruptActiveRun(current, runCancelledMessage, 'rejected');
         });
@@ -549,6 +555,18 @@ export function useConversations({
       if (evt.event === 'phase') {
         const phase = (evt.data as { phase: Exclude<AgentRunPhase, 'idle'> }).phase;
         setRunPhase(phase);
+        if (phase !== 'waiting_for_model') {
+          setRetryStatus(null);
+        }
+        return;
+      }
+      if (evt.event === 'retry') {
+        const data = evt.data as { attempt: number; max_attempts: number; reason: string };
+        setRetryStatus({
+          attempt: data.attempt,
+          maxAttempts: data.max_attempts,
+          reason: data.reason,
+        });
         return;
       }
       if (evt.event === 'user') {
@@ -564,10 +582,12 @@ export function useConversations({
         return;
       }
       if (evt.event === 'delta') {
+        setRetryStatus(null);
         appendDelta(evt.data as string);
         return;
       }
       if (evt.event === 'reasoning_delta') {
+        setRetryStatus(null);
         applyReasoningDelta(evt.data as string);
         return;
       }
@@ -698,6 +718,7 @@ export function useConversations({
     setRunningConversationIds((current) => new Set(current).add(run.conversation_id));
     setIsSending(true);
     setRunPhase(run.phase ?? 'waiting_for_model');
+    setRetryStatus(null);
     if (replayFromStart && run.user_message_id) {
       setMessages((current) => {
         const runStart = current.findIndex(
@@ -797,6 +818,7 @@ export function useConversations({
       sendAbortControllerRef.current = controller;
       setIsSending(true);
       setRunPhase('waiting_for_model');
+      setRetryStatus(null);
       setMessages((current) => {
         const restartIndex = restartFromMessageId
           ? current.findIndex(
@@ -959,6 +981,7 @@ export function useConversations({
     isLoadingChat,
     isSending,
     runPhase,
+    retryStatus,
     runningConversationIds,
     loadConversationsForAgent,
     refreshRunningConversations,

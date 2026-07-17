@@ -129,7 +129,10 @@
       "x_high": "超高"
     },
     "tokens": "tokens",
-    "usageDetail": "输入 {input} · 输出 {output} · 缓存写入 {cacheWrite} · 缓存读取 {cacheRead}"
+    "usageDetail": "输入 {input} · 输出 {output} · 缓存写入 {cacheWrite} · 缓存读取 {cacheRead} · 上下文 {used}/{limit}",
+    "contextUsage": "上下文用量 {used} / {limit} tokens",
+    "retrying": "请求超时，正在重试（{attempt}/{max}）",
+    "retryingHint": "模型暂时未响应，正在自动重试…"
   },
   "conversation": {
     "select": "选择会话",
@@ -265,7 +268,10 @@
     "llmLogEnabled": "启用 LLM 调试日志",
     "llmLogHint": "开启后，每次与 AI 模型的请求和响应内容会记录到 data/llm_logs/ 目录下。",
     "restartHint": "为保护终端工具，服务只允许监听本机回环地址。修改地址或端口后需要重启。",
-    "save": "保存设置"
+    "save": "保存设置",
+    "agentTitle": "模型与智能体",
+    "agentDescription": "对话超时重试与模型调试日志等运行参数。",
+    "agentRetryHint": "发送消息等待模型回复时，若超时或网络失败会按此次数自动重试。时间默认 60 秒，次数默认 5 次。"
   },
   "provider": {
     "title": "模型提供商",
@@ -293,11 +299,12 @@
     "capabilities": "能力",
     "multimodal": "多模态",
     "thinking": "思考",
+    "contextSize": "上下文",
     "inputPrice": "输入",
     "outputPrice": "输出",
     "cacheWritePrice": "缓存输入",
     "cacheReadPrice": "缓存输出",
-    "priceUnit": "价格单位：美元 / 百万 tokens。留空表示暂未设置。",
+    "priceUnit": "价格单位：美元 / 百万 tokens。留空表示暂未设置。上下文单位：tokens，默认 128000（128K）。",
     "modelsPlaceholder": "每行输入一个模型 ID",
     "modelsRequired": "必填，请至少配置一个模型",
     "fetchModels": "获取模型",

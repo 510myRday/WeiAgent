@@ -15,6 +15,10 @@ pub enum ProviderType {
     GoogleGemini,
 }
 
+fn default_context_size() -> u32 {
+    128_000
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelConfig {
     pub model_id: String,
@@ -22,6 +26,9 @@ pub struct ModelConfig {
     pub multimodal: bool,
     #[serde(default)]
     pub thinking: bool,
+    /// Model context window size in tokens. Defaults to 128K.
+    #[serde(default = "default_context_size")]
+    pub context_size: u32,
     #[serde(default)]
     pub input_price: Option<f64>,
     #[serde(default)]
@@ -153,11 +160,24 @@ mod tests {
 
         assert_eq!(config.cache_write_price, None);
         assert_eq!(config.cache_read_price, Some(0.25));
+        assert_eq!(config.context_size, 128_000);
 
         let serialized = serde_json::to_value(config).unwrap();
         assert!(serialized.get("tool_calling").is_none());
         assert!(serialized.get("web_search").is_none());
         assert!(serialized.get("cache_price").is_none());
         assert_eq!(serialized["cache_read_price"], 0.25);
+        assert_eq!(serialized["context_size"], 128_000);
+    }
+
+    #[test]
+    fn model_config_keeps_explicit_context_size() {
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "model_id": "wide-model",
+            "context_size": 200000
+        }))
+        .unwrap();
+
+        assert_eq!(config.context_size, 200_000);
     }
 }

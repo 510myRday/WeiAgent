@@ -19,7 +19,6 @@ import type {
   ChatMessage,
   ConversationMessagePage,
   StreamEvent,
-  ToolResultData,
 } from './types';
 
 const permissionModeSchema = picklist(['request_approval', 'full_access']);
@@ -115,22 +114,16 @@ export const agentRunSchema = looseObject({
   finished_at: optional(nullable(string())),
 });
 
-export const toolResultDataSchema = looseObject({
-  stdout: optional(string()),
-  stderr: optional(string()),
-  exit_code: optional(number()),
-  duration_ms: optional(number()),
-  process_id: optional(string()),
-  output_cursor: optional(number()),
-  message: optional(string()),
-  reason: optional(string()),
-  runtime: optional(string()),
-});
-
 const phaseEventDataSchema = looseObject({
   phase: agentRunPhaseSchema,
   iteration: number(),
   call_id: optional(nullable(string())),
+});
+
+const retryEventDataSchema = looseObject({
+  attempt: number(),
+  max_attempts: number(),
+  reason: string(),
 });
 
 const toolCallEventDataSchema = looseObject({
@@ -197,12 +190,8 @@ export function parseAgentRun(value: unknown): AgentRun {
   return parse(agentRunSchema, value) as AgentRun;
 }
 
-export function parseToolResultData(value: unknown): ToolResultData {
-  return parse(toolResultDataSchema, value) as ToolResultData;
-}
-
 export function parseJsonStreamEvent(
-  event: 'user' | 'assistant' | 'phase' | 'tool_call' | 'tool_result' | 'approval_required',
+  event: 'user' | 'assistant' | 'phase' | 'retry' | 'tool_call' | 'tool_result' | 'approval_required',
   data: string,
   sequence?: number,
 ): StreamEvent {
@@ -219,6 +208,8 @@ export function parseJsonStreamEvent(
         sequence,
       };
     }
+    case 'retry':
+      return { event, data: parse(retryEventDataSchema, parsed), sequence };
     case 'tool_call':
       return { event, data: parse(toolCallEventDataSchema, parsed), sequence };
     case 'tool_result':

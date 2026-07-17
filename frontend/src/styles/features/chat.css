@@ -979,7 +979,7 @@
 .conversation-usage {
   display: flex;
   min-width: 0;
-  align-items: baseline;
+  align-items: center;
   justify-content: flex-end;
   gap: 7px;
   color: var(--color-muted);
@@ -991,6 +991,32 @@
 .conversation-usage strong {
   color: var(--color-text-soft);
   font-weight: var(--font-weight-emphasis);
+}
+
+.context-usage-ring {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.context-usage-ring svg {
+  display: block;
+}
+
+.context-usage-ring__track {
+  stroke: var(--color-primary-border);
+}
+
+.context-usage-ring__progress {
+  stroke: var(--color-primary);
+  transition: stroke-dashoffset 220ms var(--ease-standard);
+}
+
+.context-usage-ring.is-full .context-usage-ring__progress {
+  stroke: var(--color-primary-strong);
 }
 
 .send-button {
@@ -1060,4 +1086,77 @@
   align-self: center;
   flex: 1 0 auto;
   margin-inline: auto;
+}
+
+/* Auto-retry status inside assistant waiting bubble */
+.message-row.assistant.is-retrying .message-bubble {
+  min-width: min(280px, 100%);
+}
+
+.message-retry-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  padding: 2px 0;
+}
+
+.message-retry-spinner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-warning, #f59e0b) 16%, transparent);
+  color: var(--color-warning, #d97706);
+}
+
+.message-retry-spinner svg {
+  animation: message-retry-spin 0.9s linear infinite;
+}
+
+.message-retry-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.message-retry-title {
+  font-size: var(--font-size-label, 13px);
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+
+.message-retry-hint {
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+  line-height: 1.35;
+}
+
+.message-retry-badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-warning, #f59e0b) 35%, var(--border-strong));
+  background: color-mix(in srgb, var(--color-warning, #f59e0b) 12%, var(--surface-elevated, #fff));
+  color: var(--color-warning, #b45309);
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+@keyframes message-retry-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-retry-spinner svg {
+    animation: none;
+  }
 }

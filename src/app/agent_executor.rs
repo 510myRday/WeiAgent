@@ -51,6 +51,12 @@ pub enum AgentRunEvent {
         iteration: usize,
         call_id: Option<String>,
     },
+    /// LLM HTTP request is about to be retried after a timeout/error.
+    Retry {
+        attempt: u32,
+        max_attempts: u32,
+        reason: String,
+    },
     ToolCall {
         call_id: String,
         name: String,
@@ -113,6 +119,16 @@ pub async fn run_agent(
         )
         .await?;
     emit(&events, AgentRunEvent::User(user_message.clone())).await?;
+    let mut options = options;
+    if let Some(sender) = events.clone() {
+        options.on_retry = Some(std::sync::Arc::new(move |attempt, max_attempts, reason| {
+            let _ = sender.try_send(AgentRunEvent::Retry {
+                attempt,
+                max_attempts,
+                reason: reason.to_string(),
+            });
+        }));
+    }
     let runtime = AgentRuntime {
         state: &state,
         client: &client,
@@ -484,7 +500,7 @@ async fn run_llm_iteration(
             &runtime.prepared.provider,
             messages,
             &runtime.prepared.system_prompt,
-            runtime.options,
+            runtime.options.clone(),
             tools,
         );
         let output = if let Some(sender) = runtime.events {
@@ -527,7 +543,7 @@ async fn stream_llm_iteration(
             &runtime.prepared.provider,
             messages,
             &runtime.prepared.system_prompt,
-            runtime.options,
+            runtime.options.clone(),
             tools,
         )
         .await?;
@@ -1043,3 +1059,5 @@ async fn emit(events: &Option<mpsc::Sender<AgentRunEvent>>, event: AgentRunEvent
     }
     Ok(())
 }
+
+

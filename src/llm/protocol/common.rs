@@ -107,7 +107,7 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
 
         let response = match self
             .http
-            .retry_send(options, || {
+            .retry_send(&options, || {
                 self.adapter
                     .authenticated_post(self.http.client(), &url, &api_key, &request)
             })
@@ -218,7 +218,7 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         let log_enabled = self.http.log_enabled();
         let response = match self
             .http
-            .retry_send(options, || {
+            .retry_send(&options, || {
                 self.adapter
                     .authenticated_post(self.http.client(), &url, &api_key, &request)
             })

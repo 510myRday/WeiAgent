@@ -12,7 +12,7 @@ import {
 import {
   Brain,
   Check,
-  Plus,
+  Paperclip,
   Send,
   Square,
   X,
@@ -49,6 +49,8 @@ interface ChatComposerProps {
   supportsThinking: boolean;
   thinkingLevel: ThinkingLevel;
   usage: ConversationUsage;
+  /** Model context window size in tokens. */
+  contextSize: number;
   onStreamModeChange: (isStreamMode: boolean) => void;
   onThinkingLevelChange: (level: ThinkingLevel) => void;
   onUnsupportedImage: () => void;
@@ -72,6 +74,7 @@ export const ChatComposer = memo(function ChatComposer({
   supportsThinking,
   thinkingLevel,
   usage,
+  contextSize,
   onStreamModeChange,
   onThinkingLevelChange,
   onUnsupportedImage,
@@ -285,7 +288,7 @@ export const ChatComposer = memo(function ChatComposer({
               aria-label={t('chat.addImage')}
               title={t('chat.addImage')}
             >
-              <Plus size={18} />
+              <Paperclip size={18} />
             </button>
             {supportsThinking ? (
               <div className="thinking-control" ref={thinkingRef}>
@@ -347,8 +350,18 @@ export const ChatComposer = memo(function ChatComposer({
                 output: formatTokenCount(usage.output_tokens, locale),
                 cacheWrite: formatTokenCount(usage.cache_write_tokens, locale),
                 cacheRead: formatTokenCount(usage.cache_read_tokens, locale),
+                used: formatTokenCount(usage.total_tokens, locale),
+                limit: formatTokenCount(Math.max(1, contextSize), locale),
               })}
             >
+              <ContextUsageRing
+                used={usage.total_tokens}
+                limit={contextSize}
+                label={t('chat.contextUsage', {
+                  used: formatTokenCount(usage.total_tokens, locale),
+                  limit: formatTokenCount(Math.max(1, contextSize), locale),
+                })}
+              />
               <span>{formatTokenCount(usage.total_tokens, locale)} {t('chat.tokens')}</span>
               <strong>{formatCost(usage.cost_usd, locale)}</strong>
             </div>
@@ -409,6 +422,56 @@ function createAttachmentId(): string {
     : `image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+
+function ContextUsageRing({
+  used,
+  limit,
+  label,
+}: {
+  used: number;
+  limit: number;
+  label: string;
+}) {
+  const safeLimit = Math.max(1, Math.floor(limit) || 128000);
+  const safeUsed = Math.max(0, used);
+  const ratio = Math.min(1, safeUsed / safeLimit);
+  const size = 16;
+  const stroke = 2.25;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference * (1 - ratio);
+
+  return (
+    <span
+      className={`context-usage-ring${ratio >= 1 ? ' is-full' : ''}`}
+      role="img"
+      aria-label={label}
+    >
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+        <circle
+          className="context-usage-ring__track"
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          strokeWidth={stroke}
+        />
+        <circle
+          className="context-usage-ring__progress"
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          strokeWidth={stroke}
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+          strokeLinecap="round"
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </svg>
+    </span>
+  );
+}
 function formatTokenCount(value: number, locale: string): string {
   return new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
     notation: value >= 10_000 ? 'compact' : 'standard',

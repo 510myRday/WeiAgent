@@ -82,6 +82,7 @@ export function ChatPanel({
     isLoadingChat,
     isSending,
     runPhase,
+    retryStatus,
     runningConversationIds,
     loadConversationsForAgent,
     refreshRunningConversations,
@@ -696,6 +697,7 @@ export function ChatPanel({
           isLoadingOlderMessages={isLoadingOlderMessages}
           isSending={isSending}
           runPhase={runPhase}
+          retryStatus={retryStatus}
           terminalPermissionMode={terminalPermissionMode}
           timelineMessageIndexes={timelineMessageIndexes}
           onLoadOlder={handleLoadOlderMessages}
@@ -729,6 +731,7 @@ export function ChatPanel({
           thinkingLevel={thinkingLevel}
           onThinkingLevelChange={setThinkingLevel}
           usage={conversationUsage}
+          contextSize={activeModelConfig?.context_size ?? 128000}
           onUnsupportedImage={() => toast.warning(t('chat.imageUnsupportedModel'))}
           onSend={handleSendMessage}
           onStop={cancelActiveSend}

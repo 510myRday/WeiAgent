@@ -28,6 +28,8 @@ export type ModelConfig = {
   model_id: string;
   multimodal: boolean;
   thinking: boolean;
+  /** Context window size in tokens. Defaults to 128000 (128K). */
+  context_size: number;
   input_price?: number;
   output_price?: number;
   cache_write_price?: number;
@@ -254,6 +256,15 @@ export type StreamEvent =
       };
     }
   | {
+      event: 'retry';
+      sequence?: number;
+      data: {
+        attempt: number;
+        max_attempts: number;
+        reason: string;
+      };
+    }
+  | {
       event: 'tool_call';
       sequence?: number;
       data: {
@@ -298,3 +309,4 @@ export type LlmLogDetail = LlmLogEntry & {
   raw_status?: number;
   error?: string;
 };
+

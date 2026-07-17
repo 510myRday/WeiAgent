@@ -129,7 +129,10 @@
       "x_high": "Extra high"
     },
     "tokens": "tokens",
-    "usageDetail": "Input {input} · Output {output} · Cache write {cacheWrite} · Cache read {cacheRead}"
+    "usageDetail": "Input {input} · Output {output} · Cache write {cacheWrite} · Cache read {cacheRead} · Context {used}/{limit}",
+    "contextUsage": "Context usage {used} / {limit} tokens",
+    "retrying": "Timed out, retrying ({attempt}/{max})",
+    "retryingHint": "The model did not respond in time. Retrying automatically…"
   },
   "conversation": {
     "select": "Select conversation",
@@ -160,7 +163,10 @@
     "llmLogEnabled": "Enable LLM debug logs",
     "llmLogHint": "When enabled, every LLM request and response will be saved under data/llm_logs/.",
     "restartHint": "To protect terminal tools, the service may only listen on a loopback address. Restart after changing host or port.",
-    "save": "Save settings"
+    "save": "Save settings",
+    "agentTitle": "Models & Agents",
+    "agentDescription": "Chat timeout/retry policy and model debug logging.",
+    "agentRetryHint": "When waiting for a model reply, timed-out or failed requests are retried automatically. Default timeout is 60 seconds and default attempts is 5."
   },
   "provider": {
     "title": "Model Providers",
@@ -188,11 +194,12 @@
     "capabilities": "Capabilities",
     "multimodal": "Multimodal",
     "thinking": "Thinking",
+    "contextSize": "Context",
     "inputPrice": "Input",
     "outputPrice": "Output",
     "cacheWritePrice": "Cache write",
     "cacheReadPrice": "Cache read",
-    "priceUnit": "Prices are in USD per million tokens. Leave blank when unset.",
+    "priceUnit": "Prices are in USD per million tokens. Leave blank when unset. Context is in tokens and defaults to 128000 (128K).",
     "modelsPlaceholder": "Enter one model ID per line",
     "modelsRequired": "Required: add at least one model",
     "fetchModels": "Fetch Models",

@@ -34,6 +34,7 @@ function renderComposer() {
           supportsThinking
           thinkingLevel="medium"
           usage={usage}
+          contextSize={128000}
           onStreamModeChange={vi.fn()}
           onThinkingLevelChange={vi.fn()}
           onUnsupportedImage={vi.fn()}

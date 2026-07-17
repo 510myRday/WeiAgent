@@ -17,7 +17,6 @@ import type {
   ImageAttachment,
   ThinkingLevel,
   StreamEvent,
-  UpdateAgentWorkspacePayload,
   UpdateAgentProfilePayload,
   UpdateAgentPayload,
   UpdateConversationPayload,
@@ -155,16 +154,6 @@ export function deleteAgent(agentId: string): Promise<void> {
 
 export function readAgentWorkspace(agentId: string): Promise<AgentWorkspace> {
   return request<AgentWorkspace>(`/api/agents/${agentId}/workspace`);
-}
-
-export function updateAgentWorkspace(
-  agentId: string,
-  payload: UpdateAgentWorkspacePayload,
-): Promise<AgentWorkspace> {
-  return request<AgentWorkspace>(`/api/agents/${agentId}/workspace`, {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  });
 }
 
 export function listConversations(agentId: string): Promise<Conversation[]> {
@@ -350,28 +339,6 @@ export function readCodexRuntime(): Promise<CodexRuntimeStatus> {
   return request<CodexRuntimeStatus>('/api/tools/codex-runtime');
 }
 
-export function refreshCodexRuntime(): Promise<CodexRuntimeStatus> {
-  return request<CodexRuntimeStatus>('/api/tools/codex-runtime/refresh', {
-    method: 'POST',
-  });
-}
-
-export async function installCodexRuntime(): Promise<CodexRuntimeStatus> {
-  const abortHandle = createAbortSignal(15 * 60 * 1000);
-  try {
-    const response = await fetch('/api/tools/codex-runtime', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      signal: abortHandle.signal,
-    });
-    if (!response.ok) {
-      throw new Error(await readError(response));
-    }
-    return response.json() as Promise<CodexRuntimeStatus>;
-  } finally {
-    abortHandle.dispose();
-  }
-}
 
 export async function installRuntimeComponent(
   component: RuntimeComponentKind,
@@ -418,10 +385,6 @@ export function approveToolCall(
 export function listToolProcesses(agentId?: string): Promise<ToolProcessInfo[]> {
   const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
   return request<ToolProcessInfo[]>(`/api/tools/processes${query}`);
-}
-
-export function getToolProcess(processId: string, agentId: string): Promise<ToolProcessInfo> {
-  return request<ToolProcessInfo>(`/api/tools/processes/${encodeURIComponent(processId)}?agent_id=${encodeURIComponent(agentId)}`);
 }
 
 export function stopToolProcess(processId: string, agentId: string): Promise<ToolProcessInfo> {
@@ -584,6 +547,7 @@ function dispatchStreamEvent(
     event === 'user'
     || event === 'assistant'
     || event === 'phase'
+    || event === 'retry'
     || event === 'tool_call'
     || event === 'tool_result'
     || event === 'approval_required'

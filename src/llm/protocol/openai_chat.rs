@@ -86,7 +86,7 @@ impl ChatClient for OpenAiChatClient {
 
         let response = match self
             .http
-            .retry_send(options, || {
+            .retry_send(&options, || {
                 self.http
                     .client()
                     .post(chat_url.clone())
@@ -256,7 +256,7 @@ impl ChatClient for OpenAiChatClient {
 
         let response = match self
             .http
-            .retry_send(options, || {
+            .retry_send(&options, || {
                 self.http
                     .client()
                     .post(chat_url.clone())
