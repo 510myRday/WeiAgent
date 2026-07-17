@@ -1,5 +1,28 @@
 # Third-Party Notices
 
+## Inter Variable Font
+
+WeiAgent bundles the Inter variable font through the Fontsource package.
+
+- Project: Inter
+- Copyright: Copyright 2016 The Inter Project Authors
+- Package: `@fontsource-variable/inter`
+- License: SIL Open Font License 1.1
+- Upstream repository: `rsms/inter`
+
+## Noto Sans SC Variable Font
+
+WeiAgent bundles the Noto Sans SC variable font through the Fontsource package.
+
+- Project: Noto Sans SC
+- Copyright: Google Inc.
+- Package: `@fontsource-variable/noto-sans-sc`
+- License: SIL Open Font License 1.1
+- Upstream repository: `notofonts/noto-cjk`
+
+The complete SIL Open Font License 1.1 text for both bundled fonts is
+distributed at `licenses/OFL-1.1.txt`.
+
 ## OpenAI Codex CLI
 
 WeiAgent can download and run a platform-native build of OpenAI Codex CLI as
@@ -25,3 +48,19 @@ Copyright (c) 2023-2025 The Ratatui Developers
 
 The complete Apache License 2.0 text is available from the Apache Software
 Foundation and the upstream OpenAI Codex repository.
+
+## Runtime Identification Marks
+
+WeiAgent displays small product marks to identify locally detected runtime
+components. These marks are used only as labels for their corresponding
+projects.
+
+- OpenAI mark representation: Lobe Icons, Copyright (c) 2023 LobeHub, MIT
+  License
+- Node.js mark: official Node.js branding asset
+- Python mark: official Python community logo asset
+- uv mark: official Astral uv documentation asset
+
+OpenAI, Node.js, Python, uv, and their respective marks are trademarks or
+project identifiers of their respective owners. Their inclusion does not imply
+endorsement of WeiAgent.

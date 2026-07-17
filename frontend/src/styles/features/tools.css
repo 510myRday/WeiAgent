@@ -1,289 +1,525 @@
-.settings-card {
-  border-color: var(--border-subtle);
-  border-radius: var(--radius-md);
+.tools-panel .config-main > * {
+  width: min(100%, 1040px);
+}
+
+.tools-panel .config-page-header {
+  margin-bottom: 22px;
+}
+
+.terminal-tool-settings-v2 {
+  min-width: 0;
+}
+
+.terminal-settings-form {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  overflow: visible;
+}
+
+.terminal-tool-settings-v2 .settings-card {
+  min-width: 0;
+  margin: 0;
+  padding: 24px 28px;
+  overflow: visible;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-pane);
   box-shadow: var(--shadow-xs);
+  transition: border-color var(--duration-fast) var(--ease-standard);
 }
 
-.settings-card:hover {
-  transform: none;
+.terminal-tool-settings-v2 .settings-card:hover {
   border-color: var(--border-strong);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-xs);
+  transform: none;
 }
 
-.settings-card .card-header {
-  min-height: 56px;
-  border-bottom-color: var(--border-subtle);
-  background: var(--surface-subtle);
-}
-
-.terminal-settings-form > .settings-card {
-  border: 0;
-  border-bottom: 1px solid var(--border-subtle);
-  border-radius: 0;
-  box-shadow: none;
-}
-
-.terminal-settings-form > .settings-card:last-child {
-  border-bottom: 0;
-}
-
-.terminal-settings-form > .settings-card:hover {
-  border-color: var(--border-subtle);
-  box-shadow: none;
-}
-
-.terminal-settings-form > .settings-card > .card-header {
-  min-height: 34px;
-  padding: 0 0 12px;
+.terminal-tool-settings-v2 .card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 0;
+  padding: 0 0 18px;
   border: 0;
   background: transparent;
 }
 
-.terminal-tool-settings-v2.is-default-scope .terminal-settings-form {
+.terminal-tool-settings-v2 .card-header h3 {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-strong);
+  line-height: var(--line-height-snug);
+}
+
+.settings-section-title {
   display: grid;
-  grid-template-columns: minmax(280px, 0.72fr) minmax(440px, 1.55fr);
-  grid-template-areas:
-    "runtime runtime"
-    "basic access"
-    "basic roots"
-    "processes processes";
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-section-title p {
+  max-width: 680px;
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-normal);
+}
+
+.terminal-tool-settings-v2 .card-body {
+  min-width: 0;
   padding: 0;
-  overflow: hidden;
+}
+
+.terminal-tool-settings-v2 .badge {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-round);
+  background: var(--surface-subtle);
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-emphasis);
+  font-variant-numeric: tabular-nums;
+}
+
+.terminal-tool-settings-v2 .setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  min-height: 74px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.terminal-tool-settings-v2 .setting-row:first-child {
+  padding-top: 2px;
+}
+
+.terminal-tool-settings-v2 .setting-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.terminal-tool-settings-v2 .setting-info {
+  min-width: 0;
+}
+
+.terminal-tool-settings-v2 .setting-info label {
+  display: block;
+  margin: 0 0 5px;
+  color: var(--color-text);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-emphasis);
+  line-height: var(--line-height-snug);
+}
+
+.terminal-tool-settings-v2 .setting-desc,
+.terminal-tool-settings-v2 .card-description {
+  max-width: 760px;
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-normal);
+}
+
+.terminal-tool-settings-v2 .card-description {
+  margin-bottom: 16px;
+}
+
+.terminal-tool-settings-v2 .timeout-input {
+  min-width: 106px;
+  border-radius: 8px;
+}
+
+.terminal-tool-settings-v2 .timeout-input input {
+  width: 64px;
+  font-variant-numeric: tabular-nums;
+}
+
+.terminal-tool-settings-v2 .toggle-switch {
+  flex: 0 0 auto;
 }
 
 .terminal-tool-settings-v2.is-default-scope .runtime-card {
-  grid-area: runtime;
-  margin: 0;
-  padding: 20px 22px 22px;
-  background: transparent;
+  padding-bottom: 18px;
 }
 
-.terminal-tool-settings-v2.is-default-scope .basic-settings-card {
-  grid-area: basic;
-  margin: 0;
-  padding: 22px 22px 24px;
-  border-right: 1px solid var(--border-subtle);
-  border-bottom: 0;
+.terminal-tool-settings-v2.is-default-scope .runtime-card .card-header {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.terminal-tool-settings-v2.is-default-scope .access-settings-card {
-  grid-area: access;
-  margin: 0 22px;
-  padding: 22px 0 20px;
-}
-
-.terminal-tool-settings-v2.is-default-scope .roots-settings-card {
-  grid-area: roots;
-  margin: 0 22px;
-  padding: 20px 0 22px;
-  border-bottom: 0;
-}
-
-.terminal-tool-settings-v2.is-default-scope .processes-settings-card {
-  grid-area: processes;
-  margin: 0;
-  padding: 20px 22px 22px;
-  border-top: 1px solid var(--border-subtle);
-  border-bottom: 0;
-}
-
-.terminal-tool-settings-v2.is-default-scope .settings-card > .card-header {
-  padding-bottom: 8px;
-}
-
-.terminal-tool-settings-v2.is-default-scope .card-header h3 {
-  font-size: 14px;
-}
-
-.terminal-tool-settings-v2.is-default-scope .card-header > svg {
-  width: 18px;
-  height: 18px;
-  color: var(--color-text-soft);
-}
-
-.terminal-tool-settings-v2.is-default-scope .setting-row {
-  min-height: 66px;
-  padding: 11px 0;
-}
-
-.terminal-tool-settings-v2.is-default-scope .setting-info label {
-  font-size: 13px;
-}
-
-.terminal-tool-settings-v2.is-default-scope .setting-desc,
-.terminal-tool-settings-v2.is-default-scope .card-description,
-.terminal-tool-settings-v2.is-default-scope .permission-mode-control small {
-  font-size: 12px;
+.terminal-tool-settings-v2.is-default-scope .basic-settings-card .card-body {
+  display: grid;
 }
 
 .terminal-tool-settings-v2.is-default-scope .permission-mode-control {
+  margin: 14px 0 0;
+}
+
+.terminal-tool-settings-v2.is-default-scope .roots-settings-card .card-description,
+.terminal-tool-settings-v2.is-default-scope .processes-settings-card .card-description {
+  margin-bottom: 14px;
+}
+
+.terminal-tool-settings-v2.is-default-scope .processes-settings-card {
+  margin-bottom: 24px;
+}
+
+.terminal-settings-save-status {
+  display: inline-flex;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.runtime-card__body {
+  display: grid;
+  gap: 12px;
+}
+
+.runtime-component-list {
+  display: grid;
+}
+
+.runtime-component-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 66px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.runtime-component-row:first-child {
+  padding-top: 10px;
+}
+
+.runtime-component-row:last-child {
+  padding-bottom: 4px;
+  border-bottom: 0;
+}
+
+.runtime-component-row__icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+}
+
+.runtime-component-row__icon img {
+  display: block;
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+}
+
+.runtime-component-row__icon.is-codex img {
+  width: 28px;
+  height: 28px;
+}
+
+.runtime-component-row__icon.is-node img {
+  width: 29px;
+  height: 33px;
+}
+
+.runtime-component-row__icon.is-uv img {
+  width: 28px;
+  height: 28px;
+}
+
+.runtime-component-row__details {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.runtime-component-row__title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.runtime-component-row__title strong {
+  color: var(--color-text);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-emphasis);
+}
+
+.runtime-component-row__details small {
+  color: var(--color-muted);
+  font-size: var(--font-size-label);
+  line-height: var(--line-height-snug);
+}
+
+.runtime-component-row__error {
+  color: var(--color-danger);
+  font-size: var(--font-size-caption);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.runtime-component-row__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.runtime-status {
+  padding: 2px 7px;
+  border-radius: var(--radius-round);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-emphasis);
+  font-variant-numeric: tabular-nums;
+}
+
+.runtime-required {
+  color: var(--color-text-soft);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-emphasis);
+}
+
+.permission-mode-control {
   gap: 10px;
-  margin: 10px 0 0;
+  margin: 12px 0 0;
 }
 
-.terminal-tool-settings-v2.is-default-scope .permission-mode-control button {
-  min-height: 70px;
-  padding: 12px;
+.permission-mode-control button {
+  min-height: 82px;
+  padding: 15px 16px;
+  border-radius: 8px;
+  box-shadow: none;
 }
 
-.terminal-tool-settings-v2.is-default-scope .roots-settings-card .card-description {
-  margin-bottom: 10px;
+.permission-mode-control button > svg {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: var(--color-text-soft);
 }
 
-.terminal-tool-settings-v2.is-default-scope .pattern-input-wrapper {
-  margin-bottom: 10px;
+.permission-mode-control button.is-active > svg {
+  color: var(--color-primary-strong);
 }
 
-.terminal-tool-settings-v2.is-default-scope .runtime-card > .card-header {
-  min-height: 40px;
-  padding-bottom: 12px;
+.permission-mode-control button.is-active.is-danger > svg {
+  color: var(--color-danger);
+}
+
+.permission-mode-control strong {
+  font-size: var(--font-size-body);
+}
+
+.permission-mode-control small {
+  font-size: var(--font-size-label);
+  line-height: var(--line-height-normal);
+}
+
+.setting-section-heading {
+  align-items: flex-start;
+  margin-bottom: 0;
+}
+
+.pattern-input-wrapper {
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.pattern-input {
+  min-width: 0;
+  border-radius: 8px;
+  font-size: var(--font-size-ui);
+}
+
+.add-btn {
+  padding-inline: 16px;
+}
+
+.pattern-tag {
+  border-radius: 8px;
+}
+
+.inherit-control {
+  color: var(--color-muted);
+  font-size: var(--font-size-label);
+}
+
+.inherit-control input {
+  accent-color: var(--color-primary);
 }
 
 .terminal-tool-settings-v2.is-agent-scope {
   box-sizing: border-box;
-  min-width: 0;
   width: 100%;
   max-width: 100%;
   margin-top: 2px;
-  padding: 18px 20px 22px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
+  padding: 26px 28px 30px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
   background: var(--surface-pane);
   box-shadow: var(--shadow-xs);
 }
 
 .terminal-tool-settings-v2.is-agent-scope .tool-config-heading {
   align-items: flex-start;
-  margin: 0 0 20px;
-  padding: 0 0 16px;
+  margin: 0 0 4px;
+  padding: 0 0 22px;
   border-bottom: 1px solid var(--border-subtle);
 }
 
 .terminal-tool-settings-v2.is-agent-scope .tool-config-heading__main {
-  gap: 10px;
+  gap: 12px;
 }
 
 .terminal-tool-settings-v2.is-agent-scope .tool-config-heading h2 {
-  font-size: 15px;
+  margin-bottom: 6px;
+  font-size: var(--font-size-feature-title);
+  line-height: var(--line-height-snug);
 }
 
 .terminal-tool-settings-v2.is-agent-scope .tool-config-heading p {
   max-width: 720px;
+  font-size: var(--font-size-ui);
 }
 
 .terminal-tool-settings-v2.is-agent-scope .terminal-settings-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-areas:
-    "basic"
-    "access"
-    "roots"
-    "grants";
-  min-width: 0;
-  max-width: 100%;
+  display: block;
 }
 
-.terminal-tool-settings-v2.is-agent-scope .basic-settings-card {
-  grid-area: basic;
-  margin: 0;
-  padding: 0 0 20px;
-}
-
-.terminal-tool-settings-v2.is-agent-scope .basic-settings-card .card-body {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0;
-}
-
-.terminal-tool-settings-v2.is-agent-scope .basic-settings-card .setting-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "info info"
-    "inherit input";
-  align-items: center;
-  min-width: 0;
-  padding: 4px 20px 2px 0;
+.terminal-tool-settings-v2.is-agent-scope .settings-card {
+  padding: 26px 0;
   border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  box-shadow: none;
 }
 
-.terminal-tool-settings-v2.is-agent-scope .basic-settings-card .setting-row + .setting-row {
-  padding-right: 0;
-  padding-left: 20px;
-  border-left: 1px solid var(--border-subtle);
-}
-
-.terminal-tool-settings-v2.is-agent-scope .basic-settings-card .setting-info {
-  grid-area: info;
-  min-height: 54px;
-  margin-bottom: 10px;
-}
-
-.terminal-tool-settings-v2.is-agent-scope .basic-settings-card .inherit-control {
-  grid-area: inherit;
-  justify-self: start;
-}
-
-.terminal-tool-settings-v2.is-agent-scope .basic-settings-card .timeout-input {
-  grid-area: input;
-  justify-self: end;
-}
-
-.terminal-tool-settings-v2.is-agent-scope .access-settings-card {
-  grid-area: access;
-  margin: 0;
-  padding: 20px 0;
-}
-
-.terminal-tool-settings-v2.is-agent-scope .roots-settings-card {
-  grid-area: roots;
-  margin: 0;
-  padding: 20px 0;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.terminal-tool-settings-v2.is-agent-scope .grants-settings-card {
-  grid-area: grants;
-  margin: 0;
-  padding: 20px 0 0;
+.terminal-tool-settings-v2.is-agent-scope .settings-card:last-child {
+  padding-bottom: 0;
   border-bottom: 0;
 }
 
-.terminal-tool-settings-v2.is-agent-scope .setting-row {
-  min-height: 66px;
-  padding: 10px 0;
+.terminal-tool-settings-v2.is-agent-scope .settings-card:hover {
+  border-color: var(--border-subtle);
+  box-shadow: none;
 }
 
-.terminal-tool-settings-v2.is-agent-scope .setting-section-heading {
-  align-items: flex-start;
+.terminal-tool-settings-v2.is-agent-scope .card-header {
+  padding-bottom: 16px;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .setting-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-height: 76px;
+}
+
+.terminal-tool-settings-v2.is-agent-scope .setting-row .inherit-control {
+  justify-self: end;
 }
 
 .terminal-tool-settings-v2.is-agent-scope .permission-mode-control {
-  gap: 10px;
   margin-bottom: 0;
 }
 
-.terminal-tool-settings-v2.is-agent-scope .permission-mode-control button {
-  min-height: 72px;
-  padding: 12px;
+.agent-tools-overview {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
 }
 
-.setting-row {
-  border-bottom-color: var(--border-subtle);
+.agent-tools-overview__header {
+  align-items: flex-start;
+  gap: 20px;
+  padding: 2px 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.permission-mode-control button {
-  border-radius: var(--radius-sm);
+.agent-tools-overview__header h3 {
+  margin: 0 0 6px;
+  font-size: var(--font-size-feature-title);
+  font-weight: var(--font-weight-strong);
+  line-height: var(--line-height-snug);
 }
 
-.toggle-switch input:focus-visible + .toggle-slider {
-  outline: 3px solid var(--focus-ring);
-  outline-offset: 2px;
+.agent-tools-overview__header p {
+  max-width: 760px;
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-normal);
+}
+
+.agent-tool-list {
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-pane);
+  box-shadow: var(--shadow-xs);
+}
+
+.agent-tool-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+  min-height: 104px;
+  padding: 20px 22px;
+}
+
+.agent-tool-row__body {
+  gap: 5px;
+}
+
+.agent-tool-row__title {
+  gap: 8px;
+}
+
+.agent-tool-row__body strong {
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-strong);
+}
+
+.agent-tool-row__body small {
+  max-width: 720px;
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-normal);
+}
+
+.agent-tool-row__source {
+  margin-top: 2px;
+  color: var(--color-muted);
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-medium);
+}
+
+.agent-tool-row__actions {
+  gap: 10px;
+}
+
+.agent-tool-edit {
+  border-color: var(--border-strong);
+  background: var(--surface-pane);
+}
+
+.agent-tool-row .mini-status-badge {
+  min-height: 20px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
+  color: var(--color-muted);
 }
 
 .tools-coming-soon {
-  padding: 12px 16px;
-  font-size: 13px;
+  padding: 14px 16px;
+  font-size: var(--font-size-ui);
 }
 
 .terminal-load-error {
@@ -304,10 +540,10 @@
   width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--color-danger-border);
-  border-radius: var(--radius-xs);
+  border-radius: 8px;
   background: var(--color-danger-soft);
   color: var(--color-danger-text);
-  font-size: 12px;
+  font-size: var(--font-size-label);
   overflow-wrap: anywhere;
 }
 
@@ -321,18 +557,12 @@
   flex: 0 0 auto;
 }
 
-.runtime-card__save-status {
-  display: inline-flex;
-  min-width: 0;
-  margin-left: auto;
-}
-
 .tool-card {
   border-color: var(--border-subtle);
-  border-radius: var(--radius-sm);
+  border-radius: 8px;
   box-shadow: none;
 }
 
 .tool-card__status-icon {
-  border-radius: 9px;
+  border-radius: 8px;
 }

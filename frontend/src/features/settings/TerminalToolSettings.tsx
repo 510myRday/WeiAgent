@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, BadgeCheck, Braces, Clock, Code2, Download, FolderLock, Gauge, Pencil, Plus, RefreshCw, Shield, ShieldCheck, Square, Terminal, Trash2 } from 'lucide-react';
+import { ArrowLeft, Download, Pencil, Plus, RefreshCw, Square, Trash2 } from 'lucide-react';
 
 import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, ToolProcessInfo } from '../../api';
 import {
@@ -613,14 +613,10 @@ export function TerminalToolSettings({
         </div>
         <div className="agent-tool-list">
           <div className="agent-tool-row">
-            <div className="agent-tool-row__icon"><Terminal size={20} /></div>
             <div className="agent-tool-row__body">
               <div className="agent-tool-row__title">
                 <strong>{t('tools.terminal.name')}</strong>
-                <span className="mini-status-badge">
-                  <ShieldCheck size={12} />
-                  {t('tools.builtinBadge')}
-                </span>
+                <span className="mini-status-badge">{t('tools.builtinBadge')}</span>
               </div>
               <small>{t('tools.terminal.description')}</small>
               <span className="agent-tool-row__source">
@@ -679,45 +675,16 @@ export function TerminalToolSettings({
         </div>
       ) : null}
 
-      <div className={`${isAgentScope ? '' : 'form-card '}terminal-settings-form`}>
-      {scope === 'defaults' ? <section className="settings-card runtime-card">
-        <div className="card-header">
-          <Terminal size={20} />
-          <h3>{t('tools.terminal.runtimeTitle')}</h3>
-          <span className="runtime-card__save-status">
-            <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryAutoSaveNow} />
-          </span>
-        </div>
-        <div className="card-body runtime-card__body">
-          {runtimeLoadError ? (
-            <div className="terminal-inline-error" role="alert">
-              <span>{runtimeLoadError}</span>
-              <Button variant="secondary" type="button" disabled={isRetryingRuntime} onClick={() => void retryRuntimeLoad()} icon={<RefreshCw size={15} className={isRetryingRuntime ? 'is-spinning' : ''} />}>
-                {t('common.retry')}
-              </Button>
-            </div>
-          ) : (
-            <div className="runtime-component-list">
-              {runtimeComponents.map((component) => (
-                <RuntimeComponentRow
-                  key={component.kind}
-                  component={component}
-                  installing={component.installing || installingRuntimeComponent === component.kind}
-                  refreshing={refreshingRuntimeComponent === component.kind}
-                  actionsDisabled={runtime?.installing === true || installingRuntimeComponent !== null || refreshingRuntimeComponent !== null || runtime?.supported === false}
-                  onInstall={() => handleInstallRuntime(component)}
-                  onRefresh={() => handleRefreshRuntime(component.kind)}
-                  t={t}
-                />
-              ))}
-            </div>
-          )}
-          {runtime?.error ? <code className="runtime-card__error">{runtime.error}</code> : null}
-        </div>
-      </section> : null}
-
+      <div className="terminal-settings-form">
       <section className="settings-card basic-settings-card">
-        <div className="card-header"><Clock size={20} /><h3>{t('tools.terminal.basicSettings')}</h3></div>
+        <div className="card-header">
+          <h3>{t('tools.terminal.basicSettings')}</h3>
+          {!isAgentScope ? (
+            <span className="terminal-settings-save-status">
+              <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryAutoSaveNow} />
+            </span>
+          ) : null}
+        </div>
         <div className="card-body">
           {!isAgentScope ? (
             <div className="setting-row">
@@ -754,7 +721,7 @@ export function TerminalToolSettings({
       </section>
 
       <section className="settings-card access-settings-card">
-        <div className="card-header"><Shield size={20} /><h3>{t('tools.terminal.permissionMode')}</h3></div>
+        <div className="card-header"><h3>{t('tools.terminal.permissionMode')}</h3></div>
         <div className="card-body">
           <div className="setting-section-heading">
             <p className="card-description">{t('tools.terminal.permissionModeDesc')}</p>
@@ -776,7 +743,6 @@ export function TerminalToolSettings({
 
       <section className="settings-card roots-settings-card">
         <div className="card-header">
-          <FolderLock size={20} />
           <h3>{t('tools.terminal.allowedRootsLabel')}</h3>
           <span className="badge">{terminal.allowed_cwd_roots.length}</span>
           {isAgentScope ? <InheritanceControl inherited={fieldInherited('allowed_cwd_roots')} onChange={(value) => setTerminalInherited('allowed_cwd_roots', value)} t={t} /> : null}
@@ -809,9 +775,44 @@ export function TerminalToolSettings({
         </div>
       </section>
 
+      {scope === 'defaults' ? <section className="settings-card runtime-card">
+        <div className="card-header">
+          <div className="settings-section-title">
+            <h3>{t('tools.terminal.runtimeTitle')}</h3>
+            <p>{sandboxAvailable ? t('tools.terminal.runtimeReadyDesc') : t('tools.terminal.runtimeMissingDesc')}</p>
+          </div>
+        </div>
+        <div className="card-body runtime-card__body">
+          {runtimeLoadError ? (
+            <div className="terminal-inline-error" role="alert">
+              <span>{runtimeLoadError}</span>
+              <Button variant="secondary" type="button" disabled={isRetryingRuntime} onClick={() => void retryRuntimeLoad()} icon={<RefreshCw size={15} className={isRetryingRuntime ? 'is-spinning' : ''} />}>
+                {t('common.retry')}
+              </Button>
+            </div>
+          ) : (
+            <div className="runtime-component-list">
+              {runtimeComponents.map((component) => (
+                <RuntimeComponentRow
+                  key={component.kind}
+                  component={component}
+                  installing={component.installing || installingRuntimeComponent === component.kind}
+                  refreshing={refreshingRuntimeComponent === component.kind}
+                  actionsDisabled={runtime?.installing === true || installingRuntimeComponent !== null || refreshingRuntimeComponent !== null || runtime?.supported === false}
+                  onInstall={() => handleInstallRuntime(component)}
+                  onRefresh={() => handleRefreshRuntime(component.kind)}
+                  t={t}
+                />
+              ))}
+            </div>
+          )}
+          {runtime?.error ? <code className="runtime-card__error">{runtime.error}</code> : null}
+        </div>
+      </section> : null}
+
       {isAgentScope && overrides ? (
         <section className="settings-card grants-settings-card">
-          <div className="card-header"><BadgeCheck size={20} /><h3>{t('tools.terminal.contextGrants')}</h3><span className="badge">{overrides.terminal.approval_grants.length}</span></div>
+          <div className="card-header"><h3>{t('tools.terminal.contextGrants')}</h3><span className="badge">{overrides.terminal.approval_grants.length}</span></div>
           <div className="card-body">
             <p className="card-description">{t('tools.terminal.contextGrantsDesc')}</p>
             {overrides.terminal.approval_grants.length === 0 ? <p className="muted">{t('tools.terminal.noContextGrants')}</p> : (
@@ -843,7 +844,7 @@ export function TerminalToolSettings({
 
       {scope === 'defaults' ? (
         <section className="settings-card processes-settings-card">
-          <div className="card-header"><RefreshCw size={20} /><h3>{t('tools.terminal.backgroundProcesses')}</h3><span className="badge">{processes.length}</span></div>
+          <div className="card-header"><h3>{t('tools.terminal.backgroundProcesses')}</h3><span className="badge">{processes.length}</span></div>
           <div className="card-body">
             <p className="card-description">{t('tools.terminal.backgroundProcessesDesc')}</p>
             {processLoadError ? (
@@ -927,10 +928,10 @@ function RuntimeComponentRow({
   t: (key: string, values?: Record<string, string | number>) => string;
 }) {
   const icon = {
-    codex: <Terminal size={19} />,
-    node: <Braces size={19} />,
-    python: <Code2 size={19} />,
-    uv: <Gauge size={19} />,
+    codex: '/tool-icons/openai.svg',
+    node: '/tool-icons/nodejs.svg',
+    python: '/tool-icons/python.svg',
+    uv: '/tool-icons/uv.svg',
   }[component.kind];
   const source = component.source ? t(`tools.terminal.runtimeSource.${component.source}`) : '';
   const latest = component.target_version
@@ -949,7 +950,9 @@ function RuntimeComponentRow({
 
   return (
     <div className="runtime-component-row">
-      <span className="runtime-component-row__icon">{icon}</span>
+      <span className={`runtime-component-row__icon is-${component.kind}`}>
+        <img src={icon} alt="" aria-hidden="true" />
+      </span>
       <div className="runtime-component-row__details">
         <div className="runtime-component-row__title">
           <strong>{t(`tools.terminal.runtimeComponent.${component.kind}`)}</strong>

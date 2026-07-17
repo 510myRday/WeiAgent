@@ -1,8 +1,29 @@
 :root {
   color-scheme: light;
 
-  --font-sans: Inter, "SF Pro Text", "Segoe UI Variable Text", "PingFang SC", "Microsoft YaHei UI", system-ui, -apple-system, sans-serif;
+  --font-sans: "Inter Variable", "Noto Sans SC Variable", "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif;
   --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  --font-size-page-title: 24px;
+  --font-size-content-title: 20px;
+  --font-size-feature-title: 18px;
+  --font-size-pane-title: 16px;
+  --font-size-body: 14px;
+  --font-size-ui: 13px;
+  --font-size-label: 12px;
+  --font-size-caption: 11px;
+  --font-size-micro: 10px;
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-emphasis: 600;
+  --font-weight-strong: 700;
+
+  --line-height-none: 1;
+  --line-height-tight: 1.25;
+  --line-height-snug: 1.4;
+  --line-height-normal: 1.55;
+  --line-height-relaxed: 1.7;
 
   --color-text: #17201c;
   --color-text-soft: #3f4b45;

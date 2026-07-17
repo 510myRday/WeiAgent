@@ -51,8 +51,8 @@
 .provider-title-count {
   min-height: 32px;
   padding-inline: 11px;
-  font-size: 12.5px;
-  font-weight: 760;
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-emphasis);
 }
 
 .provider-editor {
@@ -62,9 +62,9 @@
 .provider-editor-kicker {
   margin: 0;
   color: var(--color-primary-strong);
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 1.4;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-emphasis);
+  line-height: var(--line-height-snug);
 }
 
 .provider-form-section {
@@ -127,13 +127,14 @@
 }
 
 .provider-advanced__content strong {
-  font-size: 12.5px;
-  font-weight: 730;
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-emphasis);
 }
 
 .provider-advanced summary small {
   color: var(--color-muted);
-  font-size: 10.5px;
+  font-size: var(--font-size-label);
+  line-height: var(--line-height-snug);
 }
 
 .provider-advanced__chevron {
@@ -164,7 +165,7 @@
 .hint-text {
   padding: 11px 13px;
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: var(--font-size-label);
 }
 
 .model-note-badge,
