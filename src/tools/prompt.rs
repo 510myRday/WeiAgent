@@ -18,8 +18,11 @@ fn build_environment_section(tools_config: &AgentToolsConfig, data_dir: &Path) -
     let os = host_os_label();
     let arch = std::env::consts::ARCH;
     let shell = host_shell_label();
+    let roots = resolve_workspace_roots_for_prompt(
+        &tools_config.terminal.allowed_cwd_roots,
+        data_dir,
+    );
     let data_dir = resolve_data_dir_for_prompt(data_dir);
-    let roots = resolve_workspace_roots_for_prompt(&tools_config.terminal.allowed_cwd_roots);
     let default_workspace = roots
         .first()
         .cloned()
@@ -138,18 +141,9 @@ fn resolve_data_dir_for_prompt(data_dir: &Path) -> String {
     }
 }
 
-fn resolve_workspace_roots_for_prompt(configured: &[String]) -> Vec<String> {
+fn resolve_workspace_roots_for_prompt(configured: &[String], data_dir: &Path) -> Vec<String> {
     if configured.is_empty() {
-        return std::env::current_dir()
-            .ok()
-            .map(|path| {
-                std::fs::canonicalize(&path)
-                    .unwrap_or(path)
-                    .display()
-                    .to_string()
-            })
-            .into_iter()
-            .collect();
+        return vec![resolve_data_dir_for_prompt(data_dir)];
     }
 
     configured
@@ -235,6 +229,14 @@ mod tests {
         assert!(
             prefix.contains(&format!("App data directory: {expected}")),
             "prefix missing data dir line: {prefix}"
+        );
+        assert!(
+            prefix.contains(&format!("Default workspace: {expected}")),
+            "prefix missing default workspace line: {prefix}"
+        );
+        assert!(
+            prefix.contains(&format!("Allowed workspace roots: {expected}")),
+            "prefix missing allowed roots line: {prefix}"
         );
     }
 }

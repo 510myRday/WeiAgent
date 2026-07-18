@@ -14,7 +14,7 @@ pub struct TerminalToolConfig {
     /// Foreground wait timeout. A still-running command is moved to background after this time.
     #[serde(default = "default_timeout_ms")]
     pub default_timeout_ms: u64,
-    /// Host roots that may be mounted/used by the tool. Empty means the server working directory.
+    /// Host roots that may be mounted/used by the tool. Empty means the WeiAgent data directory.
     #[serde(default)]
     pub allowed_cwd_roots: Vec<String>,
 }

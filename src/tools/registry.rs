@@ -270,6 +270,7 @@ impl AgentTool for ExecuteTerminalTool {
                 tool_call_id: context.call_id.clone(),
             },
             &context.tools_config.terminal,
+            &context.store.data_dir,
             &context.terminal_manager,
         )
         .await;
@@ -290,14 +291,17 @@ impl AgentTool for ExecuteTerminalTool {
             conversation_id: context.conversation_id,
             tool_call_id: context.call_id.clone(),
             command: command.clone(),
-            cwd: cwd.clone().or_else(|| {
-                context
-                    .tools_config
-                    .terminal
-                    .allowed_cwd_roots
-                    .first()
-                    .cloned()
-            }),
+            cwd: cwd
+                .clone()
+                .or_else(|| {
+                    context
+                        .tools_config
+                        .terminal
+                        .allowed_cwd_roots
+                        .first()
+                        .cloned()
+                })
+                .or_else(|| Some(context.store.data_dir.display().to_string())),
             runtime: "codex_full_access".to_string(),
             permission: "full_access".to_string(),
             justification: justification.clone(),
@@ -370,6 +374,7 @@ impl AgentTool for ExecuteTerminalTool {
                 tool_call_id: context.call_id,
             },
             &context.tools_config.terminal,
+            &context.store.data_dir,
             &context.terminal_manager,
         )
         .await;
@@ -721,6 +726,7 @@ impl AgentTool for MultiEditFileTool {
                 approved: false,
             },
             &context.tools_config.terminal,
+            &context.store.data_dir,
         )
         .await;
 
@@ -740,14 +746,17 @@ impl AgentTool for MultiEditFileTool {
             };
         };
 
-        let approval_cwd = cwd.clone().or_else(|| {
-            context
-                .tools_config
-                .terminal
-                .allowed_cwd_roots
-                .first()
-                .cloned()
-        });
+        let approval_cwd = cwd
+            .clone()
+            .or_else(|| {
+                context
+                    .tools_config
+                    .terminal
+                    .allowed_cwd_roots
+                    .first()
+                    .cloned()
+            })
+            .or_else(|| Some(context.store.data_dir.display().to_string()));
         let decision_rx = context.approval_manager.register(PendingApproval {
             approval_id: approval_id.clone(),
             agent_id: context.agent_id,
@@ -823,6 +832,7 @@ impl AgentTool for MultiEditFileTool {
                 approved: true,
             },
             &context.tools_config.terminal,
+            &context.store.data_dir,
         )
         .await;
         result

@@ -27,11 +27,12 @@
 .monitor-model-scope-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   padding: 0 2px 4px;
 }
 
 .monitor-model-scope-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -49,6 +50,17 @@
     background var(--duration-fast, 120ms) var(--ease-standard, ease),
     border-color var(--duration-fast, 120ms) var(--ease-standard, ease),
     box-shadow var(--duration-fast, 120ms) var(--ease-standard, ease);
+}
+
+.monitor-model-scope-card:not(:last-child)::after {
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  left: 12px;
+  height: 1px;
+  background: color-mix(in srgb, var(--border-strong) 64%, transparent);
+  content: '';
+  pointer-events: none;
 }
 
 .monitor-model-scope-card:hover,
@@ -174,8 +186,7 @@
 .monitor-dashboard {
   gap: 10px;
   padding: 10px 12px;
-  background:
-    linear-gradient(180deg, rgba(234, 248, 240, 0.4), rgba(255, 255, 255, 0.98));
+  background: var(--surface-pane);
 }
 
 .monitor-range-group {
@@ -337,8 +348,7 @@
 
 .monitor-metric-card.is-controls {
   border-color: color-mix(in srgb, var(--color-primary) 16%, var(--border-subtle));
-  background:
-    linear-gradient(180deg, rgba(234, 248, 240, 0.55), rgba(255, 255, 255, 0.96));
+  background: var(--surface-pane);
 }
 
 .monitor-metric-card.is-requests {
@@ -954,8 +964,7 @@
 }
 
 .monitor-detail-modal .dialog-header {
-  background:
-    linear-gradient(180deg, rgba(234, 248, 240, 0.72), rgba(255, 255, 255, 0.96));
+  background: var(--surface-pane);
   border-bottom-color: var(--border-subtle);
 }
 
@@ -999,8 +1008,7 @@
 
 .monitor-detail-metric.is-accent {
   border-color: var(--color-primary-border);
-  background:
-    linear-gradient(180deg, rgba(234, 248, 240, 0.9), rgba(255, 255, 255, 0.98));
+  background: var(--surface-pane);
 }
 
 .monitor-detail-metric-label {
@@ -1088,8 +1096,7 @@
   min-height: 0;
   flex: 1;
   overflow: hidden;
-  background:
-    linear-gradient(180deg, #f8faf9 0%, #f3f6f4 100%);
+  background: var(--surface-subtle);
   padding: 14px 16px 16px;
 }
 

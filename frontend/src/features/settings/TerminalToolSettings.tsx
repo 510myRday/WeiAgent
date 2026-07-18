@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, Download, Pencil, Plus, RefreshCw, Square, Trash2 } from 'lucide-react';
+import { ArrowLeft, Download, Pencil, Plus, RefreshCw, ShieldCheck, Square, Trash2 } from 'lucide-react';
 
 import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, ToolProcessInfo } from '../../api';
 import {
@@ -616,7 +616,10 @@ export function TerminalToolSettings({
             <div className="agent-tool-row__body">
               <div className="agent-tool-row__title">
                 <strong>{t('tools.terminal.name')}</strong>
-                <span className="mini-status-badge">{t('tools.builtinBadge')}</span>
+                <span className="mini-status-badge">
+                  <ShieldCheck size={12} />
+                  {t('tools.builtinBadge')}
+                </span>
               </div>
               <small>{t('tools.terminal.description')}</small>
               <span className="agent-tool-row__source">

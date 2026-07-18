@@ -154,6 +154,7 @@ pub struct MultiEditRequest {
 pub async fn execute_multi_edit(
     request: &MultiEditRequest,
     config: &TerminalToolConfig,
+    default_workspace: &Path,
 ) -> ToolResult {
     if !config.enabled {
         return ToolResult::Blocked {
@@ -173,7 +174,12 @@ pub async fn execute_multi_edit(
     }
 
     let full_access = config.permission_mode == TerminalPermissionMode::FullAccess;
-    let workspace = match resolve_edit_workspace(request.args.cwd.as_deref(), config, full_access) {
+    let workspace = match resolve_edit_workspace(
+        request.args.cwd.as_deref(),
+        config,
+        default_workspace,
+        full_access,
+    ) {
         Ok(workspace) => workspace,
         Err(message) => return ToolResult::Blocked { reason: message },
     };
@@ -267,13 +273,11 @@ struct ResolvedEditWorkspace {
 fn resolve_edit_workspace(
     cwd: Option<&str>,
     config: &TerminalToolConfig,
+    default_workspace: &Path,
     allow_outside: bool,
 ) -> Result<ResolvedEditWorkspace, String> {
     let roots = if config.allowed_cwd_roots.is_empty() {
-        vec![
-            std::env::current_dir()
-                .map_err(|error| format!("Failed to resolve server working directory: {error}"))?,
-        ]
+        vec![default_workspace.to_path_buf()]
     } else {
         config.allowed_cwd_roots.iter().map(PathBuf::from).collect()
     };
@@ -1038,6 +1042,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_roots_use_data_directory_as_default_workspace() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config = TerminalToolConfig {
+            permission_mode: TerminalPermissionMode::FullAccess,
+            ..TerminalToolConfig::default()
+        };
+
+        let result = execute_multi_edit(
+            &MultiEditRequest {
+                args: MultiEditFileArgs {
+                    path: None,
+                    edits: Vec::new(),
+                    files: Vec::new(),
+                    operations: vec![MultiEditFileOperation::Create {
+                        path: "default-workspace.txt".to_string(),
+                        content: "data directory".to_string(),
+                        overwrite: false,
+                    }],
+                    cwd: None,
+                },
+                approved: true,
+            },
+            &config,
+            data_dir.path(),
+        )
+        .await;
+
+        assert!(matches!(result, ToolResult::Completed { .. }));
+        assert!(data_dir.path().join("default-workspace.txt").exists());
+    }
+
+    #[tokio::test]
     async fn multi_edit_applies_single_file_and_create() {
         let (dir, config) = temp_workspace();
         let file = dir.path().join("a.rs");
@@ -1070,6 +1106,7 @@ mod tests {
                 approved: true,
             },
             &config,
+            dir.path(),
         )
         .await;
 
@@ -1104,6 +1141,7 @@ mod tests {
                 approved: false,
             },
             &config,
+            dir.path(),
         )
         .await;
 
@@ -1147,6 +1185,7 @@ mod tests {
                 approved: false,
             },
             &config,
+            dir.path(),
         )
         .await;
 

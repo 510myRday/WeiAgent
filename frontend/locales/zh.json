@@ -238,7 +238,7 @@
       "maxLlmIterationsDesc": "限制智能体在一次任务中连续使用工具的次数，避免任务长时间反复执行。",
       "remove": "删除",
       "allowedRootsLabel": "可操作的文件夹",
-      "allowedRootsDesc": "在“需要时询问”模式下，智能体可以直接修改这些文件夹中的内容；留空时使用 WeiAgent 当前所在的文件夹。",
+      "allowedRootsDesc": "在“需要时询问”模式下，智能体可以直接修改这些文件夹中的内容；留空时使用 WeiAgent 数据文件夹。",
       "pathPlaceholder": "输入文件夹的完整路径",
       "permissionMode": "访问范围",
       "permissionModeDesc": "选择智能体可以直接完成哪些操作，以及什么时候需要先征得你的同意。",

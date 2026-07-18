@@ -344,7 +344,7 @@
       "maxLlmIterationsDesc": "Limit how many times an agent can use tools during one task to prevent repetitive, long-running work.",
       "remove": "Remove",
       "allowedRootsLabel": "Folders agents can work in",
-      "allowedRootsDesc": "With “Ask when needed” selected, agents can edit these folders directly. Leave this empty to use WeiAgent's current folder.",
+      "allowedRootsDesc": "With “Ask when needed” selected, agents can edit these folders directly. Leave this empty to use WeiAgent's data folder.",
       "pathPlaceholder": "Enter the full folder path",
       "permissionMode": "Access level",
       "permissionModeDesc": "Choose what agents can do directly and when they need to ask you first.",

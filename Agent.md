@@ -368,7 +368,7 @@ User Message
 - `execute_terminal` 参数：`command`、`cwd`、`timeout_ms`、`background`、`tty`、`sandbox_permissions`、`justification`
 - `multi_edit_file`：单文件/多文件精确替换，以及 create/delete/move；不出现在 Tools UI，仅随 `terminal.enabled` 注册到模型 schema。`request_approval` 下每次写文件需审批（支持 24h always-allow），`full_access` 下直接写工作区
 - `terminal_session` 操作：`poll`、`write`、`submit`、`interrupt`、`eof`、`terminate`、`resize`，通过 `output_cursor` 增量读取输出
-- `cwd` 省略、空字符串或 `.` 都使用配置的默认工作区；非空 `cwd` 必须是已存在目录，不允许失败后静默切换到猜测路径
+- `cwd` 省略、空字符串或 `.` 都使用配置的默认工作区；`allowed_cwd_roots` 为空时默认工作区是 WeiAgent 数据目录（开发模式为 `data`，生产模式默认为 `%USERPROFILE%\.WeiAgent`）；非空 `cwd` 必须是已存在目录，不允许失败后静默切换到猜测路径
 - 终端工具定义会明确告知模型当前宿主 OS 和命令解释器，避免在 Windows 上默认生成 `/tmp`、heredoc、`python3` 等 Unix 假设
 - 支持 Codex PTY、stdin 续写、Ctrl+C/EOF、终止和尺寸调整；后台或超时转后台后返回 `process_id`
 - Windows 的 Codex unelevated 沙箱是上游例外：只允许短时、非交互、前台命令；后台、stdin 续写、PTY 和超时转后台必须请求完整权限

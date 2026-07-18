@@ -1017,6 +1017,7 @@ impl TerminalManager {
 pub async fn execute_terminal(
     request: &ExecuteTerminalRequest,
     config: &TerminalToolConfig,
+    default_workspace: &Path,
     manager: &Arc<TerminalManager>,
 ) -> ToolResult {
     if !config.enabled {
@@ -1038,8 +1039,12 @@ pub async fn execute_terminal(
     let escalation_requested = request.sandbox_permissions == SandboxPermissions::RequireEscalated;
     let full_access_mode = config.permission_mode == TerminalPermissionMode::FullAccess;
     let allow_outside_workspace = full_access_mode || escalation_requested;
-    let workspace = match resolve_workspace(request.cwd.as_deref(), config, allow_outside_workspace)
-    {
+    let workspace = match resolve_workspace(
+        request.cwd.as_deref(),
+        config,
+        default_workspace,
+        allow_outside_workspace,
+    ) {
         Ok(workspace) => workspace,
         Err(WorkspaceResolutionError::Invalid(message)) => {
             return ToolResult::Error { message };
@@ -1252,14 +1257,11 @@ enum WorkspaceResolutionError {
 fn resolve_workspace(
     cwd: Option<&str>,
     config: &TerminalToolConfig,
+    default_workspace: &Path,
     allow_outside_workspace: bool,
 ) -> Result<ResolvedWorkspace, WorkspaceResolutionError> {
     let roots = if config.allowed_cwd_roots.is_empty() {
-        vec![std::env::current_dir().map_err(|error| {
-            WorkspaceResolutionError::Invalid(format!(
-                "Failed to resolve server working directory: {error}"
-            ))
-        })?]
+        vec![default_workspace.to_path_buf()]
     } else {
         config.allowed_cwd_roots.iter().map(PathBuf::from).collect()
     };
@@ -1676,6 +1678,20 @@ mod tests {
     }
 
     #[test]
+    fn empty_roots_use_explicit_default_workspace() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config = TerminalToolConfig::default();
+        let workspace = match resolve_workspace(None, &config, data_dir.path(), false) {
+            Ok(workspace) => workspace,
+            Err(_) => panic!("expected the data directory to resolve as the default workspace"),
+        };
+        let expected = std::fs::canonicalize(data_dir.path()).unwrap();
+
+        assert_eq!(workspace.root, expected);
+        assert_eq!(workspace.cwd, expected);
+    }
+
+    #[test]
     fn output_buffer_returns_incremental_chunks() {
         let mut output = OutputBuffer::default();
         output.append(OutputStream::Stdout, b"one".to_vec());
@@ -1764,6 +1780,7 @@ mod tests {
                 tool_call_id: "stdin-test".to_string(),
             },
             &config,
+            root.path(),
             &manager,
         )
         .await;
@@ -1819,6 +1836,7 @@ mod tests {
                 tool_call_id: "windows-sandbox-background".to_string(),
             },
             &config,
+            root.path(),
             &manager,
         )
         .await;
@@ -1867,6 +1885,7 @@ mod tests {
                 tool_call_id: "real-full".to_string(),
             },
             &full_config,
+            &workspace,
             &manager,
         )
         .await;
@@ -1894,6 +1913,7 @@ mod tests {
                 tool_call_id: "real-interactive".to_string(),
             },
             &full_config,
+            &workspace,
             &manager,
         )
         .await;
@@ -1942,6 +1962,7 @@ mod tests {
                 tool_call_id: "real-sandbox".to_string(),
             },
             &sandbox_config,
+            &workspace,
             &manager,
         )
         .await;

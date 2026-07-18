@@ -40,9 +40,13 @@ impl AppConfig {
 /// 1. `WEIAGENT_DATA_DIR` absolute/relative override
 /// 2. dev mode -> `./data`
 /// 3. `WEIAGENT_PORTABLE=1` -> `<exe_dir>/data`
-/// 4. user home folder (easy to find):
-///    - Windows: `%USERPROFILE%\WeiAgent` (e.g. `C:\Users\Administrator\WeiAgent`)
-///    - macOS/Linux: `$HOME/WeiAgent` (e.g. `/Users/name/WeiAgent`, `/home/name/WeiAgent`)
+/// 4. user home folder (dot-directory):
+///    - Windows: `%USERPROFILE%\.WeiAgent` (e.g. `C:\Users\Administrator\.WeiAgent`)
+///    - macOS/Linux: `$HOME/.WeiAgent` (e.g. `/Users/name/.WeiAgent`, `/home/name/.WeiAgent`)
+///
+/// In production the resolved path is the app data root itself (settings, agents,
+/// conversations, runtimes, db live directly under it). There is no extra `data`
+/// subdirectory. Only dev/portable modes use a folder literally named `data`.
 pub fn resolve_data_dir(is_dev: bool) -> AppResult<PathBuf> {
     if let Ok(override_dir) = std::env::var("WEIAGENT_DATA_DIR") {
         let path = PathBuf::from(override_dir.trim());
@@ -85,7 +89,7 @@ fn portable_data_dir() -> AppResult<PathBuf> {
 }
 
 fn platform_user_data_dir() -> AppResult<PathBuf> {
-    Ok(user_home_dir()?.join("WeiAgent"))
+    Ok(user_home_dir()?.join(".WeiAgent"))
 }
 
 fn user_home_dir() -> AppResult<PathBuf> {
@@ -306,10 +310,10 @@ mod tests {
             None => unsafe { std::env::remove_var("WEIAGENT_PORTABLE") },
         }
         let home = user_home_dir().unwrap();
-        assert_eq!(resolved, home.join("WeiAgent"));
+        assert_eq!(resolved, home.join(".WeiAgent"));
         assert_eq!(
             resolved.file_name().and_then(|name| name.to_str()),
-            Some("WeiAgent")
+            Some(".WeiAgent")
         );
     }
 }

@@ -12,6 +12,7 @@ import {
   FileText,
   Hash,
   RefreshCw,
+  ShieldCheck,
   Sparkles,
 } from 'lucide-react';
 import type {
@@ -631,7 +632,17 @@ export function MonitorPanel({
                 key={option.agentKey}
                 type="button"
                 active={scope.kind === 'agent' && scope.agentKey === option.agentKey}
-                title={option.agentName}
+                title={(
+                  <span className="agent-list-title">
+                    <span>{option.agentName}</span>
+                    {option.agent?.is_builtin ? (
+                      <span className="mini-status-badge">
+                        <ShieldCheck size={12} />
+                        {t('agentConfig.builtinBadge')}
+                      </span>
+                    ) : null}
+                  </span>
+                )}
                 subtitle={t('llmLogs.requestCount', { count: option.requestCount })}
                 leading={(
                   <AvatarBadge
