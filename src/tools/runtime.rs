@@ -485,7 +485,23 @@ impl CodexRuntimeManager {
     }
 
     async fn runtime_path(&self) -> Option<std::ffi::OsString> {
-        let mut paths = supporting_runtime::managed_bin_paths(&self.runtimes_root).await;
+        let mut paths = Vec::new();
+        if let Some(program) = self
+            .status
+            .read()
+            .await
+            .executable
+            .as_deref()
+            .map(Path::new)
+            && let Some(path) = bundled_codex_tool_path(program)
+        {
+            paths.push(path);
+        }
+        for path in supporting_runtime::managed_bin_paths(&self.runtimes_root).await {
+            if !paths.iter().any(|current| current == &path) {
+                paths.push(path);
+            }
+        }
         if let Some(current) = std::env::var_os("PATH") {
             for path in std::env::split_paths(&current) {
                 if !paths.iter().any(|managed| managed == &path) {
@@ -1068,6 +1084,12 @@ fn find_runtime_executable(root: &Path) -> Option<PathBuf> {
     None
 }
 
+fn bundled_codex_tool_path(program: &Path) -> Option<PathBuf> {
+    let tool_dir = program.parent()?.parent()?.join("codex-path");
+    let rg = tool_dir.join(if cfg!(windows) { "rg.exe" } else { "rg" });
+    rg.is_file().then_some(tool_dir)
+}
+
 #[cfg(windows)]
 fn preferred_native_program(program: &Path) -> Option<PathBuf> {
     if program
@@ -1279,6 +1301,22 @@ mod tests {
         let root = PathBuf::from("runtime");
         assert!(ensure_child_path(&root, &root.join("version")).is_ok());
         assert!(ensure_child_path(&root, &root.join("..").join("outside")).is_err());
+    }
+
+    #[test]
+    fn bundled_codex_tool_path_finds_the_sibling_rg_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("vendor").join("target");
+        let bin = target.join("bin");
+        let tools = target.join("codex-path");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&tools).unwrap();
+        let codex = bin.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let rg = tools.join(if cfg!(windows) { "rg.exe" } else { "rg" });
+        std::fs::write(&codex, []).unwrap();
+        std::fs::write(&rg, []).unwrap();
+
+        assert_eq!(bundled_codex_tool_path(&codex), Some(tools));
     }
 
     #[tokio::test]

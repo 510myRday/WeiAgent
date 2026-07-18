@@ -69,7 +69,7 @@ fn build_terminal_policy_section(tools_config: &AgentToolsConfig) -> String {
 - Escalated commands require user approval unless this agent already has a matching always-allow grant.\n\
 - If a sandboxed command is denied or fails due to permissions, report the real error. Retry with escalation only when the user intent requires it; never invent success.\n\
 - Terminal execution is provided by Codex. Use `tty=true` only for programs that require a real terminal.\n\
-- Prefer foreground `execute_terminal` for short commands. Use `background=true` only for long-lived services/watchers/dev servers; do not background ordinary one-shot work.\n\
+- Prefer `multi_edit_file` for normal source/config/docs edits (exact replacements, create/delete/move). Prefer foreground `execute_terminal` for short commands. Use `background=true` only for long-lived services/watchers/dev servers; do not background ordinary one-shot work.\n\
 - Long-running or interactive workflow: start with `execute_terminal`, then continue only with `terminal_session` using the returned `process_id` and `output_cursor`.\n\
 - On Windows, the Codex sandbox supports only short non-interactive foreground commands. It cannot provide PTY, stdin continuation, observable background sessions, or timeout promotion. Request full access with a justification for interactive or long-lived work.\n\
 - Do not spam polls or re-run a command that already returned a process_id. Use incremental cursors and wait between checks."
@@ -80,7 +80,7 @@ fn build_terminal_policy_section(tools_config: &AgentToolsConfig) -> String {
 - Terminal commands run with full host access and no approval prompts.\n\
 - Prefer staying inside the configured workspace roots unless the user explicitly asks otherwise.\n\
 - Terminal execution is provided by Codex, including PTY sessions and stdin continuation. Use `tty=true` only for programs that require a real terminal.\n\
-- Prefer foreground `execute_terminal` for short commands. Use `background=true` only for long-lived services/watchers/dev servers; do not background ordinary one-shot work.\n\
+- Prefer `multi_edit_file` for normal source/config/docs edits (exact replacements, create/delete/move). Prefer foreground `execute_terminal` for short commands. Use `background=true` only for long-lived services/watchers/dev servers; do not background ordinary one-shot work.\n\
 - Long-running or interactive workflow: start with `execute_terminal`, then continue only with `terminal_session` using the returned `process_id` and `output_cursor`.\n\
 - Do not spam polls or re-run a command that already returned a process_id. Use incremental cursors and wait between checks.\n\
 - Be careful with destructive operations (delete, overwrite, recursive remove). Prefer targeted, reversible steps."

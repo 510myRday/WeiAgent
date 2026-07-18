@@ -365,8 +365,9 @@ User Message
 
 ### 终端能力
 
-- 内置工具：`execute_terminal`、`terminal_session`
+- 内置工具：`execute_terminal`、`terminal_session`、`multi_edit_file`（隐藏内置编辑器，与终端同启停）
 - `execute_terminal` 参数：`command`、`cwd`、`timeout_ms`、`background`、`tty`、`sandbox_permissions`、`justification`
+- `multi_edit_file`：单文件/多文件精确替换，以及 create/delete/move；不出现在 Tools UI，仅随 `terminal.enabled` 注册到模型 schema。`request_approval` 下每次写文件需审批（支持 24h always-allow），`full_access` 下直接写工作区
 - `terminal_session` 操作：`poll`、`write`、`submit`、`interrupt`、`eof`、`terminate`、`resize`，通过 `output_cursor` 增量读取输出
 - `cwd` 省略、空字符串或 `.` 都使用配置的默认工作区；非空 `cwd` 必须是已存在目录，不允许失败后静默切换到猜测路径
 - 终端工具定义会明确告知模型当前宿主 OS 和命令解释器，避免在 Windows 上默认生成 `/tmp`、heredoc、`python3` 等 Unix 假设

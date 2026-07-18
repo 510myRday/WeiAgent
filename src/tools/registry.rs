@@ -12,6 +12,10 @@ use crate::{
     storage::JsonStore,
     tools::{
         approval::ApprovalManager,
+        multi_edit::{
+            MULTI_EDIT_GRANT_COMMAND, MULTI_EDIT_TOOL_NAME, MultiEditFileArgs, MultiEditRequest,
+            execute_multi_edit,
+        },
         terminal::{
             ExecuteTerminalRequest, MAX_SESSION_WAIT_MS, SandboxPermissions, TerminalManager,
             TerminalSessionAction, execute_terminal, process_read_to_result,
@@ -64,6 +68,7 @@ impl ToolRegistry {
         };
         registry.register(ExecuteTerminalTool);
         registry.register(TerminalSessionTool);
+        registry.register(MultiEditFileTool);
         registry
     }
 
@@ -566,6 +571,264 @@ impl AgentTool for TerminalSessionTool {
     }
 }
 
+
+struct MultiEditFileTool;
+
+#[async_trait]
+impl AgentTool for MultiEditFileTool {
+    fn definition(&self, config: &AgentToolsConfig) -> ToolDefinition {
+        let permission = match config.terminal.permission_mode {
+            crate::domain::TerminalPermissionMode::RequestApproval => "request_approval",
+            crate::domain::TerminalPermissionMode::FullAccess => "full_access",
+        };
+        let description = format!(
+            "Built-in multi-file text editor companion to the terminal tool group. Prefer this over shell redirection for normal source/config/docs edits. Supports exact replacements on one or many files, plus create/delete/move operations. All operations are validated in memory first; if any fails, nothing is written (or earlier writes are rolled back). Enabled only when the terminal tool group is enabled. Current permission mode is {permission}: in request_approval every edit requires user approval (or a matching 24h always-allow grant for multi_edit_file); in full_access edits apply immediately inside configured workspace roots. Keep old_string exact after CRLF->LF normalization; use replace_all or startLine when a match is ambiguous."
+        );
+        tool_definition(
+            MULTI_EDIT_TOOL_NAME,
+            &description,
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Legacy single-file edit path, relative to cwd unless absolute. Use with top-level edits."
+                    },
+                    "edits": {
+                        "type": "array",
+                        "description": "Legacy ordered exact replacements for path. Validated and applied in memory before writing.",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["old_string", "new_string"],
+                            "properties": {
+                                "old_string": {
+                                    "type": "string",
+                                    "description": "Exact text to replace after LF normalization."
+                                },
+                                "new_string": {
+                                    "type": "string",
+                                    "description": "Replacement text. Must differ from old_string."
+                                },
+                                "replace_all": {
+                                    "type": "boolean",
+                                    "description": "Replace every occurrence. Defaults to false."
+                                },
+                                "startLine": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "Optional 1-based line hint when old_string is not unique."
+                                }
+                            }
+                        }
+                    },
+                    "files": {
+                        "type": "array",
+                        "description": "Multiple existing files to edit. Each item has path and edits.",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["path", "edits"],
+                            "properties": {
+                                "path": {"type": "string"},
+                                "edits": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": ["old_string", "new_string"],
+                                        "properties": {
+                                            "old_string": {"type": "string"},
+                                            "new_string": {"type": "string"},
+                                            "replace_all": {"type": "boolean"},
+                                            "startLine": {"type": "integer", "minimum": 1}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "operations": {
+                        "type": "array",
+                        "description": "Structured file operations: edit, create, delete, move. Validated before commit.",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "required": ["type"],
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["edit", "create", "delete", "move"]
+                                },
+                                "path": {"type": "string"},
+                                "from": {"type": "string"},
+                                "to": {"type": "string"},
+                                "content": {"type": "string"},
+                                "overwrite": {"type": "boolean"},
+                                "edits": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": ["old_string", "new_string"],
+                                        "properties": {
+                                            "old_string": {"type": "string"},
+                                            "new_string": {"type": "string"},
+                                            "replace_all": {"type": "boolean"},
+                                            "startLine": {"type": "integer", "minimum": 1}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Optional existing working directory for relative paths. Omit to use the default workspace root."
+                    }
+                }
+            }),
+        )
+    }
+
+    fn is_enabled(&self, config: &AgentToolsConfig) -> bool {
+        config.terminal.enabled
+    }
+
+    async fn execute(&self, arguments: Value, context: ToolExecutionContext) -> ToolResult {
+        let args: MultiEditFileArgs = match serde_json::from_value(arguments) {
+            Ok(args) => args,
+            Err(error) => {
+                return ToolResult::Error {
+                    message: format!("Invalid multi_edit_file arguments: {error}"),
+                };
+            }
+        };
+        let cwd = match normalize_optional_cwd(args.cwd.clone()) {
+            Ok(cwd) => cwd,
+            Err(message) => return ToolResult::Error { message },
+        };
+        let args = MultiEditFileArgs {
+            cwd: cwd.clone(),
+            ..args
+        };
+
+        let mut result = execute_multi_edit(
+            &MultiEditRequest {
+                args: args.clone(),
+                approved: false,
+            },
+            &context.tools_config.terminal,
+        )
+        .await;
+
+        let ToolResult::PendingApproval {
+            approval_id,
+            command,
+        } = &result
+        else {
+            return result;
+        };
+        let approval_id = approval_id.clone();
+        let command = command.clone();
+        let Some(event_sender) = context.event_sender.clone() else {
+            return ToolResult::Rejected {
+                reason: "This edit requires interactive approval; use the SSE message endpoint"
+                    .to_string(),
+            };
+        };
+
+        let approval_cwd = cwd.clone().or_else(|| {
+            context
+                .tools_config
+                .terminal
+                .allowed_cwd_roots
+                .first()
+                .cloned()
+        });
+        let decision_rx = context.approval_manager.register(PendingApproval {
+            approval_id: approval_id.clone(),
+            agent_id: context.agent_id,
+            conversation_id: context.conversation_id,
+            tool_call_id: context.call_id.clone(),
+            command: command.clone(),
+            cwd: approval_cwd.clone(),
+            runtime: "builtin_multi_edit".to_string(),
+            permission: "file_write".to_string(),
+            justification: Some("Apply multi_edit_file changes".to_string()),
+            background: false,
+        });
+        let _approval_guard = ApprovalRegistrationGuard {
+            manager: context.approval_manager.clone(),
+            approval_id: approval_id.clone(),
+        };
+        if event_sender
+            .send(ToolExecutionEvent::ApprovalRequired {
+                call_id: context.call_id.clone(),
+                agent_id: context.agent_id,
+                command: command.clone(),
+                approval_id,
+                cwd: approval_cwd.clone(),
+                runtime: "builtin_multi_edit".to_string(),
+                permission: "file_write".to_string(),
+                justification: Some("Apply multi_edit_file changes".to_string()),
+                background: false,
+            })
+            .await
+            .is_err()
+        {
+            return ToolResult::Rejected {
+                reason: "Approval client disconnected".to_string(),
+            };
+        }
+
+        let decision = tokio::select! {
+            decision = decision_rx => decision.ok(),
+            _ = event_sender.closed() => None,
+        };
+        match decision {
+            Some(ApprovalDecision::Approve) => {}
+            Some(ApprovalDecision::AlwaysApprove) => {
+                if let Err(error) = context
+                    .store
+                    .always_allow_terminal_command(
+                        context.agent_id,
+                        MULTI_EDIT_GRANT_COMMAND,
+                        approval_cwd.as_deref(),
+                    )
+                    .await
+                {
+                    return ToolResult::Error {
+                        message: format!("Failed to persist always-allow rule: {error}"),
+                    };
+                }
+            }
+            Some(ApprovalDecision::Reject) => {
+                return ToolResult::Rejected {
+                    reason: "Edit rejected by user or approval expired".to_string(),
+                };
+            }
+            None => {
+                return ToolResult::Rejected {
+                    reason: "Approval client disconnected".to_string(),
+                };
+            }
+        }
+
+        result = execute_multi_edit(
+            &MultiEditRequest {
+                args,
+                approved: true,
+            },
+            &context.tools_config.terminal,
+        )
+        .await;
+        result
+    }
+}
+
 fn tool_definition(name: &str, description: &str, parameters: Value) -> ToolDefinition {
     ToolDefinition {
         kind: "function".to_string(),
@@ -610,6 +873,7 @@ fn unsupported_host_shell_syntax(command: &str) -> Option<&'static str> {
 
 fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
     let shell = crate::tools::prompt::host_shell_guidance();
+    let workspace_inspection = workspace_inspection_guidance();
     let default_timeout = config.terminal.default_timeout_ms;
     let permission = match config.terminal.permission_mode {
         crate::domain::TerminalPermissionMode::RequestApproval => {
@@ -632,12 +896,21 @@ fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
 
     format!(
         "Execute a local terminal command and return stdout/stderr/exit_code (or process_id if still running). {shell} {permission} \
+{workspace_inspection} \
 For the default workspace, omit cwd, pass an empty value, or use '.'. Set cwd only to a directory known to exist; never substitute a guessed path. \
 Usage decision: default to foreground for short commands (list files, git, builds/tests that usually finish soon). Set background=true only for long-lived services/watchers/dev servers that must keep running. If runtime is uncertain, stay foreground and raise timeout_ms. {platform_limits} \
 Foreground commands wait up to timeout_ms (default {default_timeout}, max 120000). Ordinary completed foreground commands do not stay listed as background processes and need no get/stop. \
 Only after a process_id is returned, use terminal_session with the returned output_cursor to poll incremental output, answer prompts, send Ctrl+C/EOF, resize a PTY, or terminate the session. Do not re-run the same long command instead of continuing its session. \
 Set tty=true only for software that requires a real terminal. Returned output per tool call is limited to the last 64KB. If a sandboxed attempt is denied, report the failure and escalate only when user intent requires it; never invent success. {examples}"
     )
+}
+
+fn workspace_inspection_guidance() -> &'static str {
+    if cfg!(windows) {
+        "Use terminal commands to inspect the workspace and read their stdout from the tool result; there is no separate file-reading or directory-listing tool. `rg` is bundled with the Codex runtime and is always available: prefer it for repository search, file discovery with `rg --files`, and targeted file reads. On Windows, prefer PowerShell for other shell operations; invoke it from the command string, for example `powershell -NoProfile -Command \"Get-Content README.md\"` or `powershell -NoProfile -Command \"Get-ChildItem\"`."
+    } else {
+        "Use terminal commands to inspect the workspace and read their stdout from the tool result; there is no separate file-reading or directory-listing tool. `rg` is bundled with the Codex runtime and is always available: prefer it for repository search, file discovery with `rg --files`, and targeted file reads. Use Unix tools such as `cat` or `ls` when they are a better fit."
+    }
 }
 
 struct ApprovalRegistrationGuard {
@@ -712,13 +985,39 @@ mod tests {
         assert!(terminal.function.description.contains("omit cwd"));
         assert!(terminal.function.description.contains("background=true"));
         assert!(terminal.function.description.contains("Usage decision"));
+        assert!(
+            terminal
+                .function
+                .description
+                .contains("read their stdout from the tool result")
+        );
+        assert!(
+            terminal
+                .function
+                .description
+                .contains("there is no separate file-reading")
+        );
+        assert!(
+            terminal
+                .function
+                .description
+                .contains("`rg` is bundled with the Codex runtime and is always available")
+        );
+        assert!(terminal.function.description.contains("`rg --files`"));
         if cfg!(windows) {
+            assert!(terminal.function.description.contains("prefer PowerShell"));
+            assert!(terminal.function.description.contains("Get-Content"));
+            assert!(!terminal.function.description.contains("`cat`"));
             assert!(
                 terminal
                     .function
                     .description
                     .contains("Never use POSIX heredocs")
             );
+        } else {
+            assert!(terminal.function.description.contains("`cat`"));
+            assert!(terminal.function.description.contains("`ls`"));
+            assert!(!terminal.function.description.contains("Get-Content"));
         }
         assert!(
             terminal
@@ -786,7 +1085,8 @@ mod tests {
             .collect();
         assert!(names.contains(&"execute_terminal"));
         assert!(names.contains(&"terminal_session"));
-        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"multi_edit_file"));
+        assert_eq!(names.len(), 3);
 
         config.terminal.enabled = false;
         assert!(
@@ -795,4 +1095,30 @@ mod tests {
                 .is_none()
         );
     }
+
+    #[test]
+    fn multi_edit_is_registered_with_terminal_group() {
+        let mut config = AgentToolsConfig::default();
+        config.terminal.enabled = true;
+        let definitions = ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .unwrap();
+        let multi = definitions
+            .iter()
+            .find(|definition| definition.function.name == "multi_edit_file")
+            .expect("multi_edit_file should be registered");
+        assert!(
+            multi.function.description.contains("request_approval")
+                || multi.function.description.contains("full_access")
+        );
+        assert_eq!(
+            multi.function.parameters["properties"]["operations"]["type"],
+            "array"
+        );
+        assert_eq!(
+            multi.function.parameters["properties"]["files"]["type"],
+            "array"
+        );
+    }
+
 }
