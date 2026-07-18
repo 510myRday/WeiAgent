@@ -126,7 +126,7 @@ export function ChatPanel({
     const agentIds = new Set<string>();
     if (activeAgentId) agentIds.add(activeAgentId);
     for (const item of messages) {
-      if ('role' in item && item.agent_id) agentIds.add(item.agent_id);
+      if (item.agent_id) agentIds.add(item.agent_id);
     }
     return [...agentIds].join('\n');
   }, [activeAgentId, messages]);
@@ -203,7 +203,6 @@ export function ChatPanel({
     const result: MessageTimelineItem[] = [];
     let previousTimelineTimestamp: number | undefined;
     visibleMessages.forEach((item, index) => {
-      if (!('role' in item)) return;
       const date = new Date(item.created_at);
       const timestamp = date.getTime();
       if (!Number.isFinite(timestamp)) return;

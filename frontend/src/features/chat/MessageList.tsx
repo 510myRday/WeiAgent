@@ -28,17 +28,17 @@ import type {
   AgentRunPhase,
   AppSettings,
   ImageAttachment,
-  ToolCallMessage,
+  ToolCallState,
   UiMessage,
   UiMessageItem,
 } from '../../types';
-import { ToolCallCard } from '../../components/ToolCallCard';
 import { AvatarBadge } from '../../components/AvatarPicker';
 import { agentDisplayName } from '../../components/AgentListItem';
 import { Button, EmptyState, useFeedback } from '../../components/ui';
 import { useI18n } from '../../i18n';
 import { MarkdownContent } from './MarkdownContent';
 import { ReasoningDisclosure } from './ReasoningDisclosure';
+import { ToolDisclosure } from './ToolDisclosure';
 
 interface MessageListProps {
   conversationId: string;
@@ -86,7 +86,6 @@ type VirtualRow =
   };
 
 const MESSAGE_ESTIMATE = 156;
-const TOOL_ESTIMATE = 250;
 const LOAD_OLDER_ESTIMATE = 56;
 const WAITING_ESTIMATE = 90;
 const INITIAL_POSITION_MAX_FRAMES = 12;
@@ -128,7 +127,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     }
     messages.forEach((item, messageIndex) => {
       next.push({
-        key: 'role' in item ? `message-${item.clientId}` : `tool-${item.call_id}`,
+        key: `message-${item.clientId}`,
         kind: 'message',
         messageIndex,
         item,
@@ -146,9 +145,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
       const row = rows[index];
       if (row?.kind === 'load_older') return LOAD_OLDER_ESTIMATE;
       if (row?.kind === 'waiting') return WAITING_ESTIMATE;
-      return row && 'type' in row.item && row.item.type === 'tool_call'
-        ? TOOL_ESTIMATE
-        : MESSAGE_ESTIMATE;
+      return MESSAGE_ESTIMATE;
     },
     getItemKey: (index) => rows[index]?.key ?? index,
     anchorTo: 'end',
@@ -441,89 +438,20 @@ const MessageListItem = memo(function MessageListItem({
   formatTimelineTime: (value: string) => string;
 }) {
   const { t } = useI18n();
-
-  if ('type' in item && item.type === 'tool_call') {
-    return (
-      <ToolMessageRow
-        item={item}
-        activeAgent={activeAgent}
-        settings={settings}
-        terminalPermissionMode={terminalPermissionMode}
-        onApproveToolCall={onApproveToolCall}
-      />
-    );
-  }
-
-  const message = item as UiMessage;
-  const previousMessage = previous && 'role' in previous ? previous as UiMessage : undefined;
   return (
     <MessageRow
-      message={message}
-      showTimeSeparator={shouldShowTimeSeparator(message, previousMessage)}
-      timeSeparatorLabel={formatTimelineTime(message.created_at)}
-      participantName={message.role === 'user' ? t('chat.you') : activeAgent ? agentDisplayName(activeAgent, t) : 'Assistant'}
+      message={item}
+      showTimeSeparator={shouldShowTimeSeparator(item, previous)}
+      timeSeparatorLabel={formatTimelineTime(item.created_at)}
+      participantName={item.role === 'user' ? t('chat.you') : activeAgent ? agentDisplayName(activeAgent, t) : 'Assistant'}
       agent={activeAgent}
       settings={settings}
       failedLabel={t('chat.failed')}
       actionsDisabled={isSending}
+      terminalPermissionMode={terminalPermissionMode}
       onRestart={onRestart}
+      onApproveToolCall={onApproveToolCall}
     />
-  );
-});
-
-const ToolMessageRow = memo(function ToolMessageRow({
-  item,
-  activeAgent,
-  settings,
-  terminalPermissionMode,
-  onApproveToolCall,
-}: {
-  item: ToolCallMessage;
-  activeAgent?: Agent;
-  settings: AppSettings;
-  terminalPermissionMode?: 'request_approval' | 'full_access' | null;
-  onApproveToolCall: MessageListProps['onApproveToolCall'];
-}) {
-  const { t } = useI18n();
-  const { toast } = useFeedback();
-  const handleApprove = useCallback(async (
-    decision: 'approve' | 'reject' | 'always_approve',
-  ) => {
-    const approvalId = typeof item.arguments.approval_id === 'string'
-      ? item.arguments.approval_id
-      : '';
-    const argumentAgentId = typeof item.arguments.agent_id === 'string'
-      ? item.arguments.agent_id
-      : '';
-    const agentId = argumentAgentId || activeAgent?.id;
-    if (!approvalId || !agentId) return;
-    try {
-      await onApproveToolCall(approvalId, agentId, decision);
-    } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
-      throw cause;
-    }
-  }, [activeAgent?.id, item.arguments.agent_id, item.arguments.approval_id, onApproveToolCall, t, toast]);
-
-  return (
-    <div className="message-row assistant message-row--tool">
-      <MessageAvatar agent={activeAgent} settings={settings} isUser={false} />
-      <div className="message-body">
-        <div className="message-meta"><strong>{activeAgent ? agentDisplayName(activeAgent, t) : 'Assistant'}</strong></div>
-        <div className="message-bubble message-bubble--tool">
-          <ToolCallCard
-            agentId={activeAgent?.id ?? ''}
-            callId={item.call_id}
-            name={item.name}
-            arguments={item.arguments}
-            status={item.status}
-            result={item.result}
-            permissionMode={item.permission_mode ?? terminalPermissionMode}
-            onApprove={handleApprove}
-          />
-        </div>
-      </div>
-    </div>
   );
 });
 
@@ -537,9 +465,14 @@ function shouldShowAgentWaitingBubble(
 
   const last = messages[messages.length - 1];
   if (!last) return true;
-  if ('type' in last && last.type === 'tool_call') return last.status !== 'pending_approval';
-  if ('role' in last && last.role === 'assistant') {
-    return last.status !== 'streaming' && runPhase === 'executing_tool';
+  if (last.role === 'assistant') {
+    const tools = (last.blocks ?? [])
+      .filter((block): block is Extract<NonNullable<UiMessage['blocks']>[number], { type: 'tool' }> => block.type === 'tool')
+      .map((block) => block.tool);
+    if (tools.some((tool) => tool.status === 'pending_approval')) return false;
+    if (last.status === 'streaming') return false;
+    if (tools.some((tool) => tool.status === 'running')) return true;
+    return runPhase === 'executing_tool';
   }
   return true;
 }
@@ -600,7 +533,9 @@ const MessageRow = memo(function MessageRow({
   settings,
   failedLabel,
   actionsDisabled,
+  terminalPermissionMode,
   onRestart,
+  onApproveToolCall,
 }: {
   message: UiMessage;
   showTimeSeparator: boolean;
@@ -610,7 +545,9 @@ const MessageRow = memo(function MessageRow({
   settings: AppSettings;
   failedLabel: string;
   actionsDisabled: boolean;
+  terminalPermissionMode?: 'request_approval' | 'full_access' | null;
   onRestart: MessageListProps['onRestart'];
+  onApproveToolCall: MessageListProps['onApproveToolCall'];
 }) {
   const { t } = useI18n();
   const isUser = message.role === 'user';
@@ -718,7 +655,12 @@ const MessageRow = memo(function MessageRow({
           ) : (
             <>
               <div className="message-bubble">
-                <MessageContent message={message} />
+                <MessageContent
+                  message={message}
+                  agentId={agent?.id ?? ''}
+                  terminalPermissionMode={terminalPermissionMode}
+                  onApproveToolCall={onApproveToolCall}
+                />
                 {message.status === 'failed' ? <span className="message-status error">{failedLabel}</span> : null}
               </div>
               {canRestart ? (
@@ -772,11 +714,47 @@ export function MessageAvatar({
   return <span className="chat-avatar avatar-muted"><Bot size={23} /></span>;
 }
 
-function MessageContent({ message }: { message: UiMessage }) {
+function MessageContent({
+  message,
+  agentId,
+  terminalPermissionMode,
+  onApproveToolCall,
+}: {
+  message: UiMessage;
+  agentId: string;
+  terminalPermissionMode?: 'request_approval' | 'full_access' | null;
+  onApproveToolCall: MessageListProps['onApproveToolCall'];
+}) {
   const { t } = useI18n();
-  if (message.status === 'streaming' && !message.content && !message.reasoning_content) {
+  const { toast } = useFeedback();
+  const blocks = message.blocks ?? [];
+  const tools = blocks
+    .filter((block): block is Extract<NonNullable<UiMessage['blocks']>[number], { type: 'tool' }> => block.type === 'tool')
+    .map((block) => block.tool);
+  const hasStructuredBody = tools.length > 0;
+  const emptyStreaming = (
+    message.status === 'streaming'
+    && !message.content
+    && !message.reasoning_content
+    && tools.length === 0
+  );
+  if (emptyStreaming) {
     return <TypingIndicator label={t('chat.sending')} />;
   }
+
+  async function handleApprove(tool: ToolCallState, decision: 'approve' | 'reject' | 'always_approve') {
+    const approvalId = typeof tool.arguments.approval_id === 'string' ? tool.arguments.approval_id : '';
+    const argumentAgentId = typeof tool.arguments.agent_id === 'string' ? tool.arguments.agent_id : '';
+    const resolvedAgentId = argumentAgentId || agentId;
+    if (!approvalId || !resolvedAgentId) return;
+    try {
+      await onApproveToolCall(approvalId, resolvedAgentId, decision);
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      throw cause;
+    }
+  }
+
   return (
     <>
       {message.attachments?.length ? (
@@ -794,10 +772,33 @@ function MessageContent({ message }: { message: UiMessage }) {
       {message.reasoning_content ? (
         <ReasoningDisclosure
           content={message.reasoning_content}
-          isStreaming={message.status === 'streaming'}
+          isStreaming={message.status === 'streaming' && !message.content && tools.length === 0}
         />
       ) : null}
-      {message.content ? (
+      {hasStructuredBody ? (
+        blocks.map((block, index) => {
+          if (block.type === 'text') {
+            if (!block.content) return null;
+            return (
+              <div
+                key={`text-${index}`}
+                className={`message-markdown${message.status === 'streaming' && index === blocks.length - 1 ? ' streaming-content' : ''}`}
+              >
+                <MarkdownContent content={block.content} />
+              </div>
+            );
+          }
+          return (
+            <ToolDisclosure
+              key={block.tool.call_id}
+              agentId={agentId}
+              tool={block.tool}
+              terminalPermissionMode={terminalPermissionMode}
+              onApprove={(decision) => handleApprove(block.tool, decision)}
+            />
+          );
+        })
+      ) : message.content ? (
         <div className={`message-markdown${message.status === 'streaming' ? ' streaming-content' : ''}`}>
           <MarkdownContent content={message.content} />
         </div>

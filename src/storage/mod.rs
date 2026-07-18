@@ -1,5 +1,6 @@
 mod agents;
 mod conversations;
+mod db;
 mod files;
 mod json_store;
 pub mod llm_logs;
@@ -50,7 +51,9 @@ mod tests {
 
         let settings = store.read_settings().await.unwrap();
         assert_eq!(settings.host, "127.0.0.1");
-        assert!(temp_dir.path().join("model_providers.json").exists());
+        assert!(temp_dir.path().join("settings.json").exists());
+        assert!(temp_dir.path().join("weiagent.db").exists());
+        assert!(store.list_model_providers().await.unwrap().is_empty());
         assert!(temp_dir.path().join("tool_defaults.json").exists());
     }
 

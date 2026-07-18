@@ -162,7 +162,11 @@ export type ConversationMessagePage = {
   usage?: ConversationUsage;
 };
 
-export type UiMessage = ChatMessage & { clientId: string };
+export type UiMessage = ChatMessage & {
+  clientId: string;
+  /** Ordered text/tool segments inside one assistant bubble (same agent run). */
+  blocks?: AssistantBlock[];
+};
 
 export type CreateAgentPayload = {
   name: string;
@@ -226,8 +230,7 @@ export type ToolResultData = {
 
 export type ToolArguments = Record<string, unknown>;
 
-export type ToolCallMessage = {
-  type: 'tool_call';
+export type ToolCallState = {
   call_id: string;
   name: string;
   arguments: ToolArguments;
@@ -236,7 +239,15 @@ export type ToolCallMessage = {
   result?: ToolResultData;
 };
 
-export type UiMessageItem = UiMessage | ToolCallMessage;
+/** @deprecated Prefer ToolCallState; kept for gradual renames. */
+export type ToolCallMessage = ToolCallState;
+
+export type AssistantBlock =
+  | { type: 'text'; content: string }
+  | { type: 'tool'; tool: ToolCallState };
+
+/** Chat timeline item: one bubble per message (tools nest inside assistant). */
+export type UiMessageItem = UiMessage;
 
 export type StreamEvent =
   | { event: 'user'; data: ChatMessage; sequence?: number }

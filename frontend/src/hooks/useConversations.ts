@@ -2,12 +2,13 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import type {
   AgentRun,
   AgentRunPhase,
+  AssistantBlock,
   ChatMessage,
   Conversation,
   ConversationUsage,
   ImageAttachment,
   ThinkingLevel,
-  ToolCallMessage,
+  ToolCallState,
   ToolCallStatus,
   ToolArguments,
   StreamEvent,
@@ -61,6 +62,10 @@ function parseJsonObject(value: string): ToolArguments {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
 function statusFromToolResult(result: unknown): ToolCallStatus {
   const status = isRecord(result) ? result.status : undefined;
   if (
@@ -76,6 +81,124 @@ function statusFromToolResult(result: unknown): ToolCallStatus {
   return 'completed';
 }
 
+function isAssistantMessage(item: UiMessageItem): item is UiMessage & { role: 'assistant' } {
+  return item.role === 'assistant';
+}
+
+function isUserMessage(item: UiMessageItem): item is UiMessage & { role: 'user' } {
+  return item.role === 'user';
+}
+
+function listTools(message: UiMessage): ToolCallState[] {
+  return (message.blocks ?? [])
+    .filter((block): block is Extract<AssistantBlock, { type: 'tool' }> => block.type === 'tool')
+    .map((block) => block.tool);
+}
+
+function updateAssistantTools(
+  message: UiMessage,
+  mapper: (tool: ToolCallState) => ToolCallState,
+): UiMessage & { role: 'assistant' } {
+  if (!message.blocks?.length) return { ...message, role: 'assistant' };
+  let changed = false;
+  const blocks = message.blocks.map((block) => {
+    if (block.type !== 'tool') return block;
+    const nextTool = mapper(block.tool);
+    if (nextTool === block.tool) return block;
+    changed = true;
+    return { type: 'tool' as const, tool: nextTool };
+  });
+  return changed
+    ? { ...message, role: 'assistant', blocks }
+    : { ...message, role: 'assistant' };
+}
+
+function upsertToolOnAssistant(
+  message: UiMessage,
+  tool: ToolCallState,
+): UiMessage & { role: 'assistant' } {
+  const blocks = [...(message.blocks ?? [])];
+  const existingIndex = blocks.findIndex(
+    (block) => block.type === 'tool' && block.tool.call_id === tool.call_id,
+  );
+  if (existingIndex >= 0) {
+    const existing = blocks[existingIndex];
+    if (existing.type === 'tool') {
+      blocks[existingIndex] = {
+        type: 'tool',
+        tool: {
+          ...existing.tool,
+          ...tool,
+          arguments: { ...existing.tool.arguments, ...tool.arguments },
+          result: tool.result ?? existing.tool.result,
+        },
+      };
+    }
+  } else {
+    // Promote plain content into an ordered text block before the first tool.
+    if (
+      message.content
+      && !blocks.some((block) => block.type === 'text' || block.type === 'tool')
+    ) {
+      blocks.push({ type: 'text', content: message.content });
+    }
+    blocks.push({ type: 'tool', tool });
+  }
+  return { ...message, role: 'assistant', blocks };
+}
+
+function patchToolOnMessages(
+  items: UiMessageItem[],
+  callId: string,
+  patch: Partial<ToolCallState> | ((tool: ToolCallState) => ToolCallState),
+): UiMessageItem[] {
+  return items.map((item) => {
+    if (!isAssistantMessage(item) || !item.blocks?.length) return item;
+    let changed = false;
+    const blocks = item.blocks.map((block) => {
+      if (block.type !== 'tool' || block.tool.call_id !== callId) return block;
+      changed = true;
+      const nextTool = typeof patch === 'function'
+        ? patch(block.tool)
+        : {
+          ...block.tool,
+          ...patch,
+          arguments: patch.arguments
+            ? { ...block.tool.arguments, ...patch.arguments }
+            : block.tool.arguments,
+          result: patch.result ?? block.tool.result,
+        };
+      return { type: 'tool' as const, tool: nextTool };
+    });
+    return changed ? { ...item, blocks } : item;
+  });
+}
+
+function appendTextDeltaToAssistant(message: UiMessage, delta: string): UiMessage & { role: 'assistant' } {
+  const content = (message.content ?? '') + delta;
+  const blocks = [...(message.blocks ?? [])];
+  const last = blocks[blocks.length - 1];
+  if (last && last.type === 'text') {
+    blocks[blocks.length - 1] = { type: 'text', content: last.content + delta };
+  } else if (blocks.some((block) => block.type === 'tool')) {
+    blocks.push({ type: 'text', content: delta });
+  }
+  return {
+    ...message,
+    role: 'assistant',
+    content,
+    blocks: blocks.length ? blocks : message.blocks,
+    status: 'streaming',
+  };
+}
+
+function assistantHasVisibleBody(message: UiMessage): boolean {
+  if (message.content?.trim()) return true;
+  if (message.reasoning_content?.trim()) return true;
+  if (listTools(message).length > 0) return true;
+  return false;
+}
+
 function interruptActiveRun(
   items: UiMessageItem[],
   reason: string,
@@ -83,70 +206,129 @@ function interruptActiveRun(
 ): UiMessageItem[] {
   let activeRunStart = -1;
   for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    if ('role' in item && item.role === 'user') {
+    if (isUserMessage(items[index])) {
       activeRunStart = index;
       break;
     }
   }
+
   const next = items.map((item, index) => {
-    if (
-      index > activeRunStart
-      && 'type' in item
-      && item.type === 'tool_call'
-      && (item.status === 'running' || item.status === 'pending_approval')
-    ) {
+    if (index <= activeRunStart || !isAssistantMessage(item)) return item;
+    return updateAssistantTools(item, (tool) => {
+      if (tool.status !== 'running' && tool.status !== 'pending_approval') return tool;
       return {
-        ...item,
-        status: item.status === 'pending_approval' ? 'rejected' as const : toolStatus,
-        result: toolStatus === 'error' ? { ...item.result, message: reason } : { ...item.result, reason },
+        ...tool,
+        status: tool.status === 'pending_approval' ? 'rejected' as const : toolStatus,
+        result: toolStatus === 'error'
+          ? { ...tool.result, message: reason }
+          : { ...tool.result, reason },
       };
-    }
-    return item;
+    });
   });
+
   let assistantIndex = -1;
   for (let index = next.length - 1; index > activeRunStart; index -= 1) {
     const item = next[index];
-    if ('role' in item && item.role === 'assistant' && item.status === 'streaming') {
+    if (isAssistantMessage(item) && item.status === 'streaming') {
       assistantIndex = index;
       break;
     }
   }
   if (assistantIndex < 0) return next;
   const assistant = next[assistantIndex];
-  if (!('role' in assistant)) return next;
-  if (!assistant.content && !assistant.reasoning_content) {
+  if (!isAssistantMessage(assistant)) return next;
+  if (!assistantHasVisibleBody(assistant)) {
     return next.filter((_, index) => index !== assistantIndex);
   }
   return next.map((item, index) => (
-    index === assistantIndex && 'role' in item ? { ...item, status: 'failed' as const } : item
+    index === assistantIndex && isAssistantMessage(item) ? { ...item, status: 'failed' as const } : item
   ));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
   const items: UiMessageItem[] = [];
-  const toolIndexes = new Map<string, number>();
+  const toolOwner = new Map<string, number>();
+  let lastAssistantIndex = -1;
 
   for (const msg of raw) {
-    if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-      if (msg.content.trim() || msg.reasoning_content?.trim()) {
-        items.push(toUiMessage({ ...msg, role: 'assistant', tool_calls: undefined }));
+    if (msg.role === 'assistant') {
+      const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+      const tools: ToolCallState[] = toolCalls.map((call) => ({
+        call_id: call.id,
+        name: call.function.name,
+        arguments: parseJsonObject(call.function.arguments),
+        permission_mode: call.permission_mode,
+        status: 'running' as const,
+      }));
+
+      // One bubble per user turn: fold all assistant/tool steps into the latest assistant.
+      if (lastAssistantIndex >= 0 && isAssistantMessage(items[lastAssistantIndex])) {
+        let merged = items[lastAssistantIndex];
+        if (msg.reasoning_content?.trim()) {
+          merged = {
+            ...merged,
+            role: 'assistant',
+            reasoning_content: [merged.reasoning_content, msg.reasoning_content]
+              .filter(Boolean)
+              .join("\n\n"),
+          };
+        }
+        if (msg.content.trim()) {
+          const blocks = [...(merged.blocks ?? [])];
+          if (
+            merged.content
+            && !blocks.some((block) => block.type === 'text' || block.type === 'tool')
+          ) {
+            blocks.push({ type: 'text', content: merged.content });
+          }
+          const lastBlock = blocks[blocks.length - 1];
+          if (lastBlock && lastBlock.type === 'text') {
+            blocks[blocks.length - 1] = {
+              type: 'text',
+              content: `${lastBlock.content}\n\n${msg.content}`,
+            };
+          } else {
+            blocks.push({ type: 'text', content: msg.content });
+          }
+          merged = {
+            ...merged,
+            role: 'assistant',
+            content: merged.content
+              ? `${merged.content}\n\n${msg.content}`
+              : msg.content,
+            blocks: blocks.length ? blocks : undefined,
+            usage: msg.usage ?? merged.usage,
+            status: msg.status ?? merged.status,
+            id: msg.id || merged.id,
+          };
+        }
+        for (const tool of tools) {
+          merged = upsertToolOnAssistant(merged, tool);
+          toolOwner.set(tool.call_id, lastAssistantIndex);
+        }
+        if (msg.usage) merged = { ...merged, role: 'assistant', usage: msg.usage };
+        items[lastAssistantIndex] = { ...merged, role: 'assistant' };
+        continue;
       }
-      for (const call of msg.tool_calls) {
-        const item: ToolCallMessage = {
-          type: 'tool_call',
-          call_id: call.id,
-          name: call.function.name,
-          arguments: parseJsonObject(call.function.arguments),
-          permission_mode: call.permission_mode,
-          status: 'running',
-        };
-        toolIndexes.set(call.id, items.length);
-        items.push(item);
+
+      const blocks: AssistantBlock[] = [];
+      if (msg.content.trim()) {
+        blocks.push({ type: 'text', content: msg.content });
+      }
+      for (const tool of tools) {
+        blocks.push({ type: 'tool', tool });
+      }
+
+      const ui = toUiMessage({
+        ...msg,
+        role: 'assistant',
+        tool_calls: undefined,
+      });
+      ui.blocks = blocks.length ? blocks : undefined;
+      items.push(ui);
+      lastAssistantIndex = items.length - 1;
+      for (const tool of tools) {
+        toolOwner.set(tool.call_id, lastAssistantIndex);
       }
       continue;
     }
@@ -154,27 +336,61 @@ function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
     if (msg.role === 'tool') {
       const result = parseJsonObject(msg.content);
       const callId = msg.tool_call_id ?? msg.id;
-      const index = toolIndexes.get(callId);
-      if (index !== undefined) {
-        const current = items[index];
-        if ('type' in current && current.type === 'tool_call') {
-          items[index] = { ...current, status: statusFromToolResult(result), result };
+      const ownerIndex = toolOwner.get(callId);
+      const status = statusFromToolResult(result);
+      if (ownerIndex !== undefined) {
+        const current = items[ownerIndex];
+        if (isAssistantMessage(current)) {
+          const existing = listTools(current).find((tool) => tool.call_id === callId);
+          items[ownerIndex] = upsertToolOnAssistant(current, {
+            call_id: callId,
+            name: existing?.name ?? 'tool',
+            arguments: existing?.arguments ?? {},
+            permission_mode: existing?.permission_mode,
+            status,
+            result,
+          });
         }
-      } else {
-        items.push({
-          type: 'tool_call',
+      } else if (lastAssistantIndex >= 0 && isAssistantMessage(items[lastAssistantIndex])) {
+        items[lastAssistantIndex] = upsertToolOnAssistant(items[lastAssistantIndex], {
           call_id: callId,
           name: 'tool',
           arguments: {},
-          status: statusFromToolResult(result),
+          status,
           result,
         });
+        toolOwner.set(callId, lastAssistantIndex);
+      } else {
+        const orphan: UiMessage = {
+          id: msg.id,
+          agent_id: msg.agent_id,
+          conversation_id: msg.conversation_id,
+          role: 'assistant',
+          content: '',
+          status: 'done',
+          created_at: msg.created_at,
+          clientId: msg.id ?? genClientId(),
+          blocks: [{
+            type: 'tool',
+            tool: {
+              call_id: callId,
+              name: 'tool',
+              arguments: {},
+              status,
+              result,
+            },
+          }],
+        };
+        items.push(orphan);
+        lastAssistantIndex = items.length - 1;
+        toolOwner.set(callId, lastAssistantIndex);
       }
       continue;
     }
 
-    if (msg.role === 'user' || msg.role === 'assistant') {
-      items.push(toUiMessage(msg as ChatMessage & { role: 'user' | 'assistant' }));
+    if (msg.role === 'user') {
+      items.push(toUiMessage(msg as ChatMessage & { role: 'user' }));
+      lastAssistantIndex = -1;
     }
   }
 
@@ -374,33 +590,28 @@ export function useConversations({
   const applyDelta = useCallback((delta: string) => {
     setMessages((current) => {
       const last = current[current.length - 1];
-      if (
-        last
-        && 'role' in last
-        && last.role === 'assistant'
-        && last.status === 'streaming'
-      ) {
+      if (last && isAssistantMessage(last)) {
+        // Keep one assistant bubble for the whole run, including post-tool text.
         return [
           ...current.slice(0, -1),
-          {
-            ...last,
-            content: last.content + delta,
-            status: 'streaming' as const,
-          },
+          appendTextDeltaToAssistant(
+            { ...last, status: last.status === 'failed' ? last.status : 'streaming' },
+            delta,
+          ),
         ];
       }
-      const prevUi = last && 'role' in last ? last : undefined;
       return [
         ...current,
         {
           id: '',
-          agent_id: prevUi?.agent_id ?? activeStreamRef.current.agentId,
-          conversation_id: prevUi?.conversation_id ?? activeStreamRef.current.conversationId,
+          agent_id: last?.agent_id ?? activeStreamRef.current.agentId,
+          conversation_id: last?.conversation_id ?? activeStreamRef.current.conversationId,
           role: 'assistant' as const,
           content: delta,
           status: 'streaming' as const,
           created_at: new Date().toISOString(),
           clientId: genClientId(),
+          blocks: undefined,
         },
       ];
     });
@@ -409,12 +620,7 @@ export function useConversations({
   const applyReasoningDelta = useCallback((delta: string) => {
     setMessages((current) => {
       const last = current[current.length - 1];
-      if (
-        last
-        && 'role' in last
-        && last.role === 'assistant'
-        && last.status === 'streaming'
-      ) {
+      if (last && isAssistantMessage(last)) {
         return [
           ...current.slice(0, -1),
           {
@@ -424,13 +630,12 @@ export function useConversations({
           },
         ];
       }
-      const prevUi = last && 'role' in last ? last : undefined;
       return [
         ...current,
         {
           id: '',
-          agent_id: prevUi?.agent_id ?? activeStreamRef.current.agentId,
-          conversation_id: prevUi?.conversation_id ?? activeStreamRef.current.conversationId,
+          agent_id: last?.agent_id ?? activeStreamRef.current.agentId,
+          conversation_id: last?.conversation_id ?? activeStreamRef.current.conversationId,
           role: 'assistant' as const,
           content: '',
           reasoning_content: delta,
@@ -533,8 +738,8 @@ export function useConversations({
         setRetryStatus(null);
         setMessages((current) => {
           const last = current[current.length - 1];
-          if (last && 'role' in last && last.role === 'assistant' && last.status === 'streaming') {
-            if (!last.content && !last.reasoning_content) {
+          if (last && isAssistantMessage(last) && last.status === 'streaming') {
+            if (!assistantHasVisibleBody(last)) {
               return current.slice(0, -1);
             }
             return [...current.slice(0, -1), { ...last, status: 'done' as const }];
@@ -572,10 +777,10 @@ export function useConversations({
       if (evt.event === 'user') {
         const msg = toUiMessage(evt.data as Parameters<typeof toUiMessage>[0]);
         setMessages((current) => {
-          if (current.some((item) => 'role' in item && item.id && item.id === msg.id)) return current;
-          const optimisticIndex = current.findIndex((item) => 'role' in item && item.role === 'user' && !item.id && item.content === msg.content);
+          if (current.some((item) => item.id && item.id === msg.id)) return current;
+          const optimisticIndex = current.findIndex((item) => isUserMessage(item) && !item.id && item.content === msg.content);
           if (optimisticIndex >= 0) {
-            return current.map((item, index) => index === optimisticIndex && 'clientId' in item ? { ...msg, clientId: item.clientId } : item);
+            return current.map((item, index) => index === optimisticIndex ? { ...msg, clientId: item.clientId } : item);
           }
           return [...current, msg];
         });
@@ -596,34 +801,22 @@ export function useConversations({
         setMessages((current) => {
           const last = current[current.length - 1];
           if (msg.status === 'failed') {
-            const withoutEmptyStreaming = current.filter((item, index) => {
-              const isLast = index === current.length - 1;
-              return !(
-                isLast
-                && 'role' in item
-                && item.role === 'assistant'
-                && item.status === 'streaming'
-                && !item.content
-                && !item.reasoning_content
-              );
-            });
-            const withFailedPartial = withoutEmptyStreaming.map((item, index) => {
-              const isLast = index === withoutEmptyStreaming.length - 1;
-              return isLast
-                && 'role' in item
-                && item.role === 'assistant'
-                && item.status === 'streaming'
-                ? { ...item, status: 'failed' as const }
-                : item;
-            });
-            return [...withFailedPartial, { ...msg, status: 'failed' as const }];
+            if (last && isAssistantMessage(last)) {
+              return [
+                ...current.slice(0, -1),
+                {
+                  ...last,
+                  id: msg.id || last.id,
+                  content: msg.content || last.content,
+                  reasoning_content: msg.reasoning_content || last.reasoning_content,
+                  usage: msg.usage ?? last.usage,
+                  status: 'failed' as const,
+                },
+              ];
+            }
+            return [...current, { ...msg, status: 'failed' as const }];
           }
-          if (
-            last
-            && 'role' in last
-            && last.role === 'assistant'
-            && last.status === 'streaming'
-          ) {
+          if (last && isAssistantMessage(last)) {
             return [
               ...current.slice(0, -1),
               {
@@ -632,7 +825,7 @@ export function useConversations({
                 content: msg.content || last.content,
                 reasoning_content: msg.reasoning_content || last.reasoning_content,
                 usage: msg.usage ?? last.usage,
-                status: msg.status ?? 'done',
+                status: msg.status ?? (last.status === 'streaming' ? 'done' : last.status),
               },
             ];
           }
@@ -643,8 +836,7 @@ export function useConversations({
       if (evt.event === 'tool_call') {
         setRunPhase('executing_tool');
         const d = evt.data;
-        const toolMsg: ToolCallMessage = {
-          type: 'tool_call',
+        const tool: ToolCallState = {
           call_id: d.call_id,
           name: d.name,
           arguments: d.arguments,
@@ -652,48 +844,47 @@ export function useConversations({
           status: 'running',
         };
         setMessages((current) => {
-          const withoutEmptyAssistant = current.filter((item, index) => {
-            const isLast = index === current.length - 1;
-            return !(
-              isLast
-              && 'role' in item
-              && item.role === 'assistant'
-              && item.status === 'streaming'
-              && !item.content
-              && !item.reasoning_content
-            );
-          });
-          const existingIndex = withoutEmptyAssistant.findIndex(
-            (item) => 'type' in item && item.type === 'tool_call' && item.call_id === d.call_id,
-          );
-          if (existingIndex >= 0) {
-            return withoutEmptyAssistant.map((item, index) => (
-              index === existingIndex ? toolMsg : item
-            ));
+          // Attach tools to the active assistant bubble for this run.
+          for (let index = current.length - 1; index >= 0; index -= 1) {
+            const item = current[index];
+            if (isUserMessage(item)) break;
+            if (isAssistantMessage(item)) {
+              return current.map((entry, entryIndex) => (
+                entryIndex === index ? upsertToolOnAssistant(entry, tool) : entry
+              ));
+            }
           }
-          return [...withoutEmptyAssistant, toolMsg];
+          const seed: UiMessage = {
+            id: '',
+            agent_id: activeStreamRef.current.agentId,
+            conversation_id: activeStreamRef.current.conversationId,
+            role: 'assistant',
+            content: '',
+            status: 'streaming',
+            created_at: new Date().toISOString(),
+            clientId: genClientId(),
+            blocks: [{ type: 'tool', tool }],
+          };
+          return [...current, seed];
         });
         return;
       }
       if (evt.event === 'tool_result') {
         const d = evt.data;
-        setMessages((current) => current.map((item) => {
-          if ('type' in item && item.type === 'tool_call' && item.call_id === d.call_id) {
-            return { ...item, status: d.result.status, result: d.result };
-          }
-          return item;
+        setMessages((current) => patchToolOnMessages(current, d.call_id, {
+          status: d.result.status,
+          result: d.result,
         }));
         return;
       }
       if (evt.event === 'approval_required') {
         setRunPhase('waiting_for_approval');
         const d = evt.data;
-        setMessages((current) => current.map((item) => {
-          if ('type' in item && item.type === 'tool_call' && item.call_id === d.call_id) {
-            return { ...item, status: 'pending_approval', arguments: { ...item.arguments, ...d } };
-          }
-          return item;
-        }));
+        setMessages((current) => patchToolOnMessages(current, d.call_id, (tool) => ({
+          ...tool,
+          status: 'pending_approval',
+          arguments: { ...tool.arguments, ...d },
+        })));
         return;
       }
     },
@@ -722,7 +913,7 @@ export function useConversations({
     if (replayFromStart && run.user_message_id) {
       setMessages((current) => {
         const runStart = current.findIndex(
-          (item) => 'role' in item && item.role === 'user' && item.id === run.user_message_id,
+          (item) => isUserMessage(item) && item.id === run.user_message_id,
         );
         return runStart >= 0 ? current.slice(0, runStart) : current;
       });
@@ -822,7 +1013,7 @@ export function useConversations({
       setMessages((current) => {
         const restartIndex = restartFromMessageId
           ? current.findIndex(
-            (item) => 'role' in item && item.role === 'user' && item.id === restartFromMessageId,
+            (item) => isUserMessage(item) && item.id === restartFromMessageId,
           )
           : -1;
         const retained = restartIndex >= 0 ? current.slice(0, restartIndex) : current;
@@ -864,7 +1055,7 @@ export function useConversations({
           setActiveConversationId(created.id);
           conversationId = created.id;
           setMessages((current) => current.map((msg) => (
-            'clientId' in msg && (msg.clientId === optimisticUserClientId || msg.clientId === optimisticAssistantClientId)
+            msg.clientId === optimisticUserClientId || msg.clientId === optimisticAssistantClientId
               ? { ...msg, conversation_id: conversationId }
               : msg
           )));

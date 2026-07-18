@@ -129,7 +129,6 @@ WeiAgent/
 └── data/                     # 运行时数据（dev 模式在项目根目录，release 在 exe 同目录）
     ├── settings.json
     ├── tool_defaults.json
-    ├── model_providers.json
     ├── agents.json
     ├── conversations.json
     ├── agents/{agent_id}/    # 工作空间文件
@@ -146,7 +145,7 @@ WeiAgent/
 项目不再从 `.env` 或系统环境变量读取运行配置。`cargo run dev` 使用项目根目录下的 `data`；直接运行打包后的二进制文件时，使用二进制文件同目录下的 `data`，不存在则自动初始化。
 
 - `data/settings.json`：保存应用监听地址、端口、日志级别、用户头像图标和颜色、语言、请求超时秒数、超时重试次数。默认值：`127.0.0.1:18283`、`info`、`bot/#22c55e`、`zh`、`60`、`3`
-- `data/model_providers.json`：保存 OpenAI 兼容模型提供商、Base URL、API Key、模型列表和 extra_body（额外请求体 JSON）。API Key 本地明文保存，但 API 响应通过 `has_api_key` 布尔值和 `masked_api_key`（如 `****cret`）脱敏返回
+- `data/weiagent.db` 表 `model_providers`：保存模型提供商、Base URL、API Key、模型列表和 extra_body。API Key 本地明文保存，API 响应通过 `has_api_key` / `masked_api_key` 脱敏
 - `data/tool_defaults.json`：保存所有 Agent 默认继承的工具配置，不保存任何 Agent 上下文授权
 - `data/agents.json`：保存 Agent 配置，包含 `id`、`name`、`description`、`model_provider_id`、`model_id`、`is_builtin`、`avatar_icon`、`avatar_color`、`created_at`、`updated_at`
 - `data/conversations.json` 与 `data/conversations/{conversation_id}.json`：保存多会话元数据和消息。会话标题自动从第一条用户消息截取（最多 80 字符）；`message_count` 在列表查询时自动修正

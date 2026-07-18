@@ -23,6 +23,12 @@ const MAX_DOWNLOAD_BYTES: u64 = 600 * 1024 * 1024;
 const COMPONENT_LATEST_VERSION_CACHE_DIR: &str = "latest-versions";
 /// Shared TTL for all runtime latest-version lookups (Node/Python/uv/Git and future components).
 pub const LATEST_VERSION_CACHE_HOURS: i64 = 3;
+/// Pause between remote latest-version lookups to avoid bursting public APIs (e.g. GitHub).
+pub const COMPONENT_VERSION_LOOKUP_DELAY: Duration = Duration::from_millis(800);
+
+pub fn latest_version_cache_ttl() -> Duration {
+    Duration::from_secs(LATEST_VERSION_CACHE_HOURS.saturating_mul(3600) as u64)
+}
 
 #[derive(Debug)]
 struct ProbeCandidate {
@@ -75,8 +81,17 @@ pub async fn latest_component_version(
     if let Some(cache) = read_component_latest_cache(cache_root, kind).await
         && component_latest_cache_is_fresh(&cache)
     {
+        tracing::debug!(
+            ?kind,
+            version = %cache.version,
+            checked_at = %cache.checked_at,
+            "using fresh component latest version cache"
+        );
         return Ok(cache.version);
     }
+
+    // Only hit remote APIs when the on-disk cache is missing or older than TTL.
+    tokio::time::sleep(COMPONENT_VERSION_LOOKUP_DELAY).await;
 
     match fetch_latest_component_version(kind, client).await {
         Ok(version) => {
@@ -91,6 +106,16 @@ pub async fn latest_component_version(
         }
         Err(error) => {
             if let Some(cache) = read_component_latest_cache(cache_root, kind).await {
+                // Refresh checked_at so restarts within TTL do not re-query after a failure.
+                if let Err(write_error) =
+                    write_component_latest_cache(cache_root, kind, &cache.version).await
+                {
+                    tracing::warn!(
+                        ?kind,
+                        %write_error,
+                        "failed to refresh component latest version cache timestamp after lookup failure"
+                    );
+                }
                 tracing::warn!(
                     ?kind,
                     %error,
@@ -736,22 +761,30 @@ async fn fetch_node_releases(client: &reqwest::Client) -> AppResult<Vec<NodeRele
         .map_err(download_error)
 }
 
-async fn fetch_uv_release(client: &reqwest::Client) -> AppResult<GithubRelease> {
+fn github_api_request(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
     client
-        .get("https://api.github.com/repos/astral-sh/uv/releases/latest")
-        .send()
-        .await
-        .map_err(download_error)?
-        .error_for_status()
-        .map_err(download_error)?
-        .json::<GithubRelease>()
-        .await
-        .map_err(download_error)
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+}
+
+async fn fetch_uv_release(client: &reqwest::Client) -> AppResult<GithubRelease> {
+    github_api_request(
+        client,
+        "https://api.github.com/repos/astral-sh/uv/releases/latest",
+    )
+    .send()
+    .await
+    .map_err(download_error)?
+    .error_for_status()
+    .map_err(download_error)?
+    .json::<GithubRelease>()
+    .await
+    .map_err(download_error)
 }
 
 async fn fetch_git_tags(client: &reqwest::Client) -> AppResult<Vec<GithubTag>> {
-    client
-        .get("https://api.github.com/repos/git/git/tags?per_page=20")
+    github_api_request(client, "https://api.github.com/repos/git/git/tags?per_page=20")
         .send()
         .await
         .map_err(download_error)?
@@ -763,16 +796,18 @@ async fn fetch_git_tags(client: &reqwest::Client) -> AppResult<Vec<GithubTag>> {
 }
 
 async fn fetch_git_for_windows_release(client: &reqwest::Client) -> AppResult<GithubRelease> {
-    client
-        .get("https://api.github.com/repos/git-for-windows/git/releases/latest")
-        .send()
-        .await
-        .map_err(download_error)?
-        .error_for_status()
-        .map_err(download_error)?
-        .json::<GithubRelease>()
-        .await
-        .map_err(download_error)
+    github_api_request(
+        client,
+        "https://api.github.com/repos/git-for-windows/git/releases/latest",
+    )
+    .send()
+    .await
+    .map_err(download_error)?
+    .error_for_status()
+    .map_err(download_error)?
+    .json::<GithubRelease>()
+    .await
+    .map_err(download_error)
 }
 
 async fn install_archive(
@@ -1250,6 +1285,15 @@ mod tests {
     }
 
     #[test]
+    fn latest_version_cache_ttl_follows_hours_constant() {
+        assert_eq!(
+            latest_version_cache_ttl(),
+            Duration::from_secs((LATEST_VERSION_CACHE_HOURS * 3600) as u64)
+        );
+        assert!(COMPONENT_VERSION_LOOKUP_DELAY > Duration::ZERO);
+    }
+
+    #[test]
     fn component_latest_version_cache_expires_after_three_hours() {
         let fresh = ComponentLatestVersionCache {
             version: "2.55.0".to_string(),
@@ -1276,5 +1320,36 @@ mod tests {
             .unwrap();
         assert_eq!(cache.version, "2.55.0");
         assert!(component_latest_cache_is_fresh(&cache));
+    }
+
+    #[tokio::test]
+    async fn rewriting_component_cache_refreshes_checked_at_for_failure_backoff() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = component_latest_cache_path(temp.path(), RuntimeComponentKind::Uv).unwrap();
+        let stale = ComponentLatestVersionCache {
+            version: "0.11.29".to_string(),
+            checked_at: chrono::Utc::now()
+                - chrono::Duration::hours(LATEST_VERSION_CACHE_HOURS)
+                - chrono::Duration::minutes(5),
+        };
+        fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        crate::fsutil::write_atomic(&path, serde_json::to_string_pretty(&stale).unwrap())
+            .await
+            .unwrap();
+        assert!(!component_latest_cache_is_fresh(
+            &read_component_latest_cache(temp.path(), RuntimeComponentKind::Uv)
+                .await
+                .unwrap()
+        ));
+
+        // Same behavior as a failed remote lookup: keep the version, bump checked_at.
+        write_component_latest_cache(temp.path(), RuntimeComponentKind::Uv, "0.11.29")
+            .await
+            .unwrap();
+        let refreshed = read_component_latest_cache(temp.path(), RuntimeComponentKind::Uv)
+            .await
+            .unwrap();
+        assert_eq!(refreshed.version, "0.11.29");
+        assert!(component_latest_cache_is_fresh(&refreshed));
     }
 }

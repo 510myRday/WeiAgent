@@ -170,26 +170,55 @@ impl CodexRuntimeManager {
             *self.recommended_version.write().await = cache.version;
         }
         let status = self.refresh_local().await?;
+        // One-shot: load from disk cache when still inside TTL; only network-fetch when expired.
+        // A background timer then rechecks on the shared LATEST_VERSION_CACHE_HOURS interval.
         let manager = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = manager.update_recommended_version(false).await {
-                tracing::warn!(%error, "failed to check for a newer Codex runtime");
-            }
-            if let Err(error) = manager.refresh_local().await {
-                tracing::warn!(%error, "failed to refresh Codex runtime after update check");
-            }
-            for component in [
-                RuntimeComponentKind::Node,
-                RuntimeComponentKind::Python,
-                RuntimeComponentKind::Uv,
-                RuntimeComponentKind::Git,
-            ] {
-                if let Err(error) = manager.refresh_component(component).await {
-                    tracing::warn!(?component, %error, "failed to check runtime component version");
-                }
+            manager.run_latest_version_refresh_cycle("startup").await;
+            let mut ticker =
+                tokio::time::interval(supporting_runtime::latest_version_cache_ttl());
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The first tick completes immediately; skip it because startup already checked.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                manager
+                    .run_latest_version_refresh_cycle("scheduled")
+                    .await;
             }
         });
         Ok(status)
+    }
+
+    async fn run_latest_version_refresh_cycle(&self, reason: &str) {
+        tracing::debug!(%reason, "running runtime latest-version refresh cycle");
+        if let Err(error) = self.update_recommended_version(false).await {
+            tracing::warn!(%error, %reason, "failed to check for a newer Codex runtime");
+        }
+        if let Err(error) = self.refresh_local().await {
+            tracing::warn!(
+                %error,
+                %reason,
+                "failed to refresh Codex runtime after update check"
+            );
+        }
+        for component in [
+            RuntimeComponentKind::Node,
+            RuntimeComponentKind::Python,
+            RuntimeComponentKind::Uv,
+            RuntimeComponentKind::Git,
+        ] {
+            // Each lookup already sleeps when a remote request is needed, so sequential
+            // checks stay spaced out and fresh-cache components skip the network entirely.
+            if let Err(error) = self.refresh_component(component).await {
+                tracing::warn!(
+                    ?component,
+                    %error,
+                    %reason,
+                    "failed to check runtime component version"
+                );
+            }
+        }
     }
 
     pub async fn status(&self) -> CodexRuntimeStatus {
@@ -688,9 +717,15 @@ impl CodexRuntimeManager {
     async fn update_recommended_version(&self, force: bool) -> AppResult<String> {
         let _guard = self.latest_check_lock.lock().await;
         if let Some(cache) = self.latest_version_cache().await
-            && (!force || latest_cache_is_fresh(&cache))
+            && !force
+            && latest_cache_is_fresh(&cache)
         {
             *self.recommended_version.write().await = cache.version.clone();
+            tracing::debug!(
+                version = %cache.version,
+                checked_at = %cache.checked_at,
+                "using fresh Codex latest version cache"
+            );
             return Ok(cache.version);
         }
 

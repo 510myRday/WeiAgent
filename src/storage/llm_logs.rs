@@ -19,48 +19,6 @@ const MAX_LOG_FIELD_BYTES: usize = 1024 * 1024;
 const MAX_RETAINED_LOGS: usize = 300_000;
 const MAX_RETAINED_DAYS: usize = 30;
 const MAX_LIST_LIMIT: usize = 500;
-const DB_FILE_NAME: &str = "weiagent.db";
-
-const SCHEMA_SQL: &str = "
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS llm_requests (
-    id TEXT PRIMARY KEY NOT NULL,
-    created_at TEXT NOT NULL,
-    created_at_ms INTEGER NOT NULL,
-    agent_id TEXT,
-    agent_name TEXT NOT NULL,
-    conversation_id TEXT,
-    provider_name TEXT NOT NULL,
-    model_id TEXT NOT NULL,
-    status_code INTEGER,
-    first_token_ms INTEGER,
-    duration_ms INTEGER,
-    input_tokens INTEGER,
-    output_tokens INTEGER,
-    cache_read_tokens INTEGER,
-    cache_write_tokens INTEGER,
-    cost_usd REAL,
-    error TEXT,
-    has_payload INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS llm_payloads (
-    request_id TEXT PRIMARY KEY NOT NULL,
-    raw_request TEXT NOT NULL DEFAULT '',
-    raw_response TEXT,
-    FOREIGN KEY (request_id) REFERENCES llm_requests(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_llm_requests_created_at_ms
-    ON llm_requests(created_at_ms DESC);
-CREATE INDEX IF NOT EXISTS idx_llm_requests_agent_id_created
-    ON llm_requests(agent_id, created_at_ms DESC);
-CREATE INDEX IF NOT EXISTS idx_llm_requests_agent_name_created
-    ON llm_requests(agent_name, created_at_ms DESC);
-";
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct LlmLogMetrics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -232,14 +190,7 @@ fn now_parts() -> (String, i64) {
 }
 
 fn open_connection(db_path: &Path) -> AppResult<Connection> {
-    if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let conn = Connection::open(db_path)?;
-    conn.execute_batch(SCHEMA_SQL)?;
-    let _ = conn.pragma_update(None, "journal_mode", "WAL");
-    conn.pragma_update(None, "foreign_keys", true)?;
-    Ok(conn)
+    crate::storage::db::open_connection(db_path)
 }
 
 pub struct LlmLogger {
@@ -252,7 +203,7 @@ pub struct LlmLogger {
 
 impl LlmLogger {
     pub fn new(data_dir: &Path, enabled: bool) -> AppResult<Self> {
-        let db_path = data_dir.join(DB_FILE_NAME);
+        let db_path = crate::storage::db::db_path(data_dir);
         let conn = open_connection(&db_path)?;
         Ok(Self {
             db_path,
@@ -1401,7 +1352,7 @@ mod tests {
         assert_eq!(page.items.len(), 2);
         assert_eq!(page.total, 3);
         assert_eq!(logger.list_logs(2, 2).await.unwrap().len(), 1);
-        assert!(logger.db_path().ends_with(DB_FILE_NAME));
+        assert!(logger.db_path().ends_with(crate::storage::db::DB_FILE_NAME));
     }
 
     #[tokio::test(flavor = "multi_thread")]

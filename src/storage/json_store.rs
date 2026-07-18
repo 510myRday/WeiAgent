@@ -7,14 +7,16 @@ use crate::{
     config::{load_or_init_settings, write_settings},
     domain::{Agent, AppSettings, ChatMessage, Conversation, ModelProvider},
     error::AppResult,
-    storage::files::{ensure_json_array, read_json, write_json},
+    storage::{
+        db,
+        files::{ensure_json_array, read_json, write_json},
+    },
 };
 
 pub struct JsonStore {
     pub data_dir: PathBuf,
     pub(super) settings_file: PathBuf,
     pub(super) tool_defaults_file: PathBuf,
-    pub(super) providers_file: PathBuf,
     pub(super) agents_file: PathBuf,
     pub(super) agents_dir: PathBuf,
     pub(super) conversations_file: PathBuf,
@@ -27,7 +29,6 @@ impl JsonStore {
         let root = root.as_ref().to_path_buf();
         let settings_file = root.join("settings.json");
         let tool_defaults_file = root.join("tool_defaults.json");
-        let providers_file = root.join("model_providers.json");
         let agents_file = root.join("agents.json");
         let agents_dir = root.join("agents");
         let conversations_file = root.join("conversations.json");
@@ -35,10 +36,10 @@ impl JsonStore {
         fs::create_dir_all(&root).await?;
         fs::create_dir_all(&agents_dir).await?;
         fs::create_dir_all(&conversations_dir).await?;
-        ensure_json_array(&providers_file).await?;
         ensure_json_array(&agents_file).await?;
         ensure_json_array(&conversations_file).await?;
         load_or_init_settings(&settings_file).await?;
+        db::ensure_schema(&root)?;
         if fs::metadata(&tool_defaults_file).await.is_err() {
             let content =
                 serde_json::to_string_pretty(&crate::domain::AgentToolsConfig::default())?;
@@ -49,7 +50,6 @@ impl JsonStore {
             data_dir: root,
             settings_file,
             tool_defaults_file,
-            providers_file,
             agents_file,
             agents_dir,
             conversations_file,
@@ -78,14 +78,14 @@ impl JsonStore {
     }
 
     pub(super) async fn read_providers_unlocked(&self) -> AppResult<Vec<ModelProvider>> {
-        read_json(&self.providers_file).await
+        db::read_providers(&self.data_dir)
     }
 
     pub(super) async fn write_providers_unlocked(
         &self,
         providers: &[ModelProvider],
     ) -> AppResult<()> {
-        write_json(&self.providers_file, providers).await
+        db::write_providers(&self.data_dir, providers)
     }
 
     pub(super) async fn read_agents(&self) -> AppResult<Vec<Agent>> {
