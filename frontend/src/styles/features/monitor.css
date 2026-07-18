@@ -127,34 +127,46 @@
 
 /* Header title when a model scope is selected */
 .monitor-scope-model-cell {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  line-height: 1.25;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
   min-width: 0;
   max-width: 100%;
+  line-height: 1.2;
 }
 
 .monitor-scope-model-cell.is-header {
-  gap: 3px;
+  gap: 10px;
 }
 
 .monitor-scope-model-provider {
+  flex: 0 1 auto;
+  align-self: center;
   color: var(--color-muted, #64748b);
   font-size: 12px;
   font-weight: 500;
-  max-width: 100%;
+  line-height: 1.2;
+  max-width: 42%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.monitor-scope-model-separator {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 1.15em;
+  background: var(--border-strong, #cbd5e1);
+}
+
 .monitor-scope-model-id {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--color-text, #0f172a);
   font-weight: 600;
   font-size: 1.05em;
-  max-width: 100%;
+  line-height: 1.15;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1090,7 +1102,39 @@
   border-color: var(--color-primary-border);
 }
 
+.monitor-detail-navigation {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.monitor-detail-nav-button,
+.monitor-detail-copy-button {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--surface-pane);
+  color: var(--color-text-soft);
+}
+
+.monitor-detail-nav-button:hover:not(:disabled),
+.monitor-detail-nav-button:focus-visible,
+.monitor-detail-copy-button:hover:not(:disabled),
+.monitor-detail-copy-button:focus-visible {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-soft);
+  color: var(--color-primary-deep);
+}
+
+.monitor-detail-nav-button:disabled,
+.monitor-detail-copy-button:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
 .monitor-detail-content {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1098,6 +1142,14 @@
   overflow: hidden;
   background: var(--surface-subtle);
   padding: 14px 16px 16px;
+}
+
+.monitor-detail-copy-button {
+  position: absolute;
+  top: 22px;
+  right: 26px;
+  z-index: 2;
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(15, 23, 42, 0.12));
 }
 
 .monitor-detail-content > .monitor-detail-code,

@@ -409,6 +409,8 @@ export function MonitorPanel({
   const [pageSize, setPageSize] = useState<PageSize>(10);
   const [selectedLog, setSelectedLog] = useState<LlmLogDetail | null>(null);
   const [activeTab, setActiveTab] = useState<'request' | 'response'>('request');
+  const [isDetailLoading, setIsDetailLoading] = useState(false);
+  const [pendingDetailNavigation, setPendingDetailNavigation] = useState<{ direction: -1 | 1; page: number } | null>(null);
   const [isSavingToggle, setIsSavingToggle] = useState(false);
 
   const agentById = useMemo(() => {
@@ -477,6 +479,15 @@ export function MonitorPanel({
     void loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    if (!pendingDetailNavigation || !selectedLog || isLoading || page !== pendingDetailNavigation.page) return;
+    const targetIndex = pendingDetailNavigation.direction === -1 ? logs.length - 1 : 0;
+    const target = logs[targetIndex];
+    if (!target) return;
+    setPendingDetailNavigation(null);
+    void handleViewPayload(target.id, Boolean(target.has_payload));
+  }, [handleViewPayload, isLoading, logs, page, pendingDetailNavigation, selectedLog]);
+
   const agentOptions = useMemo(() => {
     return agentStats
       .map((stat) => {
@@ -533,6 +544,7 @@ export function MonitorPanel({
 
   async function handleViewPayload(logId: string, hasPayload: boolean) {
     if (!hasPayload) return;
+    setIsDetailLoading(true);
     try {
       const detail = await getLlmLog(logId);
       if (!detail.raw_request && !detail.raw_response && !detail.error) {
@@ -543,7 +555,31 @@ export function MonitorPanel({
       setActiveTab('request');
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+    } finally {
+      setIsDetailLoading(false);
     }
+  }
+
+  const selectedLogIndex = selectedLog
+    ? logs.findIndex((log) => log.id === selectedLog.id)
+    : -1;
+  const canGoPrevious = selectedLogIndex > 0 || (selectedLogIndex === 0 && page > 1);
+  const canGoNext = selectedLogIndex >= 0 && (
+    selectedLogIndex < logs.length - 1 || page < totalPages
+  );
+
+  function handleNavigateDetail(direction: -1 | 1) {
+    if (selectedLogIndex < 0) return;
+    const target = logs[selectedLogIndex + direction];
+    if (target) {
+      void handleViewPayload(target.id, Boolean(target.has_payload));
+      return;
+    }
+    const targetPage = page + direction;
+    if (targetPage < 1 || targetPage > totalPages) return;
+    setIsLoading(true);
+    setPendingDetailNavigation({ direction, page: targetPage });
+    setPage(targetPage);
   }
 
   function handleCopy() {
@@ -591,6 +627,7 @@ export function MonitorPanel({
       : (
         <span className="monitor-scope-model-cell is-header">
           <span className="monitor-scope-model-provider">{scope.providerName}</span>
+          <span className="monitor-scope-model-separator" aria-hidden="true" />
           <span className="monitor-scope-model-id mono">{scope.modelId}</span>
         </span>
       );
@@ -1185,12 +1222,42 @@ export function MonitorPanel({
                   {t('llmLogs.response')}
                 </button>
                 <div className="tab-spacer" />
-                <Button variant="ghost" type="button" onClick={handleCopy} icon={<Copy size={14} />}>
-                  {copied ? t('chat.copied') : t('chat.copy')}
-                </Button>
+                <div className="monitor-detail-navigation" role="group" aria-label={t('llmLogs.detailNavigation')}>
+                  <IconButton
+                    variant="ghost"
+                    type="button"
+                    className="monitor-detail-nav-button"
+                    onClick={() => handleNavigateDetail(-1)}
+                    disabled={!canGoPrevious || isDetailLoading}
+                    label={t('llmLogs.previousRequest')}
+                  >
+                    <ChevronLeft size={16} />
+                  </IconButton>
+                  <IconButton
+                    variant="ghost"
+                    type="button"
+                    className="monitor-detail-nav-button"
+                    onClick={() => handleNavigateDetail(1)}
+                    disabled={!canGoNext || isDetailLoading}
+                    label={t('llmLogs.nextRequest')}
+                  >
+                    <ChevronRight size={16} />
+                  </IconButton>
+                </div>
               </div>
 
               <div className="monitor-detail-content">
+                <IconButton
+                  variant="ghost"
+                  type="button"
+                  className="monitor-detail-copy-button"
+                  onClick={handleCopy}
+                  disabled={isDetailLoading}
+                  label={copied ? t('chat.copied') : t('chat.copy')}
+                  title={copied ? t('chat.copied') : t('chat.copy')}
+                >
+                  <Copy size={15} />
+                </IconButton>
                 {activeTab === 'request' ? (
                   <pre className="llm-logs-content monitor-detail-code">
                     {formatRawJson(selectedLog.raw_request)}
