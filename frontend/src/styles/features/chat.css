@@ -981,23 +981,22 @@
   min-width: 0;
   align-items: center;
   justify-content: flex-end;
-  gap: 7px;
-  color: var(--color-muted);
-  font-size: var(--font-size-caption);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.conversation-usage strong {
-  color: var(--color-text-soft);
-  font-weight: var(--font-weight-emphasis);
 }
 
 .context-usage-ring {
+  position: relative;
   display: inline-flex;
   width: 16px;
   height: 16px;
   flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.context-usage-ring__icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
   align-items: center;
   justify-content: center;
 }
@@ -1017,6 +1016,51 @@
 
 .context-usage-ring.is-full .context-usage-ring__progress {
   stroke: var(--color-primary-strong);
+}
+
+.context-usage-ring__tooltip {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  z-index: 20;
+  display: none;
+  min-width: 148px;
+  max-width: 220px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(28, 28, 30, 0.94);
+  color: #f5f5f7;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.context-usage-ring__tooltip::after {
+  content: "";
+  position: absolute;
+  right: 6px;
+  top: 100%;
+  border: 6px solid transparent;
+  border-top-color: rgba(28, 28, 30, 0.94);
+}
+
+.context-usage-ring:hover .context-usage-ring__tooltip,
+.context-usage-ring:focus-within .context-usage-ring__tooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.context-usage-ring__tooltip-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.context-usage-ring__tooltip-line {
+  color: rgba(245, 245, 247, 0.88);
+  font-variant-numeric: tabular-nums;
 }
 
 .send-button {

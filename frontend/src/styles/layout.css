@@ -10,7 +10,9 @@
 
 .panel-shell,
 .agents-panel,
-.settings-panel {
+.settings-panel,
+.tools-panel,
+.monitor-panel {
   display: contents;
 }
 

@@ -95,3 +95,12 @@
   align-self: center;
   margin: auto;
 }
+
+
+.llm-logs-modal-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}

@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn resolves_every_provider_client() {
         let temp = tempfile::tempdir().unwrap();
-        let logger = Arc::new(LlmLogger::new(temp.path(), false));
+        let logger = Arc::new(LlmLogger::new(temp.path(), false).unwrap());
         let registry = DefaultLlmRegistry::new(logger);
         for provider_type in [
             ProviderType::OpenAiCompatible,

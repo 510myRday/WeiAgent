@@ -1,4 +1,4 @@
-import { Bot, Globe, Settings, Wrench } from 'lucide-react';
+import { Bot, ChartColumn, Globe, Settings, Wrench } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 import type { AppSettings, AvatarIcon, NavKey } from '../../types';
@@ -60,6 +60,7 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
       <nav className="sidebar-nav">
         <NavButton active={activeNav === 'chat'} onClick={() => onNavChange('chat')} icon={<ChatBubbleMoreIcon />} label={t('nav.chat')} />
         <NavButton active={activeNav === 'agents'} onClick={() => onNavChange('agents')} icon={<Bot size={21} />} label={t('nav.agents')} />
+        <NavButton active={activeNav === 'monitor'} onClick={() => onNavChange('monitor')} icon={<ChartColumn size={21} />} label={t('nav.monitor')} />
         <NavButton active={activeNav === 'tools'} onClick={() => onNavChange('tools')} icon={<Wrench size={21} />} label={t('nav.tools')} />
         <NavButton active={activeNav === 'settings'} onClick={() => onNavChange('settings')} icon={<Settings size={21} />} label={t('nav.settings')} />
       </nav>

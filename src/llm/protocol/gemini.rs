@@ -287,24 +287,25 @@ fn build_gemini_request(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    if let Some(level) = thinking_level {
+    if let Some(level) = thinking_level.filter(|level| *level != ThinkingLevel::Off) {
         let thinking_config = if model_id.to_ascii_lowercase().contains("2.5") {
             json!({
                 "thinkingBudget": match level {
-                    ThinkingLevel::Off => 0,
                     ThinkingLevel::Low => 1024,
                     ThinkingLevel::Medium => 4096,
                     ThinkingLevel::High => 8192,
                     ThinkingLevel::XHigh => 16384,
+                    ThinkingLevel::Off => unreachable!(),
                 }
             })
         } else {
             json!({
                 "thinkingLevel": match level {
-                    ThinkingLevel::Off | ThinkingLevel::Low => "MINIMAL",
+                    ThinkingLevel::Low => "MINIMAL",
                     ThinkingLevel::Medium => "LOW",
                     ThinkingLevel::High => "MEDIUM",
                     ThinkingLevel::XHigh => "HIGH",
+                    ThinkingLevel::Off => unreachable!(),
                 }
             })
         };
@@ -680,6 +681,41 @@ mod tests {
         assert!(!request.to_string().contains("saved-reasoning-must-not-be-sent"));
     }
 
+
+    #[test]
+    fn omits_thinking_config_when_level_is_off() {
+        let conversation_id = Uuid::new_v4();
+        let agent_id = Uuid::new_v4();
+        let messages = vec![ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id,
+            conversation_id,
+            role: ChatRole::User,
+            content: "hi".to_string(),
+            reasoning_content: None,
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        }];
+        let request = build_gemini_request(
+            "gemini-3-pro",
+            &messages,
+            "system",
+            &Value::Null,
+            None,
+            Some(ThinkingLevel::Off),
+        )
+        .unwrap();
+        assert!(
+            request
+                .get("generationConfig")
+                .and_then(|cfg| cfg.get("thinkingConfig"))
+                .is_none()
+        );
+    }
     #[test]
     fn parses_output_and_stream_events() {
         let output = parse_gemini_output(&json!({

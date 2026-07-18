@@ -33,7 +33,7 @@ async fn main() -> AppResult<()> {
     let llm_logger = Arc::new(LlmLogger::new(
         &config.data_dir,
         config.settings.llm_log_enabled,
-    ));
+    )?);
     let llm_registry = Arc::new(DefaultLlmRegistry::new(llm_logger.clone()));
     let approval_manager = Arc::new(tools::approval::ApprovalManager::new());
     let codex_runtime = Arc::new(tools::runtime::CodexRuntimeManager::new(&config.data_dir)?);

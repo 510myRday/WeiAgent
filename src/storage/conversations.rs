@@ -397,17 +397,24 @@ impl JsonStore {
 }
 
 fn conversation_usage(messages: &[ChatMessage]) -> ConversationUsage {
-    let mut summary = ConversationUsage {
-        cost_usd: Some(0.0),
-        ..ConversationUsage::default()
+    // Latest model call is a snapshot of current context-window occupancy.
+    // Summing every historical turn overcounts (turn1 50 + turn2 50 is still
+    // ~50 tokens of context, not 100).
+    let Some(usage) = messages.iter().rev().find_map(|message| message.usage.as_ref()) else {
+        return ConversationUsage::default();
     };
-    for usage in messages.iter().filter_map(|message| message.usage.as_ref()) {
-        summary.tokens.add_assign(&usage.tokens);
-        summary.cost_usd = match (summary.cost_usd, usage.cost_usd) {
-            (Some(total), Some(cost)) => Some(total + cost),
-            _ => None,
-        };
+
+    // Prompt tokens (fresh input + cache hits) plus the latest completion occupy
+    // the window for the next turn. Cache writes are billing-only.
+    let context_tokens = usage
+        .tokens
+        .input_tokens
+        .saturating_add(usage.tokens.cache_read_tokens)
+        .saturating_add(usage.tokens.output_tokens);
+
+    ConversationUsage {
+        tokens: usage.tokens.clone(),
+        total_tokens: context_tokens,
+        cost_usd: usage.cost_usd,
     }
-    summary.total_tokens = summary.tokens.total_tokens();
-    summary
 }

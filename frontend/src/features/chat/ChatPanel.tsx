@@ -104,7 +104,7 @@ export function ChatPanel({
   });
 
   const [isStreamMode, setIsStreamMode] = useState(true);
-  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>('off');
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>('medium');
   const [modelTargetAgentId, setModelTargetAgentId] = useState('');
   const [selectedModelValue, setSelectedModelValue] = useState('');
   const [isModelSavePending, setIsModelSavePending] = useState(false);
@@ -250,8 +250,9 @@ export function ChatPanel({
     setSelectedModelValue(activeModelValue);
     setIsModelSavePending(false);
     setIsSavingModel(false);
-    setThinkingLevel('off');
-  }, [activeModelValue, modelTargetAgentId]);
+    // Thinking-capable models default to medium; others stay off (no thinking params).
+    setThinkingLevel(supportsThinking ? 'medium' : 'off');
+  }, [activeModelValue, modelTargetAgentId, supportsThinking]);
 
   useEffect(() => () => {
     const pending = pendingModelSaveRef.current;

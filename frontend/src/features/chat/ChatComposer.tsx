@@ -343,17 +343,7 @@ export const ChatComposer = memo(function ChatComposer({
             </button>
           </div>
           <div className="composer-actions">
-            <div
-              className="conversation-usage"
-              title={t('chat.usageDetail', {
-                input: formatTokenCount(usage.input_tokens, locale),
-                output: formatTokenCount(usage.output_tokens, locale),
-                cacheWrite: formatTokenCount(usage.cache_write_tokens, locale),
-                cacheRead: formatTokenCount(usage.cache_read_tokens, locale),
-                used: formatTokenCount(usage.total_tokens, locale),
-                limit: formatTokenCount(Math.max(1, contextSize), locale),
-              })}
-            >
+            <div className="conversation-usage">
               <ContextUsageRing
                 used={usage.total_tokens}
                 limit={contextSize}
@@ -361,9 +351,19 @@ export const ChatComposer = memo(function ChatComposer({
                   used: formatTokenCount(usage.total_tokens, locale),
                   limit: formatTokenCount(Math.max(1, contextSize), locale),
                 })}
+                detailTitle={t('chat.contextUsageTitle')}
+                detailUsed={t('chat.contextUsageUsed', {
+                  percent: formatUsagePercent(usage.total_tokens, contextSize),
+                  remaining: Math.max(
+                    0,
+                    100 - formatUsagePercent(usage.total_tokens, contextSize),
+                  ),
+                })}
+                detailStats={t('chat.contextUsageStats', {
+                  used: formatTokenCount(usage.total_tokens, locale),
+                  limit: formatTokenCount(Math.max(1, contextSize), locale),
+                })}
               />
-              <span>{formatTokenCount(usage.total_tokens, locale)} {t('chat.tokens')}</span>
-              <strong>{formatCost(usage.cost_usd, locale)}</strong>
             </div>
             <Button
               className={`send-button${isSending ? ' is-stopping' : ''}`}
@@ -427,10 +427,16 @@ function ContextUsageRing({
   used,
   limit,
   label,
+  detailTitle,
+  detailUsed,
+  detailStats,
 }: {
   used: number;
   limit: number;
   label: string;
+  detailTitle: string;
+  detailUsed: string;
+  detailStats: string;
 }) {
   const safeLimit = Math.max(1, Math.floor(limit) || 128000);
   const safeUsed = Math.max(0, used);
@@ -444,34 +450,41 @@ function ContextUsageRing({
   return (
     <span
       className={`context-usage-ring${ratio >= 1 ? ' is-full' : ''}`}
-      role="img"
-      aria-label={label}
+      tabIndex={0}
     >
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
-        <circle
-          className="context-usage-ring__track"
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          strokeWidth={stroke}
-        />
-        <circle
-          className="context-usage-ring__progress"
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          strokeWidth={stroke}
-          strokeDasharray={circumference}
-          strokeDashoffset={dashOffset}
-          strokeLinecap="round"
-          transform={`rotate(-90 ${size / 2} ${size / 2})`}
-        />
-      </svg>
+      <span className="context-usage-ring__icon" role="img" aria-label={label}>
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+          <circle
+            className="context-usage-ring__track"
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            strokeWidth={stroke}
+          />
+          <circle
+            className="context-usage-ring__progress"
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            strokeWidth={stroke}
+            strokeDasharray={circumference}
+            strokeDashoffset={dashOffset}
+            strokeLinecap="round"
+            transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          />
+        </svg>
+      </span>
+      <span className="context-usage-ring__tooltip" role="tooltip">
+        <span className="context-usage-ring__tooltip-title">{detailTitle}</span>
+        <span className="context-usage-ring__tooltip-line">{detailUsed}</span>
+        <span className="context-usage-ring__tooltip-line">{detailStats}</span>
+      </span>
     </span>
   );
 }
+
 function formatTokenCount(value: number, locale: string): string {
   return new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
     notation: value >= 10_000 ? 'compact' : 'standard',
@@ -479,12 +492,8 @@ function formatTokenCount(value: number, locale: string): string {
   }).format(value);
 }
 
-function formatCost(value: number | null | undefined, locale: string): string {
-  if (value == null) return '$--';
-  return new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: value < 0.01 ? 4 : 2,
-    maximumFractionDigits: value < 0.01 ? 6 : 4,
-  }).format(value);
+function formatUsagePercent(used: number, limit: number): number {
+  const safeLimit = Math.max(1, Math.floor(limit) || 128000);
+  const safeUsed = Math.max(0, used);
+  return Math.min(100, Math.round((safeUsed / safeLimit) * 100));
 }

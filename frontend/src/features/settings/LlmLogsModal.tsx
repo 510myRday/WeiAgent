@@ -23,8 +23,8 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
   const loadLogs = useCallback(async () => {
     setIsLoading(true);
     try {
-      const list = await listLlmLogs();
-      setLogs(list);
+      const page = await listLlmLogs({ offset: 0, limit: 200 });
+      setLogs(page.items);
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
     } finally {
@@ -160,6 +160,48 @@ export function LlmLogsModal({ onClose }: LlmLogsModalProps) {
                       <div className="meta-row">
                         <span className="meta-label">{t('llmLogs.status')}</span>
                         <span className={selectedLog.raw_status >= 400 ? 'text-error' : 'text-success'}>{selectedLog.raw_status}</span>
+                      </div>
+                    ) : null}
+                    {selectedLog.first_token_ms != null ? (
+                      <div className="meta-row">
+                        <span className="meta-label">{t('llmLogs.firstToken')}</span>
+                        <span>{t('llmLogs.ms', { value: selectedLog.first_token_ms })}</span>
+                      </div>
+                    ) : null}
+                    {selectedLog.duration_ms != null ? (
+                      <div className="meta-row">
+                        <span className="meta-label">{t('llmLogs.duration')}</span>
+                        <span>{t('llmLogs.ms', { value: selectedLog.duration_ms })}</span>
+                      </div>
+                    ) : null}
+                    {selectedLog.input_tokens != null ? (
+                      <div className="meta-row">
+                        <span className="meta-label">{t('llmLogs.inputTokens')}</span>
+                        <span>{t('llmLogs.tokens', { value: selectedLog.input_tokens })}</span>
+                      </div>
+                    ) : null}
+                    {selectedLog.output_tokens != null ? (
+                      <div className="meta-row">
+                        <span className="meta-label">{t('llmLogs.outputTokens')}</span>
+                        <span>{t('llmLogs.tokens', { value: selectedLog.output_tokens })}</span>
+                      </div>
+                    ) : null}
+                    {selectedLog.cache_read_tokens != null ? (
+                      <div className="meta-row">
+                        <span className="meta-label">{t('llmLogs.cacheReadTokens')}</span>
+                        <span>{t('llmLogs.tokens', { value: selectedLog.cache_read_tokens })}</span>
+                      </div>
+                    ) : null}
+                    {selectedLog.cache_write_tokens != null ? (
+                      <div className="meta-row">
+                        <span className="meta-label">{t('llmLogs.cacheWriteTokens')}</span>
+                        <span>{t('llmLogs.tokens', { value: selectedLog.cache_write_tokens })}</span>
+                      </div>
+                    ) : null}
+                    {selectedLog.cost_usd != null ? (
+                      <div className="meta-row">
+                        <span className="meta-label">{t('llmLogs.cost')}</span>
+                        <span>{t('llmLogs.usd', { value: selectedLog.cost_usd })}</span>
                       </div>
                     ) : null}
                   </div>

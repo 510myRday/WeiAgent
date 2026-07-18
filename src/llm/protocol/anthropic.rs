@@ -277,10 +277,8 @@ fn build_anthropic_request(
     body.insert("system".to_string(), json!(system_prompt));
     body.insert("messages".to_string(), Value::Array(anthropic_messages));
     body.insert("stream".to_string(), Value::Bool(stream));
-    if let Some(level) = thinking_level {
-        if level == ThinkingLevel::Off {
-            body.insert("thinking".to_string(), json!({"type": "disabled"}));
-        } else if supports_adaptive_thinking(&agent.model_id) {
+    if let Some(level) = thinking_level.filter(|level| *level != ThinkingLevel::Off) {
+        if supports_adaptive_thinking(&agent.model_id) {
             body.insert("thinking".to_string(), json!({"type": "adaptive"}));
             body.insert(
                 "output_config".to_string(),
@@ -700,6 +698,22 @@ mod tests {
                     .iter()
                     .any(|block| block["type"] == "tool_result"))
         );
+    }
+
+    #[test]
+    fn omits_thinking_when_level_is_off() {
+        let (agent, messages) = fixture();
+        let request = build_anthropic_request(
+            &agent,
+            &messages,
+            false,
+            "system",
+            &Value::Null,
+            None,
+            Some(ThinkingLevel::Off),
+        )
+        .unwrap();
+        assert!(request.get("thinking").is_none());
     }
 
     #[test]

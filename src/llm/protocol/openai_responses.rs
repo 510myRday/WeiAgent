@@ -212,21 +212,19 @@ fn build_openai_responses_request(
     body.insert("instructions".to_string(), json!(system_prompt));
     body.insert("input".to_string(), Value::Array(input));
     body.insert("stream".to_string(), Value::Bool(stream));
-    if let Some(level) = thinking_level {
+    if let Some(level) = thinking_level.filter(|level| *level != ThinkingLevel::Off) {
         let mut reasoning = Map::new();
         reasoning.insert(
             "effort".to_string(),
             json!(match level {
-                ThinkingLevel::Off => "none",
                 ThinkingLevel::Low => "low",
                 ThinkingLevel::Medium => "medium",
                 ThinkingLevel::High => "high",
                 ThinkingLevel::XHigh => "xhigh",
+                ThinkingLevel::Off => unreachable!(),
             }),
         );
-        if level != ThinkingLevel::Off {
-            reasoning.insert("summary".to_string(), Value::String("auto".to_string()));
-        }
+        reasoning.insert("summary".to_string(), Value::String("auto".to_string()));
         body.insert(
             "reasoning".to_string(),
             Value::Object(reasoning),
@@ -600,6 +598,34 @@ mod tests {
             })
         );
         assert!(!request.to_string().contains("saved-reasoning-must-not-be-sent"));
+    }
+
+    #[test]
+    fn omits_reasoning_when_thinking_is_off() {
+        let (agent, messages) = fixture();
+        let request = build_openai_responses_request(
+            &agent,
+            &messages,
+            false,
+            "system",
+            &Value::Null,
+            None,
+            Some(ThinkingLevel::Off),
+        )
+        .unwrap();
+        assert!(request.get("reasoning").is_none());
+
+        let request = build_openai_responses_request(
+            &agent,
+            &messages,
+            false,
+            "system",
+            &Value::Null,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(request.get("reasoning").is_none());
     }
 
     #[test]

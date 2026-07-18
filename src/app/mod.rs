@@ -135,7 +135,7 @@ mod tests {
             llm_registry: Arc::new(MockLlmRegistry {
                 client: Arc::new(MockChatClient),
             }),
-            llm_logger: Arc::new(LlmLogger::new(tempfile::tempdir().unwrap().path(), false)),
+            llm_logger: Arc::new(LlmLogger::new(tempfile::tempdir().unwrap().path(), false).unwrap()),
             terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
             codex_runtime: test_codex_runtime(&temp_dir),
@@ -559,7 +559,7 @@ mod tests {
             llm_registry: Arc::new(MockLlmRegistry {
                 client: client.clone(),
             }),
-            llm_logger: Arc::new(LlmLogger::new(&root, false)),
+            llm_logger: Arc::new(LlmLogger::new(&root, false).unwrap()),
             terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
             codex_runtime: test_codex_runtime(&root),
@@ -1232,7 +1232,7 @@ mod tests {
         let state = AppState {
             store: store.clone(),
             llm_registry: Arc::new(MockLlmRegistry { client }),
-            llm_logger: Arc::new(LlmLogger::new(&root, false)),
+            llm_logger: Arc::new(LlmLogger::new(&root, false).unwrap()),
             terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
             codex_runtime: test_codex_runtime(&root),

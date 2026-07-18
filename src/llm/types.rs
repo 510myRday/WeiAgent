@@ -127,15 +127,12 @@ pub fn build_chat_request(
         messages: request_messages,
         stream,
         tools,
-        reasoning_effort: thinking_level.map(|level| {
-            match level {
-                ThinkingLevel::Off => "none",
-                ThinkingLevel::Low => "low",
-                ThinkingLevel::Medium => "medium",
-                ThinkingLevel::High => "high",
-                ThinkingLevel::XHigh => "xhigh",
-            }
-            .to_string()
+        reasoning_effort: thinking_level.and_then(|level| match level {
+            ThinkingLevel::Off => None,
+            ThinkingLevel::Low => Some("low".to_string()),
+            ThinkingLevel::Medium => Some("medium".to_string()),
+            ThinkingLevel::High => Some("high".to_string()),
+            ThinkingLevel::XHigh => Some("xhigh".to_string()),
         }),
         stream_options: stream.then(|| serde_json::json!({"include_usage": true})),
         extra_body: sanitized_openai_extra_body(extra_body),

@@ -34,7 +34,6 @@ pub const MIN_SUPPORTED_CODEX_VERSION: &str = "0.137.0";
 const MAX_RUNTIME_DOWNLOAD_BYTES: u64 = 600 * 1024 * 1024;
 const RUNTIME_MANIFEST_FILE: &str = "weiagent-runtime.json";
 const LATEST_VERSION_CACHE_FILE: &str = "latest-version.json";
-const LATEST_VERSION_CACHE_HOURS: i64 = 24;
 const LATEST_VERSION_TIMEOUT: Duration = Duration::from_secs(15);
 const APP_SERVER_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -232,7 +231,13 @@ impl CodexRuntimeManager {
         }
         let _guard = self.latest_check_lock.lock().await;
         let mut status = self.refresh_local().await?;
-        match supporting_runtime::latest_component_version(component, &self.client).await {
+        match supporting_runtime::latest_component_version(
+            component,
+            &self.client,
+            &self.runtimes_root,
+        )
+        .await
+        {
             Ok(target) => {
                 if let Some(component_status) = status
                     .components
@@ -868,7 +873,7 @@ fn component_update_available(detected: Option<&str>, target: Option<&str>) -> b
 
 fn latest_cache_is_fresh(cache: &LatestVersionCache) -> bool {
     let age = chrono::Utc::now().signed_duration_since(cache.checked_at);
-    age >= chrono::Duration::zero() && age < chrono::Duration::hours(LATEST_VERSION_CACHE_HOURS)
+    age >= chrono::Duration::zero() && age < chrono::Duration::hours(supporting_runtime::LATEST_VERSION_CACHE_HOURS)
 }
 
 async fn probe_codex(program: &Path, codex_home: &Path) -> Result<ProbedRuntime, String> {
@@ -1384,14 +1389,18 @@ mod tests {
     }
 
     #[test]
-    fn latest_version_cache_expires_after_one_day() {
+    fn latest_version_cache_expires_after_three_hours() {
         let fresh = LatestVersionCache {
             version: "0.144.5".to_string(),
-            checked_at: chrono::Utc::now() - chrono::Duration::hours(23),
+            checked_at: chrono::Utc::now()
+                - chrono::Duration::hours(2)
+                - chrono::Duration::minutes(59),
         };
         let stale = LatestVersionCache {
             version: "0.144.5".to_string(),
-            checked_at: chrono::Utc::now() - chrono::Duration::hours(25),
+            checked_at: chrono::Utc::now()
+                - chrono::Duration::hours(3)
+                - chrono::Duration::minutes(1),
         };
         assert!(latest_cache_is_fresh(&fresh));
         assert!(!latest_cache_is_fresh(&stale));

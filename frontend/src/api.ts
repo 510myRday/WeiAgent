@@ -12,6 +12,7 @@ import type {
   FetchProviderModelsPayload,
   LlmLogDetail,
   LlmLogEntry,
+  LlmLogListPage,
   ModelProvider,
   ModelProviderPayload,
   ImageAttachment,
@@ -196,8 +197,31 @@ export function deleteConversation(conversationId: string): Promise<void> {
   });
 }
 
-export function listLlmLogs(): Promise<LlmLogEntry[]> {
-  return request<LlmLogEntry[]>('/api/llm-logs');
+export type ListLlmLogsParams = {
+  offset?: number;
+  limit?: number;
+  agentId?: string;
+  agentName?: string;
+  providerName?: string;
+  modelId?: string;
+  q?: string;
+  since?: string;
+  until?: string;
+};
+
+export function listLlmLogs(params: ListLlmLogsParams = {}): Promise<LlmLogListPage> {
+  const search = new URLSearchParams();
+  if (params.offset != null) search.set('offset', String(params.offset));
+  if (params.limit != null) search.set('limit', String(params.limit));
+  if (params.agentId) search.set('agent_id', params.agentId);
+  if (params.agentName) search.set('agent_name', params.agentName);
+  if (params.providerName) search.set('provider_name', params.providerName);
+  if (params.modelId) search.set('model_id', params.modelId);
+  if (params.q) search.set('q', params.q);
+  if (params.since) search.set('since', params.since);
+  if (params.until) search.set('until', params.until);
+  const query = search.toString();
+  return request<LlmLogListPage>(query ? `/api/llm-logs?${query}` : '/api/llm-logs');
 }
 
 export function getLlmLog(logId: string): Promise<LlmLogDetail> {

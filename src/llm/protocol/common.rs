@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use reqwest::RequestBuilder;
 use serde_json::{Map, Value};
@@ -14,7 +14,7 @@ use crate::{
         },
         types::{ChatCompletionOutput, ToolCall, ToolDefinition},
     },
-    storage::LlmLogger,
+    storage::{llm_logs::LlmLogMetrics, LlmLogger},
 };
 
 pub(crate) trait ProtocolAdapter: Clone + Send + Sync + 'static {
@@ -105,6 +105,12 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let url = self.adapter.completion_url(provider, agent, false);
         let log_enabled = self.http.log_enabled();
+        let started = Instant::now();
+        let agent_id = agent.id.to_string();
+        let conversation_id = messages
+            .last()
+            .map(|message| message.conversation_id.to_string());
+
 
         let response = match self
             .http
@@ -119,12 +125,15 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
                 self.http.spawn_log(
                     log_enabled,
                     &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                     &agent.model_id,
                     &provider.name,
                     &request_json,
                     None,
                     None,
                     Some(&error.to_string()),
+                    LlmLogMetrics::timed(started),
                 );
                 return Err(error);
             }
@@ -137,12 +146,15 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some(&error),
+                    LlmLogMetrics::timed(started),
             );
             return Err(AppError::Llm(error));
         }
@@ -155,12 +167,15 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
                 self.http.spawn_log(
                     log_enabled,
                     &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                     &agent.model_id,
                     &provider.name,
                     &request_json,
                     Some(&body),
                     Some(status.as_u16()),
                     None,
+                    LlmLogMetrics::timed(started),
                 );
                 Ok(output)
             }
@@ -169,12 +184,15 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
                 self.http.spawn_log(
                     log_enabled,
                     &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                     &agent.model_id,
                     &provider.name,
                     &request_json,
                     Some(&body),
                     Some(status.as_u16()),
                     Some(&error.to_string()),
+                    LlmLogMetrics::timed(started),
                 );
                 Err(error)
             }
@@ -182,12 +200,15 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
                 self.http.spawn_log(
                     log_enabled,
                     &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                     &agent.model_id,
                     &provider.name,
                     &request_json,
                     Some(&body),
                     Some(status.as_u16()),
                     Some(&error.to_string()),
+                    LlmLogMetrics::timed(started),
                 );
                 Err(error)
             }
@@ -217,6 +238,12 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let url = self.adapter.completion_url(provider, agent, true);
         let log_enabled = self.http.log_enabled();
+        let started = Instant::now();
+        let agent_id = agent.id.to_string();
+        let conversation_id = messages
+            .last()
+            .map(|message| message.conversation_id.to_string());
+
         let response = match self
             .http
             .retry_send(&options, || {
@@ -230,12 +257,15 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
                 self.http.spawn_log(
                     log_enabled,
                     &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                     &agent.model_id,
                     &provider.name,
                     &request_json,
                     None,
                     None,
                     Some(&error.to_string()),
+                    LlmLogMetrics::timed(started),
                 );
                 return Err(error);
             }
@@ -250,12 +280,15 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some(&error),
+                    LlmLogMetrics::timed(started),
             );
             return Err(AppError::Llm(error));
         }
@@ -268,10 +301,13 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
                 logger: self.http.logger(),
                 enabled: log_enabled,
                 agent_name: agent.name.clone(),
+                agent_id: Some(agent_id),
+                conversation_id,
                 model_id: agent.model_id.clone(),
                 provider_name: provider.name.clone(),
                 request_json,
                 status: status.as_u16(),
+                started,
             },
         ))
     }

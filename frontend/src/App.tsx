@@ -12,6 +12,7 @@ import { userErrorMessage } from './utils/userError';
 const AgentsPanel = lazy(() => import('./features/agents/AgentsPanel').then((module) => ({ default: module.AgentsPanel })));
 const ToolsPanel = lazy(() => import('./features/tools/ToolsPanel').then((module) => ({ default: module.ToolsPanel })));
 const SettingsPanel = lazy(() => import('./features/settings/SettingsPanel').then((module) => ({ default: module.SettingsPanel })));
+const MonitorPanel = lazy(() => import('./features/monitor/MonitorPanel').then((module) => ({ default: module.MonitorPanel })));
 
 type SettingsSection = 'runtime' | 'agent' | 'providers';
 
@@ -183,6 +184,16 @@ export function App() {
           />
         )}
         <Suspense fallback={<PanelLoading label={t('sidebar.loading')} />}>
+        {activeNav === 'monitor' && (
+          <MonitorPanel
+            agents={agents}
+            providers={providers}
+            settings={settingsForm}
+            onSettingsSave={saveSettingsWithLocale}
+            onOpenMain={openMainPane}
+            onBackToList={openListPane}
+          />
+        )}
         {activeNav === 'agents' && (
           <AgentsPanel
             agents={agents}

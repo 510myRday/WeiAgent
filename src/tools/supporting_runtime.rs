@@ -9,7 +9,7 @@ use std::{
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
 use semver::Version;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{fs, io::AsyncWriteExt, process::Command};
 use uuid::Uuid;
@@ -20,6 +20,9 @@ use crate::{
 };
 
 const MAX_DOWNLOAD_BYTES: u64 = 600 * 1024 * 1024;
+const COMPONENT_LATEST_VERSION_CACHE_DIR: &str = "latest-versions";
+/// Shared TTL for all runtime latest-version lookups (Node/Python/uv/Git and future components).
+pub const LATEST_VERSION_CACHE_HOURS: i64 = 3;
 
 #[derive(Debug)]
 struct ProbeCandidate {
@@ -58,7 +61,51 @@ struct GithubTag {
     name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ComponentLatestVersionCache {
+    version: String,
+    checked_at: chrono::DateTime<chrono::Utc>,
+}
+
 pub async fn latest_component_version(
+    kind: RuntimeComponentKind,
+    client: &reqwest::Client,
+    cache_root: &Path,
+) -> AppResult<String> {
+    if let Some(cache) = read_component_latest_cache(cache_root, kind).await
+        && component_latest_cache_is_fresh(&cache)
+    {
+        return Ok(cache.version);
+    }
+
+    match fetch_latest_component_version(kind, client).await {
+        Ok(version) => {
+            if let Err(error) = write_component_latest_cache(cache_root, kind, &version).await {
+                tracing::warn!(
+                    ?kind,
+                    %error,
+                    "failed to persist component latest version cache"
+                );
+            }
+            Ok(version)
+        }
+        Err(error) => {
+            if let Some(cache) = read_component_latest_cache(cache_root, kind).await {
+                tracing::warn!(
+                    ?kind,
+                    %error,
+                    cached = %cache.version,
+                    "using stale component latest version cache after lookup failure"
+                );
+                Ok(cache.version)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+async fn fetch_latest_component_version(
     kind: RuntimeComponentKind,
     client: &reqwest::Client,
 ) -> AppResult<String> {
@@ -648,7 +695,7 @@ async fn install_python(root: &Path, client: &reqwest::Client) -> AppResult<()> 
         .ok_or_else(|| AppError::Process("uv is required to install Python".to_string()))?;
     let install_dir = root.join("python");
     fs::create_dir_all(&install_dir).await?;
-    let target_version = latest_component_version(RuntimeComponentKind::Python, client).await?;
+    let target_version = latest_component_version(RuntimeComponentKind::Python, client, root).await?;
     let output = Command::new(&uv)
         .args(["python", "install", &target_version])
         .env("UV_PYTHON_INSTALL_DIR", &install_dir)
@@ -1029,6 +1076,59 @@ fn unsupported_platform() -> AppError {
     AppError::BadRequest("managed runtime is not available for this platform".to_string())
 }
 
+fn component_cache_key(kind: RuntimeComponentKind) -> Option<&'static str> {
+    match kind {
+        RuntimeComponentKind::Node => Some("node"),
+        RuntimeComponentKind::Python => Some("python"),
+        RuntimeComponentKind::Uv => Some("uv"),
+        RuntimeComponentKind::Git => Some("git"),
+        RuntimeComponentKind::Codex => None,
+    }
+}
+
+fn component_latest_cache_path(cache_root: &Path, kind: RuntimeComponentKind) -> Option<PathBuf> {
+    let key = component_cache_key(kind)?;
+    Some(
+        cache_root
+            .join(COMPONENT_LATEST_VERSION_CACHE_DIR)
+            .join(format!("{key}.json")),
+    )
+}
+
+fn component_latest_cache_is_fresh(cache: &ComponentLatestVersionCache) -> bool {
+    let age = chrono::Utc::now().signed_duration_since(cache.checked_at);
+    age >= chrono::Duration::zero()
+        && age < chrono::Duration::hours(LATEST_VERSION_CACHE_HOURS)
+}
+
+async fn read_component_latest_cache(
+    cache_root: &Path,
+    kind: RuntimeComponentKind,
+) -> Option<ComponentLatestVersionCache> {
+    let path = component_latest_cache_path(cache_root, kind)?;
+    let content = fs::read_to_string(path).await.ok()?;
+    let cache: ComponentLatestVersionCache = serde_json::from_str(&content).ok()?;
+    if cache.version.trim().is_empty() {
+        return None;
+    }
+    Some(cache)
+}
+
+async fn write_component_latest_cache(
+    cache_root: &Path,
+    kind: RuntimeComponentKind,
+    version: &str,
+) -> AppResult<()> {
+    let path = component_latest_cache_path(cache_root, kind).ok_or_else(|| {
+        AppError::BadRequest("Codex version is managed by the terminal runtime manager".to_string())
+    })?;
+    let cache = ComponentLatestVersionCache {
+        version: version.to_string(),
+        checked_at: chrono::Utc::now(),
+    };
+    crate::fsutil::write_atomic(&path, serde_json::to_string_pretty(&cache)?).await
+}
+
 fn download_error(error: reqwest::Error) -> AppError {
     AppError::Process(format!("runtime download failed: {error}"))
 }
@@ -1147,5 +1247,34 @@ mod tests {
 
         assert_eq!(paths.first(), Some(&newer));
         assert_eq!(paths.get(1), Some(&older));
+    }
+
+    #[test]
+    fn component_latest_version_cache_expires_after_three_hours() {
+        let fresh = ComponentLatestVersionCache {
+            version: "2.55.0".to_string(),
+            checked_at: chrono::Utc::now() - chrono::Duration::hours(2)
+                - chrono::Duration::minutes(59),
+        };
+        let stale = ComponentLatestVersionCache {
+            version: "2.55.0".to_string(),
+            checked_at: chrono::Utc::now() - chrono::Duration::hours(3)
+                - chrono::Duration::minutes(1),
+        };
+        assert!(component_latest_cache_is_fresh(&fresh));
+        assert!(!component_latest_cache_is_fresh(&stale));
+    }
+
+    #[tokio::test]
+    async fn component_latest_version_cache_round_trips() {
+        let temp = tempfile::tempdir().unwrap();
+        write_component_latest_cache(temp.path(), RuntimeComponentKind::Git, "2.55.0")
+            .await
+            .unwrap();
+        let cache = read_component_latest_cache(temp.path(), RuntimeComponentKind::Git)
+            .await
+            .unwrap();
+        assert_eq!(cache.version, "2.55.0");
+        assert!(component_latest_cache_is_fresh(&cache));
     }
 }

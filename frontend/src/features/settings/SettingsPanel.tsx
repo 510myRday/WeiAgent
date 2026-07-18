@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, FormEvent } from 'react';
+import { useState, useEffect, useRef, FormEvent, type SyntheticEvent } from 'react';
 import {
   ArrowLeft,
   ChevronDown,
@@ -6,7 +6,6 @@ import {
   Download,
   Eye,
   EyeOff,
-  FileText,
   KeyRound,
   Plus,
   Save,
@@ -28,7 +27,6 @@ import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
 import { AutoSaveIndicator, Button, FormField, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
 import { userErrorMessage } from '../../utils/userError';
-import { LlmLogsModal } from './LlmLogsModal';
 
 interface SettingsPanelProps {
   settingsForm: AppSettings;
@@ -57,6 +55,7 @@ type PendingProviderSave = {
   serialized: string;
   payload: ModelProviderPayload;
 };
+type ExtraBodyStatus = 'empty' | 'invalid' | 'valid';
 
 type ProviderForm = {
   provider_type: ProviderType;
@@ -235,6 +234,16 @@ function serializeRuntimeSettings(settings: AppSettings): string {
   });
 }
 
+function formatExtraBodyText(extraBody: unknown): string {
+  if (extraBody == null || typeof extraBody !== 'object' || Array.isArray(extraBody)) {
+    return '';
+  }
+  if (Object.keys(extraBody as Record<string, unknown>).length === 0) {
+    return '';
+  }
+  return JSON.stringify(extraBody, null, 2);
+}
+
 function providerToForm(provider: ModelProvider): ProviderForm {
   return {
     provider_type: provider.provider_type,
@@ -243,23 +252,39 @@ function providerToForm(provider: ModelProvider): ProviderForm {
     api_key: '',
     modelsText: provider.models.join('\n'),
     modelConfigs: syncModelConfigs(provider.models, provider.model_configs ?? []),
-    extraBodyText: provider.extra_body && Object.keys(provider.extra_body).length > 0
-      ? JSON.stringify(provider.extra_body, null, 2)
-      : '',
+    extraBodyText: formatExtraBodyText(provider.extra_body),
   };
+}
+
+function parseExtraBodyText(text: string): {
+  status: ExtraBodyStatus;
+  value?: Record<string, unknown>;
+} {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return { status: 'empty' };
+  }
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { status: 'invalid' };
+    }
+    return {
+      status: 'valid',
+      value: parsed as Record<string, unknown>,
+    };
+  } catch {
+    return { status: 'invalid' };
+  }
 }
 
 function buildProviderPayload(
   form: ProviderForm,
   requireApiKey: boolean,
 ): ModelProviderPayload | null {
-  let extraBody: Record<string, unknown> | undefined;
-  if (form.extraBodyText.trim()) {
-    try {
-      extraBody = JSON.parse(form.extraBodyText) as Record<string, unknown>;
-    } catch {
-      return null;
-    }
+  const parsedExtraBody = parseExtraBodyText(form.extraBodyText);
+  if (parsedExtraBody.status === 'invalid') {
+    return null;
   }
 
   const models = parseModels(form.modelsText);
@@ -270,7 +295,11 @@ function buildProviderPayload(
     api_key: form.api_key.trim(),
     models,
     model_configs: syncModelConfigs(models, form.modelConfigs),
-    extra_body: extraBody,
+    // Always send an object so PUT updates apply (JSON null becomes Option::None
+    // on the backend and would leave the previous extra_body unchanged).
+    extra_body: parsedExtraBody.status === 'valid'
+      ? parsedExtraBody.value
+      : {},
   };
 
   if (
@@ -297,6 +326,28 @@ function serializeProviderForm(form: ProviderForm): string {
   });
 }
 
+/** Rebuild editor state from a serializeProviderForm snapshot, clearing api_key. */
+function formFromSerializedSnapshot(serialized: string): ProviderForm {
+  const snap = JSON.parse(serialized) as {
+    provider_type: ProviderType;
+    name: string;
+    base_url: string;
+    models: string[];
+    model_configs: ModelConfig[];
+    extra_body_text: string;
+  };
+  return {
+    provider_type: snap.provider_type,
+    name: snap.name,
+    base_url: snap.base_url,
+    api_key: '',
+    modelsText: snap.models.join('\n'),
+    modelConfigs: snap.model_configs ?? [],
+    // Keep the exact extra-body text the user saved (not server pretty-print).
+    extraBodyText: snap.extra_body_text ?? '',
+  };
+}
+
 export function SettingsPanel({
   settingsForm,
   onSettingsFormChange,
@@ -318,11 +369,11 @@ export function SettingsPanel({
   const [isSubmittingProvider, setIsSubmittingProvider] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
-  const [showLlmLogs, setShowLlmLogs] = useState(false);
   const [runtimeDirty, setRuntimeDirty] = useState(false);
   const [autoSaveStatus, setAutoSaveStatus] = useState<RuntimeAutoSaveStatus>('idle');
   const [providerDirty, setProviderDirty] = useState(false);
   const [providerAutoSaveStatus, setProviderAutoSaveStatus] = useState<ProviderAutoSaveStatus>('idle');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const latestSerializedRef = useRef('');
   const persistedSerializedRef = useRef('');
@@ -361,6 +412,7 @@ export function SettingsPanel({
 
   const activeProvider = providers.find((provider) => provider.id === activeProviderId);
   const modelCount = parseModels(providerForm.modelsText).length;
+  const extraBodyStatus = parseExtraBodyText(providerForm.extraBodyText).status;
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -410,6 +462,7 @@ export function SettingsPanel({
       setShowApiKey(false);
       setProviderDirty(false);
       setProviderAutoSaveStatus('idle');
+      setAdvancedOpen(false);
       return;
     }
     const nextForm = providerToForm(activeProvider);
@@ -418,6 +471,7 @@ export function SettingsPanel({
     setShowApiKey(false);
     setProviderDirty(false);
     setProviderAutoSaveStatus('idle');
+    setAdvancedOpen(Boolean(nextForm.extraBodyText.trim()));
     providerLatestSerializedByIdRef.current.set(activeProvider.id, serialized);
     providerPersistedSerializedByIdRef.current.set(activeProvider.id, serialized);
   }, [activeProvider, activeProviderId]);
@@ -611,18 +665,22 @@ export function SettingsPanel({
 
     let retryDelay = 0;
     try {
-      const updated = await onProviderEditRef.current(pending.providerId, pending.payload);
-      const savedForm = providerToForm(updated);
-      const savedSerialized = serializeProviderForm(savedForm);
-      providerPersistedSerializedByIdRef.current.set(pending.providerId, savedSerialized);
+      await onProviderEditRef.current(pending.providerId, pending.payload);
       providerSaveRetryCountRef.current = 0;
 
+      // Restore from the draft snapshot we just saved. Do NOT rebuild from the API
+      // response: that used to replace the textarea with placeholder text when
+      // extra_body came back as null/{} or with different formatting.
       if (
         isMountedRef.current
         && activeProviderIdRef.current === pending.providerId
         && providerLatestSerializedByIdRef.current.get(pending.providerId) === pending.serialized
       ) {
-        providerLatestSerializedByIdRef.current.set(pending.providerId, savedSerialized);
+        const nextForm = formFromSerializedSnapshot(pending.serialized);
+        const nextSerialized = serializeProviderForm(nextForm);
+        providerLatestSerializedByIdRef.current.set(pending.providerId, nextSerialized);
+        providerPersistedSerializedByIdRef.current.set(pending.providerId, nextSerialized);
+
         const queuedSave = pendingProviderSaveRef.current as PendingProviderSave | null;
         if (queuedSave?.serialized === pending.serialized) {
           pendingProviderSaveRef.current = null;
@@ -631,10 +689,12 @@ export function SettingsPanel({
           window.clearTimeout(providerSaveTimerRef.current);
           providerSaveTimerRef.current = undefined;
         }
-        setProviderForm(savedForm);
+        setProviderForm(nextForm);
         setShowApiKey(false);
         setProviderDirty(false);
         setProviderAutoSaveStatus('saved');
+      } else {
+        providerPersistedSerializedByIdRef.current.set(pending.providerId, pending.serialized);
       }
     } catch (cause) {
       const attempt = providerSaveRetryCountRef.current + 1;
@@ -752,15 +812,12 @@ export function SettingsPanel({
   }
 
   async function handleFetchModels() {
-    let extraBody: Record<string, unknown> | undefined;
-    if (providerForm.extraBodyText.trim()) {
-      try {
-        extraBody = JSON.parse(providerForm.extraBodyText);
-      } catch {
-        toast.warning(t('error.invalidJson'));
-        return;
-      }
+    const parsedExtraBody = parseExtraBodyText(providerForm.extraBodyText);
+    if (parsedExtraBody.status === 'invalid') {
+      toast.warning(t('error.invalidJson'));
+      return;
     }
+    const extraBody = parsedExtraBody.value;
     const baseUrl = providerForm.base_url.trim();
     const apiKey = providerForm.api_key.trim();
     const canUseStoredKey = Boolean(
@@ -961,21 +1018,6 @@ export function SettingsPanel({
                 </FormField>
               </div>
               <p className="hint-text small-hint">{t('settings.agentRetryHint')}</p>
-              <div className="llm-log-toggle-row">
-                <label className="toggle-label">
-                  <input
-                    id="settings-llm-log"
-                    type="checkbox"
-                    checked={settingsForm.llm_log_enabled}
-                    onChange={(e) => patchRuntimeSettings({ llm_log_enabled: e.target.checked })}
-                  />
-                  <span className="toggle-text">{t('settings.llmLogEnabled')}</span>
-                </label>
-                <Button variant="secondary" type="button" onClick={() => setShowLlmLogs(true)} icon={<FileText size={15} />}>
-                  {t('llmLogs.title')}
-                </Button>
-              </div>
-              <p className="hint-text small-hint">{t('settings.llmLogHint')}</p>
             </div>
           ) : (
             <div className="provider-page">
@@ -1223,9 +1265,11 @@ export function SettingsPanel({
                 </section>
 
                 <details
-                  key={`${activeProvider?.id ?? 'new'}-${providerForm.provider_type}`}
                   className="provider-advanced"
-                  open={Boolean(providerForm.extraBodyText)}
+                  open={advancedOpen}
+                  onToggle={(event: SyntheticEvent<HTMLDetailsElement>) => {
+                    setAdvancedOpen(event.currentTarget.open);
+                  }}
                 >
                   <summary>
                     <span className="provider-advanced__icon" aria-hidden="true">
@@ -1235,8 +1279,10 @@ export function SettingsPanel({
                       <strong>{t('provider.advanced')}</strong>
                       <small>{t('provider.extraBody')}</small>
                     </span>
-                    {providerForm.extraBodyText.trim() ? (
+                    {extraBodyStatus === 'valid' ? (
                       <span className="mini-status-badge">{t('provider.advancedConfigured')}</span>
+                    ) : extraBodyStatus === 'invalid' ? (
+                      <span className="mini-status-badge is-required">{t('provider.advancedInvalid')}</span>
                     ) : null}
                     <ChevronDown className="provider-advanced__chevron" size={17} aria-hidden="true" />
                   </summary>
@@ -1244,11 +1290,23 @@ export function SettingsPanel({
                     <textarea
                       id="provider-extra-body"
                       value={providerForm.extraBodyText}
-                      onChange={(e) => changeProviderForm((current) => ({ ...current, extraBodyText: e.target.value }))}
+                      onChange={(e) => {
+                        const nextValue = e.target.value;
+                        changeProviderForm((current) => ({ ...current, extraBodyText: nextValue }));
+                        if (nextValue.trim()) {
+                          setAdvancedOpen(true);
+                        }
+                      }}
                       rows={5}
                       placeholder='{"temperature": 0.7}'
                       disabled={isSubmittingProvider}
+                      aria-invalid={extraBodyStatus === 'invalid'}
                     />
+                    {extraBodyStatus === 'invalid' ? (
+                      <p className="hint-text provider-extra-body-error" role="alert">
+                        {t('error.invalidJson')}
+                      </p>
+                    ) : null}
                   </FormField>
                 </details>
 
@@ -1265,7 +1323,6 @@ export function SettingsPanel({
           </div>
         )}
       />
-      {showLlmLogs ? <LlmLogsModal onClose={() => setShowLlmLogs(false)} /> : null}
     </>
   );
 }

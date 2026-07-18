@@ -19,7 +19,7 @@ export type ModelProvider = {
   masked_api_key: string;
   models: string[];
   model_configs: ModelConfig[];
-  extra_body: Record<string, unknown>;
+  extra_body: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 };
@@ -49,7 +49,7 @@ export type ModelProviderPayload = {
   api_key: string;
   models: string[];
   model_configs: ModelConfig[];
-  extra_body?: Record<string, unknown>;
+  extra_body?: Record<string, unknown> | null;
 };
 
 export type FetchProviderModelsPayload = {
@@ -291,22 +291,69 @@ export type StreamEvent =
       };
     };
 
-export type NavKey = 'chat' | 'agents' | 'tools' | 'settings';
+export type NavKey = 'chat' | 'monitor' | 'agents' | 'tools' | 'settings';
 
 export type MobileView = 'list' | 'main';
 
 export type LlmLogEntry = {
   id: string;
   agent_name: string;
+  agent_id?: string;
+  conversation_id?: string;
   model_id: string;
   provider_name: string;
   created_at: string;
+  raw_status?: number;
+  first_token_ms?: number;
+  duration_ms?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_write_tokens?: number;
+  cache_read_tokens?: number;
+  cost_usd?: number;
+  error?: string;
+  has_payload?: boolean;
 };
 
 export type LlmLogDetail = LlmLogEntry & {
   raw_request: string;
   raw_response?: string;
-  raw_status?: number;
-  error?: string;
+};
+
+export type LlmLogAgentStat = {
+  agent_key: string;
+  agent_id?: string;
+  agent_name: string;
+  request_count: number;
+  latest_at: string;
+};
+
+export type LlmLogModelStat = {
+  model_key: string;
+  provider_name: string;
+  model_id: string;
+  request_count: number;
+  latest_at: string;
+};
+
+export type LlmLogSummary = {
+  request_count: number;
+  success_count: number;
+  error_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cost_usd: number;
+};
+
+export type LlmLogListPage = {
+  items: LlmLogEntry[];
+  total: number;
+  offset: number;
+  limit: number;
+  agent_stats?: LlmLogAgentStat[];
+  model_stats?: LlmLogModelStat[];
+  summary?: LlmLogSummary;
 };
 

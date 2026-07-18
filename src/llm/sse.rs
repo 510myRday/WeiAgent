@@ -42,6 +42,8 @@ pub fn parse_sse_line(line: &str) -> Vec<AppResult<StreamEvent>> {
                     for tc in tool_calls {
                         if let (Some(id), Some(name)) =
                             (&tc.id, tc.function.as_ref().and_then(|f| f.name.as_ref()))
+                            && !id.is_empty()
+                            && !name.is_empty()
                         {
                             events.push(Ok(StreamEvent::ToolCallStart {
                                 index: tc.index,
@@ -142,6 +144,37 @@ mod tests {
             StreamEvent::ToolCallArgsDelta { index: 0, .. }
         ));
         assert!(matches!(&events[2], StreamEvent::FinishedWithToolCalls));
+    }
+
+    #[test]
+    fn ignores_empty_tool_call_id_and_name_on_argument_deltas() {
+        // ModelScope / DeepSeek stream subsequent tool-call chunks with id:"" and
+        // name:"" instead of omitting those fields. Those empty strings must not
+        // emit another ToolCallStart that would wipe a valid start.
+        let parsed = parse_sse_chunk(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"execute_terminal\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\
+             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"type\":\"function\",\"function\":{\"name\":\"\",\"arguments\":\"{\\\"command\\\": \\\"echo hi\\\"}\"}}]},\"finish_reason\":null}]}\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n",
+        );
+        let events: Vec<_> = parsed.into_iter().map(Result::unwrap).collect();
+        assert_eq!(events.len(), 3);
+        assert!(
+            matches!(&events[0], StreamEvent::ToolCallStart { index: 0, id, name } if id == "call_1" && name == "execute_terminal")
+        );
+        assert!(matches!(
+            &events[1],
+            StreamEvent::ToolCallArgsDelta {
+                index: 0,
+                arguments
+            } if arguments == "{\"command\": \"echo hi\"}"
+        ));
+        assert!(matches!(&events[2], StreamEvent::FinishedWithToolCalls));
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                StreamEvent::ToolCallStart { id, name, .. } if id.is_empty() || name.is_empty()
+            ))
+        );
     }
 
     #[test]

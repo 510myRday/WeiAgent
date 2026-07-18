@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use futures_util::StreamExt;
 use reqwest::{RequestBuilder, Response};
@@ -9,7 +12,10 @@ use crate::{
         client::{ChatStream, RequestOptions},
         types::StreamEvent,
     },
-    storage::LlmLogger,
+    storage::{
+        llm_logs::{elapsed_ms, LlmLogMetrics},
+        LlmLogger,
+    },
 };
 
 pub const MAX_LLM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
@@ -92,25 +98,32 @@ impl LlmHttp {
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_log(
         &self,
-        enabled: bool,
+        // When true, persist full request/response payloads; summary metrics always persist.
+        include_payload: bool,
         agent_name: &str,
+        agent_id: Option<&str>,
+        conversation_id: Option<&str>,
         model_id: &str,
         provider_name: &str,
         raw_request: &str,
         raw_response: Option<&str>,
         raw_status: Option<u16>,
         error: Option<&str>,
+        metrics: LlmLogMetrics,
     ) {
         spawn_log(
             &self.logger,
-            enabled,
+            include_payload,
             agent_name,
+            agent_id,
+            conversation_id,
             model_id,
             provider_name,
             raw_request,
             raw_response,
             raw_status,
             error,
+            metrics,
         );
     }
 }
@@ -118,21 +131,24 @@ impl LlmHttp {
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_log(
     logger: &Option<Arc<LlmLogger>>,
-    enabled: bool,
+    // When true, persist full request/response payloads; summary metrics always persist.
+    include_payload: bool,
     agent_name: &str,
+    agent_id: Option<&str>,
+    conversation_id: Option<&str>,
     model_id: &str,
     provider_name: &str,
     raw_request: &str,
     raw_response: Option<&str>,
     raw_status: Option<u16>,
     error: Option<&str>,
+    metrics: LlmLogMetrics,
 ) {
-    if !enabled {
-        return;
-    }
     if let Some(logger) = logger {
         let logger = logger.clone();
         let agent_name = agent_name.to_string();
+        let agent_id = agent_id.map(str::to_string);
+        let conversation_id = conversation_id.map(str::to_string);
         let model_id = model_id.to_string();
         let provider_name = provider_name.to_string();
         let raw_request = raw_request.to_string();
@@ -142,12 +158,16 @@ pub fn spawn_log(
             let _ = logger
                 .write_log(
                     &agent_name,
+                    agent_id.as_deref(),
+                    conversation_id.as_deref(),
                     &model_id,
                     &provider_name,
                     &raw_request,
                     raw_response.as_deref(),
                     raw_status,
                     error.as_deref(),
+                    metrics,
+                    include_payload,
                 )
                 .await;
         });
@@ -192,10 +212,26 @@ pub struct StreamLogContext {
     pub logger: Option<Arc<LlmLogger>>,
     pub enabled: bool,
     pub agent_name: String,
+    pub agent_id: Option<String>,
+    pub conversation_id: Option<String>,
     pub model_id: String,
     pub provider_name: String,
     pub request_json: String,
     pub status: u16,
+    pub started: Instant,
+}
+
+fn is_first_token_event(event: &StreamEvent) -> bool {
+    matches!(
+        event,
+        StreamEvent::TextDelta(_)
+            | StreamEvent::ReasoningDelta(_)
+            | StreamEvent::ToolCallStart { .. }
+    )
+}
+
+fn stream_metrics(started: Instant, first_token_ms: Option<u64>) -> LlmLogMetrics {
+    LlmLogMetrics::timed(started).with_first_token(first_token_ms)
 }
 
 pub fn capture_log_line(
@@ -257,6 +293,7 @@ pub fn stream_response(
         let mut raw_lines = Vec::new();
         let mut raw_bytes = 0_usize;
         let mut raw_truncated = false;
+        let mut first_token_ms = None;
 
         loop {
             let next = match tokio::time::timeout(options.timeout, bytes.next()).await {
@@ -270,12 +307,15 @@ pub fn stream_response(
                         &context.logger,
                         context.enabled,
                         &context.agent_name,
+                        context.agent_id.as_deref(),
+                        context.conversation_id.as_deref(),
                         &context.model_id,
                         &context.provider_name,
                         &context.request_json,
                         Some(&format_stream_log(&raw_lines, raw_truncated)),
                         Some(context.status),
                         Some(&error.to_string()),
+                        stream_metrics(context.started, first_token_ms),
                     );
                     yield Err(error);
                     return;
@@ -295,12 +335,15 @@ pub fn stream_response(
                                     &context.logger,
                                     context.enabled,
                                     &context.agent_name,
+                        context.agent_id.as_deref(),
+                        context.conversation_id.as_deref(),
                                     &context.model_id,
                                     &context.provider_name,
                                     &context.request_json,
                                     Some(&format_stream_log(&raw_lines, raw_truncated)),
                                     Some(context.status),
                                     Some(&error.to_string()),
+                                    stream_metrics(context.started, first_token_ms),
                                 );
                                 yield Err(error);
                                 return;
@@ -314,18 +357,26 @@ pub fn stream_response(
                         );
                         for event in parser.parse_line(&line) {
                             match event {
-                                Ok(event) => yield Ok(event),
+                                Ok(event) => {
+                                    if first_token_ms.is_none() && is_first_token_event(&event) {
+                                        first_token_ms = Some(elapsed_ms(context.started));
+                                    }
+                                    yield Ok(event);
+                                }
                                 Err(error) => {
                                     spawn_log(
                                         &context.logger,
                                         context.enabled,
                                         &context.agent_name,
+                        context.agent_id.as_deref(),
+                        context.conversation_id.as_deref(),
                                         &context.model_id,
                                         &context.provider_name,
                                         &context.request_json,
                                         Some(&format_stream_log(&raw_lines, raw_truncated)),
                                         Some(context.status),
                                         Some(&error.to_string()),
+                                        stream_metrics(context.started, first_token_ms),
                                     );
                                     yield Err(error);
                                     return;
@@ -346,12 +397,15 @@ pub fn stream_response(
                         &context.logger,
                         context.enabled,
                         &context.agent_name,
+                        context.agent_id.as_deref(),
+                        context.conversation_id.as_deref(),
                         &context.model_id,
                         &context.provider_name,
                         &context.request_json,
                         Some(&format_stream_log(&raw_lines, raw_truncated)),
                         Some(context.status),
                         Some(&error.to_string()),
+                        stream_metrics(context.started, first_token_ms),
                     );
                     yield Err(error);
                     return;
@@ -365,12 +419,15 @@ pub fn stream_response(
                     &context.logger,
                     context.enabled,
                     &context.agent_name,
+                        context.agent_id.as_deref(),
+                        context.conversation_id.as_deref(),
                     &context.model_id,
                     &context.provider_name,
                     &context.request_json,
                     Some(&format_stream_log(&raw_lines, raw_truncated)),
                     Some(context.status),
                     Some(&error.to_string()),
+                    stream_metrics(context.started, first_token_ms),
                 );
                 yield Err(error);
                 return;
@@ -383,19 +440,47 @@ pub fn stream_response(
                 &mut raw_truncated,
             );
             for event in parser.parse_line(&line) {
-                yield event;
+                match event {
+                    Ok(event) => {
+                        if first_token_ms.is_none() && is_first_token_event(&event) {
+                            first_token_ms = Some(elapsed_ms(context.started));
+                        }
+                        yield Ok(event);
+                    }
+                    Err(error) => {
+                        spawn_log(
+                            &context.logger,
+                            context.enabled,
+                            &context.agent_name,
+                        context.agent_id.as_deref(),
+                        context.conversation_id.as_deref(),
+                            &context.model_id,
+                            &context.provider_name,
+                            &context.request_json,
+                            Some(&format_stream_log(&raw_lines, raw_truncated)),
+                            Some(context.status),
+                            Some(&error.to_string()),
+                            stream_metrics(context.started, first_token_ms),
+                        );
+                        yield Err(error);
+                        return;
+                    }
+                }
             }
         }
         spawn_log(
             &context.logger,
             context.enabled,
             &context.agent_name,
+                        context.agent_id.as_deref(),
+                        context.conversation_id.as_deref(),
             &context.model_id,
             &context.provider_name,
             &context.request_json,
             Some(&format_stream_log(&raw_lines, raw_truncated)),
             Some(context.status),
             None,
+            stream_metrics(context.started, first_token_ms),
         );
     };
     Box::pin(stream)
@@ -435,4 +520,3 @@ mod tests {
         server.abort();
     }
 }
-

@@ -19,7 +19,7 @@
   padding: 24px 28px;
   overflow: visible;
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface-pane);
   box-shadow: var(--shadow-xs);
   transition: border-color var(--duration-fast) var(--ease-standard);
@@ -367,7 +367,7 @@
   margin-top: 2px;
   padding: 26px 28px 30px;
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface-pane);
   box-shadow: var(--shadow-xs);
 }
@@ -462,7 +462,7 @@
 .agent-tool-list {
   overflow: hidden;
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface-pane);
   box-shadow: var(--shadow-xs);
 }

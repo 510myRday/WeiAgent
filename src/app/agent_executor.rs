@@ -722,8 +722,12 @@ async fn stream_llm_iteration(
             }
             StreamEvent::ToolCallStart { index, id, name } => {
                 let builder = calls.entry(index).or_default();
-                builder.id = id;
-                builder.name = name;
+                if !id.is_empty() {
+                    builder.id = id;
+                }
+                if !name.is_empty() {
+                    builder.name = name;
+                }
             }
             StreamEvent::ToolCallArgsDelta { index, arguments } => {
                 let builder = calls.entry(index).or_default();
@@ -975,23 +979,15 @@ fn model_usage(prepared: &PreparedChat, tokens: &TokenUsage) -> ModelUsage {
         .model_configs
         .iter()
         .find(|config| config.model_id == prepared.agent.model_id);
-    let prices = config.map(|config| {
-        [
-            (tokens.input_tokens, config.input_price),
-            (tokens.output_tokens, config.output_price),
-            (tokens.cache_write_tokens, config.cache_write_price),
-            (tokens.cache_read_tokens, config.cache_read_price),
-        ]
-    });
-    let cost_usd = prices.and_then(|prices| {
-        let mut cost = 0.0;
-        for (token_count, price) in prices {
-            if token_count == 0 {
-                continue;
-            }
-            cost += token_count as f64 * price? / 1_000_000.0;
+    // Missing unit prices are treated as 0 so partial configs still bill what is known.
+    let cost_usd = Some(match config {
+        Some(config) => {
+            tokens.input_tokens as f64 * config.input_price.unwrap_or(0.0) / 1_000_000.0
+                + tokens.output_tokens as f64 * config.output_price.unwrap_or(0.0) / 1_000_000.0
+                + tokens.cache_write_tokens as f64 * config.cache_write_price.unwrap_or(0.0) / 1_000_000.0
+                + tokens.cache_read_tokens as f64 * config.cache_read_price.unwrap_or(0.0) / 1_000_000.0
         }
-        Some(cost)
+        None => 0.0,
     });
     ModelUsage {
         tokens: tokens.clone(),

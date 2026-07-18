@@ -49,6 +49,7 @@ impl TokenUsage {
             .saturating_add(self.cache_read_tokens)
     }
 
+    #[allow(dead_code)]
     pub fn add_assign(&mut self, other: &Self) {
         self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
         self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);

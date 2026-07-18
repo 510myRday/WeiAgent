@@ -64,7 +64,11 @@ pub async fn prepare_chat(
             "the selected model is not configured for multimodal image input".to_string(),
         ));
     }
-    let thinking_level = if model_config.is_some_and(|config| config.thinking) {
+    // Off means "do not enable thinking": omit all thinking params, same as models
+    // that do not support thinking. Only non-Off levels are forwarded.
+    let thinking_level = if model_config.is_some_and(|config| config.thinking)
+        && thinking_level != ThinkingLevel::Off
+    {
         Some(thinking_level)
     } else {
         None

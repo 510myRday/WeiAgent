@@ -29,6 +29,14 @@ pub enum AppError {
     Conflict(String),
     #[error("process error: {0}")]
     Process(String),
+    #[error("database error: {0}")]
+    Database(String),
+}
+
+impl From<rusqlite::Error> for AppError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Database(error.to_string())
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +55,7 @@ impl IntoResponse for AppError {
             | AppError::Json(_)
             | AppError::Llm(_)
             | AppError::Process(_)
+            | AppError::Database(_)
             | AppError::Address(_)
             | AppError::AddressInUse(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

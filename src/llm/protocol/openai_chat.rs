@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -19,7 +19,7 @@ use crate::{
             build_chat_request,
         },
     },
-    storage::LlmLogger,
+    storage::{llm_logs::{elapsed_ms, LlmLogMetrics}, LlmLogger},
 };
 
 #[derive(Clone)]
@@ -83,6 +83,12 @@ impl ChatClient for OpenAiChatClient {
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let chat_url = self.chat_url(provider);
         let log_enabled = self.http.log_enabled();
+        let started = Instant::now();
+        let agent_id = agent.id.to_string();
+        let conversation_id = messages
+            .last()
+            .map(|message| message.conversation_id.to_string());
+
 
         let response = match self
             .http
@@ -100,12 +106,15 @@ impl ChatClient for OpenAiChatClient {
                 self.http.spawn_log(
                     log_enabled,
                     &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                     &agent.model_id,
                     &provider.name,
                     &request_json,
                     None,
                     None,
                     Some(&error.to_string()),
+                    LlmLogMetrics::timed(started),
                 );
                 return Err(error);
             }
@@ -118,12 +127,15 @@ impl ChatClient for OpenAiChatClient {
                 self.http.spawn_log(
                     log_enabled,
                     &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                     &agent.model_id,
                     &provider.name,
                     &request_json,
                     None,
                     Some(status.as_u16()),
                     Some(&format!("failed to read response body: {error}")),
+                    LlmLogMetrics::timed(started),
                 );
                 return Err(error);
             }
@@ -133,13 +145,16 @@ impl ChatClient for OpenAiChatClient {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some(&format!("upstream returned {status}")),
-            );
+                    LlmLogMetrics::timed(started),
+                );
             return Err(AppError::Llm(format!("upstream returned {status}: {body}")));
         }
 
@@ -148,12 +163,15 @@ impl ChatClient for OpenAiChatClient {
                 self.http.spawn_log(
                     log_enabled,
                     &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                     &agent.model_id,
                     &provider.name,
                     &request_json,
                     Some(&body),
                     Some(status.as_u16()),
                     Some(&error.to_string()),
+                    LlmLogMetrics::timed(started),
                 );
                 AppError::Llm(error.to_string())
             })?;
@@ -167,13 +185,16 @@ impl ChatClient for OpenAiChatClient {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some("empty model response"),
-            );
+                    LlmLogMetrics::timed(started),
+                );
             AppError::Llm("empty model response".to_string())
         })?;
 
@@ -183,13 +204,16 @@ impl ChatClient for OpenAiChatClient {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some(&error.to_string()),
-            );
+                    LlmLogMetrics::timed(started),
+                );
             return Err(error);
         }
 
@@ -200,26 +224,32 @@ impl ChatClient for OpenAiChatClient {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some("empty model response"),
-            );
+                    LlmLogMetrics::timed(started),
+                );
             return Err(AppError::Llm("empty model response".to_string()));
         }
 
         self.http.spawn_log(
             log_enabled,
             &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
             &agent.model_id,
             &provider.name,
             &request_json,
             Some(&body),
             Some(status.as_u16()),
             None,
-        );
+                    LlmLogMetrics::timed(started),
+                );
 
         Ok(ChatCompletionOutput {
             content,
@@ -253,6 +283,12 @@ impl ChatClient for OpenAiChatClient {
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let chat_url = self.chat_url(provider);
         let log_enabled = self.http.log_enabled();
+        let started = Instant::now();
+        let agent_id = agent.id.to_string();
+        let conversation_id = messages
+            .last()
+            .map(|message| message.conversation_id.to_string());
+
 
         let response = match self
             .http
@@ -270,12 +306,15 @@ impl ChatClient for OpenAiChatClient {
                 self.http.spawn_log(
                     log_enabled,
                     &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                     &agent.model_id,
                     &provider.name,
                     &request_json,
                     None,
                     None,
                     Some(&error.to_string()),
+                    LlmLogMetrics::timed(started),
                 );
                 return Err(error);
             }
@@ -289,13 +328,16 @@ impl ChatClient for OpenAiChatClient {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
+                    Some(agent_id.as_str()),
+                    conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some(&format!("upstream returned {status}")),
-            );
+                    LlmLogMetrics::timed(started),
+                );
             return Err(AppError::Llm(format!("upstream returned {status}: {body}")));
         }
 
@@ -312,6 +354,8 @@ impl ChatClient for OpenAiChatClient {
                 logger: Option<Arc<LlmLogger>>,
                 enabled: bool,
                 agent_name: String,
+                agent_id: Option<String>,
+                conversation_id: Option<String>,
                 model_id: String,
                 provider_name: String,
                 request_json: String,
@@ -319,23 +363,49 @@ impl ChatClient for OpenAiChatClient {
                 raw_bytes: usize,
                 raw_truncated: bool,
                 raw_status: u16,
+                started: Instant,
+                first_token_ms: Option<u64>,
                 completed: bool,
+            }
+
+            impl StreamLogGuard {
+                fn metrics(&self) -> LlmLogMetrics {
+                    LlmLogMetrics::timed(self.started).with_first_token(self.first_token_ms)
+                }
+
+                fn note_event(&mut self, event: &crate::llm::types::StreamEvent) {
+                    if self.first_token_ms.is_some() {
+                        return;
+                    }
+                    if matches!(
+                        event,
+                        crate::llm::types::StreamEvent::TextDelta(_)
+                            | crate::llm::types::StreamEvent::ReasoningDelta(_)
+                            | crate::llm::types::StreamEvent::ToolCallStart { .. }
+                    ) {
+                        self.first_token_ms = Some(elapsed_ms(self.started));
+                    }
+                }
             }
 
             impl Drop for StreamLogGuard {
                 fn drop(&mut self) {
-                    if self.completed || !self.enabled {
+                    if self.completed {
                         return;
                     }
                     if let Some(ref logger) = self.logger {
                         let logger = logger.clone();
+                        let include_payload = self.enabled;
                         let agent_name = self.agent_name.clone();
+                        let agent_id = self.agent_id.clone();
+                        let conversation_id = self.conversation_id.clone();
                         let model_id = self.model_id.clone();
                         let provider_name = self.provider_name.clone();
                         let request_json = self.request_json.clone();
                         let raw_lines = std::mem::take(&mut self.raw_lines);
                         let raw_truncated = self.raw_truncated;
                         let raw_status = self.raw_status;
+                        let metrics = self.metrics();
                         tokio::spawn(async move {
                             let response_body = if raw_lines.is_empty() {
                                 None
@@ -353,12 +423,16 @@ impl ChatClient for OpenAiChatClient {
                             let _ = logger
                                 .write_log(
                                     &agent_name,
+                                    agent_id.as_deref(),
+                                    conversation_id.as_deref(),
                                     &model_id,
                                     &provider_name,
                                     &request_json,
                                     response_body.as_deref(),
                                     Some(raw_status),
                                     Some("stream cancelled or connection dropped"),
+                                    metrics,
+                                    include_payload,
                                 )
                                 .await;
                         });
@@ -370,6 +444,8 @@ impl ChatClient for OpenAiChatClient {
                 logger: logger_for_stream,
                 enabled: log_enabled,
                 agent_name,
+                agent_id: Some(agent_id),
+                conversation_id,
                 model_id: agent_model_id,
                 provider_name,
                 request_json,
@@ -377,6 +453,8 @@ impl ChatClient for OpenAiChatClient {
                 raw_bytes: 0,
                 raw_truncated: false,
                 raw_status: stream_status,
+                started,
+                first_token_ms: None,
                 completed: false,
             };
 
@@ -407,13 +485,16 @@ impl ChatClient for OpenAiChatClient {
                                         &guard.logger,
                                         guard.enabled,
                                         &guard.agent_name,
+                                            guard.agent_id.as_deref(),
+                                            guard.conversation_id.as_deref(),
                                         &guard.model_id,
                                         &guard.provider_name,
                                         &guard.request_json,
                                         Some(&guard.raw_lines.join("\n")),
                                         Some(guard.raw_status),
                                         Some(&error.to_string()),
-                                    );
+                    LlmLogMetrics::timed(started),
+                );
                                     guard.completed = true;
                                     yield Err(error);
                                     return;
@@ -427,18 +508,24 @@ impl ChatClient for OpenAiChatClient {
                             }
                             for item in parse_sse_line(&line) {
                                 match item {
-                                    Ok(event) => yield Ok(event),
+                                    Ok(event) => {
+                                        guard.note_event(&event);
+                                        yield Ok(event);
+                                    },
                                     Err(error) => {
                                         spawn_log(
                                             &guard.logger,
                                             guard.enabled,
                                             &guard.agent_name,
+                                            guard.agent_id.as_deref(),
+                                            guard.conversation_id.as_deref(),
                                             &guard.model_id,
                                             &guard.provider_name,
                                             &guard.request_json,
                                             Some(&guard.raw_lines.join("\n")),
                                             Some(guard.raw_status),
                                             Some(&error.to_string()),
+                                            guard.metrics(),
                                         );
                                         guard.completed = true;
                                         yield Err(error);
@@ -460,6 +547,8 @@ impl ChatClient for OpenAiChatClient {
                             &guard.logger,
                             guard.enabled,
                             &guard.agent_name,
+                                            guard.agent_id.as_deref(),
+                                            guard.conversation_id.as_deref(),
                             &guard.model_id,
                             &guard.provider_name,
                             &guard.request_json,
@@ -470,6 +559,7 @@ impl ChatClient for OpenAiChatClient {
                             )),
                             Some(guard.raw_status),
                             Some(&error.to_string()),
+                            guard.metrics(),
                         );
                         guard.completed = true;
                         yield Err(AppError::Llm(error.to_string()));
@@ -484,12 +574,15 @@ impl ChatClient for OpenAiChatClient {
                         &guard.logger,
                         guard.enabled,
                         &guard.agent_name,
+                                            guard.agent_id.as_deref(),
+                                            guard.conversation_id.as_deref(),
                         &guard.model_id,
                         &guard.provider_name,
                         &guard.request_json,
                         Some(&guard.raw_lines.join("\n")),
                         Some(guard.raw_status),
                         Some(&error.to_string()),
+                        guard.metrics(),
                     );
                     guard.completed = true;
                     yield Err(error);
@@ -504,7 +597,10 @@ impl ChatClient for OpenAiChatClient {
                 }
                 for item in parse_sse_line(&line) {
                     match item {
-                        Ok(event) => yield Ok(event),
+                        Ok(event) => {
+                                        guard.note_event(&event);
+                                        yield Ok(event);
+                                    },
                         Err(error) => {
                             guard.completed = true;
                             yield Err(error);
@@ -519,12 +615,15 @@ impl ChatClient for OpenAiChatClient {
                 &guard.logger,
                 guard.enabled,
                 &guard.agent_name,
+                                            guard.agent_id.as_deref(),
+                                            guard.conversation_id.as_deref(),
                 &guard.model_id,
                 &guard.provider_name,
                 &guard.request_json,
                 Some(&guard.raw_lines.join("\n")),
                 Some(guard.raw_status),
                 None,
+                guard.metrics(),
             );
         };
 
@@ -637,6 +736,63 @@ mod tests {
                 .unwrap()
                 .contains("saved-reasoning-must-not-be-sent")
         );
+    }
+
+    #[test]
+    fn omits_reasoning_effort_when_thinking_is_off() {
+        let now = Utc::now();
+        let agent = Agent {
+            id: Uuid::new_v4(),
+            name: "Coder".to_string(),
+            description: "Writes and reviews code.".to_string(),
+            model_provider_id: Uuid::new_v4(),
+            model_id: "gpt-4o-mini".to_string(),
+            is_builtin: false,
+            avatar_icon: "bot".to_string(),
+            avatar_color: "#22c55e".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        let messages = vec![ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: agent.id,
+            conversation_id: Uuid::new_v4(),
+            role: ChatRole::User,
+            content: "hello".to_string(),
+            reasoning_content: None,
+            status: ChatMessageStatus::Done,
+            created_at: now,
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        }];
+
+        let off_request = build_chat_request(
+            &agent,
+            &messages,
+            false,
+            "You write Rust.",
+            &serde_json::Value::Null,
+            None,
+            Some(crate::domain::ThinkingLevel::Off),
+        );
+        assert!(off_request.reasoning_effort.is_none());
+        let serialized = serde_json::to_string(&off_request).unwrap();
+        assert!(!serialized.contains("reasoning_effort"));
+
+        let none_request = build_chat_request(
+            &agent,
+            &messages,
+            false,
+            "You write Rust.",
+            &serde_json::Value::Null,
+            None,
+            None,
+        );
+        assert!(none_request.reasoning_effort.is_none());
+        let serialized = serde_json::to_string(&none_request).unwrap();
+        assert!(!serialized.contains("reasoning_effort"));
     }
 
     #[test]
