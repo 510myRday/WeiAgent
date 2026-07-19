@@ -39,6 +39,12 @@ pub struct TokenUsage {
     pub cache_write_tokens: u64,
     #[serde(default)]
     pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub total_prompt_tokens: u64,
+    #[serde(default)]
+    pub uncached_input_tokens: u64,
+    #[serde(default)]
+    pub cache_hit_ratio: f64,
 }
 
 impl TokenUsage {
@@ -59,6 +65,30 @@ impl TokenUsage {
         self.cache_read_tokens = self
             .cache_read_tokens
             .saturating_add(other.cache_read_tokens);
+        self.uncached_input_tokens = self.input_tokens;
+        self.total_prompt_tokens = self.input_tokens
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_write_tokens);
+        let denominator = self.input_tokens.saturating_add(self.cache_read_tokens);
+        self.cache_hit_ratio = if denominator == 0 { 0.0 } else { self.cache_read_tokens as f64 / denominator as f64 };
+    }
+
+    pub fn normalized(mut self) -> Self {
+        if self.uncached_input_tokens == 0 {
+            self.uncached_input_tokens = self.input_tokens;
+        }
+        if self.total_prompt_tokens == 0 {
+            self.total_prompt_tokens = self.uncached_input_tokens
+                .saturating_add(self.cache_read_tokens)
+                .saturating_add(self.cache_write_tokens);
+        }
+        if self.cache_hit_ratio == 0.0 {
+            let denominator = self.uncached_input_tokens.saturating_add(self.cache_read_tokens);
+            if denominator > 0 {
+                self.cache_hit_ratio = self.cache_read_tokens as f64 / denominator as f64;
+            }
+        }
+        self
     }
 }
 

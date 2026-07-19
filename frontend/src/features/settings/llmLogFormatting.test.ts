@@ -70,4 +70,10 @@ describe('LLM log formatting', () => {
   it('leaves non-JSON text untouched', () => {
     expect(formatRawJson('upstream error')).toBe('upstream error');
   });
+
+  it('renders the middle truncation marker in the request/response viewer', () => {
+    expect(formatRawJson('HEAD\n[middle truncated]\nTAIL')).toBe(
+      'HEAD\n[..., 此处已截断, ...]\nTAIL',
+    );
+  });
 });

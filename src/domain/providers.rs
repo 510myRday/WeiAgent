@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::llm::cache::{PromptCacheConfig, ProviderCacheCapabilities};
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProviderType {
     #[default]
@@ -52,6 +54,10 @@ pub struct ModelProvider {
     pub model_configs: Vec<ModelConfig>,
     #[serde(default)]
     pub extra_body: serde_json::Value,
+    #[serde(default, alias = "cache")]
+    pub prompt_cache: PromptCacheConfig,
+    #[serde(default)]
+    pub cache_capabilities: Option<ProviderCacheCapabilities>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -67,6 +73,8 @@ pub struct ModelProviderResponse {
     pub models: Vec<String>,
     pub model_configs: Vec<ModelConfig>,
     pub extra_body: serde_json::Value,
+    pub prompt_cache: PromptCacheConfig,
+    pub cache_capabilities: Option<ProviderCacheCapabilities>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -83,6 +91,8 @@ impl From<&ModelProvider> for ModelProviderResponse {
             models: provider.models.clone(),
             model_configs: provider.model_configs.clone(),
             extra_body: provider.extra_body.clone(),
+            prompt_cache: provider.prompt_cache.clone(),
+            cache_capabilities: provider.cache_capabilities.clone(),
             created_at: provider.created_at,
             updated_at: provider.updated_at,
         }
@@ -117,6 +127,10 @@ pub struct CreateModelProviderRequest {
     pub model_configs: Vec<ModelConfig>,
     #[serde(default)]
     pub extra_body: serde_json::Value,
+    #[serde(default)]
+    pub prompt_cache: PromptCacheConfig,
+    #[serde(default)]
+    pub cache_capabilities: Option<ProviderCacheCapabilities>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,6 +152,8 @@ pub struct UpdateModelProviderRequest {
     pub models: Option<Vec<String>>,
     pub model_configs: Option<Vec<ModelConfig>>,
     pub extra_body: Option<serde_json::Value>,
+    pub prompt_cache: Option<PromptCacheConfig>,
+    pub cache_capabilities: Option<Option<ProviderCacheCapabilities>>,
 }
 
 #[cfg(test)]

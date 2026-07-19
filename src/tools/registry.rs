@@ -82,13 +82,24 @@ impl ToolRegistry {
     }
 
     pub fn definitions(&self, config: &AgentToolsConfig) -> Option<Vec<ToolDefinition>> {
-        let definitions: Vec<_> = self
+        let mut definitions: Vec<_> = self
             .tools
             .values()
             .filter(|tool| tool.is_enabled(config))
             .map(|tool| tool.definition(config))
             .collect();
+        // Tool order is part of the model prompt prefix; keep it stable across
+        // HashMap seeds and process restarts so provider prompt caches can match.
+        definitions.sort_by(|left, right| left.function.name.cmp(&right.function.name));
         (!definitions.is_empty()).then_some(definitions)
+    }
+
+    /// Stable digest used by prompt-cache adapters. Approval grants are
+    /// intentionally absent from tool schemas, while schema-affecting tool
+    /// settings remain part of the serialized definitions.
+    #[allow(dead_code)]
+    pub fn definitions_hash(&self, config: &AgentToolsConfig) -> String {
+        crate::llm::cache::tools_hash(self.definitions(config).as_deref())
     }
 
     pub async fn execute(
@@ -135,13 +146,8 @@ struct ExecuteTerminalArgs {
 
 #[async_trait]
 impl AgentTool for ExecuteTerminalTool {
-    fn definition(&self, config: &AgentToolsConfig) -> ToolDefinition {
-        let description = build_execute_terminal_description(config);
-        let default_timeout = config.terminal.default_timeout_ms;
-        let permission = match config.terminal.permission_mode {
-            crate::domain::TerminalPermissionMode::RequestApproval => "request_approval",
-            crate::domain::TerminalPermissionMode::FullAccess => "full_access",
-        };
+    fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
+        let description = build_execute_terminal_description();
         tool_definition(
             "execute_terminal",
             &description,
@@ -162,9 +168,7 @@ impl AgentTool for ExecuteTerminalTool {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 120000,
-                        "description": format!(
-                            "Foreground wait in milliseconds. Default {default_timeout}, max 120000. An unfinished command returns process_id when sessions are supported; Windows sandbox mode stops it on timeout."
-                        )
+                        "description": "Foreground wait in milliseconds. If omitted, the server default is used. Maximum is 120000. An unfinished command returns process_id when sessions are supported; the runtime may stop it on timeout."
                     },
                     "background": {
                         "type": "boolean",
@@ -177,14 +181,12 @@ impl AgentTool for ExecuteTerminalTool {
                     "sandbox_permissions": {
                         "type": "string",
                         "enum": ["use_default", "require_escalated"],
-                        "description": format!(
-                            "Execution privilege request. Current agent mode is {permission}. use_default follows that mode (Codex sandbox in request_approval, Codex-managed full host access in full_access). For any cwd outside the configured sandbox roots, use require_escalated; in request_approval mode this emits an approval request and needs justification. Example: {{\"sandbox_permissions\":\"require_escalated\",\"justification\":\"需要访问配置工作区之外的项目目录\"}}."
-                        )
+                        "description": "Execution privilege request. use_default follows the server's current policy. For any cwd outside the configured sandbox roots, use require_escalated and provide a justification; the server may request approval. Example: {\"sandbox_permissions\":\"require_escalated\",\"justification\":\"access is required for the requested workspace\"}."
                     },
                     "justification": {
                         "type": "string",
                         "maxLength": 2000,
-                        "description": "Short reason for full host access. Required in request_approval mode when sandbox_permissions is require_escalated. Max 2000 bytes. Skip it for use_default."
+                        "description": "Short reason for elevated access. Include it when sandbox_permissions is require_escalated. Max 2000 bytes. Skip it for use_default."
                     }
                 },
                 "required": ["command"],
@@ -580,14 +582,8 @@ struct MultiEditFileTool;
 
 #[async_trait]
 impl AgentTool for MultiEditFileTool {
-    fn definition(&self, config: &AgentToolsConfig) -> ToolDefinition {
-        let permission = match config.terminal.permission_mode {
-            crate::domain::TerminalPermissionMode::RequestApproval => "request_approval",
-            crate::domain::TerminalPermissionMode::FullAccess => "full_access",
-        };
-        let description = format!(
-            "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection for source, config, and documentation changes. Every operation is validated before commit; failure leaves files unchanged. Current permission mode: {permission}. Exact edits compare LF-normalized text; use replace_all or startLine only when needed."
-        );
+    fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
+        let description = "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection for source, config, and documentation changes. Every operation is validated by the server; failure leaves files unchanged. File operations may require approval. Exact edits compare LF-normalized text; use replace_all or startLine only when needed.";
         tool_definition(
             MULTI_EDIT_TOOL_NAME,
             &description,
@@ -856,21 +852,13 @@ fn unsupported_host_shell_syntax(command: &str) -> Option<String> {
     None
 }
 
-fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
+fn build_execute_terminal_description() -> String {
     let shell = crate::tools::shell::selected_host_shell();
     let host_guidance = shell.tool_guidance();
     let examples = shell.command_examples();
-    let permission = match config.terminal.permission_mode {
-        crate::domain::TerminalPermissionMode::RequestApproval => {
-            "Permission mode: request_approval. Default commands use the workspace sandbox without network access. When the requested cwd is outside the configured sandbox roots, you MUST set sandbox_permissions to require_escalated and set justification (for example, 需要访问配置工作区之外的项目目录) so the user receives an approval prompt."
-        }
-        crate::domain::TerminalPermissionMode::FullAccess => {
-            "Permission mode: full_access. Commands run with full host access; stay in the requested workspace unless the user specifies another path."
-        }
-    };
 
     format!(
-        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. Selected shell: {}. {host_guidance} {examples} {permission} Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again.",
+        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. Selected shell: {}. {host_guidance} {examples} The server enforces its current execution policy; request elevated access with sandbox_permissions=require_escalated and a justification when needed. Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again.",
         shell.display_name()
     )
 }
@@ -919,12 +907,11 @@ mod tests {
     }
 
     #[test]
-    fn terminal_description_requires_escalation_for_external_workspaces() {
-        let config = AgentToolsConfig::default();
-        let description = super::build_execute_terminal_description(&config);
-        assert!(description.contains("cwd is outside the configured sandbox roots"));
-        assert!(description.contains("sandbox_permissions to require_escalated"));
-        assert!(description.contains("需要访问配置工作区之外的项目目录"));
+    fn terminal_description_explains_stable_escalation_contract() {
+        let description = super::build_execute_terminal_description();
+        assert!(description.contains("sandbox_permissions=require_escalated"));
+        assert!(description.contains("justification"));
+        assert!(description.contains("server enforces its current execution policy"));
     }
 
     #[cfg(windows)]
@@ -991,24 +978,32 @@ mod tests {
     }
 
     #[test]
-    fn terminal_definition_reflects_full_access_mode() {
-        let mut config = AgentToolsConfig::default();
-        config.terminal.enabled = true;
-        config.terminal.permission_mode = crate::domain::TerminalPermissionMode::FullAccess;
-        config.terminal.default_timeout_ms = 45_000;
-        let definitions = ToolRegistry::with_builtin_tools()
-            .definitions(&config)
+    fn terminal_definition_is_stable_across_permission_modes() {
+        let mut request_approval = AgentToolsConfig::default();
+        request_approval.terminal.enabled = true;
+        let mut full_access = request_approval.clone();
+        full_access.terminal.permission_mode = crate::domain::TerminalPermissionMode::FullAccess;
+        full_access.terminal.default_timeout_ms = 45_000;
+
+        let approval_definitions = ToolRegistry::with_builtin_tools()
+            .definitions(&request_approval)
             .unwrap();
-        let terminal = definitions
+        let full_access_definitions = ToolRegistry::with_builtin_tools()
+            .definitions(&full_access)
+            .unwrap();
+
+        assert_eq!(approval_definitions, full_access_definitions);
+        let terminal = approval_definitions
             .iter()
             .find(|definition| definition.function.name == "execute_terminal")
             .unwrap();
-        assert!(terminal.function.description.contains("full_access"));
+        assert!(!terminal.function.description.contains("request_approval"));
+        assert!(!terminal.function.description.contains("full_access"));
         assert!(
             terminal.function.parameters["properties"]["timeout_ms"]["description"]
                 .as_str()
                 .unwrap()
-                .contains("45000")
+                .contains("server default")
         );
     }
 
@@ -1037,6 +1032,23 @@ mod tests {
     }
 
     #[test]
+    fn tool_definitions_are_sorted_by_name() {
+        let mut config = AgentToolsConfig::default();
+        config.terminal.enabled = true;
+        let definitions = ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .unwrap();
+        let names: Vec<_> = definitions
+            .iter()
+            .map(|definition| definition.function.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["execute_terminal", "multi_edit_file", "terminal_session"]
+        );
+    }
+
+    #[test]
     fn multi_edit_is_registered_with_terminal_group() {
         let mut config = AgentToolsConfig::default();
         config.terminal.enabled = true;
@@ -1047,10 +1059,7 @@ mod tests {
             .iter()
             .find(|definition| definition.function.name == "multi_edit_file")
             .expect("multi_edit_file should be registered");
-        assert!(
-            multi.function.description.contains("request_approval")
-                || multi.function.description.contains("full_access")
-        );
+        assert!(multi.function.description.contains("may require approval"));
         assert_eq!(
             multi.function.parameters["properties"]["operations"]["type"],
             "array"

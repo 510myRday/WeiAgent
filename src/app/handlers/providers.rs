@@ -39,6 +39,8 @@ pub async fn fetch_provider_models(
         models: Vec::new(),
         model_configs: Vec::new(),
         extra_body: request.extra_body,
+        prompt_cache: Default::default(),
+        cache_capabilities: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

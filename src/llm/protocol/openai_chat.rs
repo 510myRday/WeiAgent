@@ -8,9 +8,11 @@ use crate::{
     error::{AppError, AppResult},
     llm::{
         client::{ChatClient, ChatStream, RequestOptions},
+        cache::{apply_openai_fields, apply_provider_extra, build_context},
         http::{
-            LlmHttp, MAX_LLM_LOG_BYTES, MAX_SSE_LINE_BUFFER_BYTES, decode_remaining_sse_line,
-            drain_sse_line, read_response_body_limited, spawn_log,
+            LlmHttp, MAX_SSE_LINE_BUFFER_BYTES, capture_log_line, decode_remaining_sse_line,
+            drain_sse_line, format_stream_log, read_response_body_limited, spawn_log,
+            stream_metrics,
         },
         protocol::common::request_json_for_log,
         sse::{openai_finish_event, parse_sse_line},
@@ -68,7 +70,7 @@ impl ChatClient for OpenAiChatClient {
         options: RequestOptions,
         tools: Option<Vec<ToolDefinition>>,
     ) -> AppResult<ChatCompletionOutput> {
-        let request = build_chat_request(
+        let mut request = build_chat_request(
             agent,
             messages,
             false,
@@ -77,6 +79,19 @@ impl ChatClient for OpenAiChatClient {
             tools,
             options.thinking_level,
         );
+        let context = build_context(
+            provider,
+            &agent.model_id,
+            agent.id,
+            "openai_chat",
+            system_prompt,
+            request.tools.as_deref(),
+        );
+        if let serde_json::Value::Object(mut extra) = request.extra_body {
+            apply_openai_fields(&mut extra, provider, &context);
+            apply_provider_extra(&mut extra, &context);
+            request.extra_body = serde_json::Value::Object(extra);
+        }
         let request_json = serde_json::to_value(&request)
             .map(|value| request_json_for_log(&value))
             .unwrap_or_else(|_| format!("{request:?}"));
@@ -268,7 +283,7 @@ impl ChatClient for OpenAiChatClient {
         options: RequestOptions,
         tools: Option<Vec<ToolDefinition>>,
     ) -> AppResult<ChatStream> {
-        let request = build_chat_request(
+        let mut request = build_chat_request(
             agent,
             messages,
             true,
@@ -277,6 +292,19 @@ impl ChatClient for OpenAiChatClient {
             tools,
             options.thinking_level,
         );
+        let context = build_context(
+            provider,
+            &agent.model_id,
+            agent.id,
+            "openai_chat",
+            system_prompt,
+            request.tools.as_deref(),
+        );
+        if let serde_json::Value::Object(mut extra) = request.extra_body {
+            apply_openai_fields(&mut extra, provider, &context);
+            apply_provider_extra(&mut extra, &context);
+            request.extra_body = serde_json::Value::Object(extra);
+        }
         let request_json = serde_json::to_value(&request)
             .map(|value| request_json_for_log(&value))
             .unwrap_or_else(|_| format!("{request:?}"));
@@ -365,15 +393,19 @@ impl ChatClient for OpenAiChatClient {
                 raw_status: u16,
                 started: Instant,
                 first_token_ms: Option<u64>,
+                usage: Option<crate::domain::TokenUsage>,
                 completed: bool,
             }
 
             impl StreamLogGuard {
                 fn metrics(&self) -> LlmLogMetrics {
-                    LlmLogMetrics::timed(self.started).with_first_token(self.first_token_ms)
+                    stream_metrics(self.started, self.first_token_ms, self.usage.as_ref())
                 }
 
                 fn note_event(&mut self, event: &crate::llm::types::StreamEvent) {
+                    if let crate::llm::types::StreamEvent::Usage(usage) = event {
+                        self.usage = Some(usage.clone());
+                    }
                     if self.first_token_ms.is_some() {
                         return;
                     }
@@ -407,19 +439,8 @@ impl ChatClient for OpenAiChatClient {
                         let raw_status = self.raw_status;
                         let metrics = self.metrics();
                         tokio::spawn(async move {
-                            let response_body = if raw_lines.is_empty() {
-                                None
-                            } else {
-                                Some(format!(
-                                    "{}{}",
-                                    raw_lines.join("\n"),
-                                    if raw_truncated {
-                                        "\n[LLM stream log truncated]"
-                                    } else {
-                                        ""
-                                    }
-                                ))
-                            };
+                            let response_body = (!raw_lines.is_empty())
+                                .then(|| format_stream_log(&raw_lines, raw_truncated));
                             let _ = logger
                                 .write_log(
                                     &agent_name,
@@ -455,6 +476,7 @@ impl ChatClient for OpenAiChatClient {
                 raw_status: stream_status,
                 started,
                 first_token_ms: None,
+                usage: None,
                 completed: false,
             };
 
@@ -490,7 +512,7 @@ impl ChatClient for OpenAiChatClient {
                                         &guard.model_id,
                                         &guard.provider_name,
                                         &guard.request_json,
-                                        Some(&guard.raw_lines.join("\n")),
+                                        Some(&format_stream_log(&guard.raw_lines, guard.raw_truncated)),
                                         Some(guard.raw_status),
                                         Some(&error.to_string()),
                     LlmLogMetrics::timed(started),
@@ -500,12 +522,12 @@ impl ChatClient for OpenAiChatClient {
                                     return;
                                 }
                             };
-                            if guard.raw_bytes.saturating_add(line.len()) <= MAX_LLM_LOG_BYTES {
-                                guard.raw_bytes += line.len();
-                                guard.raw_lines.push(line.clone());
-                            } else {
-                                guard.raw_truncated = true;
-                            }
+                            capture_log_line(
+                                &line,
+                                &mut guard.raw_lines,
+                                &mut guard.raw_bytes,
+                                &mut guard.raw_truncated,
+                            );
                             for item in parse_sse_line(&line) {
                                 match item {
                                     Ok(event) => {
@@ -522,7 +544,7 @@ impl ChatClient for OpenAiChatClient {
                                             &guard.model_id,
                                             &guard.provider_name,
                                             &guard.request_json,
-                                            Some(&guard.raw_lines.join("\n")),
+                                            Some(&format_stream_log(&guard.raw_lines, guard.raw_truncated)),
                                             Some(guard.raw_status),
                                             Some(&error.to_string()),
                                             guard.metrics(),
@@ -555,7 +577,7 @@ impl ChatClient for OpenAiChatClient {
                             Some(&format!(
                                 "[SSE stream error, {} raw lines received]\n{}",
                                 guard.raw_lines.len(),
-                                guard.raw_lines.join("\n")
+                                format_stream_log(&guard.raw_lines, guard.raw_truncated)
                             )),
                             Some(guard.raw_status),
                             Some(&error.to_string()),
@@ -579,7 +601,7 @@ impl ChatClient for OpenAiChatClient {
                         &guard.model_id,
                         &guard.provider_name,
                         &guard.request_json,
-                        Some(&guard.raw_lines.join("\n")),
+                        Some(&format_stream_log(&guard.raw_lines, guard.raw_truncated)),
                         Some(guard.raw_status),
                         Some(&error.to_string()),
                         guard.metrics(),
@@ -589,12 +611,12 @@ impl ChatClient for OpenAiChatClient {
                     return;
                 }
             } {
-                if guard.raw_bytes.saturating_add(line.len()) <= MAX_LLM_LOG_BYTES {
-                    guard.raw_bytes += line.len();
-                    guard.raw_lines.push(line.clone());
-                } else {
-                    guard.raw_truncated = true;
-                }
+                capture_log_line(
+                    &line,
+                    &mut guard.raw_lines,
+                    &mut guard.raw_bytes,
+                    &mut guard.raw_truncated,
+                );
                 for item in parse_sse_line(&line) {
                     match item {
                         Ok(event) => {
@@ -620,7 +642,7 @@ impl ChatClient for OpenAiChatClient {
                 &guard.model_id,
                 &guard.provider_name,
                 &guard.request_json,
-                Some(&guard.raw_lines.join("\n")),
+                Some(&format_stream_log(&guard.raw_lines, guard.raw_truncated)),
                 Some(guard.raw_status),
                 None,
                 guard.metrics(),

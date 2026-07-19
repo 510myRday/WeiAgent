@@ -903,7 +903,7 @@ export function MonitorPanel({
                 <div className="monitor-metric-split-item">
                   <span className="monitor-metric-split-label">
                     <ArrowDownToLine size={12} aria-hidden="true" />
-                    {t('llmLogs.metricCacheInputTokens')}
+                    {t('llmLogs.metricCacheReadTokens')}
                   </span>
                   <strong className="monitor-metric-split-value mono">
                     <TokenCompact value={summary.cache_read_tokens} />
@@ -922,7 +922,7 @@ export function MonitorPanel({
                 <div className="monitor-metric-split-item">
                   <span className="monitor-metric-split-label">
                     <ArrowUpFromLine size={12} aria-hidden="true" />
-                    {t('llmLogs.metricCacheOutputTokens')}
+                    {t('llmLogs.metricCacheWriteTokens')}
                   </span>
                   <strong className="monitor-metric-split-value mono">
                     <TokenCompact value={summary.cache_write_tokens} />

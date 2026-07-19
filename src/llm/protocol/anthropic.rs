@@ -9,6 +9,7 @@ use crate::{
     error::{AppError, AppResult},
     llm::{
         client::{ChatClient, ChatStream, RequestOptions},
+        cache::{apply_provider_extra, build_context, effective_capabilities, PromptCacheMode},
         http::StreamLineParser,
         protocol::common::{
             ProtocolAdapter, ProtocolClient, add_query_parameter, default_models, merge_extra_body,
@@ -94,6 +95,7 @@ impl ProtocolAdapter for AnthropicAdapter {
     fn build_request(
         &self,
         agent: &Agent,
+        provider: &ModelProvider,
         messages: &[ChatMessage],
         stream: bool,
         system_prompt: &str,
@@ -103,6 +105,7 @@ impl ProtocolAdapter for AnthropicAdapter {
     ) -> AppResult<Value> {
         build_anthropic_request(
             agent,
+            provider,
             messages,
             stream,
             system_prompt,
@@ -176,6 +179,7 @@ impl ProtocolAdapter for AnthropicAdapter {
 
 fn build_anthropic_request(
     agent: &Agent,
+    provider: &ModelProvider,
     messages: &[ChatMessage],
     stream: bool,
     system_prompt: &str,
@@ -183,6 +187,14 @@ fn build_anthropic_request(
     tools: Option<Vec<ToolDefinition>>,
     thinking_level: Option<ThinkingLevel>,
 ) -> AppResult<Value> {
+    let context = build_context(
+        provider,
+        &agent.model_id,
+        agent.id,
+        "anthropic_messages",
+        system_prompt,
+        tools.as_deref(),
+    );
     let selected = select_context_messages(messages);
     let mut call_names = HashMap::new();
     for message in &selected {
@@ -274,7 +286,23 @@ fn build_anthropic_request(
             }
         ),
     );
-    body.insert("system".to_string(), json!(system_prompt));
+    let capabilities = effective_capabilities(provider);
+    let cache_enabled = match provider.prompt_cache.mode {
+        PromptCacheMode::Disabled => false,
+        PromptCacheMode::Automatic => capabilities.automatic_prefix_cache,
+        PromptCacheMode::Explicit => capabilities.explicit_breakpoints,
+    };
+    if cache_enabled {
+        let mut block = json!({"type": "text", "text": system_prompt});
+        block["cache_control"] = provider
+            .prompt_cache
+            .anthropic_ttl
+            .as_ref()
+            .map_or_else(|| json!({"type": "ephemeral"}), |ttl| json!({"type": "ephemeral", "ttl": ttl}));
+        body.insert("system".to_string(), json!([block]));
+    } else {
+        body.insert("system".to_string(), json!(system_prompt));
+    }
     body.insert("messages".to_string(), Value::Array(anthropic_messages));
     body.insert("stream".to_string(), Value::Bool(stream));
     if let Some(level) = thinking_level.filter(|level| *level != ThinkingLevel::Off) {
@@ -325,6 +353,12 @@ fn build_anthropic_request(
             ),
         );
     }
+    if cache_enabled && context.explicit_breakpoints {
+        if let Some(last) = body["tools"].as_array_mut().and_then(|tools| tools.last_mut()) {
+            last["cache_control"] = json!({"type": "ephemeral"});
+        }
+    }
+    apply_provider_extra(&mut body, &context);
     merge_extra_body(
         body,
         extra_body,
@@ -395,11 +429,17 @@ fn parse_anthropic_output(value: &Value) -> AppResult<ChatCompletionOutput> {
 }
 
 fn parse_anthropic_usage(value: &Value) -> TokenUsage {
+    let input = value["input_tokens"].as_u64().unwrap_or(0);
+    let write = value["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+    let read = value["cache_read_input_tokens"].as_u64().unwrap_or(0);
     TokenUsage {
-        input_tokens: value["input_tokens"].as_u64().unwrap_or(0),
+        input_tokens: input,
         output_tokens: value["output_tokens"].as_u64().unwrap_or(0),
-        cache_write_tokens: value["cache_creation_input_tokens"].as_u64().unwrap_or(0),
-        cache_read_tokens: value["cache_read_input_tokens"].as_u64().unwrap_or(0),
+        cache_write_tokens: write,
+        cache_read_tokens: read,
+        total_prompt_tokens: input.saturating_add(write).saturating_add(read),
+        uncached_input_tokens: input,
+        cache_hit_ratio: if input.saturating_add(read) == 0 { 0.0 } else { read as f64 / input.saturating_add(read) as f64 },
     }
 }
 
@@ -633,9 +673,20 @@ mod tests {
         (agent, messages)
     }
 
+    fn test_provider() -> ModelProvider {
+        ModelProvider {
+            id: Uuid::new_v4(), provider_type: crate::domain::ProviderType::AnthropicMessages,
+            name: "test".into(), base_url: "http://localhost".into(), api_key: "key".into(),
+            models: vec!["test-model".into()], model_configs: vec![], extra_body: Value::Null,
+            prompt_cache: Default::default(), cache_capabilities: None,
+            created_at: Utc::now(), updated_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn request_maps_tools_and_allows_max_tokens_override() {
         let (agent, mut messages) = fixture();
+        let provider = test_provider();
         messages[0].reasoning_content =
             Some("saved-reasoning-must-not-be-sent".to_string());
         messages.insert(
@@ -664,6 +715,7 @@ mod tests {
         );
         let request = build_anthropic_request(
             &agent,
+            &provider,
             &messages,
             false,
             "system",
@@ -703,8 +755,10 @@ mod tests {
     #[test]
     fn omits_thinking_when_level_is_off() {
         let (agent, messages) = fixture();
+        let provider = test_provider();
         let request = build_anthropic_request(
             &agent,
+            &provider,
             &messages,
             false,
             "system",
@@ -787,6 +841,8 @@ mod tests {
             models: Vec::new(),
             model_configs: Vec::new(),
             extra_body: Value::Null,
+            prompt_cache: Default::default(),
+            cache_capabilities: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

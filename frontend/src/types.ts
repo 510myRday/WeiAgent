@@ -20,6 +20,8 @@ export type ModelProvider = {
   models: string[];
   model_configs: ModelConfig[];
   extra_body: Record<string, unknown> | null;
+  prompt_cache?: PromptCacheConfig;
+  cache_capabilities?: ProviderCacheCapabilities | null;
   created_at: string;
   updated_at: string;
 };
@@ -50,6 +52,29 @@ export type ModelProviderPayload = {
   models: string[];
   model_configs: ModelConfig[];
   extra_body?: Record<string, unknown> | null;
+  prompt_cache?: PromptCacheConfig;
+  cache_capabilities?: ProviderCacheCapabilities | null;
+};
+
+export type PromptCacheMode = 'disabled' | 'automatic' | 'explicit';
+
+export type PromptCacheConfig = {
+  mode: PromptCacheMode;
+  use_stable_key: boolean;
+  retention?: string | null;
+  ttl?: string | null;
+  anthropic_ttl?: string | null;
+  gemini_cached_content?: string | null;
+  extra?: Record<string, unknown> | null;
+};
+
+export type ProviderCacheCapabilities = {
+  automatic_prefix_cache: boolean;
+  explicit_breakpoints: boolean;
+  stable_cache_key: boolean;
+  supports_cache_retention: boolean;
+  supports_cache_usage_fields: boolean;
+  supports_prompt_cache_options: boolean;
 };
 
 export type FetchProviderModelsPayload = {
@@ -116,6 +141,9 @@ export type TokenUsage = {
   output_tokens: number;
   cache_write_tokens: number;
   cache_read_tokens: number;
+  total_prompt_tokens?: number;
+  uncached_input_tokens?: number;
+  cache_hit_ratio?: number;
 };
 
 export type ModelUsage = TokenUsage & {

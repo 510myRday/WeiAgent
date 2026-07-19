@@ -28,6 +28,7 @@ pub(crate) trait ProtocolAdapter: Clone + Send + Sync + 'static {
     fn build_request(
         &self,
         agent: &Agent,
+        provider: &ModelProvider,
         messages: &[ChatMessage],
         stream: bool,
         system_prompt: &str,
@@ -94,6 +95,7 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
     ) -> AppResult<ChatCompletionOutput> {
         let request = self.adapter.build_request(
             agent,
+            provider,
             messages,
             false,
             system_prompt,
@@ -227,6 +229,7 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
     ) -> AppResult<ChatStream> {
         let request = self.adapter.build_request(
             agent,
+            provider,
             messages,
             true,
             system_prompt,

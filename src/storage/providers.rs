@@ -47,6 +47,8 @@ impl JsonStore {
             models,
             model_configs,
             extra_body: request.extra_body,
+            prompt_cache: request.prompt_cache,
+            cache_capabilities: request.cache_capabilities,
             created_at: now,
             updated_at: now,
         };
@@ -107,6 +109,12 @@ impl JsonStore {
         if let Some(extra_body) = request.extra_body {
             validate_extra_body(&extra_body)?;
             provider.extra_body = extra_body;
+        }
+        if let Some(prompt_cache) = request.prompt_cache {
+            provider.prompt_cache = prompt_cache;
+        }
+        if let Some(cache_capabilities) = request.cache_capabilities {
+            provider.cache_capabilities = cache_capabilities;
         }
 
         provider.updated_at = Utc::now();

@@ -974,6 +974,7 @@ fn partial_assistant(
 }
 
 fn model_usage(prepared: &PreparedChat, tokens: &TokenUsage) -> ModelUsage {
+    let tokens = tokens.clone().normalized();
     let config = prepared
         .provider
         .model_configs
@@ -989,9 +990,10 @@ fn model_usage(prepared: &PreparedChat, tokens: &TokenUsage) -> ModelUsage {
         }
         None => 0.0,
     });
+    let total_tokens = tokens.total_tokens();
     ModelUsage {
-        tokens: tokens.clone(),
-        total_tokens: tokens.total_tokens(),
+        tokens,
+        total_tokens,
         cost_usd,
         provider_id: prepared.provider.id,
         model_id: prepared.agent.model_id.clone(),

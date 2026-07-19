@@ -80,6 +80,8 @@ mod tests {
                 models: vec!["test-model".to_string()],
                 model_configs: Vec::new(),
                 extra_body: serde_json::Value::Null,
+                prompt_cache: Default::default(),
+                cache_capabilities: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
             };

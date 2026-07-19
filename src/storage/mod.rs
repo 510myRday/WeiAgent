@@ -41,6 +41,8 @@ mod tests {
             models: vec![model.to_string()],
             model_configs: Vec::new(),
             extra_body: serde_json::Value::Null,
+            prompt_cache: Default::default(),
+            cache_capabilities: None,
         }
     }
 
@@ -146,6 +148,8 @@ mod tests {
                     models: None,
                     model_configs: None,
                     extra_body: None,
+                    prompt_cache: None,
+                    cache_capabilities: None,
                 },
             )
             .await

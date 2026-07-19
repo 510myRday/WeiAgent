@@ -7,6 +7,7 @@ use futures_util::StreamExt;
 use reqwest::{RequestBuilder, Response};
 
 use crate::{
+    domain::TokenUsage,
     error::{AppError, AppResult},
     llm::{
         client::{ChatStream, RequestOptions},
@@ -22,6 +23,7 @@ pub const MAX_LLM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_LLM_LOG_BYTES: usize = 1024 * 1024;
 pub const MAX_SSE_LINE_BUFFER_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(30);
+const STREAM_LOG_TRUNCATION_MARKER: &str = "[LLM stream log middle truncated]";
 
 #[derive(Clone)]
 pub struct LlmHttp {
@@ -230,8 +232,21 @@ fn is_first_token_event(event: &StreamEvent) -> bool {
     )
 }
 
-fn stream_metrics(started: Instant, first_token_ms: Option<u64>) -> LlmLogMetrics {
-    LlmLogMetrics::timed(started).with_first_token(first_token_ms)
+pub(crate) fn stream_metrics(
+    started: Instant,
+    first_token_ms: Option<u64>,
+    usage: Option<&TokenUsage>,
+) -> LlmLogMetrics {
+    let mut metrics = LlmLogMetrics::timed(started).with_first_token(first_token_ms);
+    if let Some(usage) = usage.filter(|usage| {
+        usage.total_tokens() > 0 || usage.total_prompt_tokens > 0
+    }) {
+        metrics.input_tokens = Some(usage.input_tokens);
+        metrics.output_tokens = Some(usage.output_tokens);
+        metrics.cache_read_tokens = Some(usage.cache_read_tokens);
+        metrics.cache_write_tokens = Some(usage.cache_write_tokens);
+    }
+    metrics
 }
 
 pub fn capture_log_line(
@@ -240,24 +255,68 @@ pub fn capture_log_line(
     raw_bytes: &mut usize,
     raw_truncated: &mut bool,
 ) {
-    if raw_bytes.saturating_add(line.len()) <= MAX_LLM_LOG_BYTES {
+    if !*raw_truncated && raw_bytes.saturating_add(line.len()) <= MAX_LLM_LOG_BYTES {
         *raw_bytes += line.len();
         raw_lines.push(line.to_string());
-    } else {
-        *raw_truncated = true;
+        return;
     }
+
+    let available = MAX_LLM_LOG_BYTES.saturating_sub(STREAM_LOG_TRUNCATION_MARKER.len() + 2);
+    let head_bytes = available / 2;
+    let tail_bytes = available.saturating_sub(head_bytes);
+
+    if *raw_truncated {
+        let head = raw_lines.first().cloned().unwrap_or_default();
+        let previous_tail = raw_lines.get(1).map(String::as_str).unwrap_or_default();
+        let combined_tail = if previous_tail.is_empty() {
+            line.to_string()
+        } else {
+            format!("{previous_tail}\n{line}")
+        };
+        let tail = suffix_at_most(&combined_tail, tail_bytes).to_string();
+        *raw_lines = vec![head, tail];
+    } else {
+        // Keep both ends of a long stream: the beginning is useful for context,
+        // while the end usually contains usage, finish, and cache metadata.
+        let existing = raw_lines.join("\n");
+        let combined = if existing.is_empty() {
+            line.to_string()
+        } else {
+            format!("{existing}\n{line}")
+        };
+        *raw_lines = vec![
+            prefix_at_most(&combined, head_bytes).to_string(),
+            suffix_at_most(&combined, tail_bytes).to_string(),
+        ];
+    }
+    *raw_bytes = raw_lines.iter().map(String::len).sum();
+    *raw_truncated = true;
+}
+
+fn prefix_at_most(value: &str, max_bytes: usize) -> &str {
+    let mut end = max_bytes.min(value.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+fn suffix_at_most(value: &str, max_bytes: usize) -> &str {
+    let mut start = value.len().saturating_sub(max_bytes);
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    &value[start..]
 }
 
 pub fn format_stream_log(raw_lines: &[String], truncated: bool) -> String {
-    format!(
-        "{}{}",
-        raw_lines.join("\n"),
-        if truncated {
-            "\n[LLM stream log truncated]"
-        } else {
-            ""
-        }
-    )
+    if truncated {
+        let head = raw_lines.first().map(String::as_str).unwrap_or_default();
+        let tail = raw_lines.get(1).map(String::as_str).unwrap_or_default();
+        format!("{head}\n{STREAM_LOG_TRUNCATION_MARKER}\n{tail}")
+    } else {
+        raw_lines.join("\n")
+    }
 }
 
 pub fn drain_sse_line(buffer: &mut Vec<u8>) -> Option<AppResult<String>> {
@@ -294,6 +353,7 @@ pub fn stream_response(
         let mut raw_bytes = 0_usize;
         let mut raw_truncated = false;
         let mut first_token_ms = None;
+        let mut usage = None;
 
         loop {
             let next = match tokio::time::timeout(options.timeout, bytes.next()).await {
@@ -315,7 +375,7 @@ pub fn stream_response(
                         Some(&format_stream_log(&raw_lines, raw_truncated)),
                         Some(context.status),
                         Some(&error.to_string()),
-                        stream_metrics(context.started, first_token_ms),
+                        stream_metrics(context.started, first_token_ms, usage.as_ref()),
                     );
                     yield Err(error);
                     return;
@@ -343,7 +403,7 @@ pub fn stream_response(
                                     Some(&format_stream_log(&raw_lines, raw_truncated)),
                                     Some(context.status),
                                     Some(&error.to_string()),
-                                    stream_metrics(context.started, first_token_ms),
+                                    stream_metrics(context.started, first_token_ms, usage.as_ref()),
                                 );
                                 yield Err(error);
                                 return;
@@ -358,6 +418,9 @@ pub fn stream_response(
                         for event in parser.parse_line(&line) {
                             match event {
                                 Ok(event) => {
+                                    if let StreamEvent::Usage(value) = &event {
+                                        usage = Some(value.clone());
+                                    }
                                     if first_token_ms.is_none() && is_first_token_event(&event) {
                                         first_token_ms = Some(elapsed_ms(context.started));
                                     }
@@ -376,7 +439,7 @@ pub fn stream_response(
                                         Some(&format_stream_log(&raw_lines, raw_truncated)),
                                         Some(context.status),
                                         Some(&error.to_string()),
-                                        stream_metrics(context.started, first_token_ms),
+                                        stream_metrics(context.started, first_token_ms, usage.as_ref()),
                                     );
                                     yield Err(error);
                                     return;
@@ -405,7 +468,7 @@ pub fn stream_response(
                         Some(&format_stream_log(&raw_lines, raw_truncated)),
                         Some(context.status),
                         Some(&error.to_string()),
-                        stream_metrics(context.started, first_token_ms),
+                        stream_metrics(context.started, first_token_ms, usage.as_ref()),
                     );
                     yield Err(error);
                     return;
@@ -427,7 +490,7 @@ pub fn stream_response(
                     Some(&format_stream_log(&raw_lines, raw_truncated)),
                     Some(context.status),
                     Some(&error.to_string()),
-                    stream_metrics(context.started, first_token_ms),
+                    stream_metrics(context.started, first_token_ms, usage.as_ref()),
                 );
                 yield Err(error);
                 return;
@@ -441,8 +504,11 @@ pub fn stream_response(
             );
             for event in parser.parse_line(&line) {
                 match event {
-                    Ok(event) => {
-                        if first_token_ms.is_none() && is_first_token_event(&event) {
+                        Ok(event) => {
+                            if let StreamEvent::Usage(value) = &event {
+                                usage = Some(value.clone());
+                            }
+                            if first_token_ms.is_none() && is_first_token_event(&event) {
                             first_token_ms = Some(elapsed_ms(context.started));
                         }
                         yield Ok(event);
@@ -460,7 +526,7 @@ pub fn stream_response(
                             Some(&format_stream_log(&raw_lines, raw_truncated)),
                             Some(context.status),
                             Some(&error.to_string()),
-                            stream_metrics(context.started, first_token_ms),
+                            stream_metrics(context.started, first_token_ms, usage.as_ref()),
                         );
                         yield Err(error);
                         return;
@@ -480,7 +546,7 @@ pub fn stream_response(
             Some(&format_stream_log(&raw_lines, raw_truncated)),
             Some(context.status),
             None,
-            stream_metrics(context.started, first_token_ms),
+            stream_metrics(context.started, first_token_ms, usage.as_ref()),
         );
     };
     Box::pin(stream)
@@ -518,5 +584,38 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("idle timeout"));
         server.abort();
+    }
+
+    #[test]
+    fn stream_metrics_keep_usage_after_payload_capture_is_truncated() {
+        let usage = TokenUsage {
+            input_tokens: 120,
+            output_tokens: 240,
+            cache_read_tokens: 360,
+            cache_write_tokens: 12,
+            ..TokenUsage::default()
+        };
+        let metrics = stream_metrics(Instant::now(), Some(17), Some(&usage));
+        assert_eq!(metrics.first_token_ms, Some(17));
+        assert_eq!(metrics.input_tokens, Some(120));
+        assert_eq!(metrics.output_tokens, Some(240));
+        assert_eq!(metrics.cache_read_tokens, Some(360));
+        assert_eq!(metrics.cache_write_tokens, Some(12));
+    }
+
+    #[test]
+    fn stream_log_capture_keeps_the_head_and_latest_tail() {
+        let mut lines = Vec::new();
+        let mut bytes = 0;
+        let mut truncated = false;
+        capture_log_line("HEAD", &mut lines, &mut bytes, &mut truncated);
+        capture_log_line(&"M".repeat(MAX_LLM_LOG_BYTES), &mut lines, &mut bytes, &mut truncated);
+        capture_log_line("TAIL", &mut lines, &mut bytes, &mut truncated);
+
+        let formatted = format_stream_log(&lines, truncated);
+        assert!(truncated);
+        assert!(formatted.starts_with("HEAD"));
+        assert!(formatted.contains("[LLM stream log middle truncated]"));
+        assert!(formatted.ends_with("TAIL"));
     }
 }

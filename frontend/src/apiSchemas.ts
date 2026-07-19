@@ -64,6 +64,9 @@ const tokenUsageFields = {
   output_tokens: number(),
   cache_write_tokens: number(),
   cache_read_tokens: number(),
+  total_prompt_tokens: optional(number()),
+  uncached_input_tokens: optional(number()),
+  cache_hit_ratio: optional(number()),
 };
 
 const modelUsageSchema = looseObject({

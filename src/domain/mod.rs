@@ -22,6 +22,8 @@ pub use providers::{
     CreateModelProviderRequest, FetchProviderModelsRequest, ModelConfig, ModelProvider,
     ModelProviderResponse, ProviderType, UpdateModelProviderRequest,
 };
+#[allow(unused_imports)]
+pub use crate::llm::cache::{CacheContext, PromptCacheConfig, PromptCacheMode, ProviderCacheCapabilities};
 pub use runtime::{
     CodexRuntimeSource, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus,
 };

@@ -346,6 +346,14 @@ pub struct OpenAiUsage {
     pub completion_tokens: u64,
     #[serde(default, alias = "input_tokens_details")]
     pub prompt_tokens_details: Option<OpenAiInputTokenDetails>,
+    #[serde(default, alias = "cache_hit_tokens")]
+    pub prompt_cache_hit_tokens: u64,
+    #[serde(default)]
+    pub prompt_cache_miss_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cached_tokens: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -356,17 +364,32 @@ pub struct OpenAiInputTokenDetails {
 
 impl OpenAiUsage {
     pub fn normalized(&self) -> TokenUsage {
-        let cached = self
-            .prompt_tokens_details
+        let cached = self.prompt_tokens_details
             .as_ref()
-            .map_or(0, |details| details.cached_tokens);
+            .map_or(0, |details| details.cached_tokens)
+            .max(self.prompt_cache_hit_tokens)
+            .max(self.cache_read_tokens)
+            .max(self.cached_tokens);
+        let uncached = if self.prompt_cache_miss_tokens > 0 {
+            self.prompt_cache_miss_tokens
+        } else {
+            self.prompt_tokens.saturating_sub(cached)
+        };
         TokenUsage {
-            input_tokens: self.prompt_tokens.saturating_sub(cached),
+            input_tokens: uncached,
+            uncached_input_tokens: uncached,
+            total_prompt_tokens: self.prompt_tokens.max(uncached.saturating_add(cached)),
             output_tokens: self.completion_tokens,
             cache_write_tokens: 0,
             cache_read_tokens: cached,
+            cache_hit_ratio: ratio(cached, uncached),
         }
     }
+}
+
+fn ratio(hit: u64, uncached: u64) -> f64 {
+    let denominator = hit.saturating_add(uncached);
+    if denominator == 0 { 0.0 } else { hit as f64 / denominator as f64 }
 }
 
 #[cfg(test)]
@@ -377,6 +400,21 @@ mod tests {
 
     use super::*;
     use crate::domain::{ChatMessageStatus, ChatRole};
+
+    #[test]
+    fn deepseek_cache_usage_normalizes_hit_and_miss_tokens() {
+        let usage: OpenAiUsage = serde_json::from_value(serde_json::json!({
+            "prompt_tokens": 1800,
+            "completion_tokens": 20,
+            "prompt_cache_hit_tokens": 1200,
+            "prompt_cache_miss_tokens": 600
+        })).unwrap();
+        let normalized = usage.normalized();
+        assert_eq!(normalized.input_tokens, 600);
+        assert_eq!(normalized.cache_read_tokens, 1200);
+        assert_eq!(normalized.total_prompt_tokens, 1800);
+        assert!((normalized.cache_hit_ratio - (2.0 / 3.0)).abs() < f64::EPSILON);
+    }
 
     fn message(role: ChatRole, content: impl Into<String>) -> ChatMessage {
         ChatMessage {

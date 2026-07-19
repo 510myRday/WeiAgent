@@ -1,5 +1,14 @@
 type JsonRecord = Record<string, unknown>;
 
+const DISPLAY_TRUNCATION_MARKER = '[..., 此处已截断, ...]';
+
+function normalizeTruncationMarker(raw: string): string {
+  return raw.replace(
+    /\[(?:middle truncated|log field truncated|LLM stream log truncated|LLM stream log middle truncated)\]/g,
+    DISPLAY_TRUNCATION_MARKER,
+  );
+}
+
 export interface FormattedLlmResponse {
   isStreaming: boolean;
   formatted: string;
@@ -28,20 +37,22 @@ interface StreamChoice {
 
 export function formatRawJson(raw: string | undefined): string {
   if (!raw) return '';
+  const displayRaw = normalizeTruncationMarker(raw);
   try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
+    return JSON.stringify(JSON.parse(displayRaw), null, 2);
   } catch {
-    return raw;
+    return displayRaw;
   }
 }
 
 export function formatLlmResponse(raw: string): FormattedLlmResponse {
-  const payloads = parseSsePayloads(raw);
+  const displayRaw = normalizeTruncationMarker(raw);
+  const payloads = parseSsePayloads(displayRaw);
   if (!payloads) {
     return {
       isStreaming: false,
-      formatted: formatRawJson(raw),
-      raw,
+      formatted: formatRawJson(displayRaw),
+      raw: displayRaw,
     };
   }
 
@@ -54,7 +65,7 @@ export function formatLlmResponse(raw: string): FormattedLlmResponse {
   return {
     isStreaming: true,
     formatted: JSON.stringify(aggregated, null, 2),
-    raw,
+    raw: displayRaw,
   };
 }
 

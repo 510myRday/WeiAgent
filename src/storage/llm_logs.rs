@@ -814,12 +814,39 @@ fn truncate_log_field(value: &str) -> String {
     if value.len() <= MAX_LOG_FIELD_BYTES {
         return value.to_string();
     }
-    let tail = String::from_utf8_lossy(&value.as_bytes()[value.len() - MAX_LOG_FIELD_BYTES..]);
-    format!("[log field truncated]\n{tail}")
+    let marker = "[middle truncated]";
+    let available = MAX_LOG_FIELD_BYTES.saturating_sub(marker.len() + 2);
+    let head_bytes = available / 2;
+    let tail_bytes = available.saturating_sub(head_bytes);
+    let head = prefix_at_most(value, head_bytes);
+    let tail = suffix_at_most(value, tail_bytes);
+    format!("{head}\n{marker}\n{tail}")
+}
+
+fn prefix_at_most(value: &str, max_bytes: usize) -> &str {
+    let mut end = max_bytes.min(value.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+fn suffix_at_most(value: &str, max_bytes: usize) -> &str {
+    let mut start = value.len().saturating_sub(max_bytes);
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    &value[start..]
 }
 
 
 pub fn finalize_response_for_log(raw_response: &str) -> String {
+    // A head/tail stream preview must remain a stream preview so the UI can
+    // show the explicit middle-truncation marker instead of silently
+    // aggregating the two retained fragments together.
+    if raw_response.contains("middle truncated") {
+        return raw_response.to_string();
+    }
     let payloads = collect_json_payloads(raw_response);
     if payloads.is_empty() {
         return raw_response.to_string();
@@ -1552,6 +1579,12 @@ mod tests {
         assert_eq!(value["choices"][0]["message"]["content"], "AB");
         assert_eq!(value["usage"]["prompt_tokens"], 2);
         assert!(!finalized.contains("chat.completion.chunk"));
+    }
+
+    #[test]
+    fn finalize_keeps_head_tail_stream_marker_visible() {
+        let raw = "data: {\"choices\":[{\"delta\":{\"content\":\"HEAD\"}}]}\n[LLM stream log middle truncated]\ndata: {\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}";
+        assert_eq!(finalize_response_for_log(raw), raw);
     }
 
     #[tokio::test(flavor = "multi_thread")]

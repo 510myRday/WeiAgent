@@ -10,6 +10,7 @@ use crate::{
     error::{AppError, AppResult},
     llm::{
         client::{ChatClient, ChatStream, RequestOptions},
+        cache::{apply_provider_extra, build_context, effective_capabilities, PromptCacheMode},
         http::StreamLineParser,
         protocol::common::{
             ProtocolAdapter, ProtocolClient, add_query_parameter, encode_path_segment,
@@ -104,6 +105,7 @@ impl ProtocolAdapter for GeminiAdapter {
     fn build_request(
         &self,
         _agent: &Agent,
+        provider: &ModelProvider,
         messages: &[ChatMessage],
         _stream: bool,
         system_prompt: &str,
@@ -113,6 +115,8 @@ impl ProtocolAdapter for GeminiAdapter {
     ) -> AppResult<Value> {
         build_gemini_request(
             &_agent.model_id,
+            _agent.id,
+            provider,
             messages,
             system_prompt,
             extra_body,
@@ -192,12 +196,22 @@ impl ProtocolAdapter for GeminiAdapter {
 
 fn build_gemini_request(
     model_id: &str,
+    agent_id: Uuid,
+    provider: &ModelProvider,
     messages: &[ChatMessage],
     system_prompt: &str,
     extra_body: &Value,
     tools: Option<Vec<ToolDefinition>>,
     thinking_level: Option<ThinkingLevel>,
 ) -> AppResult<Value> {
+    let context = build_context(
+        provider,
+        model_id,
+        agent_id,
+        "google_gemini",
+        system_prompt,
+        tools.as_deref(),
+    );
     let selected = select_context_messages(messages);
     let mut call_names = HashMap::new();
     for message in &selected {
@@ -282,6 +296,12 @@ fn build_gemini_request(
         json!({"parts": [{"text": system_prompt}]}),
     );
     body.insert("contents".to_string(), Value::Array(contents));
+    if matches!(provider.prompt_cache.mode, PromptCacheMode::Explicit)
+        && effective_capabilities(provider).explicit_breakpoints
+        && let Some(cached_content) = provider.prompt_cache.gemini_cached_content.as_ref()
+    {
+        body.insert("cachedContent".to_string(), json!(cached_content));
+    }
     let mut generation_config = extra_body
         .get("generationConfig")
         .and_then(Value::as_object)
@@ -332,6 +352,7 @@ fn build_gemini_request(
             }]),
         );
     }
+    apply_provider_extra(&mut body, &context);
     merge_extra_body(
         body,
         extra_body,
@@ -419,6 +440,9 @@ fn parse_gemini_usage(value: &Value) -> TokenUsage {
             .saturating_add(value["thoughtsTokenCount"].as_u64().unwrap_or(0)),
         cache_write_tokens: 0,
         cache_read_tokens: cached,
+        total_prompt_tokens: prompt,
+        uncached_input_tokens: prompt.saturating_sub(cached),
+        cache_hit_ratio: if prompt == 0 { 0.0 } else { cached as f64 / prompt as f64 },
     }
 }
 
@@ -614,9 +638,20 @@ mod tests {
         ]
     }
 
+    fn test_provider() -> ModelProvider {
+        ModelProvider {
+            id: Uuid::new_v4(), provider_type: crate::domain::ProviderType::GoogleGemini,
+            name: "test".into(), base_url: "http://localhost".into(), api_key: "key".into(),
+            models: vec!["gemini-3-pro".into()], model_configs: vec![], extra_body: Value::Null,
+            prompt_cache: Default::default(), cache_capabilities: None,
+            created_at: Utc::now(), updated_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn request_maps_function_response() {
         let mut messages = fixture();
+        let provider = test_provider();
         messages[0].reasoning_content =
             Some("saved-reasoning-must-not-be-sent".to_string());
         messages.insert(
@@ -645,6 +680,8 @@ mod tests {
         );
         let request = build_gemini_request(
             "gemini-3-pro",
+            Uuid::new_v4(),
+            &provider,
             &messages,
             "system",
             &Value::Null,
@@ -702,6 +739,8 @@ mod tests {
         }];
         let request = build_gemini_request(
             "gemini-3-pro",
+            agent_id,
+            &test_provider(),
             &messages,
             "system",
             &Value::Null,

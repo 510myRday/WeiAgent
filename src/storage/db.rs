@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS model_providers (
     models_json TEXT NOT NULL,
     model_configs_json TEXT NOT NULL,
     extra_body_json TEXT NOT NULL DEFAULT 'null',
+    prompt_cache_json TEXT NOT NULL DEFAULT '{}',
+    cache_capabilities_json TEXT NOT NULL DEFAULT 'null',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -77,6 +79,10 @@ pub fn open_connection(db_path: &Path) -> AppResult<Connection> {
     let _ = conn.pragma_update(None, "journal_mode", "WAL");
     conn.pragma_update(None, "foreign_keys", true)?;
     conn.execute_batch(SCHEMA_SQL)?;
+    // Older installations have the provider table already; add cache columns
+    // without disturbing their existing rows.
+    let _ = conn.execute("ALTER TABLE model_providers ADD COLUMN prompt_cache_json TEXT NOT NULL DEFAULT '{}'", []);
+    let _ = conn.execute("ALTER TABLE model_providers ADD COLUMN cache_capabilities_json TEXT NOT NULL DEFAULT 'null'", []);
     Ok(conn)
 }
 
@@ -108,7 +114,7 @@ pub fn write_providers(data_dir: &Path, providers: &[ModelProvider]) -> AppResul
 pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
     let mut stmt = conn.prepare(
         "SELECT id, provider_type, name, base_url, api_key, models_json,
-                model_configs_json, extra_body_json, created_at, updated_at
+                model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, created_at, updated_at
          FROM model_providers
          ORDER BY created_at ASC, id ASC",
     )?;
@@ -122,8 +128,10 @@ pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
             models_json: row.get(5)?,
             model_configs_json: row.get(6)?,
             extra_body_json: row.get(7)?,
-            created_at: row.get(8)?,
-            updated_at: row.get(9)?,
+            prompt_cache_json: row.get(8)?,
+            cache_capabilities_json: row.get(9)?,
+            created_at: row.get(10)?,
+            updated_at: row.get(11)?,
         })
     })?;
 
@@ -142,11 +150,13 @@ fn insert_provider_conn(conn: &Connection, provider: &ModelProvider) -> AppResul
     let models_json = serde_json::to_string(&provider.models)?;
     let model_configs_json = serde_json::to_string(&provider.model_configs)?;
     let extra_body_json = serde_json::to_string(&provider.extra_body)?;
+    let prompt_cache_json = serde_json::to_string(&provider.prompt_cache)?;
+    let cache_capabilities_json = serde_json::to_string(&provider.cache_capabilities)?;
     conn.execute(
         "INSERT INTO model_providers (
             id, provider_type, name, base_url, api_key, models_json,
-            model_configs_json, extra_body_json, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             provider.id.to_string(),
             provider_type,
@@ -156,6 +166,8 @@ fn insert_provider_conn(conn: &Connection, provider: &ModelProvider) -> AppResul
             models_json,
             model_configs_json,
             extra_body_json,
+            prompt_cache_json,
+            cache_capabilities_json,
             provider.created_at.to_rfc3339(),
             provider.updated_at.to_rfc3339(),
         ],
@@ -172,6 +184,8 @@ struct ProviderRow {
     models_json: String,
     model_configs_json: String,
     extra_body_json: String,
+    prompt_cache_json: String,
+    cache_capabilities_json: String,
     created_at: String,
     updated_at: String,
 }
@@ -182,6 +196,8 @@ fn row_to_provider(row: ProviderRow) -> AppResult<ModelProvider> {
     let models: Vec<String> = serde_json::from_str(&row.models_json)?;
     let model_configs: Vec<ModelConfig> = serde_json::from_str(&row.model_configs_json)?;
     let extra_body: serde_json::Value = serde_json::from_str(&row.extra_body_json)?;
+    let prompt_cache = serde_json::from_str(&row.prompt_cache_json).unwrap_or_default();
+    let cache_capabilities = serde_json::from_str(&row.cache_capabilities_json).unwrap_or(None);
     let created_at = chrono::DateTime::parse_from_rfc3339(&row.created_at)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|error| crate::error::AppError::Database(error.to_string()))?;
@@ -198,6 +214,8 @@ fn row_to_provider(row: ProviderRow) -> AppResult<ModelProvider> {
         models,
         model_configs,
         extra_body,
+        prompt_cache,
+        cache_capabilities,
         created_at,
         updated_at,
     })

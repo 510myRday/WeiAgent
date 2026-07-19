@@ -9,6 +9,7 @@ use crate::{
     error::{AppError, AppResult},
     llm::{
         client::{ChatClient, ChatStream, RequestOptions},
+        cache::{apply_openai_fields, apply_provider_extra, build_context},
         http::StreamLineParser,
         protocol::common::{
             ProtocolAdapter, ProtocolClient, bearer_get, bearer_post, default_models,
@@ -92,6 +93,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
     fn build_request(
         &self,
         agent: &Agent,
+        provider: &ModelProvider,
         messages: &[ChatMessage],
         stream: bool,
         system_prompt: &str,
@@ -101,6 +103,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
     ) -> AppResult<Value> {
         build_openai_responses_request(
             agent,
+            provider,
             messages,
             stream,
             system_prompt,
@@ -144,6 +147,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
 
 fn build_openai_responses_request(
     agent: &Agent,
+    provider: &ModelProvider,
     messages: &[ChatMessage],
     stream: bool,
     system_prompt: &str,
@@ -151,6 +155,14 @@ fn build_openai_responses_request(
     tools: Option<Vec<ToolDefinition>>,
     thinking_level: Option<ThinkingLevel>,
 ) -> AppResult<Value> {
+    let context = build_context(
+        provider,
+        &agent.model_id,
+        agent.id,
+        "openai_responses",
+        system_prompt,
+        tools.as_deref(),
+    );
     let mut input = Vec::new();
     for message in select_context_messages(messages) {
         match message.role {
@@ -212,6 +224,16 @@ fn build_openai_responses_request(
     body.insert("instructions".to_string(), json!(system_prompt));
     body.insert("input".to_string(), Value::Array(input));
     body.insert("stream".to_string(), Value::Bool(stream));
+    if context.explicit_breakpoints {
+        body.insert(
+            "instructions".to_string(),
+            json!([{
+                "type": "input_text",
+                "text": system_prompt,
+                "cache_control": {"type": "prompt_cache_breakpoint", "mode": "explicit"}
+            }]),
+        );
+    }
     if let Some(level) = thinking_level.filter(|level| *level != ThinkingLevel::Off) {
         let mut reasoning = Map::new();
         reasoning.insert(
@@ -248,6 +270,8 @@ fn build_openai_responses_request(
             ),
         );
     }
+    apply_openai_fields(&mut body, provider, &context);
+    apply_provider_extra(&mut body, &context);
     merge_extra_body(
         body,
         extra_body,
@@ -258,6 +282,9 @@ fn build_openai_responses_request(
             "stream",
             "tools",
             "reasoning",
+            "prompt_cache_key",
+            "prompt_cache_options",
+            "prompt_cache_retention",
         ],
     )
 }
@@ -565,13 +592,25 @@ mod tests {
         (agent, messages)
     }
 
+    fn test_provider() -> ModelProvider {
+        ModelProvider {
+            id: Uuid::new_v4(), provider_type: crate::domain::ProviderType::OpenAiResponses,
+            name: "test".into(), base_url: "http://localhost".into(), api_key: "key".into(),
+            models: vec!["test-model".into()], model_configs: vec![], extra_body: Value::Null,
+            prompt_cache: Default::default(), cache_capabilities: None,
+            created_at: Utc::now(), updated_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn request_maps_tool_history() {
         let (agent, mut messages) = fixture();
+        let provider = test_provider();
         messages[1].reasoning_content =
             Some("saved-reasoning-must-not-be-sent".to_string());
         let request = build_openai_responses_request(
             &agent,
+            &provider,
             &messages,
             true,
             "system",
@@ -603,8 +642,10 @@ mod tests {
     #[test]
     fn omits_reasoning_when_thinking_is_off() {
         let (agent, messages) = fixture();
+        let provider = test_provider();
         let request = build_openai_responses_request(
             &agent,
+            &provider,
             &messages,
             false,
             "system",
@@ -617,6 +658,7 @@ mod tests {
 
         let request = build_openai_responses_request(
             &agent,
+            &provider,
             &messages,
             false,
             "system",
