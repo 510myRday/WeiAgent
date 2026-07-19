@@ -150,21 +150,20 @@ impl AgentTool for ExecuteTerminalTool {
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": format!(
-                            "Shell script to run through a Codex-managed terminal session. {}. Max length 8000 bytes. Prefer short focused commands; chain with shell operators when needed.",
-                            crate::tools::prompt::host_shell_label()
-                        )
+                        "minLength": 1,
+                        "maxLength": 8000,
+                        "description": "Command to execute using the host shell described by this tool. Prefer short focused commands; chain with shell operators when useful."
                     },
                     "cwd": {
                         "type": "string",
-                        "description": "Optional existing working directory. Omit it, leave it empty, or use '.' to use the configured default workspace root. Relative paths resolve against that root. Absolute paths must already exist. Never invent paths such as /tmp when the directory is unknown."
+                        "description": "Existing working directory. Omit to use the default workspace; relative paths resolve from it."
                     },
                     "timeout_ms": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 120000,
                         "description": format!(
-                            "Foreground wait budget in milliseconds before an unfinished command is promoted to background and returns process_id. Default {default_timeout}. Max 120000."
+                            "Foreground wait in milliseconds. Default {default_timeout}, max 120000. An unfinished command returns process_id when sessions are supported; Windows sandbox mode stops it on timeout."
                         )
                     },
                     "background": {
@@ -184,6 +183,7 @@ impl AgentTool for ExecuteTerminalTool {
                     },
                     "justification": {
                         "type": "string",
+                        "maxLength": 2000,
                         "description": "Short reason for full host access. Required in request_approval mode when sandbox_permissions is require_escalated. Max 2000 bytes. Skip it for use_default."
                     }
                 },
@@ -406,7 +406,7 @@ impl AgentTool for TerminalSessionTool {
     fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
         tool_definition(
             "terminal_session",
-            "Continue a Codex-managed terminal session returned by execute_terminal. Use action=poll to wait for incremental output, write to send raw input without Enter, submit to send input plus Enter, interrupt for Ctrl+C semantics, eof to close stdin, terminate to stop reliably, or resize for a PTY. Pass the output_cursor returned by the previous call as cursor to avoid repeated output. Only sessions owned by the current agent and conversation are accessible.",
+            "Continue a running process returned by execute_terminal. Pass the previous output_cursor as cursor to receive only new output. Sessions are limited to the current agent and conversation.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -421,7 +421,7 @@ impl AgentTool for TerminalSessionTool {
                     },
                     "input": {
                         "type": "string",
-                        "description": "Input for write or submit. submit may use an empty string to press Enter."
+                        "description": "Used only by write and submit. Required for write; submit may use an empty string to press Enter."
                     },
                     "cursor": {
                         "type": "integer",
@@ -438,13 +438,13 @@ impl AgentTool for TerminalSessionTool {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 500,
-                        "description": "PTY row count for resize."
+                        "description": "Required with cols only for action=resize."
                     },
                     "cols": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 1000,
-                        "description": "PTY column count for resize."
+                        "description": "Required with rows only for action=resize."
                     }
                 },
                 "required": ["process_id", "action"],
@@ -576,7 +576,6 @@ impl AgentTool for TerminalSessionTool {
     }
 }
 
-
 struct MultiEditFileTool;
 
 #[async_trait]
@@ -587,7 +586,7 @@ impl AgentTool for MultiEditFileTool {
             crate::domain::TerminalPermissionMode::FullAccess => "full_access",
         };
         let description = format!(
-            "Built-in multi-file text editor companion to the terminal tool group. Prefer this over shell redirection for normal source/config/docs edits. Supports exact replacements on one or many files, plus create/delete/move operations. All operations are validated in memory first; if any fails, nothing is written (or earlier writes are rolled back). Enabled only when the terminal tool group is enabled. Current permission mode is {permission}: in request_approval every edit requires user approval (or a matching 24h always-allow grant for multi_edit_file); in full_access edits apply immediately inside configured workspace roots. Keep old_string exact after CRLF->LF normalization; use replace_all or startLine when a match is ambiguous."
+            "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection for source, config, and documentation changes. Every operation is validated before commit; failure leaves files unchanged. Current permission mode: {permission}. Exact edits compare LF-normalized text; use replace_all or startLine only when needed."
         );
         tool_definition(
             MULTI_EDIT_TOOL_NAME,
@@ -596,104 +595,78 @@ impl AgentTool for MultiEditFileTool {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Legacy single-file edit path, relative to cwd unless absolute. Use with top-level edits."
-                    },
-                    "edits": {
-                        "type": "array",
-                        "description": "Legacy ordered exact replacements for path. Validated and applied in memory before writing.",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "required": ["old_string", "new_string"],
-                            "properties": {
-                                "old_string": {
-                                    "type": "string",
-                                    "description": "Exact text to replace after LF normalization."
-                                },
-                                "new_string": {
-                                    "type": "string",
-                                    "description": "Replacement text. Must differ from old_string."
-                                },
-                                "replace_all": {
-                                    "type": "boolean",
-                                    "description": "Replace every occurrence. Defaults to false."
-                                },
-                                "startLine": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                    "description": "Optional 1-based line hint when old_string is not unique."
-                                }
-                            }
-                        }
-                    },
-                    "files": {
-                        "type": "array",
-                        "description": "Multiple existing files to edit. Each item has path and edits.",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "required": ["path", "edits"],
-                            "properties": {
-                                "path": {"type": "string"},
-                                "edits": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "required": ["old_string", "new_string"],
-                                        "properties": {
-                                            "old_string": {"type": "string"},
-                                            "new_string": {"type": "string"},
-                                            "replace_all": {"type": "boolean"},
-                                            "startLine": {"type": "integer", "minimum": 1}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
                     "operations": {
                         "type": "array",
-                        "description": "Structured file operations: edit, create, delete, move. Validated before commit.",
+                        "minItems": 1,
+                        "maxItems": 32,
+                        "description": "Ordered file operations. A path may appear only once per call.",
                         "items": {
-                            "type": "object",
-                            "additionalProperties": true,
-                            "required": ["type"],
-                            "properties": {
-                                "type": {
-                                    "type": "string",
-                                    "enum": ["edit", "create", "delete", "move"]
-                                },
-                                "path": {"type": "string"},
-                                "from": {"type": "string"},
-                                "to": {"type": "string"},
-                                "content": {"type": "string"},
-                                "overwrite": {"type": "boolean"},
-                                "edits": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "required": ["old_string", "new_string"],
-                                        "properties": {
-                                            "old_string": {"type": "string"},
-                                            "new_string": {"type": "string"},
-                                            "replace_all": {"type": "boolean"},
-                                            "startLine": {"type": "integer", "minimum": 1}
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": ["type", "path", "edits"],
+                                    "properties": {
+                                        "type": {"const": "edit"},
+                                        "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+                                        "edits": {
+                                            "type": "array",
+                                            "minItems": 1,
+                                            "maxItems": 64,
+                                            "items": {
+                                                "type": "object",
+                                                "additionalProperties": false,
+                                                "required": ["old_string", "new_string"],
+                                                "properties": {
+                                                    "old_string": {"type": "string", "maxLength": 200000},
+                                                    "new_string": {"type": "string", "maxLength": 2097152},
+                                                    "replace_all": {"type": "boolean"},
+                                                    "startLine": {"type": "integer", "minimum": 1}
+                                                }
+                                            }
                                         }
                                     }
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": ["type", "path", "content"],
+                                    "properties": {
+                                        "type": {"const": "create"},
+                                        "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+                                        "content": {"type": "string", "maxLength": 2097152},
+                                        "overwrite": {"type": "boolean"}
+                                    }
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": ["type", "path"],
+                                    "properties": {
+                                        "type": {"const": "delete"},
+                                        "path": {"type": "string", "minLength": 1, "maxLength": 4096}
+                                    }
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": ["type", "from", "to"],
+                                    "properties": {
+                                        "type": {"const": "move"},
+                                        "from": {"type": "string", "minLength": 1, "maxLength": 4096},
+                                        "to": {"type": "string", "minLength": 1, "maxLength": 4096},
+                                        "overwrite": {"type": "boolean"}
+                                    }
                                 }
-                            }
+                            ]
                         }
                     },
                     "cwd": {
                         "type": "string",
-                        "description": "Optional existing working directory for relative paths. Omit to use the default workspace root."
+                        "description": "Existing working directory for relative paths. Omit to use the default workspace."
                     }
-                }
+                },
+                "required": ["operations"]
             }),
         )
     }
@@ -882,44 +855,26 @@ fn unsupported_host_shell_syntax(command: &str) -> Option<&'static str> {
 }
 
 fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
-    let shell = crate::tools::prompt::host_shell_guidance();
-    let workspace_inspection = workspace_inspection_guidance();
-    let default_timeout = config.terminal.default_timeout_ms;
+    let host_guidance = terminal_host_guidance();
     let permission = match config.terminal.permission_mode {
         crate::domain::TerminalPermissionMode::RequestApproval => {
-            "Current permission mode is request_approval: default runs use the OS workspace sandbox (network denied; outside-workspace writes denied). Request sandbox_permissions=\"require_escalated\" only for explicit full-host needs and include justification; the user must approve unless an always-allow grant already matches."
+            "Permission mode: request_approval. Default commands use the workspace sandbox without network access; use require_escalated with a justification only when full host access is needed."
         }
         crate::domain::TerminalPermissionMode::FullAccess => {
-            "Current permission mode is full_access: Codex runs commands with full host access and no approval prompts. Still prefer the configured workspace unless the user asked for another path."
+            "Permission mode: full_access. Commands run with full host access; stay in the requested workspace unless the user specifies another path."
         }
-    };
-    let examples = if cfg!(windows) {
-        "Examples of valid command strings: `dir`, `type README.md`, `where python`, `cd /d C:\\path\\to\\project && cargo test -q`, `echo hello> out.txt`. Never use POSIX heredocs such as `<<EOF` or `python - <<'PY'`; cmd.exe does not support them. For multiline content, use a PowerShell here-string, `python -c`, or several focused commands."
-    } else {
-        "Examples of valid command strings: `ls -la`, `sed -n '1,40p' README.md`, `rg --files`, `cd /path/to/project && cargo test -q`, `printf 'hello\\n' > out.txt`."
-    };
-    let platform_limits = if cfg!(windows) {
-        "On Windows, default sandbox execution is limited to short non-interactive foreground commands: background=true is blocked, a timeout is stopped instead of promoted, and terminal_session/PTY/stdin continuation require approved full access."
-    } else {
-        "Sandboxed and full-access commands can continue as managed sessions when explicitly backgrounded or when the foreground timeout is reached."
     };
 
     format!(
-        "Execute a local terminal command and return stdout/stderr/exit_code (or process_id if still running). {shell} {permission} \
-{workspace_inspection} \
-For the default workspace, omit cwd, pass an empty value, or use '.'. Set cwd only to a directory known to exist; never substitute a guessed path. \
-Usage decision: default to foreground for short commands (list files, git, builds/tests that usually finish soon). Set background=true only for long-lived services/watchers/dev servers that must keep running. If runtime is uncertain, stay foreground and raise timeout_ms. {platform_limits} \
-Foreground commands wait up to timeout_ms (default {default_timeout}, max 120000). Ordinary completed foreground commands do not stay listed as background processes and need no get/stop. \
-Only after a process_id is returned, use terminal_session with the returned output_cursor to poll incremental output, answer prompts, send Ctrl+C/EOF, resize a PTY, or terminate the session. Do not re-run the same long command instead of continuing its session. \
-Set tty=true only for software that requires a real terminal. Returned output per tool call is limited to the last 64KB. If a sandboxed attempt is denied, report the failure and escalate only when user intent requires it; never invent success. {examples}"
+        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. {host_guidance} {permission} Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again."
     )
 }
 
-fn workspace_inspection_guidance() -> &'static str {
+fn terminal_host_guidance() -> &'static str {
     if cfg!(windows) {
-        "Use terminal commands to inspect the workspace and read their stdout from the tool result; there is no separate file-reading or directory-listing tool. `rg` is bundled with the Codex runtime and is always available: prefer it for repository search, file discovery with `rg --files`, and targeted file reads. On Windows, prefer PowerShell for other shell operations; invoke it from the command string, for example `powershell -NoProfile -Command \"Get-Content README.md\"` or `powershell -NoProfile -Command \"Get-ChildItem\"`."
+        "Host OS: Windows. Commands use cmd.exe syntax; use PowerShell explicitly for richer Windows operations. Do not use POSIX paths, shell syntax, or heredocs."
     } else {
-        "Use terminal commands to inspect the workspace and read their stdout from the tool result; there is no separate file-reading or directory-listing tool. `rg` is bundled with the Codex runtime and is always available: prefer it for repository search, file discovery with `rg --files`, and targeted file reads. Use Unix tools such as `cat` or `ls` when they are a better fit."
+        "Host OS: Unix-like. Commands use POSIX sh syntax and Unix paths."
     }
 }
 
@@ -987,54 +942,21 @@ mod tests {
             .find(|definition| definition.function.name == "execute_terminal")
             .unwrap();
         let expected_shell = if cfg!(windows) {
-            "interpreted by cmd.exe"
+            "Commands use cmd.exe syntax"
         } else {
-            "POSIX shell"
+            "Commands use POSIX sh syntax"
         };
         assert!(terminal.function.description.contains(expected_shell));
-        assert!(terminal.function.description.contains("omit cwd"));
-        assert!(terminal.function.description.contains("background=true"));
-        assert!(terminal.function.description.contains("Usage decision"));
-        assert!(
-            terminal
-                .function
-                .description
-                .contains("read their stdout from the tool result")
-        );
-        assert!(
-            terminal
-                .function
-                .description
-                .contains("there is no separate file-reading")
-        );
-        assert!(
-            terminal
-                .function
-                .description
-                .contains("`rg` is bundled with the Codex runtime and is always available")
-        );
+        assert!(terminal.function.description.contains("ordinary commands"));
+        assert!(terminal.function.description.contains("process_id"));
+        assert!(terminal.function.description.contains("prefer `rg`"));
         assert!(terminal.function.description.contains("`rg --files`"));
         if cfg!(windows) {
-            assert!(terminal.function.description.contains("prefer PowerShell"));
-            assert!(terminal.function.description.contains("Get-Content"));
-            assert!(!terminal.function.description.contains("`cat`"));
-            assert!(
-                terminal
-                    .function
-                    .description
-                    .contains("Never use POSIX heredocs")
-            );
+            assert!(terminal.function.description.contains("PowerShell"));
+            assert!(terminal.function.description.contains("Do not use POSIX"));
         } else {
-            assert!(terminal.function.description.contains("`cat`"));
-            assert!(terminal.function.description.contains("`ls`"));
-            assert!(!terminal.function.description.contains("Get-Content"));
+            assert!(terminal.function.description.contains("Unix paths"));
         }
-        assert!(
-            terminal
-                .function
-                .description
-                .contains("Only after a process_id is returned")
-        );
         assert!(
             terminal.function.parameters["properties"]["timeout_ms"]["description"]
                 .as_str()
@@ -1126,9 +1048,26 @@ mod tests {
             "array"
         );
         assert_eq!(
-            multi.function.parameters["properties"]["files"]["type"],
-            "array"
+            multi.function.parameters["properties"]["operations"]["items"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert!(
+            multi.function.parameters["properties"]
+                .get("path")
+                .is_none()
+        );
+        assert!(
+            multi.function.parameters["properties"]
+                .get("edits")
+                .is_none()
+        );
+        assert!(
+            multi.function.parameters["properties"]
+                .get("files")
+                .is_none()
         );
     }
-
 }

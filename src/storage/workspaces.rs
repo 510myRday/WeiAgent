@@ -39,14 +39,9 @@ impl JsonStore {
         self.read_agent_workspace_unlocked(id).await
     }
 
-    pub async fn build_agent_system_prompt(
-        &self,
-        agent: &Agent,
-        tools_config: &crate::domain::AgentToolsConfig,
-    ) -> AppResult<String> {
+    pub async fn build_agent_system_prompt(&self, agent: &Agent) -> AppResult<String> {
         let workspace = self.read_agent_workspace(agent.id).await?;
-        let environment =
-            crate::tools::prompt::build_environment_prefix(tools_config, &self.data_dir);
+        let environment = crate::tools::prompt::build_environment_prefix(&self.data_dir);
         let agent_sections = join_prompt_sections([
             ("Personality", workspace.personality.as_str()),
             ("Memory", workspace.memory.as_str()),

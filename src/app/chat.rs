@@ -77,10 +77,7 @@ pub async fn prepare_chat(
     if tools_config.terminal.enabled && !state.codex_runtime.is_available_cached() {
         tools_config.terminal.enabled = false;
     }
-    let system_prompt = state
-        .store
-        .build_agent_system_prompt(&agent, &tools_config)
-        .await?;
+    let system_prompt = state.store.build_agent_system_prompt(&agent).await?;
     if system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
         return Err(AppError::BadRequest(format!(
             "agent system prompt exceeds {MAX_SYSTEM_PROMPT_BYTES} bytes"

@@ -29,7 +29,9 @@ use crate::{
 pub const MAX_TERMINAL_TIMEOUT_MS: u64 = 120_000;
 pub const MAX_SESSION_WAIT_MS: u64 = 30_000;
 const MAX_OUTPUT_BYTES: usize = 1_000_000;
-const MAX_LLM_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
+const APPROX_BYTES_PER_TOKEN: usize = 4;
+const MAX_LLM_TOOL_OUTPUT_TOKENS: usize = 10_000;
+const MAX_LLM_TOOL_OUTPUT_BYTES: usize = MAX_LLM_TOOL_OUTPUT_TOKENS * APPROX_BYTES_PER_TOKEN;
 const FINISHED_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_RUNNING_PROCESSES: usize = 32;
 const MAX_RUNNING_PROCESSES_PER_AGENT: usize = 8;
@@ -1149,13 +1151,14 @@ pub async fn execute_terminal(
             } else {
                 manager.promote_to_background(&process_id);
                 let cursor = info.output_cursor;
+                let (stdout, stderr) = truncate_terminal_output(info.stdout, info.stderr);
                 ToolResult::Running {
                     process_id,
                     message: format!(
                         "Command exceeded {timeout_ms}ms and continues in a Codex-managed session"
                     ),
-                    stdout: truncate_for_llm(info.stdout),
-                    stderr: truncate_for_llm(info.stderr),
+                    stdout,
+                    stderr,
                     duration_ms: info.duration_ms,
                     runtime: Some(runtime),
                     output_cursor: cursor,
@@ -1185,10 +1188,11 @@ pub fn process_read_to_result(
     stderr: String,
     output_cursor: u64,
 ) -> ToolResult {
+    let (stdout, stderr) = truncate_terminal_output(stdout, stderr);
     match info.status {
         ProcessStatus::Completed | ProcessStatus::Failed => ToolResult::Completed {
-            stdout: truncate_for_llm(stdout),
-            stderr: truncate_for_llm(stderr),
+            stdout,
+            stderr,
             exit_code: info.exit_code.unwrap_or(-1),
             duration_ms: info.duration_ms,
             runtime: Some(info.runtime),
@@ -1197,8 +1201,8 @@ pub fn process_read_to_result(
         ProcessStatus::Running => ToolResult::Running {
             process_id: info.process_id,
             message: "Terminal session is still running".to_string(),
-            stdout: truncate_for_llm(stdout),
-            stderr: truncate_for_llm(stderr),
+            stdout,
+            stderr,
             duration_ms: info.duration_ms,
             runtime: Some(info.runtime),
             output_cursor,
@@ -1342,13 +1346,63 @@ async fn snapshot(record: &ProcessRecord) -> ProcessInfo {
     }
 }
 
-fn truncate_for_llm(value: String) -> String {
-    if value.len() <= MAX_LLM_TOOL_OUTPUT_BYTES {
+fn truncate_terminal_output(stdout: String, stderr: String) -> (String, String) {
+    let total_bytes = stdout.len().saturating_add(stderr.len());
+    if total_bytes <= MAX_LLM_TOOL_OUTPUT_BYTES {
+        return (stdout, stderr);
+    }
+
+    let stdout_budget = proportional_budget(stdout.len(), total_bytes);
+    let stderr_budget = MAX_LLM_TOOL_OUTPUT_BYTES.saturating_sub(stdout_budget);
+    (
+        truncate_middle_for_llm(stdout, stdout_budget),
+        truncate_middle_for_llm(stderr, stderr_budget),
+    )
+}
+
+fn proportional_budget(stream_bytes: usize, total_bytes: usize) -> usize {
+    if stream_bytes == 0 || total_bytes == 0 {
+        return 0;
+    }
+    MAX_LLM_TOOL_OUTPUT_BYTES
+        .saturating_mul(stream_bytes)
+        .checked_div(total_bytes)
+        .unwrap_or(0)
+        .min(stream_bytes)
+}
+
+fn truncate_middle_for_llm(value: String, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
         return value;
     }
-    let start = value.len() - MAX_LLM_TOOL_OUTPUT_BYTES;
-    let tail = String::from_utf8_lossy(&value.as_bytes()[start..]);
-    format!("[output truncated; showing last {MAX_LLM_TOOL_OUTPUT_BYTES} bytes]\n{tail}")
+
+    let original_bytes = value.len();
+    let original_token_count = original_bytes.div_ceil(APPROX_BYTES_PER_TOKEN);
+    let omitted_bytes = original_bytes.saturating_sub(max_bytes);
+    let prefix_budget = max_bytes.div_ceil(2);
+    let suffix_budget = max_bytes.saturating_sub(prefix_budget);
+    let prefix_end = utf8_floor_boundary(&value, prefix_budget);
+    let suffix_start = utf8_ceil_boundary(&value, original_bytes.saturating_sub(suffix_budget));
+    let marker = format!(
+        "\n[output truncated: original_token_count={original_token_count}, original_bytes={original_bytes}, omitted_bytes={omitted_bytes}]\n"
+    );
+    format!("{}{marker}{}", &value[..prefix_end], &value[suffix_start..])
+}
+
+fn utf8_floor_boundary(value: &str, mut index: usize) -> usize {
+    index = index.min(value.len());
+    while index > 0 && !value.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn utf8_ceil_boundary(value: &str, mut index: usize) -> usize {
+    index = index.min(value.len());
+    while index < value.len() && !value.is_char_boundary(index) {
+        index += 1;
+    }
+    index
 }
 
 fn quote_powershell_literal(value: &str) -> String {
@@ -1701,6 +1755,34 @@ mod tests {
         let second = output.read_since(first.cursor);
         assert_eq!(second.stdout, "");
         assert_eq!(second.stderr, "two");
+    }
+
+    #[test]
+    fn terminal_output_uses_shared_model_budget() {
+        let stdout = "a".repeat(MAX_LLM_TOOL_OUTPUT_BYTES);
+        let stderr = "b".repeat(MAX_LLM_TOOL_OUTPUT_BYTES);
+        let (stdout, stderr) = truncate_terminal_output(stdout, stderr);
+
+        assert!(stdout.starts_with(&"a".repeat(64)));
+        assert!(stdout.ends_with(&"a".repeat(64)));
+        assert!(stderr.starts_with(&"b".repeat(64)));
+        assert!(stderr.ends_with(&"b".repeat(64)));
+        assert!(stdout.contains("original_token_count=10000"));
+        assert!(stderr.contains("omitted_bytes=20000"));
+        assert!(stdout.len() + stderr.len() < MAX_LLM_TOOL_OUTPUT_BYTES + 512);
+    }
+
+    #[test]
+    fn terminal_output_truncation_preserves_utf8_prefix_and_suffix() {
+        let value = format!("BEGIN-{}-END", "中文输出".repeat(MAX_LLM_TOOL_OUTPUT_BYTES));
+        let (stdout, stderr) = truncate_terminal_output(value, String::new());
+
+        assert!(stdout.starts_with("BEGIN-"));
+        assert!(stdout.ends_with("-END"));
+        assert!(stdout.contains("[output truncated:"));
+        assert!(stdout.contains("original_bytes="));
+        assert!(stdout.contains("omitted_bytes="));
+        assert!(stderr.is_empty());
     }
 
     #[test]
