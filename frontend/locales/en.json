@@ -503,8 +503,6 @@
     "permission": "Requested permission",
     "justification": "Reason",
     "fullAccessPermission": "Full host access",
-    "permissionModeRequestApproval": "Manual approval",
-    "permissionModeFullAccess": "Full access",
     "background": "Background",
     "defaultCwd": "Default working directory",
     "enabled": "Allowed",

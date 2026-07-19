@@ -9,14 +9,13 @@ import {
   XCircle,
 } from 'lucide-react';
 
-import { PermissionModeBadge, ToolCallCard } from '../../components/ToolCallCard';
+import { ToolCallCard } from '../../components/ToolCallCard';
 import { useI18n } from '../../i18n';
 import type { ToolCallState } from '../../types';
 
 type ToolDisclosureProps = {
   agentId: string;
   tool: ToolCallState;
-  terminalPermissionMode?: 'request_approval' | 'full_access' | null;
   onApprove?: (decision: 'approve' | 'reject' | 'always_approve') => Promise<void> | void;
 };
 
@@ -81,7 +80,6 @@ function StatusIcon({ tool }: { tool: ToolCallState }) {
 export function ToolDisclosure({
   agentId,
   tool,
-  terminalPermissionMode,
   onApprove,
 }: ToolDisclosureProps) {
   const { t } = useI18n();
@@ -105,7 +103,6 @@ export function ToolDisclosure({
     setIsOpen(isActive);
   }, [isActive, userToggled]);
 
-  const permissionMode = tool.permission_mode ?? terminalPermissionMode ?? undefined;
   const label = statusLabel(tool, t);
   const tone = statusTone(tool);
   const toneClass = tone === 'default' ? '' : ` is-${tone}`;
@@ -128,9 +125,6 @@ export function ToolDisclosure({
             <StatusIcon tool={tool} />
             <span className="message-tool__title">{label}</span>
             <code className="message-tool__name">{tool.name}</code>
-            {isTerminalTool(tool.name) ? (
-              <PermissionModeBadge permissionMode={permissionMode} t={t} />
-            ) : null}
             {tool.status === 'running' ? <span className="message-tool__pulse" aria-hidden="true" /> : null}
           </span>
           <ChevronDown className="message-tool__chevron" size={15} aria-hidden="true" />
@@ -189,7 +183,6 @@ export function ToolDisclosure({
             arguments={tool.arguments}
             status={tool.status}
             result={tool.result}
-            permissionMode={permissionMode}
             hideHeader
             onApprove={onApprove}
           />

@@ -51,7 +51,6 @@ interface MessageListProps {
   isSending: boolean;
   runPhase: AgentRunPhase;
   retryStatus: { attempt: number; maxAttempts: number; reason: string } | null;
-  terminalPermissionMode?: 'request_approval' | 'full_access' | null;
   timelineMessageIndexes: readonly number[];
   onLoadOlder: () => Promise<boolean>;
   onRestart: (messageId: string, content: string, attachments?: ImageAttachment[]) => void;
@@ -103,7 +102,6 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   isSending,
   runPhase,
   retryStatus,
-  terminalPermissionMode,
   timelineMessageIndexes,
   onLoadOlder,
   onRestart,
@@ -389,7 +387,6 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                     previous={messages[row.messageIndex - 1]}
                     activeAgent={activeAgent}
                     settings={settings}
-                    terminalPermissionMode={terminalPermissionMode}
                     isSending={isSending}
                     onRestart={onRestart}
                     onApproveToolCall={onApproveToolCall}
@@ -421,7 +418,6 @@ const MessageListItem = memo(function MessageListItem({
   previous,
   activeAgent,
   settings,
-  terminalPermissionMode,
   isSending,
   onRestart,
   onApproveToolCall,
@@ -431,7 +427,6 @@ const MessageListItem = memo(function MessageListItem({
   previous?: UiMessageItem;
   activeAgent?: Agent;
   settings: AppSettings;
-  terminalPermissionMode?: 'request_approval' | 'full_access' | null;
   isSending: boolean;
   onRestart: MessageListProps['onRestart'];
   onApproveToolCall: MessageListProps['onApproveToolCall'];
@@ -448,7 +443,6 @@ const MessageListItem = memo(function MessageListItem({
       settings={settings}
       failedLabel={t('chat.failed')}
       actionsDisabled={isSending}
-      terminalPermissionMode={terminalPermissionMode}
       onRestart={onRestart}
       onApproveToolCall={onApproveToolCall}
     />
@@ -533,7 +527,6 @@ const MessageRow = memo(function MessageRow({
   settings,
   failedLabel,
   actionsDisabled,
-  terminalPermissionMode,
   onRestart,
   onApproveToolCall,
 }: {
@@ -545,7 +538,6 @@ const MessageRow = memo(function MessageRow({
   settings: AppSettings;
   failedLabel: string;
   actionsDisabled: boolean;
-  terminalPermissionMode?: 'request_approval' | 'full_access' | null;
   onRestart: MessageListProps['onRestart'];
   onApproveToolCall: MessageListProps['onApproveToolCall'];
 }) {
@@ -658,7 +650,6 @@ const MessageRow = memo(function MessageRow({
                 <MessageContent
                   message={message}
                   agentId={agent?.id ?? ''}
-                  terminalPermissionMode={terminalPermissionMode}
                   onApproveToolCall={onApproveToolCall}
                 />
                 {message.status === 'failed' ? <span className="message-status error">{failedLabel}</span> : null}
@@ -717,12 +708,10 @@ export function MessageAvatar({
 function MessageContent({
   message,
   agentId,
-  terminalPermissionMode,
   onApproveToolCall,
 }: {
   message: UiMessage;
   agentId: string;
-  terminalPermissionMode?: 'request_approval' | 'full_access' | null;
   onApproveToolCall: MessageListProps['onApproveToolCall'];
 }) {
   const { t } = useI18n();
@@ -793,7 +782,6 @@ function MessageContent({
               key={block.tool.call_id}
               agentId={agentId}
               tool={block.tool}
-              terminalPermissionMode={terminalPermissionMode}
               onApprove={(decision) => handleApprove(block.tool, decision)}
             />
           );

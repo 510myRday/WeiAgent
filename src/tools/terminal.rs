@@ -23,6 +23,7 @@ use crate::{
     tools::{
         codex_app_server::{CodexAppServer, CodexNotification},
         runtime::{CodexExecutable, CodexRuntimeManager},
+        shell::{HostShellKind, selected_host_shell},
     },
 };
 
@@ -538,20 +539,30 @@ fn build_windows_sandbox_argv(
 /// Builds the host-shell argv passed to Codex. Production code never spawns this argv directly;
 /// Codex app-server or `codex sandbox` owns the actual shell process and its permissions.
 fn build_codex_shell_argv(shell_command: &str, cwd: &Path) -> Vec<String> {
-    if cfg!(windows) {
-        vec![
-            "powershell.exe".to_string(),
+    let shell = selected_host_shell();
+    match shell.kind() {
+        #[cfg(windows)]
+        HostShellKind::PowerShell7 | HostShellKind::WindowsPowerShell => vec![
+            shell.executable().to_string_lossy().to_string(),
             "-NoLogo".to_string(),
             "-NoProfile".to_string(),
             "-Command".to_string(),
-            windows_powershell_cmd_script(shell_command, Some(cwd)),
-        ]
-    } else {
-        vec![
-            "sh".to_string(),
+            windows_powershell_script(shell_command, Some(cwd)),
+        ],
+        #[cfg(windows)]
+        HostShellKind::Cmd => vec![
+            shell.executable().to_string_lossy().to_string(),
+            "/D".to_string(),
+            "/S".to_string(),
+            "/C".to_string(),
+            windows_cmd_script(shell_command, cwd),
+        ],
+        #[cfg(not(windows))]
+        HostShellKind::PosixSh => vec![
+            shell.executable().to_string_lossy().to_string(),
             "-lc".to_string(),
             format!("cd -- {} && {}", quote_unix_path(cwd), shell_command),
-        ]
+        ],
     }
 }
 
@@ -598,11 +609,92 @@ struct OutputChunk {
     data: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum AnsiState {
+    #[default]
+    Ground,
+    Escape,
+    Csi,
+    Osc,
+    OscEscape,
+    String,
+    StringEscape,
+}
+
+#[derive(Default)]
+struct AnsiStripper {
+    state: AnsiState,
+}
+
+impl AnsiStripper {
+    fn strip(&mut self, data: &[u8]) -> Vec<u8> {
+        let mut output = Vec::with_capacity(data.len());
+        for &byte in data {
+            match self.state {
+                AnsiState::Ground => {
+                    if byte == 0x1b {
+                        self.state = AnsiState::Escape;
+                    } else {
+                        output.push(byte);
+                    }
+                }
+                AnsiState::Escape => {
+                    self.state = match byte {
+                        b'[' => AnsiState::Csi,
+                        b']' => AnsiState::Osc,
+                        b'P' | b'X' | b'^' | b'_' => AnsiState::String,
+                        0x20..=0x2f => AnsiState::Escape,
+                        _ => AnsiState::Ground,
+                    };
+                }
+                AnsiState::Csi => {
+                    if (0x40..=0x7e).contains(&byte) {
+                        self.state = AnsiState::Ground;
+                    } else if !((0x20..=0x3f).contains(&byte)) {
+                        self.state = AnsiState::Ground;
+                    }
+                }
+                AnsiState::Osc => match byte {
+                    0x07 => self.state = AnsiState::Ground,
+                    0x1b => self.state = AnsiState::OscEscape,
+                    _ => {}
+                },
+                AnsiState::OscEscape => {
+                    self.state = if byte == b'\\' {
+                        AnsiState::Ground
+                    } else if byte == 0x1b {
+                        AnsiState::OscEscape
+                    } else {
+                        AnsiState::Osc
+                    };
+                }
+                AnsiState::String => {
+                    if byte == 0x1b {
+                        self.state = AnsiState::StringEscape;
+                    }
+                }
+                AnsiState::StringEscape => {
+                    self.state = if byte == b'\\' {
+                        AnsiState::Ground
+                    } else if byte == 0x1b {
+                        AnsiState::StringEscape
+                    } else {
+                        AnsiState::String
+                    };
+                }
+            }
+        }
+        output
+    }
+}
+
 #[derive(Default)]
 struct OutputBuffer {
     chunks: VecDeque<OutputChunk>,
     next_cursor: u64,
     bytes: usize,
+    stdout_ansi: AnsiStripper,
+    stderr_ansi: AnsiStripper,
 }
 
 struct OutputRead {
@@ -613,6 +705,10 @@ struct OutputRead {
 
 impl OutputBuffer {
     fn append(&mut self, stream: OutputStream, data: Vec<u8>) {
+        let data = match stream {
+            OutputStream::Stdout => self.stdout_ansi.strip(&data),
+            OutputStream::Stderr => self.stderr_ansi.strip(&data),
+        };
         if data.is_empty() {
             return;
         }
@@ -1405,16 +1501,28 @@ fn utf8_ceil_boundary(value: &str, mut index: usize) -> usize {
     index
 }
 
+#[cfg(windows)]
 fn quote_powershell_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+#[cfg(windows)]
 fn windows_utf8_command(command: &str) -> String {
     format!("chcp 65001>nul & {command}")
 }
 
-fn windows_powershell_cmd_script(shell_command: &str, cwd: Option<&Path>) -> String {
-    let shell_command = windows_utf8_command(shell_command);
+#[cfg(windows)]
+fn quote_cmd_path(path: &Path) -> String {
+    format!("\"{}\"", windows_command_path(path).replace('"', "\"\""))
+}
+
+#[cfg(windows)]
+fn windows_cmd_script(shell_command: &str, cwd: &Path) -> String {
+    windows_utf8_command(&format!("cd /d {} && {shell_command}", quote_cmd_path(cwd)))
+}
+
+#[cfg(windows)]
+fn windows_powershell_script(shell_command: &str, cwd: Option<&Path>) -> String {
     let set_location = match cwd {
         Some(cwd) => format!(
             "Set-Location -LiteralPath {}; ",
@@ -1423,11 +1531,12 @@ fn windows_powershell_cmd_script(shell_command: &str, cwd: Option<&Path>) -> Str
         None => String::new(),
     };
     format!(
-        "$ErrorActionPreference = 'Stop'; $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); {set_location}$command = {}; & cmd.exe /D /S /C $command; exit $LASTEXITCODE",
-        quote_powershell_literal(&shell_command)
+        "$ErrorActionPreference = 'Stop'; $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $global:LASTEXITCODE = 0; {set_location}$command = {}; & ([ScriptBlock]::Create($command)); exit $LASTEXITCODE",
+        quote_powershell_literal(shell_command)
     )
 }
 
+#[cfg(not(windows))]
 fn quote_unix_path(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
 }
@@ -1461,19 +1570,7 @@ fn decode_process_output(bytes: &[u8]) -> String {
 
     #[cfg(windows)]
     {
-        let mut fallback = None;
-        for code_page in windows_decode_code_page_candidates() {
-            if let Some(encoding) = encoding_for_windows_code_page(code_page) {
-                let (cow, _, had_errors) = encoding.decode(bytes);
-                if !had_errors {
-                    return cow.into_owned();
-                }
-                if fallback.is_none() {
-                    fallback = Some(cow.into_owned());
-                }
-            }
-        }
-        fallback.unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
+        decode_windows_output_with_code_pages(bytes, &windows_decode_code_page_candidates())
     }
 
     #[cfg(not(windows))]
@@ -1483,18 +1580,32 @@ fn decode_process_output(bytes: &[u8]) -> String {
 }
 
 #[cfg(windows)]
-fn windows_decode_code_page_candidates() -> Vec<u32> {
-    let [oem, acp] = windows_fallback_code_pages();
-    let mut pages = Vec::with_capacity(4);
-    for code_page in [oem, acp, 936] {
-        if matches!(code_page, 932 | 936 | 949 | 950 | 54936) && !pages.contains(&code_page) {
-            pages.push(code_page);
+fn decode_windows_output_with_code_pages(bytes: &[u8], code_pages: &[u32]) -> String {
+    let mut fallback = None;
+    for &code_page in code_pages {
+        if let Some(encoding) = encoding_for_windows_code_page(code_page) {
+            let (cow, _, had_errors) = encoding.decode(bytes);
+            if !had_errors {
+                return cow.into_owned();
+            }
+            if fallback.is_none() {
+                fallback = Some(cow.into_owned());
+            }
         }
     }
-    if !pages.contains(&936) {
-        pages.push(936);
-    }
-    for code_page in [oem, acp] {
+    fallback.unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
+}
+
+#[cfg(windows)]
+fn windows_decode_code_page_candidates() -> Vec<u32> {
+    let [oem, acp] = windows_fallback_code_pages();
+    windows_decode_code_page_candidates_for(oem, acp)
+}
+
+#[cfg(windows)]
+fn windows_decode_code_page_candidates_for(oem: u32, acp: u32) -> Vec<u32> {
+    let mut pages = Vec::with_capacity(4);
+    for code_page in [oem, acp, 936, 54936] {
         if !pages.contains(&code_page) {
             pages.push(code_page);
         }
@@ -1731,6 +1842,88 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn selected_windows_shell_drives_the_executable_and_command_syntax() {
+        let cwd = Path::new(r"D:\workspace path");
+        let argv = build_codex_shell_argv("Write-Output 'ok'", cwd);
+        let shell = selected_host_shell();
+
+        assert_eq!(Path::new(&argv[0]), shell.executable());
+        match shell.kind() {
+            HostShellKind::PowerShell7 | HostShellKind::WindowsPowerShell => {
+                assert!(argv.iter().any(|arg| arg == "-Command"));
+                let script = argv.last().unwrap();
+                assert!(script.contains("[ScriptBlock]::Create"));
+                assert!(script.contains("Set-Location -LiteralPath"));
+                assert!(!script.contains("cmd.exe /D /S /C"));
+            }
+            HostShellKind::Cmd => {
+                assert!(argv.iter().any(|arg| arg == "/C"));
+                let script = argv.last().unwrap();
+                assert!(script.contains("chcp 65001>nul"));
+                assert!(script.contains(r#"cd /d "D:\workspace path""#));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_shell_executes_native_syntax_in_the_requested_cwd() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = TerminalManager::new_for_tests();
+        let config = TerminalToolConfig {
+            permission_mode: TerminalPermissionMode::FullAccess,
+            allowed_cwd_roots: vec![root.path().to_string_lossy().to_string()],
+            ..TerminalToolConfig::default()
+        };
+        let command = match selected_host_shell().kind() {
+            #[cfg(windows)]
+            HostShellKind::PowerShell7 | HostShellKind::WindowsPowerShell => {
+                "Write-Output ((Get-Location).Path); 1..3 | Select-Object -First 2"
+            }
+            #[cfg(windows)]
+            HostShellKind::Cmd => "cd & (for %i in (1 2) do @echo %i)",
+            #[cfg(not(windows))]
+            HostShellKind::PosixSh => "pwd; printf '1\\n2\\n'",
+        };
+
+        let result = execute_terminal(
+            &ExecuteTerminalRequest {
+                command: command.to_string(),
+                cwd: None,
+                timeout_ms: Some(5_000),
+                background: Some(false),
+                tty: Some(false),
+                sandbox_permissions: SandboxPermissions::UseDefault,
+                approved: false,
+                agent_id: Uuid::new_v4(),
+                conversation_id: Uuid::new_v4(),
+                tool_call_id: "selected-shell-native-syntax".to_string(),
+            },
+            &config,
+            root.path(),
+            &manager,
+        )
+        .await;
+
+        let ToolResult::Completed {
+            stdout, exit_code, ..
+        } = result
+        else {
+            panic!("selected shell command failed: {result:?}");
+        };
+        assert_eq!(exit_code, 0);
+        assert!(stdout.contains('1'));
+        assert!(stdout.contains('2'));
+        assert!(
+            stdout
+                .to_ascii_lowercase()
+                .contains(&root.path().to_string_lossy().to_ascii_lowercase()),
+            "expected cwd {} in output: {stdout:?}",
+            root.path().display()
+        );
+    }
+
     #[test]
     fn empty_roots_use_explicit_default_workspace() {
         let data_dir = tempfile::tempdir().unwrap();
@@ -1755,6 +1948,30 @@ mod tests {
         let second = output.read_since(first.cursor);
         assert_eq!(second.stdout, "");
         assert_eq!(second.stderr, "two");
+    }
+
+    #[test]
+    fn output_buffer_strips_ansi_sequences_across_chunks_and_streams() {
+        let mut output = OutputBuffer::default();
+        output.append(OutputStream::Stdout, b"\x1b[3".to_vec());
+        output.append(
+            OutputStream::Stdout,
+            b"2mgreen\x1b[0m \x1b]8;;https://example.com\x07link\x1b]8;;\x07".to_vec(),
+        );
+        output.append(OutputStream::Stderr, b"\x1b[31merror\x1b[39m".to_vec());
+
+        let read = output.read_all();
+        assert_eq!(read.stdout, "green link");
+        assert_eq!(read.stderr, "error");
+        assert!(!read.stdout.contains('\x1b'));
+        assert!(!read.stderr.contains('\x1b'));
+    }
+
+    #[test]
+    fn ansi_filter_keeps_non_escape_bytes_unchanged() {
+        let bytes = [0x81, 0x9b, b'A'];
+        let mut stripper = AnsiStripper::default();
+        assert_eq!(stripper.strip(&bytes), bytes);
     }
 
     #[test]
@@ -1790,6 +2007,26 @@ mod tests {
         assert_eq!(
             decode_process_output("hello world".as_bytes()),
             "hello world"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_encoding_fallback_prefers_system_pages_before_chinese_fallbacks() {
+        assert_eq!(
+            windows_decode_code_page_candidates_for(437, 1252),
+            vec![437, 1252, 936, 54936]
+        );
+        assert_eq!(
+            windows_decode_code_page_candidates_for(936, 936),
+            vec![936, 54936]
+        );
+
+        let (gbk, _, had_errors) = encoding_rs::GBK.encode("中文输出");
+        assert!(!had_errors);
+        assert_eq!(
+            decode_windows_output_with_code_pages(&gbk, &[65001, 936, 54936]),
+            "中文输出"
         );
     }
 
@@ -1843,10 +2080,15 @@ mod tests {
             allowed_cwd_roots: vec![root.path().to_string_lossy().to_string()],
             ..TerminalToolConfig::default()
         };
-        let command = if cfg!(windows) {
-            r#"powershell -NoProfile -Command "Write-Output 'Prompt:'; $x=[Console]::In.ReadLine(); Write-Output ('Got:' + $x)""#
-        } else {
-            "printf 'Prompt:'; read value; printf 'Got:%s\\n' \"$value\""
+        let command = match selected_host_shell().kind() {
+            #[cfg(windows)]
+            HostShellKind::PowerShell7 | HostShellKind::WindowsPowerShell => {
+                "Write-Output 'Prompt:'; $x=[Console]::In.ReadLine(); Write-Output ('Got:' + $x)"
+            }
+            #[cfg(windows)]
+            HostShellKind::Cmd => r#"cmd.exe /V:ON /D /S /C "set /p x=Prompt: & echo Got:!x!""#,
+            #[cfg(not(windows))]
+            HostShellKind::PosixSh => "printf 'Prompt:'; read value; printf 'Got:%s\\n' \"$value\"",
         };
         let result = execute_terminal(
             &ExecuteTerminalRequest {
@@ -1976,10 +2218,17 @@ mod tests {
         };
         assert!(stdout.contains("codex-full-access"));
 
-        let interactive_command = if cfg!(windows) {
-            r#"powershell -NoProfile -Command "Write-Output 'Prompt'; $x=[Console]::In.ReadLine(); Write-Output ('Got:' + $x)""#
-        } else {
-            "printf 'Prompt\\n'; read value; printf 'Got:%s\\n' \"$value\""
+        let interactive_command = match selected_host_shell().kind() {
+            #[cfg(windows)]
+            HostShellKind::PowerShell7 | HostShellKind::WindowsPowerShell => {
+                "Write-Output 'Prompt'; $x=[Console]::In.ReadLine(); Write-Output ('Got:' + $x)"
+            }
+            #[cfg(windows)]
+            HostShellKind::Cmd => r#"cmd.exe /V:ON /D /S /C "set /p x=Prompt: & echo Got:!x!""#,
+            #[cfg(not(windows))]
+            HostShellKind::PosixSh => {
+                "printf 'Prompt\\n'; read value; printf 'Got:%s\\n' \"$value\""
+            }
         };
         let interactive = execute_terminal(
             &ExecuteTerminalRequest {

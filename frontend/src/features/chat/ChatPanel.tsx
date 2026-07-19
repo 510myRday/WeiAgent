@@ -16,7 +16,7 @@ import type {
   UiMessageItem,
   UpdateAgentPayload,
 } from '../../types';
-import { approveToolCall, readAgentToolsConfig, type AgentToolsConfig } from '../../api';
+import { approveToolCall } from '../../api';
 import { useI18n } from '../../i18n';
 import { useConversations, usePageVisibility } from '../../hooks';
 import { AgentListItem, agentDisplayName } from '../../components/AgentListItem';
@@ -112,7 +112,6 @@ export function ChatPanel({
   const [conversationFilter, setConversationFilter] = useState('');
   const [pinningConversationIds, setPinningConversationIds] = useState<Set<string>>(() => new Set());
   const [activeTimelineMessageIndex, setActiveTimelineMessageIndex] = useState<number | null>(null);
-  const [terminalPermissionMode, setTerminalPermissionMode] = useState<AgentToolsConfig['terminal']['permission_mode'] | null>(null);
   const isPageVisible = usePageVisibility();
 
   const conversationSearchRef = useRef<HTMLInputElement>(null);
@@ -272,20 +271,8 @@ export function ChatPanel({
     detachActiveRun();
     clearChat();
     setConversationFilter('');
-    setTerminalPermissionMode(null);
     if (!activeAgentId) return;
     void loadConversationsForAgent(activeAgentId);
-    let cancelled = false;
-    void readAgentToolsConfig(activeAgentId)
-      .then((settings) => {
-        if (!cancelled) setTerminalPermissionMode(settings.effective.terminal.permission_mode);
-      })
-      .catch(() => {
-        if (!cancelled) setTerminalPermissionMode(null);
-      });
-    return () => {
-      cancelled = true;
-    };
   }, [activeAgentId, clearChat, detachActiveRun, loadConversationsForAgent]);
 
   useEffect(() => {
@@ -325,7 +312,6 @@ export function ChatPanel({
     detachActiveRun();
     clearChat();
     setConversationFilter('');
-    setTerminalPermissionMode(null);
     onAgentChange('');
   }
 
@@ -698,7 +684,6 @@ export function ChatPanel({
           isSending={isSending}
           runPhase={runPhase}
           retryStatus={retryStatus}
-          terminalPermissionMode={terminalPermissionMode}
           timelineMessageIndexes={timelineMessageIndexes}
           onLoadOlder={handleLoadOlderMessages}
           onRestart={handleRestartMessage}

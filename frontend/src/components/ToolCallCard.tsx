@@ -5,11 +5,9 @@ import {
   CheckCircle,
   Clock3,
   Copy,
-  Hand,
   Loader2,
   Maximize2,
   RefreshCw,
-  ShieldAlert,
   Square,
   Terminal,
   Wrench,
@@ -30,8 +28,7 @@ interface ToolCallCardProps {
   arguments: ToolArguments;
   status: ToolCallStatus;
   result?: ToolResultData;
-  permissionMode?: 'request_approval' | 'full_access' | null;
-  /** Hide status/title/tool badges when nested under a disclosure summary. */
+  /** Hide the status/title header when nested under a disclosure summary. */
   hideHeader?: boolean;
   onApprove?: (decision: 'approve' | 'reject' | 'always_approve') => Promise<void> | void;
 }
@@ -80,40 +77,16 @@ function ToolNameBadge({ name }: { name: string }) {
   );
 }
 
-export function PermissionModeBadge({
-  permissionMode,
-  t,
-}: {
-  permissionMode?: 'request_approval' | 'full_access' | null;
-  t: (path: string, vars?: Record<string, string | number>) => string;
-}) {
-  if (!permissionMode) return null;
-  const isFullAccess = permissionMode === 'full_access';
-  const Icon = isFullAccess ? ShieldAlert : Hand;
-  const label = t(isFullAccess ? 'toolCard.permissionModeFullAccess' : 'toolCard.permissionModeRequestApproval');
-  return (
-    <span className={`tool-card__permission-badge ${isFullAccess ? 'tool-card__permission-badge--full-access' : 'tool-card__permission-badge--approval'}`} title={label}>
-      <Icon size={12} />
-      {label}
-    </span>
-  );
-}
-
 function HeaderMeta({
   name,
-  permissionMode,
-  t,
   children,
 }: {
   name: string;
-  permissionMode?: 'request_approval' | 'full_access' | null;
-  t: (path: string, vars?: Record<string, string | number>) => string;
   children?: ReactNode;
 }) {
   return (
     <div className="tool-card__meta">
       <ToolNameBadge name={name} />
-      {isTerminalTool(name) ? <PermissionModeBadge permissionMode={permissionMode} t={t} /> : null}
       {children}
     </div>
   );
@@ -254,7 +227,6 @@ export function ToolCallCard({
   arguments: args,
   status,
   result,
-  permissionMode,
   hideHeader = false,
   onApprove,
 }: ToolCallCardProps) {
@@ -318,7 +290,7 @@ export function ToolCallCard({
               <strong>{t('toolCard.approvalTitle')}</strong>
               <small>{t('toolCard.approvalSubtitle')}</small>
             </div>
-            <HeaderMeta name={name} permissionMode={permissionMode} t={t} />
+            <HeaderMeta name={name} />
           </div>
         )}
         <ToolPayload name={name} args={args} t={t} />
@@ -384,7 +356,7 @@ export function ToolCallCard({
             <div className="tool-card__title">
               <strong>{title}</strong>
             </div>
-            <HeaderMeta name={name} permissionMode={permissionMode} t={t}>
+            <HeaderMeta name={name}>
               {running ? (
                 <button type="button" className="tool-process-action" onClick={handleStop} disabled={isStopping}>
                   <Square size={14} /> {isStopping ? t('toolCard.stopping') : t('toolCard.stop')}
@@ -423,7 +395,7 @@ export function ToolCallCard({
             <div className="tool-card__title">
               <strong>{isTerminalTool(name) ? t('toolCard.executingTitle') : t('toolCard.executingGeneric')}</strong>
             </div>
-            <HeaderMeta name={name} permissionMode={permissionMode} t={t} />
+            <HeaderMeta name={name} />
           </div>
         )}
         <ToolPayload name={name} args={args} t={t} />
@@ -444,7 +416,7 @@ export function ToolCallCard({
               {failed ? <AlertTriangle size={18} /> : <CheckCircle size={18} />}
             </span>
             <div className="tool-card__title"><strong>{title}</strong></div>
-            <HeaderMeta name={name} permissionMode={permissionMode} t={t} />
+            <HeaderMeta name={name} />
           </div>
         )}
         <ToolPayload name={name} args={args} t={t} />
@@ -467,7 +439,7 @@ export function ToolCallCard({
             <div className="tool-card__title">
               <strong>{status === 'blocked' ? t('toolCard.blocked') : t('toolCard.rejected')}</strong>
             </div>
-            <HeaderMeta name={name} permissionMode={permissionMode} t={t} />
+            <HeaderMeta name={name} />
           </div>
         )}
         <ToolPayload name={name} args={args} t={t} />
@@ -483,7 +455,7 @@ export function ToolCallCard({
           <div className="tool-card__header">
             <span className="tool-card__status-icon"><AlertTriangle size={18} /></span>
             <div className="tool-card__title"><strong>{t('toolCard.executionError')}</strong></div>
-            <HeaderMeta name={name} permissionMode={permissionMode} t={t} />
+            <HeaderMeta name={name} />
           </div>
         )}
         <ToolPayload name={name} args={args} t={t} />

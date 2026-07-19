@@ -10,6 +10,7 @@ pub fn build_environment_prefix(data_dir: &Path) -> String {
 fn build_environment_section(data_dir: &Path) -> String {
     let os = host_os_label();
     let arch = std::env::consts::ARCH;
+    let shell = crate::tools::shell::selected_host_shell().environment_label();
     let default_workspace = resolve_data_dir_for_prompt(data_dir);
     let app_version = env!("CARGO_PKG_VERSION");
 
@@ -17,6 +18,7 @@ fn build_environment_section(data_dir: &Path) -> String {
         "## Environment\n\
 - App: WeiAgent {app_version}\n\
 - OS: {os} ({arch})\n\
+- Shell: {shell}\n\
 - Default workspace: {default_workspace}"
     )
 }
@@ -67,7 +69,7 @@ mod tests {
         assert!(first.contains("## Environment"));
         assert!(first.contains("WeiAgent"));
         assert!(first.contains("Default workspace:"));
-        assert!(!first.contains("Shell:"));
+        assert!(first.contains("Shell:"));
         assert!(!first.contains("App data directory:"));
         assert!(!first.contains("Allowed workspace roots:"));
         assert!(!first.contains("Terminal tool:"));
@@ -87,7 +89,7 @@ mod tests {
             prefix.contains(&format!("Default workspace: {expected}")),
             "prefix missing default workspace line: {prefix}"
         );
-        assert!(!prefix.contains("Shell:"));
+        assert!(prefix.contains("Shell:"));
         assert!(!prefix.contains("App data directory:"));
         assert!(!prefix.contains("Allowed workspace roots:"));
     }

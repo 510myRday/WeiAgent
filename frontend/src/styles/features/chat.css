@@ -684,14 +684,6 @@
   color: var(--color-primary-deep, var(--color-primary));
 }
 
-.message-tool__identity .tool-card__permission-badge {
-  flex: 0 0 auto;
-  max-width: 10rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .message-tool__content .tool-card--embedded {
   padding: 0;
   border: 0;

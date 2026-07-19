@@ -503,8 +503,6 @@
     "permission": "请求权限",
     "justification": "请求理由",
     "fullAccessPermission": "完整本机访问",
-    "permissionModeRequestApproval": "请求手动审批",
-    "permissionModeFullAccess": "完全访问权限",
     "background": "后台运行",
     "defaultCwd": "默认工作目录",
     "enabled": "允许",

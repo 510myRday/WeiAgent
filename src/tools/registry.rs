@@ -156,7 +156,7 @@ impl AgentTool for ExecuteTerminalTool {
                     },
                     "cwd": {
                         "type": "string",
-                        "description": "Existing working directory. Omit to use the default workspace; relative paths resolve from it."
+                        "description": "Existing working directory. Omit to use the default workspace; relative paths resolve from it. If the requested directory is outside the configured sandbox roots, set sandbox_permissions=require_escalated and provide justification so the user can approve access."
                     },
                     "timeout_ms": {
                         "type": "integer",
@@ -178,7 +178,7 @@ impl AgentTool for ExecuteTerminalTool {
                         "type": "string",
                         "enum": ["use_default", "require_escalated"],
                         "description": format!(
-                            "Execution privilege request. Current agent mode is {permission}. use_default follows that mode (Codex sandbox in request_approval, Codex-managed full host access in full_access). require_escalated asks for full host access and, in request_approval mode, needs user approval plus justification."
+                            "Execution privilege request. Current agent mode is {permission}. use_default follows that mode (Codex sandbox in request_approval, Codex-managed full host access in full_access). For any cwd outside the configured sandbox roots, use require_escalated; in request_approval mode this emits an approval request and needs justification. Example: {{\"sandbox_permissions\":\"require_escalated\",\"justification\":\"需要访问配置工作区之外的项目目录\"}}."
                         )
                     },
                     "justification": {
@@ -837,7 +837,7 @@ fn normalize_optional_cwd(cwd: Option<String>) -> Result<Option<String>, String>
     Ok(Some(cwd.to_string()))
 }
 
-fn unsupported_host_shell_syntax(command: &str) -> Option<&'static str> {
+fn unsupported_host_shell_syntax(command: &str) -> Option<String> {
     #[cfg(windows)]
     {
         let lower = command.to_ascii_lowercase();
@@ -846,19 +846,23 @@ fn unsupported_host_shell_syntax(command: &str) -> Option<&'static str> {
             || command.contains("<<'")
             || command.contains("<<\"")
         {
-            return Some(
-                "Windows commands are interpreted by cmd.exe, which does not support POSIX heredoc syntax (`<<EOF` or `python - <<'PY'`). Use `python -c`, a PowerShell here-string, or split the file generation into smaller Windows-compatible commands.",
-            );
+            let shell = crate::tools::shell::selected_host_shell();
+            return Some(format!(
+                "Windows commands are interpreted using {} syntax, which does not support POSIX heredocs (`<<EOF` or `python - <<'PY'`). Use `python -c`, a PowerShell here-string when PowerShell is selected, or split the command into smaller Windows-compatible commands.",
+                shell.syntax_name()
+            ));
         }
     }
     None
 }
 
 fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
-    let host_guidance = terminal_host_guidance();
+    let shell = crate::tools::shell::selected_host_shell();
+    let host_guidance = shell.tool_guidance();
+    let examples = shell.command_examples();
     let permission = match config.terminal.permission_mode {
         crate::domain::TerminalPermissionMode::RequestApproval => {
-            "Permission mode: request_approval. Default commands use the workspace sandbox without network access; use require_escalated with a justification only when full host access is needed."
+            "Permission mode: request_approval. Default commands use the workspace sandbox without network access. When the requested cwd is outside the configured sandbox roots, you MUST set sandbox_permissions to require_escalated and set justification (for example, 需要访问配置工作区之外的项目目录) so the user receives an approval prompt."
         }
         crate::domain::TerminalPermissionMode::FullAccess => {
             "Permission mode: full_access. Commands run with full host access; stay in the requested workspace unless the user specifies another path."
@@ -866,16 +870,9 @@ fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
     };
 
     format!(
-        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. {host_guidance} {permission} Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again."
+        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. Selected shell: {}. {host_guidance} {examples} {permission} Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again.",
+        shell.display_name()
     )
-}
-
-fn terminal_host_guidance() -> &'static str {
-    if cfg!(windows) {
-        "Host OS: Windows. Commands use cmd.exe syntax; use PowerShell explicitly for richer Windows operations. Do not use POSIX paths, shell syntax, or heredocs."
-    } else {
-        "Host OS: Unix-like. Commands use POSIX sh syntax and Unix paths."
-    }
 }
 
 struct ApprovalRegistrationGuard {
@@ -921,12 +918,21 @@ mod tests {
         assert_eq!(MAX_TERMINAL_COMMAND_BYTES, 8_000);
     }
 
+    #[test]
+    fn terminal_description_requires_escalation_for_external_workspaces() {
+        let config = AgentToolsConfig::default();
+        let description = super::build_execute_terminal_description(&config);
+        assert!(description.contains("cwd is outside the configured sandbox roots"));
+        assert!(description.contains("sandbox_permissions to require_escalated"));
+        assert!(description.contains("需要访问配置工作区之外的项目目录"));
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_rejects_posix_python_heredocs_with_actionable_guidance() {
         let message = unsupported_host_shell_syntax("python - <<'PY'\nprint('ok')\nPY")
             .expect("POSIX heredoc should be rejected on Windows");
-        assert!(message.contains("cmd.exe"));
+        assert!(message.contains(crate::tools::shell::selected_host_shell().syntax_name()));
         assert!(message.contains("python -c"));
     }
 
@@ -941,19 +947,21 @@ mod tests {
             .iter()
             .find(|definition| definition.function.name == "execute_terminal")
             .unwrap();
-        let expected_shell = if cfg!(windows) {
-            "Commands use cmd.exe syntax"
-        } else {
-            "Commands use POSIX sh syntax"
-        };
-        assert!(terminal.function.description.contains(expected_shell));
+        let selected_shell = crate::tools::shell::selected_host_shell();
+        let expected_shell = format!("Selected shell: {}", selected_shell.display_name());
+        assert!(terminal.function.description.contains(&expected_shell));
         assert!(terminal.function.description.contains("ordinary commands"));
         assert!(terminal.function.description.contains("process_id"));
         assert!(terminal.function.description.contains("prefer `rg`"));
         assert!(terminal.function.description.contains("`rg --files`"));
         if cfg!(windows) {
-            assert!(terminal.function.description.contains("PowerShell"));
-            assert!(terminal.function.description.contains("Do not use POSIX"));
+            assert!(
+                terminal
+                    .function
+                    .description
+                    .contains(selected_shell.syntax_name())
+            );
+            assert!(terminal.function.description.contains("Examples:"));
         } else {
             assert!(terminal.function.description.contains("Unix paths"));
         }

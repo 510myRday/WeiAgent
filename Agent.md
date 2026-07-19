@@ -360,7 +360,7 @@ User Message
   -> follow-up LLM response
 ```
 
-生产环境中，WeiAgent 只负责启动 Codex CLI/app-server 并发送结构化执行请求，不直接启动 PowerShell、CMD 或 `sh` 来执行模型命令。Codex 会根据宿主系统在其控制的执行链路中启动本机 Shell：Windows 使用 PowerShell/CMD，macOS 和 Linux 使用 POSIX `sh`。Shell 是命令解释器，但沙箱策略、进程生命周期、stdin/stdout 和终止控制均由 Codex 路径承载。
+生产环境中，WeiAgent 只负责启动 Codex CLI/app-server 并发送结构化执行请求，不直接绕过 Codex 来执行模型命令。Codex 会在其控制的执行链路中启动 WeiAgent 已探测的本机 Shell：Windows 依次选择 PowerShell 7 (`pwsh.exe`)、Windows PowerShell (`powershell.exe`) 和 CMD (`cmd.exe`)，macOS 和 Linux 使用 POSIX `sh`。Shell 是命令解释器，但沙箱策略、进程生命周期、stdin/stdout 和终止控制均由 Codex 路径承载。
 
 ### 终端能力
 
@@ -369,7 +369,7 @@ User Message
 - `multi_edit_file`：单文件/多文件精确替换，以及 create/delete/move；不出现在 Tools UI，仅随 `terminal.enabled` 注册到模型 schema。`request_approval` 下每次写文件需审批（支持 24h always-allow），`full_access` 下直接写工作区
 - `terminal_session` 操作：`poll`、`write`、`submit`、`interrupt`、`eof`、`terminate`、`resize`，通过 `output_cursor` 增量读取输出
 - `cwd` 省略、空字符串或 `.` 都使用配置的默认工作区；`allowed_cwd_roots` 为空时默认工作区是 WeiAgent 数据目录（开发模式为 `data`，生产模式默认为 `%USERPROFILE%\.WeiAgent`）；非空 `cwd` 必须是已存在目录，不允许失败后静默切换到猜测路径
-- 终端工具定义会明确告知模型当前宿主 OS 和命令解释器，避免在 Windows 上默认生成 `/tmp`、heredoc、`python3` 等 Unix 假设
+- 实际执行器、终端工具定义、系统环境提示和命令示例共用同一个 Shell 探测结果，避免 PowerShell、CMD 与 POSIX 语法混用
 - 支持 Codex PTY、stdin 续写、Ctrl+C/EOF、终止和尺寸调整；后台或超时转后台后返回 `process_id`
 - Windows 的 Codex unelevated 沙箱是上游例外：只允许短时、非交互、前台命令；后台、stdin 续写、PTY 和超时转后台必须请求完整权限
 - 普通前台命令只在执行期间由进程管理器捕获输出，完成后立即移除，不出现在后台进程列表
