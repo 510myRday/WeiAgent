@@ -42,15 +42,23 @@ impl JsonStore {
     pub async fn build_agent_system_prompt(&self, agent: &Agent) -> AppResult<String> {
         let workspace = self.read_agent_workspace(agent.id).await?;
         let environment = crate::tools::prompt::build_environment_prefix(&self.data_dir);
+        // Runtime identity background: what "Agent" means here, and which one is active.
+        let agent_identity = format!(
+            "## Agent\n\
+当前处理本轮对话的智能体（接收用户消息、调用工具并回复）：\n\
+- Name: {}\n\
+- ID: {}",
+            agent.name, agent.id
+        );
         let agent_sections = join_prompt_sections([
             ("Personality", workspace.personality.as_str()),
             ("Memory", workspace.memory.as_str()),
             ("Instructions", workspace.instructions.as_str()),
         ]);
         if agent_sections.is_empty() {
-            Ok(environment)
+            Ok(format!("{environment}\n\n{agent_identity}"))
         } else {
-            Ok(format!("{environment}\n\n{agent_sections}"))
+            Ok(format!("{environment}\n\n{agent_identity}\n\n{agent_sections}"))
         }
     }
 

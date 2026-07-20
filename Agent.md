@@ -223,7 +223,13 @@ WeiAgent/
 - `data/agents/{agent_id}/instructions.md`：核心工作规则、输出要求和默认流程
 - `data/agents/{agent_id}/tools.json`：只保存该 Agent 相对全局默认值的覆盖字段，以及该 Agent 的上下文授权；旧版完整配置会自动迁移为差异覆盖
 
-运行时会将 `personality.md`、`memory.md`、`instructions.md` 按 `## Personality`、`## Memory`、`## Instructions` 标题合并为 system prompt 发送给模型。工具执行使用“全局默认 + Agent 覆盖 + Agent 授权”合并后的有效配置，`tools.json` 本身不进入提示词。
+运行时 system prompt 由以下几部分按固定顺序拼接后发送给模型：
+
+1. `## Environment`：运行时环境前缀（应用名/版本、OS/架构、Shell、Default workspace）
+2. `## Agent`：一句身份背景 + `Name`/`ID`，标明当前处理本轮对话的智能体
+3. `## Personality` / `## Memory` / `## Instructions`：分别来自工作空间的 `personality.md`、`memory.md`、`instructions.md`
+
+工具执行使用“全局默认 + Agent 覆盖 + Agent 授权”合并后的有效配置，`tools.json` 本身不进入提示词。
 
 Agent 已不再使用单一的 `system_prompt` 字段，工作空间的三份 Markdown 文档完全取代了它。
 

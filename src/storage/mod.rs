@@ -543,8 +543,13 @@ mod tests {
         let stored = store.get_agent(agent.id).await.unwrap();
         let prompt = store.build_agent_system_prompt(&stored).await.unwrap();
         assert!(prompt.starts_with("## Environment"));
+        assert!(prompt.contains("## Agent"));
+        assert!(prompt.contains("当前处理本轮对话的智能体"));
+        assert!(prompt.contains(&format!("- Name: {}", stored.name)));
+        assert!(prompt.contains(&format!("- ID: {}", stored.id)));
         assert!(prompt.contains("## Personality"));
-        assert!(prompt.find("## Environment").unwrap() < prompt.find("## Personality").unwrap());
+        assert!(prompt.find("## Environment").unwrap() < prompt.find("## Agent").unwrap());
+        assert!(prompt.find("## Agent").unwrap() < prompt.find("## Personality").unwrap());
         assert!(prompt.contains("Calm and direct."));
         assert!(prompt.contains("User prefers concise plans."));
         assert!(prompt.contains("Ask only important questions."));
