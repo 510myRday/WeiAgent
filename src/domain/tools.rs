@@ -114,6 +114,7 @@ impl AgentToolsConfig {
 pub enum WebSearchProviderKind {
     Tavily,
     Exa,
+    Jina,
 }
 
 impl WebSearchProviderKind {
@@ -121,6 +122,7 @@ impl WebSearchProviderKind {
         match self {
             Self::Tavily => "tavily",
             Self::Exa => "exa",
+            Self::Jina => "jina",
         }
     }
 
@@ -128,6 +130,7 @@ impl WebSearchProviderKind {
         match self {
             Self::Tavily => "https://api.tavily.com",
             Self::Exa => "https://api.exa.ai",
+            Self::Jina => "https://s.jina.ai",
         }
     }
 }
@@ -185,6 +188,13 @@ fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
         WebSearchSourceConfig {
             id: "exa".to_string(),
             provider: WebSearchProviderKind::Exa,
+            enabled: true,
+            base_url: None,
+            api_keys: Vec::new(),
+        },
+        WebSearchSourceConfig {
+            id: "jina".to_string(),
+            provider: WebSearchProviderKind::Jina,
             enabled: true,
             base_url: None,
             api_keys: Vec::new(),
@@ -585,9 +595,10 @@ mod tests {
         let config = AgentToolsConfig::default();
         assert!(!config.web_search.enabled);
         assert_eq!(config.web_search.max_results, DEFAULT_WEB_SEARCH_MAX_RESULTS);
-        assert_eq!(config.web_search.sources.len(), 2);
+        assert_eq!(config.web_search.sources.len(), 3);
         assert_eq!(config.web_search.sources[0].id, "tavily");
         assert_eq!(config.web_search.sources[1].id, "exa");
+        assert_eq!(config.web_search.sources[2].id, "jina");
         assert!(!config.web_search.has_usable_source());
     }
 
@@ -686,7 +697,7 @@ mod tests {
         }))
         .unwrap();
         assert!(!config.web_search.enabled);
-        assert_eq!(config.web_search.sources.len(), 2);
+        assert_eq!(config.web_search.sources.len(), 3);
     }
 
     #[test]

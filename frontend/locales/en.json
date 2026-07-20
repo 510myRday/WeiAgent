@@ -404,7 +404,8 @@
       "agentSecretsHint": "API keys and sources can only be configured on the global tools page.",
       "provider": {
         "tavily": "Tavily",
-        "exa": "Exa"
+        "exa": "Exa",
+        "jina": "Jina"
       }
     }
   },

@@ -235,7 +235,7 @@ export function deleteLlmLog(logId: string): Promise<void> {
 }
 
 
-export type WebSearchProviderKind = 'tavily' | 'exa';
+export type WebSearchProviderKind = 'tavily' | 'exa' | 'jina';
 export type WebSearchKeySelection = 'sequential' | 'round_robin' | 'random';
 
 export type WebSearchSourceConfig = {

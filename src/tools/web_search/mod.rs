@@ -4,7 +4,7 @@ use crate::domain::{
 use crate::domain::tools::{MAX_WEB_SEARCH_QUERY_CHARS, MAX_WEB_SEARCH_RESULTS};
 
 use self::key_pool::key_attempt_order;
-use self::providers::{exa, tavily};
+use self::providers::{exa, jina, tavily};
 use self::types::{ProviderError, WebSearchOutput, sanitize_error_message};
 
 pub mod key_pool;
@@ -87,6 +87,9 @@ pub async fn execute_web_search(args: WebSearchArgs, config: &WebSearchToolConfi
                 }
                 WebSearchProviderKind::Exa => {
                     exa::search(&client, &base_url, api_key, query, max_results).await
+                }
+                WebSearchProviderKind::Jina => {
+                    jina::search(&client, &base_url, api_key, query, max_results).await
                 }
             };
 

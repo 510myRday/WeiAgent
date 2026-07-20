@@ -465,7 +465,8 @@ mod tests {
             tools: Option<Vec<ToolDefinition>>,
         ) -> AppResult<ChatCompletionOutput> {
             if let Some(list) = &tools {
-                assert_eq!(list.len(), 2);
+                // execute_terminal + terminal_session + multi_edit_file
+                assert_eq!(list.len(), 3);
             }
             self.complete_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1014,6 +1015,112 @@ mod tests {
         assert!(second_text.contains("event: done"));
     }
     #[tokio::test]
+    async fn permission_mode_switch_hot_reloads_during_active_run() {
+        let command = "echo hot-reload-permission";
+        let outputs = vec![
+            ChatCompletionOutput {
+                content: String::new(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
+                tool_calls: vec![scripted_tool_call(
+                    "call-hot-reload-1",
+                    "execute_terminal",
+                    json!({
+                        "command": command,
+                        "sandbox_permissions": "require_escalated",
+                        "justification": "needs full host access"
+                    }),
+                )],
+            },
+            ChatCompletionOutput {
+                content: String::new(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
+                tool_calls: vec![scripted_tool_call(
+                    "call-hot-reload-2",
+                    "execute_terminal",
+                    json!({
+                        "command": command,
+                        "sandbox_permissions": "require_escalated",
+                        "justification": "still needs full host access"
+                    }),
+                )],
+            },
+            ChatCompletionOutput {
+                content: "hot reload applied".to_string(),
+                reasoning_content: String::new(),
+                usage: Default::default(),
+                tool_calls: Vec::new(),
+            },
+        ];
+        let (app, state, conversation_id, _, _) = scripted_test_app(outputs).await;
+        let agent_id = state
+            .store
+            .get_conversation(conversation_id)
+            .await
+            .unwrap()
+            .agent_id;
+        let mut config = state.store.read_agent_tools_config(agent_id).await.unwrap();
+        config.terminal.enabled = true;
+        config.terminal.permission_mode = crate::domain::TerminalPermissionMode::RequestApproval;
+        state
+            .store
+            .update_agent_tools_config(agent_id, config)
+            .await
+            .unwrap();
+
+        let stream_app = app.clone();
+        let stream_request = tokio::spawn(async move {
+            stream_app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!(
+                            "/api/conversations/{conversation_id}/messages/stream"
+                        ))
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"content": "hot reload", "stream": false}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        });
+
+        for _ in 0..100 {
+            if state.approval_manager.pending_count() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(state.approval_manager.pending_count(), 1);
+
+        let mut config = state.store.read_agent_tools_config(agent_id).await.unwrap();
+        config.terminal.permission_mode = crate::domain::TerminalPermissionMode::FullAccess;
+        state
+            .store
+            .update_agent_tools_config(agent_id, config)
+            .await
+            .unwrap();
+
+        let response = stream_request.await.unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("event: approval_required"));
+        assert!(text.contains("event: done"));
+        assert!(text.contains("hot reload applied"));
+        // The in-flight approval should auto-clear once FullAccess is saved,
+        // and the second tool call in the same run must not request approval again.
+        assert_eq!(
+            text.matches("event: approval_required").count(),
+            1,
+            "expected only the first tool call to request approval: {text}"
+        );
+        assert_eq!(state.approval_manager.pending_count(), 0);
+    }
+
+    #[tokio::test]
     async fn invalid_escalation_is_reported_without_starting_a_process() {
         let outputs = vec![
             ChatCompletionOutput {
@@ -1180,7 +1287,8 @@ mod tests {
             _options: crate::llm::client::RequestOptions,
             tools: Option<Vec<ToolDefinition>>,
         ) -> AppResult<ChatStream> {
-            assert_eq!(tools.as_ref().map(Vec::len), Some(2));
+            // execute_terminal + terminal_session + multi_edit_file
+            assert_eq!(tools.as_ref().map(Vec::len), Some(3));
             let events = self.streams.lock().unwrap().pop_front().ok_or_else(|| {
                 crate::error::AppError::Llm("stream script exhausted".to_string())
             })?;

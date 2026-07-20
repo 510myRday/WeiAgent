@@ -60,22 +60,30 @@ function defaultWebSearch(): WebSearchToolConfig {
     sources: [
       { id: 'tavily', provider: 'tavily', enabled: true, api_keys: [] },
       { id: 'exa', provider: 'exa', enabled: true, api_keys: [] },
+      { id: 'jina', provider: 'jina', enabled: true, api_keys: [] },
     ],
   };
 }
 
+function normalizeWebSearchSources(sources: WebSearchSourceConfig[]): WebSearchSourceConfig[] {
+  return sources.map((source) => ({
+    ...source,
+    api_keys: source.api_keys ?? [],
+  }));
+}
+
 function withWebSearch(config: AgentToolsConfig): AgentToolsConfig {
+  const backendSources = config.web_search?.sources ?? [];
+  const backendIds = new Set(backendSources.map((s) => s.id));
+  const missingDefaults = defaultWebSearch().sources.filter(
+    (defaultSource) => !backendIds.has(defaultSource.id),
+  );
   return {
     ...config,
     web_search: {
       ...defaultWebSearch(),
       ...config.web_search,
-      sources: config.web_search?.sources?.length
-        ? config.web_search.sources.map((source) => ({
-          ...source,
-          api_keys: source.api_keys ?? [],
-        }))
-        : defaultWebSearch().sources,
+      sources: normalizeWebSearchSources(backendSources).concat(missingDefaults),
     },
   };
 }

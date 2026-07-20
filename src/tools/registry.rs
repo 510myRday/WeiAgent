@@ -170,7 +170,7 @@ impl AgentTool for ExecuteTerminalTool {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 120000,
-                        "description": "Foreground wait in milliseconds. If omitted, the server default is used. Maximum is 120000. An unfinished command returns process_id when sessions are supported; the runtime may stop it on timeout."
+                        "description": "Foreground wait in milliseconds. If omitted, the server default is 30000 ms. Maximum is 120000. An unfinished command returns process_id when sessions are supported; the runtime may stop it on timeout."
                     },
                     "background": {
                         "type": "boolean",
@@ -247,7 +247,11 @@ impl AgentTool for ExecuteTerminalTool {
         let tty = args.tty;
         let sandbox_permissions = args.sandbox_permissions;
         let justification = args.justification;
-        if context.tools_config.terminal.permission_mode
+        let terminal_config = match live_terminal_config(&context).await {
+            Ok(config) => config,
+            Err(message) => return ToolResult::Error { message },
+        };
+        if terminal_config.permission_mode
             == crate::domain::TerminalPermissionMode::RequestApproval
             && sandbox_permissions == SandboxPermissions::RequireEscalated
             && justification
@@ -273,7 +277,7 @@ impl AgentTool for ExecuteTerminalTool {
                 conversation_id: context.conversation_id,
                 tool_call_id: context.call_id.clone(),
             },
-            &context.tools_config.terminal,
+            &terminal_config,
             &context.store.data_dir,
             &context.terminal_manager,
         )
@@ -320,7 +324,7 @@ impl AgentTool for ExecuteTerminalTool {
                 call_id: context.call_id.clone(),
                 agent_id: context.agent_id,
                 command: command.clone(),
-                approval_id,
+                approval_id: approval_id.clone(),
                 cwd: cwd.clone(),
                 runtime: "codex_full_access".to_string(),
                 permission: "full_access".to_string(),
@@ -335,10 +339,17 @@ impl AgentTool for ExecuteTerminalTool {
             };
         }
 
-        let decision = tokio::select! {
-            decision = decision_rx => decision.ok(),
-            _ = event_sender.closed() => None,
-        };
+        let decision = wait_for_approval_decision(
+            &context,
+            &approval_id,
+            decision_rx,
+            &event_sender,
+            |tools_config| {
+                tools_config.terminal.permission_mode
+                    == crate::domain::TerminalPermissionMode::FullAccess
+            },
+        )
+        .await;
         match decision {
             Some(ApprovalDecision::Approve) => {}
             Some(ApprovalDecision::AlwaysApprove) => {
@@ -364,6 +375,10 @@ impl AgentTool for ExecuteTerminalTool {
             }
         }
 
+        let terminal_config = match live_terminal_config(&context).await {
+            Ok(config) => config,
+            Err(message) => return ToolResult::Error { message },
+        };
         result = execute_terminal(
             &ExecuteTerminalRequest {
                 command,
@@ -377,7 +392,7 @@ impl AgentTool for ExecuteTerminalTool {
                 conversation_id: context.conversation_id,
                 tool_call_id: context.call_id,
             },
-            &context.tools_config.terminal,
+            &terminal_config,
             &context.store.data_dir,
             &context.terminal_manager,
         )
@@ -696,7 +711,11 @@ impl AgentTool for MultiEditFileTool {
             Ok(cwd) => cwd,
             Err(message) => return ToolResult::Error { message },
         };
-        if context.tools_config.terminal.permission_mode
+        let terminal_config = match live_terminal_config(&context).await {
+            Ok(config) => config,
+            Err(message) => return ToolResult::Error { message },
+        };
+        if terminal_config.permission_mode
             == crate::domain::TerminalPermissionMode::RequestApproval
             && args.sandbox_permissions == SandboxPermissions::RequireEscalated
         {
@@ -723,7 +742,7 @@ impl AgentTool for MultiEditFileTool {
                 args: args.clone(),
                 approved: false,
             },
-            &context.tools_config.terminal,
+            &terminal_config,
             &context.store.data_dir,
         )
         .await;
@@ -779,7 +798,7 @@ impl AgentTool for MultiEditFileTool {
                 call_id: context.call_id.clone(),
                 agent_id: context.agent_id,
                 command: command.clone(),
-                approval_id,
+                approval_id: approval_id.clone(),
                 cwd: approval_cwd.clone(),
                 runtime: "builtin_multi_edit".to_string(),
                 permission: "file_write".to_string(),
@@ -797,10 +816,17 @@ impl AgentTool for MultiEditFileTool {
             };
         }
 
-        let decision = tokio::select! {
-            decision = decision_rx => decision.ok(),
-            _ = event_sender.closed() => None,
-        };
+        let decision = wait_for_approval_decision(
+            &context,
+            &approval_id,
+            decision_rx,
+            &event_sender,
+            |tools_config| {
+                tools_config.terminal.permission_mode
+                    == crate::domain::TerminalPermissionMode::FullAccess
+            },
+        )
+        .await;
         match decision {
             Some(ApprovalDecision::Approve) => {}
             Some(ApprovalDecision::AlwaysApprove) => {
@@ -830,12 +856,16 @@ impl AgentTool for MultiEditFileTool {
             }
         }
 
+        let terminal_config = match live_terminal_config(&context).await {
+            Ok(config) => config,
+            Err(message) => return ToolResult::Error { message },
+        };
         result = execute_multi_edit(
             &MultiEditRequest {
                 args,
                 approved: true,
             },
-            &context.tools_config.terminal,
+            &terminal_config,
             &context.store.data_dir,
         )
         .await;
@@ -943,6 +973,50 @@ fn build_execute_terminal_description() -> String {
         "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. Prefer multi_edit_file for source/config edits (including outside-root paths via sandbox_permissions=require_escalated + justification) instead of rewriting files through shell. Selected shell: {}. {host_guidance} {examples} The server enforces its current execution policy; request elevated access with sandbox_permissions=require_escalated and a justification when needed. Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again.",
         shell.display_name()
     )
+}
+
+
+async fn live_tools_config(context: &ToolExecutionContext) -> Result<AgentToolsConfig, String> {
+    context
+        .store
+        .read_agent_tools_config(context.agent_id)
+        .await
+        .map_err(|error| format!("Failed to reload tools config: {error}"))
+}
+
+async fn live_terminal_config(
+    context: &ToolExecutionContext,
+) -> Result<crate::domain::TerminalToolConfig, String> {
+    Ok(live_tools_config(context).await?.terminal)
+}
+
+async fn wait_for_approval_decision(
+    context: &ToolExecutionContext,
+    approval_id: &str,
+    mut decision_rx: tokio::sync::oneshot::Receiver<ApprovalDecision>,
+    event_sender: &mpsc::Sender<ToolExecutionEvent>,
+    auto_approve: impl Fn(&AgentToolsConfig) -> bool,
+) -> Option<ApprovalDecision> {
+    let mut poll = tokio::time::interval(std::time::Duration::from_millis(250));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Skip the immediate first tick so we wait for a real interval first.
+    poll.tick().await;
+    loop {
+        tokio::select! {
+            decision = &mut decision_rx => return decision.ok(),
+            _ = event_sender.closed() => return None,
+            _ = poll.tick() => {
+                match live_tools_config(context).await {
+                    Ok(tools_config) if auto_approve(&tools_config) => {
+                        // Drop the pending approval so the UI can clear it.
+                        context.approval_manager.cancel(approval_id);
+                        return Some(ApprovalDecision::Approve);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 struct ApprovalRegistrationGuard {

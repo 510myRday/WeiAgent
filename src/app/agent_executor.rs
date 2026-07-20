@@ -86,7 +86,7 @@ pub enum AgentRunEvent {
 struct AgentRuntime<'a> {
     state: &'a AppState,
     client: &'a DynChatClient,
-    prepared: &'a PreparedChat,
+    prepared: &'a mut PreparedChat,
     options: RequestOptions,
     use_streaming_llm: bool,
     events: &'a Option<mpsc::Sender<AgentRunEvent>>,
@@ -100,14 +100,12 @@ struct ToolBudget {
 
 pub async fn run_agent(
     state: AppState,
-    prepared: PreparedChat,
+    mut prepared: PreparedChat,
     options: RequestOptions,
     use_streaming_llm: bool,
     events: Option<mpsc::Sender<AgentRunEvent>>,
 ) -> AppResult<SendMessageResponse> {
     let client = state.llm_registry.client_for(&prepared.provider)?;
-    let tools = state.tool_registry.definitions(&prepared.tools_config);
-    let max_llm_iterations = prepared.tools_config.max_llm_iterations();
     let mut messages = prepared.messages_for_llm.clone();
     let user_message = prepared.user_message.clone();
     let mut tool_budget = ToolBudget::default();
@@ -132,13 +130,23 @@ pub async fn run_agent(
     let runtime = AgentRuntime {
         state: &state,
         client: &client,
-        prepared: &prepared,
+        prepared: &mut prepared,
         options,
         use_streaming_llm,
         events: &events,
     };
 
-    for iteration in 0..max_llm_iterations {
+    let mut iteration = 0_usize;
+    loop {
+        refresh_prepared_tools_config(runtime.state, runtime.prepared).await?;
+        let max_llm_iterations = runtime.prepared.tools_config.max_llm_iterations();
+        if iteration >= max_llm_iterations {
+            break;
+        }
+        let tools = runtime
+            .state
+            .tool_registry
+            .definitions(&runtime.prepared.tools_config);
         emit(
             &events,
             AgentRunEvent::Phase {
@@ -148,7 +156,7 @@ pub async fn run_agent(
             },
         )
         .await?;
-        let output = match run_llm_iteration(&runtime, &messages, tools.clone()).await {
+        let output = match run_llm_iteration(&runtime, &messages, tools).await {
             Ok(output) => output,
             Err(error) => {
                 if events.as_ref().is_some_and(|sender| sender.is_closed()) {
@@ -164,7 +172,7 @@ pub async fn run_agent(
 
         let assistant_message = ChatMessage {
             id: output.message_id,
-            agent_id: prepared.agent.id,
+            agent_id: runtime.prepared.agent.id,
             conversation_id: user_message.conversation_id,
             role: ChatRole::Assistant,
             content: output.output.content.clone(),
@@ -175,12 +183,12 @@ pub async fn run_agent(
             tool_calls: (!output.output.tool_calls.is_empty()).then(|| {
                 tool_calls_with_permission_mode(
                     &output.output.tool_calls,
-                    &prepared.tools_config.terminal.permission_mode,
+                    &runtime.prepared.tools_config.terminal.permission_mode,
                 )
             }),
             tool_call_id: None,
             attachments: Vec::new(),
-            usage: Some(model_usage(&prepared, &output.output.usage)),
+            usage: Some(model_usage(runtime.prepared, &output.output.usage)),
         };
         state
             .store
@@ -201,12 +209,12 @@ pub async fn run_agent(
         }
         messages.push(assistant_message);
         if let Err(error) = execute_tool_calls(
-            &state,
-            &prepared,
+            runtime.state,
+            runtime.prepared,
             &mut messages,
             output.output.tool_calls,
             &mut tool_budget,
-            &events,
+            runtime.events,
             iteration,
         )
         .await
@@ -215,12 +223,15 @@ pub async fn run_agent(
             return Err(error);
         }
 
+        iteration += 1;
+        refresh_prepared_tools_config(runtime.state, runtime.prepared).await?;
         // Final reserved turn after the last tool-capable iteration.
-        if iteration + 1 == max_llm_iterations {
+        if iteration >= runtime.prepared.tools_config.max_llm_iterations() {
             break;
         }
     }
 
+    let max_llm_iterations = runtime.prepared.tools_config.max_llm_iterations();
     let summary = match finalize_after_budget(&runtime, &mut messages, max_llm_iterations).await {
         Ok(summary) => summary,
         Err(error) => {
@@ -329,7 +340,7 @@ async fn finalize_after_budget(
 
 async fn execute_tool_calls(
     state: &AppState,
-    prepared: &PreparedChat,
+    prepared: &mut PreparedChat,
     messages: &mut Vec<ChatMessage>,
     tool_calls: Vec<ToolCall>,
     budget: &mut ToolBudget,
@@ -337,6 +348,7 @@ async fn execute_tool_calls(
     iteration: usize,
 ) -> AppResult<()> {
     for (index, call) in tool_calls.into_iter().enumerate() {
+        refresh_prepared_tools_config(state, prepared).await?;
         let parsed_arguments = serde_json::from_str::<Value>(&call.function.arguments);
         let display_arguments = parsed_arguments
             .as_ref()
@@ -460,6 +472,22 @@ async fn execute_tool_calls(
         .await?;
         persist_tool_result(state, prepared, messages, &call.id, &result).await?;
     }
+    Ok(())
+}
+
+
+async fn refresh_prepared_tools_config(
+    state: &AppState,
+    prepared: &mut PreparedChat,
+) -> AppResult<()> {
+    let mut tools_config = state
+        .store
+        .read_agent_tools_config(prepared.agent.id)
+        .await?;
+    if tools_config.terminal.enabled && !state.codex_runtime.is_available_cached() {
+        tools_config.terminal.enabled = false;
+    }
+    prepared.tools_config = tools_config;
     Ok(())
 }
 
