@@ -28,8 +28,10 @@ pub use runtime::{
     CodexRuntimeSource, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus,
 };
 pub use settings::AppSettings;
+#[allow(unused_imports)]
 pub use tools::{
     AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision, ApprovalRequest,
     ApprovalResponse, PendingApproval, ProcessInfo, ProcessStatus, TerminalApprovalGrant,
-    TerminalPermissionMode, TerminalToolConfig, ToolResult,
+    TerminalPermissionMode, TerminalToolConfig, ToolResult, WebSearchKeySelection,
+    WebSearchProviderKind, WebSearchSourceConfig, WebSearchToolConfig, WebSearchToolOverrides, // re-export
 };

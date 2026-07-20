@@ -20,6 +20,7 @@ use crate::{
             ExecuteTerminalRequest, MAX_SESSION_WAIT_MS, SandboxPermissions, TerminalManager,
             TerminalSessionAction, execute_terminal, process_read_to_result,
         },
+        web_search::{WebSearchArgs, execute_web_search},
     },
 };
 
@@ -69,6 +70,7 @@ impl ToolRegistry {
         registry.register(ExecuteTerminalTool);
         registry.register(TerminalSessionTool);
         registry.register(MultiEditFileTool);
+        registry.register(WebSearchTool);
         registry
     }
 
@@ -808,6 +810,53 @@ impl AgentTool for MultiEditFileTool {
     }
 }
 
+
+struct WebSearchTool;
+
+#[async_trait]
+impl AgentTool for WebSearchTool {
+    fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
+        tool_definition(
+            "web_search",
+            "Search the public web and return ranked results with titles, URLs, and snippets. Use for up-to-date facts, docs, news, and references that are not already known from the conversation.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500,
+                        "description": "Search query. Prefer concrete keywords or a short question."
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "Maximum number of results to return. Defaults to the tool configuration when omitted."
+                    }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        )
+    }
+
+    fn is_enabled(&self, config: &AgentToolsConfig) -> bool {
+        config.web_search.enabled && config.web_search.has_usable_source()
+    }
+
+    async fn execute(&self, arguments: Value, context: ToolExecutionContext) -> ToolResult {
+        let args: WebSearchArgs = match serde_json::from_value(arguments) {
+            Ok(args) => args,
+            Err(error) => {
+                return ToolResult::Error {
+                    message: format!("Invalid web_search arguments: {error}"),
+                };
+            }
+        };
+        execute_web_search(args, &context.tools_config.web_search).await
+    }
+}
 fn tool_definition(name: &str, description: &str, parameters: Value) -> ToolDefinition {
     ToolDefinition {
         kind: "function".to_string(),
@@ -1032,6 +1081,26 @@ mod tests {
     }
 
     #[test]
+    fn web_search_enabled_only_with_keys() {
+        let mut config = AgentToolsConfig::default();
+        config.web_search.enabled = true;
+        let disabled = ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .unwrap_or_default()
+            .into_iter()
+            .any(|item| item.function.name == "web_search");
+        assert!(!disabled);
+
+        config.web_search.sources[0].api_keys = vec!["sk-test".to_string()];
+        let enabled = ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .unwrap_or_default()
+            .into_iter()
+            .any(|item| item.function.name == "web_search");
+        assert!(enabled);
+    }
+
+    #[test]
     fn tool_definitions_are_sorted_by_name() {
         let mut config = AgentToolsConfig::default();
         config.terminal.enabled = true;
@@ -1088,3 +1157,5 @@ mod tests {
         );
     }
 }
+
+

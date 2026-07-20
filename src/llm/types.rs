@@ -301,6 +301,7 @@ pub struct StreamChunk {
 #[derive(Debug, Deserialize)]
 pub struct StreamChoice {
     pub delta: StreamDelta,
+    #[serde(default)]
     pub finish_reason: Option<String>,
 }
 

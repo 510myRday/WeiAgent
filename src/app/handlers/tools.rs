@@ -19,7 +19,8 @@ pub async fn read_agent_tools_config(
     State(state): State<AppState>,
     Path(agent_id): Path<Uuid>,
 ) -> AppResult<Json<AgentToolsSettings>> {
-    Ok(Json(state.store.read_agent_tools_settings(agent_id).await?))
+    let settings = state.store.read_agent_tools_settings(agent_id).await?;
+    Ok(Json(settings.redact_secrets()))
 }
 
 pub async fn update_agent_tools_config(
@@ -27,25 +28,26 @@ pub async fn update_agent_tools_config(
     Path(agent_id): Path<Uuid>,
     Json(overrides): Json<AgentToolsOverrides>,
 ) -> AppResult<Json<AgentToolsSettings>> {
-    Ok(Json(
-        state
-            .store
-            .update_agent_tools_overrides(agent_id, overrides)
-            .await?,
-    ))
+    let settings = state
+        .store
+        .update_agent_tools_overrides(agent_id, overrides)
+        .await?;
+    Ok(Json(settings.redact_secrets()))
 }
 
 pub async fn read_tool_defaults(
     State(state): State<AppState>,
 ) -> AppResult<Json<AgentToolsConfig>> {
-    Ok(Json(state.store.read_tool_defaults().await?))
+    let config = state.store.read_tool_defaults().await?;
+    Ok(Json(config.redact_secrets()))
 }
 
 pub async fn update_tool_defaults(
     State(state): State<AppState>,
     Json(config): Json<AgentToolsConfig>,
 ) -> AppResult<Json<AgentToolsConfig>> {
-    Ok(Json(state.store.update_tool_defaults(config).await?))
+    let config = state.store.update_tool_defaults(config).await?;
+    Ok(Json(config.redact_secrets()))
 }
 
 pub async fn read_codex_runtime(
@@ -204,3 +206,4 @@ pub async fn stop_tool_process(
         .map(Json)
         .ok_or(AppError::NotFound)
 }
+

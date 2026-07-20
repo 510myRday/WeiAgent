@@ -15,7 +15,7 @@ use crate::{
             stream_metrics,
         },
         protocol::common::request_json_for_log,
-        sse::{openai_finish_event, parse_sse_line},
+        sse::{meaningful_finish_reason, openai_finish_event, parse_sse_line},
         types::{
             ChatCompletionOutput, ChatCompletionResponse, ModelsListResponse, ToolDefinition,
             build_chat_request,
@@ -213,7 +213,7 @@ impl ChatClient for OpenAiChatClient {
             AppError::Llm("empty model response".to_string())
         })?;
 
-        if let Some(reason) = choice.finish_reason.as_deref()
+        if let Some(reason) = meaningful_finish_reason(choice.finish_reason.as_deref())
             && let Err(error) = openai_finish_event(reason)
         {
             self.http.spawn_log(

@@ -7,3 +7,4 @@ pub mod runtime;
 pub mod shell;
 mod supporting_runtime;
 pub mod terminal;
+pub mod web_search;

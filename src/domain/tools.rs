@@ -47,9 +47,24 @@ fn default_timeout_ms() -> u64 {
 
 pub const DEFAULT_MAX_LLM_ITERATIONS: u32 = 99;
 pub const MAX_LLM_ITERATIONS: u32 = 999;
+pub const DEFAULT_WEB_SEARCH_MAX_RESULTS: u32 = 5;
+pub const MAX_WEB_SEARCH_RESULTS: u32 = 20;
+pub const DEFAULT_WEB_SEARCH_TIMEOUT_MS: u64 = 15_000;
+pub const MAX_WEB_SEARCH_TIMEOUT_MS: u64 = 60_000;
+pub const MAX_WEB_SEARCH_SOURCES: usize = 8;
+pub const MAX_WEB_SEARCH_KEYS_PER_SOURCE: usize = 16;
+pub const MAX_WEB_SEARCH_QUERY_CHARS: usize = 500;
 
 fn default_max_llm_iterations() -> u32 {
     DEFAULT_MAX_LLM_ITERATIONS
+}
+
+fn default_web_search_max_results() -> u32 {
+    DEFAULT_WEB_SEARCH_MAX_RESULTS
+}
+
+fn default_web_search_timeout_ms() -> u64 {
+    DEFAULT_WEB_SEARCH_TIMEOUT_MS
 }
 
 impl Default for TerminalToolConfig {
@@ -74,6 +89,8 @@ pub struct AgentToolsConfig {
     pub max_llm_iterations: u32,
     #[serde(default)]
     pub terminal: TerminalToolConfig,
+    #[serde(default)]
+    pub web_search: WebSearchToolConfig,
 }
 
 impl Default for AgentToolsConfig {
@@ -81,6 +98,7 @@ impl Default for AgentToolsConfig {
         Self {
             max_llm_iterations: default_max_llm_iterations(),
             terminal: TerminalToolConfig::default(),
+            web_search: WebSearchToolConfig::default(),
         }
     }
 }
@@ -89,6 +107,226 @@ impl AgentToolsConfig {
     pub fn max_llm_iterations(&self) -> usize {
         self.max_llm_iterations.clamp(1, MAX_LLM_ITERATIONS) as usize
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchProviderKind {
+    Tavily,
+    Exa,
+}
+
+impl WebSearchProviderKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Tavily => "tavily",
+            Self::Exa => "exa",
+        }
+    }
+
+    pub fn default_base_url(&self) -> &'static str {
+        match self {
+            Self::Tavily => "https://api.tavily.com",
+            Self::Exa => "https://api.exa.ai",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchKeySelection {
+    #[default]
+    Sequential,
+    RoundRobin,
+    Random,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WebSearchSourceConfig {
+    pub id: String,
+    pub provider: WebSearchProviderKind,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_keys: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WebSearchToolConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_web_search_max_results")]
+    pub max_results: u32,
+    #[serde(default = "default_web_search_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default)]
+    pub key_selection: WebSearchKeySelection,
+    #[serde(default = "default_web_search_sources")]
+    pub sources: Vec<WebSearchSourceConfig>,
+}
+
+fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
+    vec![
+        WebSearchSourceConfig {
+            id: "tavily".to_string(),
+            provider: WebSearchProviderKind::Tavily,
+            enabled: true,
+            base_url: None,
+            api_keys: Vec::new(),
+        },
+        WebSearchSourceConfig {
+            id: "exa".to_string(),
+            provider: WebSearchProviderKind::Exa,
+            enabled: true,
+            base_url: None,
+            api_keys: Vec::new(),
+        },
+    ]
+}
+
+impl Default for WebSearchToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
+            timeout_ms: DEFAULT_WEB_SEARCH_TIMEOUT_MS,
+            key_selection: WebSearchKeySelection::Sequential,
+            sources: default_web_search_sources(),
+        }
+    }
+}
+
+impl WebSearchToolConfig {
+    pub fn max_results(&self) -> u32 {
+        self.max_results.clamp(1, MAX_WEB_SEARCH_RESULTS)
+    }
+
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout_ms.clamp(1, MAX_WEB_SEARCH_TIMEOUT_MS)
+    }
+
+    pub fn has_usable_source(&self) -> bool {
+        self.sources.iter().any(|source| {
+            source.enabled
+                && source
+                    .api_keys
+                    .iter()
+                    .any(|key| !key.trim().is_empty())
+        })
+    }
+
+    pub fn usable_sources(&self) -> impl Iterator<Item = &WebSearchSourceConfig> {
+        self.sources.iter().filter(|source| {
+            source.enabled
+                && source
+                    .api_keys
+                    .iter()
+                    .any(|key| !key.trim().is_empty())
+        })
+    }
+
+    /// Replace secrets with masked values for API responses.
+    pub fn redact_secrets(&self) -> Self {
+        let mut redacted = self.clone();
+        for source in &mut redacted.sources {
+            source.api_keys = source
+                .api_keys
+                .iter()
+                .map(|key| mask_api_key(key))
+                .filter(|key| !key.is_empty())
+                .collect();
+        }
+        redacted
+    }
+
+    /// Merge a client update into stored secrets.
+    /// - omitted / null-equivalent sources keep previous keys when id matches and incoming keys empty with sentinel
+    /// - empty api_keys list clears keys for that source
+    /// - non-empty list replaces keys (entries that look like masks keep previous when possible)
+    pub fn merge_secret_update(&self, incoming: &Self) -> Self {
+        let mut merged = incoming.clone();
+        for source in &mut merged.sources {
+            let previous_keys = self
+                .sources
+                .iter()
+                .find(|existing| existing.id == source.id)
+                .map(|existing| existing.api_keys.clone())
+                .unwrap_or_default();
+
+            if source.api_keys.is_empty() {
+                // Distinguish clear vs preserve:
+                // Frontend sends [] to clear. When keys are omitted via preserve marker "__preserve__",
+                // keep previous. For simplicity: if previous had keys and client sends only masks or
+                // empty with preserve flag via special single entry.
+                // Contract used by frontend:
+                // - api_keys: ["__preserve__"] => keep previous
+                // - api_keys: [] => clear
+                // - api_keys: ["sk-..."] => replace
+                continue;
+            }
+
+            if source.api_keys.len() == 1 && source.api_keys[0] == "__preserve__" {
+                source.api_keys = previous_keys;
+                continue;
+            }
+
+            // If every provided key is a masked placeholder matching previous count, preserve.
+            let all_masked = source.api_keys.iter().all(|key| is_masked_api_key(key));
+            if all_masked && !previous_keys.is_empty() {
+                source.api_keys = previous_keys;
+                continue;
+            }
+
+            // Replace: drop blank entries; if a slot is masked and index maps, keep previous.
+            let mut next_keys = Vec::new();
+            for (index, key) in source.api_keys.iter().enumerate() {
+                let trimmed = key.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if is_masked_api_key(trimmed) {
+                    if let Some(previous) = previous_keys.get(index) {
+                        if !previous.trim().is_empty() {
+                            next_keys.push(previous.clone());
+                        }
+                    }
+                    continue;
+                }
+                next_keys.push(trimmed.to_string());
+            }
+            source.api_keys = next_keys;
+        }
+        merged
+    }
+}
+
+pub fn mask_api_key(api_key: &str) -> String {
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let suffix: String = trimmed
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("****{suffix}")
+}
+
+pub fn is_masked_api_key(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with("****") && trimmed.len() <= 8
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -100,6 +338,8 @@ pub struct AgentToolsOverrides {
     pub max_llm_iterations: Option<u32>,
     #[serde(default)]
     pub terminal: TerminalToolOverrides,
+    #[serde(default)]
+    pub web_search: WebSearchToolOverrides,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -115,6 +355,16 @@ pub struct TerminalToolOverrides {
     pub default_timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_cwd_roots: Option<Vec<String>>,
+}
+
+/// Agent-level overrides for web_search. Secrets stay global-only.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WebSearchToolOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +384,7 @@ impl Default for AgentToolsOverrides {
             version: tool_overrides_version(),
             max_llm_iterations: None,
             terminal: TerminalToolOverrides::default(),
+            web_search: WebSearchToolOverrides::default(),
         }
     }
 }
@@ -170,6 +421,19 @@ impl AgentToolsOverrides {
                     .clone()
                     .unwrap_or_else(|| defaults.terminal.allowed_cwd_roots.clone()),
             },
+            web_search: WebSearchToolConfig {
+                enabled: self
+                    .web_search
+                    .enabled
+                    .unwrap_or(defaults.web_search.enabled),
+                max_results: self
+                    .web_search
+                    .max_results
+                    .unwrap_or(defaults.web_search.max_results),
+                timeout_ms: defaults.web_search.timeout_ms,
+                key_selection: defaults.web_search.key_selection.clone(),
+                sources: defaults.web_search.sources.clone(),
+            },
         }
     }
 
@@ -195,6 +459,12 @@ impl AgentToolsOverrides {
                     != defaults.terminal.allowed_cwd_roots)
                     .then_some(config.terminal.allowed_cwd_roots.clone()),
             },
+            web_search: WebSearchToolOverrides {
+                enabled: (config.web_search.enabled != defaults.web_search.enabled)
+                    .then_some(config.web_search.enabled),
+                max_results: (config.web_search.max_results != defaults.web_search.max_results)
+                    .then_some(config.web_search.max_results),
+            },
         }
     }
 
@@ -210,6 +480,10 @@ impl AgentToolsOverrides {
                 default_timeout_ms: Some(config.terminal.default_timeout_ms),
                 allowed_cwd_roots: Some(config.terminal.allowed_cwd_roots.clone()),
             },
+            web_search: WebSearchToolOverrides {
+                enabled: Some(config.web_search.enabled),
+                max_results: Some(config.web_search.max_results),
+            },
         }
     }
 }
@@ -224,6 +498,24 @@ impl TerminalToolConfig {
                     .expires_at
                     .is_some_and(|expires_at| expires_at > chrono::Utc::now())
         })
+    }
+}
+
+impl AgentToolsConfig {
+    pub fn redact_secrets(&self) -> Self {
+        let mut redacted = self.clone();
+        redacted.web_search = self.web_search.redact_secrets();
+        redacted
+    }
+}
+
+impl AgentToolsSettings {
+    pub fn redact_secrets(&self) -> Self {
+        Self {
+            defaults: self.defaults.redact_secrets(),
+            overrides: self.overrides.clone(),
+            effective: self.effective.redact_secrets(),
+        }
     }
 }
 
@@ -261,14 +553,14 @@ mod tests {
         let mut overrides = AgentToolsOverrides::default();
         overrides.terminal.approval_grants = vec![
             TerminalApprovalGrant {
-                command: "expired".to_string(),
+                command: "stale".to_string(),
                 cwd: None,
                 permission_mode: TerminalPermissionMode::RequestApproval,
-                created_at: Some(now - chrono::Duration::hours(25)),
+                created_at: Some(now - chrono::Duration::hours(2)),
                 expires_at: Some(now - chrono::Duration::hours(1)),
             },
             TerminalApprovalGrant {
-                command: "missing-expiry".to_string(),
+                command: "undated".to_string(),
                 cwd: None,
                 permission_mode: TerminalPermissionMode::RequestApproval,
                 created_at: Some(now),
@@ -276,17 +568,137 @@ mod tests {
             },
             TerminalApprovalGrant {
                 command: "active".to_string(),
-                cwd: Some("workspace".to_string()),
+                cwd: None,
                 permission_mode: TerminalPermissionMode::RequestApproval,
                 created_at: Some(now),
                 expires_at: Some(now + chrono::Duration::hours(1)),
             },
         ];
-
         assert!(overrides.remove_expired_approval_grants(now));
         assert_eq!(overrides.terminal.approval_grants.len(), 1);
         assert_eq!(overrides.terminal.approval_grants[0].command, "active");
         assert!(!overrides.remove_expired_approval_grants(now));
+    }
+
+    #[test]
+    fn web_search_defaults_are_disabled_with_builtin_sources() {
+        let config = AgentToolsConfig::default();
+        assert!(!config.web_search.enabled);
+        assert_eq!(config.web_search.max_results, DEFAULT_WEB_SEARCH_MAX_RESULTS);
+        assert_eq!(config.web_search.sources.len(), 2);
+        assert_eq!(config.web_search.sources[0].id, "tavily");
+        assert_eq!(config.web_search.sources[1].id, "exa");
+        assert!(!config.web_search.has_usable_source());
+    }
+
+    #[test]
+    fn web_search_agent_overrides_do_not_touch_secrets() {
+        let mut defaults = AgentToolsConfig::default();
+        defaults.web_search.enabled = false;
+        defaults.web_search.max_results = 5;
+        defaults.web_search.sources[0].api_keys = vec!["sk-secret".to_string()];
+
+        let overrides = AgentToolsOverrides {
+            web_search: WebSearchToolOverrides {
+                enabled: Some(true),
+                max_results: Some(8),
+            },
+            ..AgentToolsOverrides::default()
+        };
+        let effective = overrides.apply_to(&defaults);
+        assert!(effective.web_search.enabled);
+        assert_eq!(effective.web_search.max_results, 8);
+        assert_eq!(
+            effective.web_search.sources[0].api_keys,
+            vec!["sk-secret".to_string()]
+        );
+        assert_eq!(
+            effective.web_search.timeout_ms,
+            defaults.web_search.timeout_ms
+        );
+    }
+
+    #[test]
+    fn web_search_secret_merge_preserves_and_clears() {
+        let stored = WebSearchToolConfig {
+            enabled: true,
+            sources: vec![WebSearchSourceConfig {
+                id: "tavily".to_string(),
+                provider: WebSearchProviderKind::Tavily,
+                enabled: true,
+                base_url: None,
+                api_keys: vec!["sk-live-secret".to_string()],
+            }],
+            ..WebSearchToolConfig::default()
+        };
+
+        let preserve = WebSearchToolConfig {
+            sources: vec![WebSearchSourceConfig {
+                id: "tavily".to_string(),
+                provider: WebSearchProviderKind::Tavily,
+                enabled: true,
+                base_url: None,
+                api_keys: vec!["__preserve__".to_string()],
+            }],
+            ..stored.clone()
+        };
+        let merged = stored.merge_secret_update(&preserve);
+        assert_eq!(merged.sources[0].api_keys, vec!["sk-live-secret".to_string()]);
+
+        let clear = WebSearchToolConfig {
+            sources: vec![WebSearchSourceConfig {
+                id: "tavily".to_string(),
+                provider: WebSearchProviderKind::Tavily,
+                enabled: true,
+                base_url: None,
+                api_keys: vec![],
+            }],
+            ..stored.clone()
+        };
+        let cleared = stored.merge_secret_update(&clear);
+        assert!(cleared.sources[0].api_keys.is_empty());
+
+        let replace = WebSearchToolConfig {
+            sources: vec![WebSearchSourceConfig {
+                id: "tavily".to_string(),
+                provider: WebSearchProviderKind::Tavily,
+                enabled: true,
+                base_url: None,
+                api_keys: vec!["sk-new".to_string()],
+            }],
+            ..stored.clone()
+        };
+        let replaced = stored.merge_secret_update(&replace);
+        assert_eq!(replaced.sources[0].api_keys, vec!["sk-new".to_string()]);
+    }
+
+    #[test]
+    fn legacy_tool_defaults_without_web_search_deserialize() {
+        let config: AgentToolsConfig = serde_json::from_value(serde_json::json!({
+            "max_llm_iterations": 99,
+            "terminal": {
+                "enabled": true,
+                "permission_mode": "request_approval",
+                "approval_grants": [],
+                "default_timeout_ms": 30000,
+                "allowed_cwd_roots": []
+            }
+        }))
+        .unwrap();
+        assert!(!config.web_search.enabled);
+        assert_eq!(config.web_search.sources.len(), 2);
+    }
+
+    #[test]
+    fn redacted_web_search_config_hides_keys() {
+        let mut config = AgentToolsConfig::default();
+        config.web_search.sources[0].api_keys = vec!["sk-abcdefgh".to_string()];
+        let redacted = config.redact_secrets();
+        assert_eq!(redacted.web_search.sources[0].api_keys, vec!["****efgh".to_string()]);
+        assert_ne!(
+            redacted.web_search.sources[0].api_keys[0],
+            config.web_search.sources[0].api_keys[0]
+        );
     }
 }
 

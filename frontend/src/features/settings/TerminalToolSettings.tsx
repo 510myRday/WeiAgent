@@ -18,6 +18,7 @@ import { useI18n } from '../../i18n';
 import { useBeforeUnloadGuard, usePageVisibility } from '../../hooks';
 import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../components/ui';
 import { PermissionModeControl, type PermissionMode } from './PermissionModeControl';
+import { WebSearchToolSettings } from './WebSearchToolSettings';
 
 interface TerminalToolSettingsProps {
   scope: 'defaults' | 'agent';
@@ -27,7 +28,7 @@ interface TerminalToolSettingsProps {
 
 type OverrideField = 'permission_mode' | 'default_timeout_ms' | 'allowed_cwd_roots';
 export type TerminalAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
-type AgentToolView = 'list' | 'terminal';
+type AgentToolView = 'list' | 'terminal' | 'web_search';
 type PendingSave =
   | {
     contextKey: string;
@@ -650,8 +651,64 @@ export function TerminalToolSettings({
               </IconButton>
             </div>
           </div>
+          <div className="agent-tool-row">
+            <div className="agent-tool-row__body">
+              <div className="agent-tool-row__title">
+                <strong>{t('tools.webSearch.name')}</strong>
+                <span className="mini-status-badge">
+                  <ShieldCheck size={12} />
+                  {t('tools.builtinBadge')}
+                </span>
+              </div>
+              <small>{t('tools.webSearch.description')}</small>
+              <span className="agent-tool-row__source">
+                {overrides?.web_search?.enabled === undefined
+                  ? t('tools.inheritsDefault')
+                  : t('tools.agentOverride')}
+              </span>
+            </div>
+            <div className="agent-tool-row__actions">
+              <label className="toggle-switch" title={config.web_search?.enabled ? t('tools.enabled') : t('tools.disabled')}>
+                <input
+                  type="checkbox"
+                  aria-label={t('tools.webSearch.enabled')}
+                  checked={Boolean(config.web_search?.enabled)}
+                  onChange={(event) => {
+                    if (!overrides) return;
+                    updateOverrides({
+                      ...overrides,
+                      web_search: {
+                        ...overrides.web_search,
+                        enabled: event.target.checked,
+                      },
+                    });
+                  }}
+                />
+                <span className="toggle-slider" />
+              </label>
+              <IconButton
+                type="button"
+                variant="ghost"
+                className="agent-tool-edit"
+                onClick={() => setAgentToolView('web_search')}
+                label={t('tools.editTool')}
+              >
+                <Pencil size={17} />
+              </IconButton>
+            </div>
+          </div>
         </div>
       </div>
+    );
+  }
+
+  if (isAgentScope && agentToolView === 'web_search') {
+    return (
+      <WebSearchToolSettings
+        scope="agent"
+        agentId={agentId}
+        onBack={() => setAgentToolView('list')}
+      />
     );
   }
 
@@ -1066,6 +1123,13 @@ function mergeToolsConfig(defaults: AgentToolsConfig, overrides: AgentToolsOverr
       approval_grants: overrides.terminal.approval_grants,
       default_timeout_ms: overrides.terminal.default_timeout_ms ?? defaults.terminal.default_timeout_ms,
       allowed_cwd_roots: overrides.terminal.allowed_cwd_roots ?? defaults.terminal.allowed_cwd_roots,
+    },
+    web_search: {
+      enabled: overrides.web_search?.enabled ?? defaults.web_search?.enabled ?? false,
+      max_results: overrides.web_search?.max_results ?? defaults.web_search?.max_results ?? 5,
+      timeout_ms: defaults.web_search?.timeout_ms ?? 15000,
+      key_selection: defaults.web_search?.key_selection ?? 'sequential',
+      sources: defaults.web_search?.sources ?? [],
     },
   };
 }

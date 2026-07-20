@@ -63,7 +63,9 @@ pub fn parse_sse_line(line: &str) -> Vec<AppResult<StreamEvent>> {
                     }
                 }
 
-                if let Some(reason) = choice.finish_reason.as_deref() {
+                // SenseNova / some gateways send finish_reason:"" on intermediate
+                // chunks instead of null. Treat blank as "not finished yet".
+                if let Some(reason) = meaningful_finish_reason(choice.finish_reason.as_deref()) {
                     events.push(openai_finish_event(reason));
                 }
             }
@@ -73,8 +75,14 @@ pub fn parse_sse_line(line: &str) -> Vec<AppResult<StreamEvent>> {
     }
 }
 
+/// OpenAI-compatible providers usually use `null` while a stream is still
+/// open. A few gateways (e.g. SenseNova) emit an empty string instead.
+pub fn meaningful_finish_reason(reason: Option<&str>) -> Option<&str> {
+    reason.map(str::trim).filter(|value| !value.is_empty())
+}
+
 pub fn openai_finish_event(reason: &str) -> AppResult<StreamEvent> {
-    match reason {
+    match reason.trim() {
         "stop" => Ok(StreamEvent::Finished),
         "tool_calls" | "function_call" => Ok(StreamEvent::FinishedWithToolCalls),
         "length" => Err(AppError::Llm(
@@ -198,6 +206,24 @@ mod tests {
             parsed.into_iter().next().unwrap().unwrap(),
             StreamEvent::Finished
         ));
+    }
+
+    #[test]
+    fn empty_finish_reason_is_ignored_like_null() {
+        // SenseNova emits finish_reason:"" on intermediate reasoning/content chunks.
+        let parsed = parse_sse_chunk(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"plan\"},\"finish_reason\":\"\"}]}\n\
+             data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"\"}]}\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n",
+        );
+        let events: Vec<_> = parsed.into_iter().map(Result::unwrap).collect();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], StreamEvent::ReasoningDelta(s) if s == "plan"));
+        assert!(matches!(&events[1], StreamEvent::TextDelta(s) if s == "ok"));
+        assert!(matches!(&events[2], StreamEvent::Finished));
+        assert!(meaningful_finish_reason(Some("")).is_none());
+        assert!(meaningful_finish_reason(Some("   ")).is_none());
+        assert_eq!(meaningful_finish_reason(Some("stop")), Some("stop"));
     }
 
     #[test]

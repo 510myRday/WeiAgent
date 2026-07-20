@@ -148,8 +148,10 @@ impl JsonStore {
             ));
         }
         config.terminal.approval_grants.clear();
-        validate_tools_config(&config)?;
         let _guard = self.lock.lock().await;
+        let existing = self.read_tool_defaults_unlocked().await?;
+        config.web_search = existing.web_search.merge_secret_update(&config.web_search);
+        validate_tools_config(&config)?;
         let content = serde_json::to_string_pretty(&config)
             .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
         crate::fsutil::write_atomic(&self.tool_defaults_file, content).await?;
@@ -453,6 +455,58 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
             ));
         }
     }
+    if config.web_search.max_results == 0
+        || config.web_search.max_results > crate::domain::tools::MAX_WEB_SEARCH_RESULTS
+    {
+        return Err(crate::error::AppError::BadRequest(format!(
+            "web_search max_results must be between 1 and {}",
+            crate::domain::tools::MAX_WEB_SEARCH_RESULTS
+        )));
+    }
+    if config.web_search.timeout_ms == 0
+        || config.web_search.timeout_ms > crate::domain::tools::MAX_WEB_SEARCH_TIMEOUT_MS
+    {
+        return Err(crate::error::AppError::BadRequest(format!(
+            "web_search timeout_ms must be between 1 and {}",
+            crate::domain::tools::MAX_WEB_SEARCH_TIMEOUT_MS
+        )));
+    }
+    if config.web_search.sources.len() > crate::domain::tools::MAX_WEB_SEARCH_SOURCES {
+        return Err(crate::error::AppError::BadRequest(format!(
+            "at most {} web_search sources may be configured",
+            crate::domain::tools::MAX_WEB_SEARCH_SOURCES
+        )));
+    }
+    let mut source_ids = std::collections::HashSet::new();
+    for source in &config.web_search.sources {
+        let id = source.id.trim();
+        if id.is_empty() {
+            return Err(crate::error::AppError::BadRequest(
+                "web_search source id must not be empty".to_string(),
+            ));
+        }
+        if !source_ids.insert(id.to_string()) {
+            return Err(crate::error::AppError::BadRequest(format!(
+                "duplicate web_search source id '{id}'"
+            )));
+        }
+        if source.api_keys.len() > crate::domain::tools::MAX_WEB_SEARCH_KEYS_PER_SOURCE {
+            return Err(crate::error::AppError::BadRequest(format!(
+                "web_search source '{id}' has too many API keys (max {})",
+                crate::domain::tools::MAX_WEB_SEARCH_KEYS_PER_SOURCE
+            )));
+        }
+        if let Some(base_url) = source.base_url.as_deref() {
+            let base_url = base_url.trim();
+            if !base_url.is_empty()
+                && !(base_url.starts_with("https://") || base_url.starts_with("http://"))
+            {
+                return Err(crate::error::AppError::BadRequest(format!(
+                    "web_search source '{id}' base_url must start with http:// or https://"
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -468,3 +522,5 @@ fn validate_tools_overrides(
     }
     validate_tools_config(&overrides.apply_to(defaults))
 }
+
+

@@ -103,6 +103,7 @@ WeiAgent/
 │   ├── tools/
 │   │   ├── registry.rs       # ToolRegistry、AgentTool、内置工具注册
 │   │   ├── terminal.rs       # Codex 终端执行、会话、输出和后台进程管理
+│   │   └── web_search/       # 网络搜索：调度、Key 池、Tavily/Exa 适配
 │   │   ├── codex_app_server.rs # Codex app-server JSON-RPC 连接
 │   │   ├── runtime.rs        # Codex CLI 发现、下载、校验和隔离环境
 │   │   ├── approval.rs       # 审批管理和自动 TTL 过期
@@ -406,3 +407,67 @@ User Message
 - 后端单元与端到端测试覆盖权限模式、人工审批、授权记忆、真实 OS 沙箱边界、后台进程和工具预算
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `npm run build`
+
+
+## 第四阶段：网络搜索工具
+
+网络搜索是第二个内置工具组，模型侧只暴露 `web_search`。密钥仅保存在全局 `data/tool_defaults.json`；Agent 只能覆盖启用状态和 `max_results`。
+
+### 配置结构
+
+全局默认（`tool_defaults.json`）：
+
+```json
+{
+  "max_llm_iterations": 99,
+  "terminal": { "...": "..." },
+  "web_search": {
+    "enabled": false,
+    "max_results": 5,
+    "timeout_ms": 15000,
+    "key_selection": "sequential",
+    "sources": [
+      { "id": "tavily", "provider": "tavily", "enabled": true, "api_keys": [] },
+      { "id": "exa", "provider": "exa", "enabled": true, "api_keys": [] }
+    ]
+  }
+}
+```
+
+- `key_selection`: `sequential` | `round_robin` | `random`（仅作用于同一源内的多 Key）
+- 源数组顺序 = 跨源失败降级优先级
+- v1 内置 provider：`tavily`、`exa`；可选 `base_url` 覆盖默认端点
+- 读 API 返回脱敏 Key（`****` + 后 4 位）；写更新：`["__preserve__"]` 保留、`[]` 清空、明文列表替换
+
+Agent `tools.json` 覆盖仅允许：
+
+```json
+{
+  "version": 1,
+  "web_search": {
+    "enabled": true,
+    "max_results": 8
+  }
+}
+```
+
+### 工具面
+
+- 工具名：`web_search`
+- 参数：`query`（必填，1–500 字符）、`max_results`（可选，1–20）
+- 启用条件：`web_search.enabled == true` 且至少一个 enabled 源有非空 API Key
+- 执行结果：`ToolResult::Completed`，`runtime=builtin_web_search`，`stdout` 为统一 JSON：
+  - `provider`、`source_id`、`query`、`results[{title,url,snippet,score?}]`、`result_count`
+- 失败旋转：同源内按策略换 Key；`401/403/429`/网络错误可旋转；同源耗尽后切下一源；全部失败返回 `ToolResult::Error`
+- 无审批、无沙箱、无进程管理（与终端工具不同）
+
+### 前端
+
+- 全局工具页新增「网络搜索」配置：开关、max_results、timeout、key_selection、源排序、多 Key 编辑
+- Agent 工具区：仅开关与 max_results 覆盖；密钥提示去全局配置
+
+### 验证
+
+- 配置反序列化兼容旧 `tool_defaults`（缺 `web_search` 时默认关闭）
+- Key 选择策略、无 Key 不注册、脱敏读写
+- Provider JSON 映射与错误路径单测

@@ -235,6 +235,25 @@ export function deleteLlmLog(logId: string): Promise<void> {
 }
 
 
+export type WebSearchProviderKind = 'tavily' | 'exa';
+export type WebSearchKeySelection = 'sequential' | 'round_robin' | 'random';
+
+export type WebSearchSourceConfig = {
+  id: string;
+  provider: WebSearchProviderKind;
+  enabled: boolean;
+  base_url?: string | null;
+  api_keys: string[];
+};
+
+export type WebSearchToolConfig = {
+  enabled: boolean;
+  max_results: number;
+  timeout_ms: number;
+  key_selection: WebSearchKeySelection;
+  sources: WebSearchSourceConfig[];
+};
+
 export type AgentToolsConfig = {
   max_llm_iterations: number;
   terminal: {
@@ -250,6 +269,7 @@ export type AgentToolsConfig = {
     default_timeout_ms: number;
     allowed_cwd_roots: string[];
   };
+  web_search: WebSearchToolConfig;
 };
 
 export type AgentToolsOverrides = {
@@ -261,6 +281,10 @@ export type AgentToolsOverrides = {
     approval_grants: AgentToolsConfig['terminal']['approval_grants'];
     default_timeout_ms?: number;
     allowed_cwd_roots?: string[];
+  };
+  web_search: {
+    enabled?: boolean;
+    max_results?: number;
   };
 };
 
@@ -321,7 +345,23 @@ export type ToolProcessInfo = {
   output_cursor: number;
 };
 export function readToolDefaults(): Promise<AgentToolsConfig> {
-  return request<AgentToolsConfig>('/api/tools/defaults');
+  return request<AgentToolsConfig>('/api/tools/defaults').then(normalizeToolDefaults);
+}
+
+function normalizeToolDefaults(config: AgentToolsConfig): AgentToolsConfig {
+  return {
+    ...config,
+    web_search: {
+      enabled: config.web_search?.enabled ?? false,
+      max_results: config.web_search?.max_results ?? 5,
+      timeout_ms: config.web_search?.timeout_ms ?? 15000,
+      key_selection: config.web_search?.key_selection ?? 'sequential',
+      sources: (config.web_search?.sources ?? []).map((source) => ({
+        ...source,
+        api_keys: source.api_keys ?? [],
+      })),
+    },
+  };
 }
 
 export function updateToolDefaults(config: AgentToolsConfig): Promise<AgentToolsConfig> {
@@ -349,11 +389,34 @@ export function updateAgentToolsConfig(
 function normalizeAgentToolsSettings(settings: AgentToolsSettings): AgentToolsSettings {
   return {
     ...settings,
+    defaults: {
+      ...settings.defaults,
+      web_search: {
+        enabled: settings.defaults.web_search?.enabled ?? false,
+        max_results: settings.defaults.web_search?.max_results ?? 5,
+        timeout_ms: settings.defaults.web_search?.timeout_ms ?? 15000,
+        key_selection: settings.defaults.web_search?.key_selection ?? 'sequential',
+        sources: settings.defaults.web_search?.sources ?? [],
+      },
+    },
     overrides: {
       ...settings.overrides,
       terminal: {
         ...settings.overrides.terminal,
         approval_grants: settings.overrides.terminal.approval_grants ?? [],
+      },
+      web_search: {
+        ...settings.overrides.web_search,
+      },
+    },
+    effective: {
+      ...settings.effective,
+      web_search: {
+        enabled: settings.effective.web_search?.enabled ?? false,
+        max_results: settings.effective.web_search?.max_results ?? 5,
+        timeout_ms: settings.effective.web_search?.timeout_ms ?? 15000,
+        key_selection: settings.effective.web_search?.key_selection ?? 'sequential',
+        sources: settings.effective.web_search?.sources ?? [],
       },
     },
   };
