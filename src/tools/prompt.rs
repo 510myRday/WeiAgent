@@ -1,4 +1,9 @@
+use chrono::Local;
 use std::path::Path;
+
+pub fn today_date() -> String {
+    Local::now().format("%Y-%m-%d").to_string()
+}
 
 /// Stable runtime facts for the system prompt prefix.
 /// Intentionally excludes timestamps and other per-message values so prompt
@@ -46,7 +51,6 @@ fn resolve_data_dir_for_prompt(data_dir: &Path) -> String {
         }
     });
     let value = absolute.display().to_string();
-    // Drop Windows extended-length prefixes so the model sees normal paths.
     if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
     } else if let Some(rest) = value.strip_prefix(r"\\?\") {
@@ -59,6 +63,18 @@ fn resolve_data_dir_for_prompt(data_dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn today_date_format() {
+        let date = today_date();
+        assert_eq!(date.len(), 10);
+        assert!(date.contains("-"));
+        let parts: Vec<&str> = date.split('-').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].len(), 4);
+        assert_eq!(parts[1].len(), 2);
+        assert_eq!(parts[2].len(), 2);
+    }
 
     #[test]
     fn environment_prefix_omits_timestamps_and_is_stable_for_same_config() {

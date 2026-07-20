@@ -50,15 +50,16 @@ impl JsonStore {
 - ID: {}",
             agent.name, agent.id
         );
+        let runtime_date = format!("## Runtime\n- Date: {}", crate::tools::prompt::today_date());
         let agent_sections = join_prompt_sections([
             ("Personality", workspace.personality.as_str()),
             ("Memory", workspace.memory.as_str()),
             ("Instructions", workspace.instructions.as_str()),
         ]);
         if agent_sections.is_empty() {
-            Ok(format!("{environment}\n\n{agent_identity}"))
+            Ok(format!("{environment}\n\n{agent_identity}\n\n{runtime_date}"))
         } else {
-            Ok(format!("{environment}\n\n{agent_identity}\n\n{agent_sections}"))
+            Ok(format!("{environment}\n\n{agent_identity}\n\n{runtime_date}\n\n{agent_sections}"))
         }
     }
 

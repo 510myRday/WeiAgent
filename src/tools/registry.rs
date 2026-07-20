@@ -585,7 +585,7 @@ struct MultiEditFileTool;
 #[async_trait]
 impl AgentTool for MultiEditFileTool {
     fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
-        let description = "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection for source, config, and documentation changes. Every operation is validated by the server; failure leaves files unchanged. File operations may require approval. Exact edits compare LF-normalized text; use replace_all or startLine only when needed.";
+        let description = "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated by the server; failure leaves files unchanged. In-workspace edits may require approval under request_approval. Paths outside the configured workspace roots must set sandbox_permissions=require_escalated with a short justification so the user can approve; do not bypass multi_edit_file via shell when an outside-root edit is needed. Exact edits compare LF-normalized text; use replace_all or startLine only when needed.";
         tool_definition(
             MULTI_EDIT_TOOL_NAME,
             &description,
@@ -661,7 +661,17 @@ impl AgentTool for MultiEditFileTool {
                     },
                     "cwd": {
                         "type": "string",
-                        "description": "Existing working directory for relative paths. Omit to use the default workspace."
+                        "description": "Existing working directory for relative paths. Omit to use the default workspace. If target files are outside the configured workspace roots, set sandbox_permissions=require_escalated and provide justification so the user can approve access."
+                    },
+                    "sandbox_permissions": {
+                        "type": "string",
+                        "enum": ["use_default", "require_escalated"],
+                        "description": "Write privilege request. use_default only allows paths under configured workspace roots. For any path outside those roots, use require_escalated and provide a justification; the server may request approval. Prefer this over rewriting files through execute_terminal."
+                    },
+                    "justification": {
+                        "type": "string",
+                        "maxLength": 2000,
+                        "description": "Short reason for elevated write access. Include it when sandbox_permissions is require_escalated. Max 2000 bytes. Skip it for use_default."
                     }
                 },
                 "required": ["operations"]
@@ -686,6 +696,23 @@ impl AgentTool for MultiEditFileTool {
             Ok(cwd) => cwd,
             Err(message) => return ToolResult::Error { message },
         };
+        if context.tools_config.terminal.permission_mode
+            == crate::domain::TerminalPermissionMode::RequestApproval
+            && args.sandbox_permissions == SandboxPermissions::RequireEscalated
+        {
+            let justification = args
+                .justification
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            if justification.is_none() || justification.is_some_and(|value| value.len() > 2000) {
+                return ToolResult::Error {
+                    message: "justification is required for require_escalated and must be at most 2000 bytes"
+                        .to_string(),
+                };
+            }
+        }
+        let justification = args.justification.clone();
         let args = MultiEditFileArgs {
             cwd: cwd.clone(),
             ..args
@@ -737,7 +764,10 @@ impl AgentTool for MultiEditFileTool {
             cwd: approval_cwd.clone(),
             runtime: "builtin_multi_edit".to_string(),
             permission: "file_write".to_string(),
-            justification: Some("Apply multi_edit_file changes".to_string()),
+            justification: justification
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| Some("Apply multi_edit_file changes".to_string())),
             background: false,
         });
         let _approval_guard = ApprovalRegistrationGuard {
@@ -753,7 +783,10 @@ impl AgentTool for MultiEditFileTool {
                 cwd: approval_cwd.clone(),
                 runtime: "builtin_multi_edit".to_string(),
                 permission: "file_write".to_string(),
-                justification: Some("Apply multi_edit_file changes".to_string()),
+                justification: justification
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .or_else(|| Some("Apply multi_edit_file changes".to_string())),
                 background: false,
             })
             .await
@@ -907,7 +940,7 @@ fn build_execute_terminal_description() -> String {
     let examples = shell.command_examples();
 
     format!(
-        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. Selected shell: {}. {host_guidance} {examples} The server enforces its current execution policy; request elevated access with sandbox_permissions=require_escalated and a justification when needed. Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again.",
+        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. Prefer multi_edit_file for source/config edits (including outside-root paths via sandbox_permissions=require_escalated + justification) instead of rewriting files through shell. Selected shell: {}. {host_guidance} {examples} The server enforces its current execution policy; request elevated access with sandbox_permissions=require_escalated and a justification when needed. Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again.",
         shell.display_name()
     )
 }
@@ -1128,6 +1161,18 @@ mod tests {
             .iter()
             .find(|definition| definition.function.name == "multi_edit_file")
             .expect("multi_edit_file should be registered");
+        let parameters = &multi.function.parameters;
+        assert_eq!(
+            parameters["properties"]["sandbox_permissions"]["enum"],
+            serde_json::json!(["use_default", "require_escalated"])
+        );
+        assert!(parameters["properties"]["justification"].is_object());
+        assert!(
+            multi
+                .function
+                .description
+                .contains("sandbox_permissions=require_escalated")
+        );
         assert!(multi.function.description.contains("may require approval"));
         assert_eq!(
             multi.function.parameters["properties"]["operations"]["type"],

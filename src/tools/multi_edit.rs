@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::{
     domain::{TerminalPermissionMode, TerminalToolConfig, ToolResult},
     fsutil,
+    tools::terminal::SandboxPermissions,
 };
 
 pub const MULTI_EDIT_TOOL_NAME: &str = "multi_edit_file";
@@ -35,6 +36,10 @@ pub struct MultiEditFileArgs {
     pub operations: Vec<MultiEditFileOperation>,
     #[serde(default)]
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub sandbox_permissions: SandboxPermissions,
+    #[serde(default)]
+    pub justification: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -174,11 +179,14 @@ pub async fn execute_multi_edit(
     }
 
     let full_access = config.permission_mode == TerminalPermissionMode::FullAccess;
+    let escalation_requested =
+        request.args.sandbox_permissions == SandboxPermissions::RequireEscalated;
+    let allow_outside_workspace = full_access || escalation_requested;
     let workspace = match resolve_edit_workspace(
         request.args.cwd.as_deref(),
         config,
         default_workspace,
-        full_access,
+        allow_outside_workspace,
     ) {
         Ok(workspace) => workspace,
         Err(message) => return ToolResult::Blocked { reason: message },
@@ -189,7 +197,7 @@ pub async fn execute_multi_edit(
         Err(message) => return ToolResult::Error { message },
     };
 
-    if let Err(reason) = enforce_path_policy(&affected, &workspace.roots, full_access) {
+    if let Err(reason) = enforce_path_policy(&affected, &workspace.roots, allow_outside_workspace) {
         return ToolResult::Blocked { reason };
     }
 
@@ -327,7 +335,7 @@ fn resolve_edit_workspace(
         .cloned();
     if matching_root.is_none() && !allow_outside {
         return Err(format!(
-            "Working directory '{}' is outside the configured workspace roots",
+            "Working directory '{}' is outside the configured workspace roots. Retry multi_edit_file with sandbox_permissions='require_escalated' and a short justification so the user can approve access.",
             canonical_cwd.display()
         ));
     }
@@ -361,7 +369,7 @@ fn enforce_path_policy(
             .any(|root| fsutil::path_is_within(&candidate, root))
         {
             return Err(format!(
-                "Path '{}' is outside the configured workspace roots",
+                "Path '{}' is outside the configured workspace roots. Retry multi_edit_file with sandbox_permissions='require_escalated' and a short justification so the user can approve access.",
                 path.display()
             ));
         }
@@ -1061,6 +1069,8 @@ mod tests {
                         overwrite: false,
                     }],
                     cwd: None,
+                    sandbox_permissions: SandboxPermissions::UseDefault,
+                    justification: None,
                 },
                 approved: true,
             },
@@ -1102,6 +1112,8 @@ mod tests {
                         },
                     ],
                     cwd: Some(dir.path().display().to_string()),
+                    sandbox_permissions: SandboxPermissions::UseDefault,
+                    justification: None,
                 },
                 approved: true,
             },
@@ -1137,6 +1149,8 @@ mod tests {
                     files: Vec::new(),
                     operations: Vec::new(),
                     cwd: Some(dir.path().display().to_string()),
+                    sandbox_permissions: SandboxPermissions::UseDefault,
+                    justification: None,
                 },
                 approved: false,
             },
@@ -1181,6 +1195,8 @@ mod tests {
                     files: Vec::new(),
                     operations: Vec::new(),
                     cwd: Some(dir.path().display().to_string()),
+                    sandbox_permissions: SandboxPermissions::UseDefault,
+                    justification: None,
                 },
                 approved: false,
             },
@@ -1194,6 +1210,117 @@ mod tests {
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "world"
         );
+    }
+
+    #[tokio::test]
+    async fn outside_workspace_path_blocked_without_escalation() {
+        let (workspace, mut config) = temp_workspace();
+        config.permission_mode = TerminalPermissionMode::RequestApproval;
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("outside.txt");
+        std::fs::write(&target, "hello").unwrap();
+
+        let result = execute_multi_edit(
+            &MultiEditRequest {
+                args: MultiEditFileArgs {
+                    path: Some(target.display().to_string()),
+                    edits: vec![MultiEditFileEdit {
+                        old_string: "hello".to_string(),
+                        new_string: "world".to_string(),
+                        replace_all: false,
+                        start_line: None,
+                    }],
+                    files: Vec::new(),
+                    operations: Vec::new(),
+                    cwd: Some(workspace.path().display().to_string()),
+                    sandbox_permissions: SandboxPermissions::UseDefault,
+                    justification: None,
+                },
+                approved: false,
+            },
+            &config,
+            workspace.path(),
+        )
+        .await;
+
+        match result {
+            ToolResult::Blocked { reason } => {
+                assert!(reason.contains("outside the configured workspace roots"));
+                assert!(reason.contains("require_escalated"));
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
+    }
+
+    #[tokio::test]
+    async fn outside_workspace_path_requests_approval_when_escalated() {
+        let (workspace, mut config) = temp_workspace();
+        config.permission_mode = TerminalPermissionMode::RequestApproval;
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("outside.txt");
+        std::fs::write(&target, "hello").unwrap();
+
+        let result = execute_multi_edit(
+            &MultiEditRequest {
+                args: MultiEditFileArgs {
+                    path: Some(target.display().to_string()),
+                    edits: vec![MultiEditFileEdit {
+                        old_string: "hello".to_string(),
+                        new_string: "world".to_string(),
+                        replace_all: false,
+                        start_line: None,
+                    }],
+                    files: Vec::new(),
+                    operations: Vec::new(),
+                    cwd: Some(workspace.path().display().to_string()),
+                    sandbox_permissions: SandboxPermissions::RequireEscalated,
+                    justification: Some("edit project root outside data workspace".to_string()),
+                },
+                approved: false,
+            },
+            &config,
+            workspace.path(),
+        )
+        .await;
+
+        assert!(matches!(result, ToolResult::PendingApproval { .. }));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
+    }
+
+    #[tokio::test]
+    async fn outside_workspace_path_writes_after_approved_escalation() {
+        let (workspace, mut config) = temp_workspace();
+        config.permission_mode = TerminalPermissionMode::RequestApproval;
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("outside.txt");
+        std::fs::write(&target, "hello").unwrap();
+
+        let result = execute_multi_edit(
+            &MultiEditRequest {
+                args: MultiEditFileArgs {
+                    path: Some(target.display().to_string()),
+                    edits: vec![MultiEditFileEdit {
+                        old_string: "hello".to_string(),
+                        new_string: "world".to_string(),
+                        replace_all: false,
+                        start_line: None,
+                    }],
+                    files: Vec::new(),
+                    operations: Vec::new(),
+                    cwd: Some(workspace.path().display().to_string()),
+                    sandbox_permissions: SandboxPermissions::RequireEscalated,
+                    justification: Some("edit project root outside data workspace".to_string()),
+                },
+                approved: true,
+            },
+            &config,
+            workspace.path(),
+        )
+        .await;
+
+        assert!(matches!(result, ToolResult::Completed { .. }));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "world");
     }
 
     #[test]

@@ -531,6 +531,13 @@ impl CodexRuntimeManager {
         {
             paths.push(path);
         }
+        // Always surface managed Codex tool dirs (rg, etc.), even when the active
+        // executable is an environment/system wrapper without a sibling codex-path.
+        for path in self.managed_codex_tool_paths().await {
+            if !paths.iter().any(|current| current == &path) {
+                paths.push(path);
+            }
+        }
         for path in supporting_runtime::managed_bin_paths(&self.runtimes_root).await {
             if !paths.iter().any(|current| current == &path) {
                 paths.push(path);
@@ -546,6 +553,19 @@ impl CodexRuntimeManager {
         (!paths.is_empty())
             .then(|| std::env::join_paths(paths).ok())
             .flatten()
+    }
+
+    async fn managed_codex_tool_paths(&self) -> Vec<PathBuf> {
+        let mut tools = Vec::new();
+        for candidate in self.managed_candidates().await {
+            let Some(path) = bundled_codex_tool_path(&candidate.program) else {
+                continue;
+            };
+            if !tools.iter().any(|current| current == &path) {
+                tools.push(path);
+            }
+        }
+        tools
     }
 
     async fn install_inner(&self, package_suffix: &str, target_version: &str) -> AppResult<()> {
@@ -1125,9 +1145,75 @@ fn find_runtime_executable(root: &Path) -> Option<PathBuf> {
 }
 
 fn bundled_codex_tool_path(program: &Path) -> Option<PathBuf> {
-    let tool_dir = program.parent()?.parent()?.join("codex-path");
-    let rg = tool_dir.join(if cfg!(windows) { "rg.exe" } else { "rg" });
-    rg.is_file().then_some(tool_dir)
+    // Native layout: vendor/<target>/bin/codex(.exe) with sibling codex-path/rg(.exe).
+    if let Some(tool_dir) = program
+        .parent()
+        .and_then(|bin| bin.parent())
+        .map(|target| target.join("codex-path"))
+    {
+        let rg = tool_dir.join(if cfg!(windows) { "rg.exe" } else { "rg" });
+        if rg.is_file() {
+            return Some(tool_dir);
+        }
+    }
+    // Fallback: walk ancestors looking for a nearby vendor/*/codex-path/rg layout.
+    // Covers npm wrappers and partial path resolutions that do not land on bin/codex.
+    let mut current = program.parent();
+    while let Some(dir) = current {
+        if let Some(tool_dir) = find_codex_path_under(dir) {
+            return Some(tool_dir);
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn find_codex_path_under(root: &Path) -> Option<PathBuf> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited = 0_usize;
+    while let Some(directory) = stack.pop() {
+        visited += 1;
+        if visited > 256 {
+            break;
+        }
+        let tool_dir = directory.join("codex-path");
+        let rg = tool_dir.join(if cfg!(windows) { "rg.exe" } else { "rg" });
+        if rg.is_file() {
+            return Some(tool_dir);
+        }
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            // Keep the walk focused on Codex package layouts.
+            if matches!(
+                name,
+                "vendor"
+                    | "bin"
+                    | "codex-path"
+                    | "x86_64-pc-windows-msvc"
+                    | "aarch64-pc-windows-msvc"
+                    | "x86_64-unknown-linux-musl"
+                    | "aarch64-unknown-linux-musl"
+                    | "x86_64-apple-darwin"
+                    | "aarch64-apple-darwin"
+                    | "node_modules"
+                    | "@openai"
+            ) || name.starts_with("codex-")
+            {
+                stack.push(path);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(windows)]
@@ -1397,6 +1483,74 @@ mod tests {
         let first = std::env::split_paths(&path).next().unwrap();
 
         assert_eq!(first, node_bin);
+    }
+
+    #[tokio::test]
+    async fn managed_codex_tool_path_is_injected_even_without_active_executable() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CodexRuntimeManager::with_system_discovery(temp.path(), false).unwrap();
+
+        let package_suffix = platform_package_suffix().expect("supported platform");
+        let version = "0.144.5";
+        let version_dir = temp
+            .path()
+            .join("runtimes")
+            .join("codex")
+            .join(version)
+            .join(package_suffix);
+        let target_triple = if cfg!(windows) {
+            "x86_64-pc-windows-msvc"
+        } else if cfg!(target_os = "macos") {
+            if cfg!(target_arch = "aarch64") {
+                "aarch64-apple-darwin"
+            } else {
+                "x86_64-apple-darwin"
+            }
+        } else if cfg!(target_arch = "aarch64") {
+            "aarch64-unknown-linux-musl"
+        } else {
+            "x86_64-unknown-linux-musl"
+        };
+        let bin = version_dir.join("vendor").join(target_triple).join("bin");
+        let tools = version_dir
+            .join("vendor")
+            .join(target_triple)
+            .join("codex-path");
+        fs::create_dir_all(&bin).await.unwrap();
+        fs::create_dir_all(&tools).await.unwrap();
+        let codex = bin.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let rg = tools.join(if cfg!(windows) { "rg.exe" } else { "rg" });
+        fs::write(&codex, []).await.unwrap();
+        fs::write(&rg, []).await.unwrap();
+
+        let relative_executable = PathBuf::from("vendor")
+            .join(target_triple)
+            .join("bin")
+            .join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let manifest = ManagedRuntimeManifest {
+            package_version: format!("{version}-{package_suffix}"),
+            integrity: "sha512-YWJj".to_string(),
+            executable: relative_executable.to_string_lossy().to_string(),
+            installed_at: chrono::Utc::now(),
+        };
+        fs::write(
+            version_dir.join(RUNTIME_MANIFEST_FILE),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Simulate a session where status.executable is missing/unavailable while
+        // managed Codex (and its bundled rg) is already on disk.
+        assert!(manager.status.read().await.executable.is_none());
+
+        let path = manager.runtime_path().await.unwrap();
+        let entries: Vec<_> = std::env::split_paths(&path).collect();
+        assert!(
+            entries.iter().any(|entry| entry == &tools),
+            "expected managed codex-path in PATH, got {entries:?}"
+        );
+        assert_eq!(entries.first(), Some(&tools));
     }
 
     #[test]
