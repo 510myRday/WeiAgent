@@ -226,11 +226,19 @@ WeiAgent/
 
 运行时 system prompt 由以下几部分按固定顺序拼接后发送给模型：
 
-1. `## Environment`：运行时环境前缀（应用名/版本、OS/架构、Shell、Default workspace）
-2. `## Agent`：一句身份背景 + `Name`/`ID`，标明当前处理本轮对话的智能体
-3. `## Personality` / `## Memory` / `## Instructions`：分别来自工作空间的 `personality.md`、`memory.md`、`instructions.md`
+1. `## Environment`：运行时环境前缀（应用名/版本、OS/架构、Shell、Default workspace）。**不含**时分秒等易变字段，以便跨轮次复用模型侧 prompt cache。
+2. `## Agent`：一句身份背景 + `Name`/`ID`，标明当前处理本轮对话的智能体。
+3. `## Runtime`：日历日期一行（`Date: YYYY-MM-DD`，本地时区）。有意只放**日期**不放时刻：模型需要“今天”的时间感，同时同一天内 system 前缀保持稳定。跨自然日会换前缀，属于预期行为。
+4. `## Personality` / `## Memory` / `## Instructions`：分别来自工作空间的 `personality.md`、`memory.md`、`instructions.md`。
 
-工具执行使用“全局默认 + Agent 覆盖 + Agent 授权”合并后的有效配置，`tools.json` 本身不进入提示词。
+拼接实现见 `storage/workspaces.rs` 的 `build_agent_system_prompt`；Environment 前缀见 `tools/prompt.rs`。
+
+工具与缓存相关约定：
+
+- 工具执行使用“全局默认 + Agent 覆盖 + Agent 授权”合并后的有效配置，`tools.json` 本身不进入提示词。
+- **同一 Agent run 内**：发给模型的 `tools` 定义在 run 开始时冻结，避免中途配置变化打断 prompt cache 前缀；工具**执行**仍按调用热读配置（如权限模式），可在 run 内热更新。
+- 历史里的 `tool_calls` 可为 UI 保留 `permission_mode`，但 OpenAI Chat 等协议回传模型时会剥离该字段。
+- 写入对话历史的 tool result 会对模型侧做精简（去掉 `duration_ms` 等易变字段、截断过长 stdout/stderr、压缩 `web_search` snippet），前端事件仍可使用完整执行结果。
 
 Agent 已不再使用单一的 `system_prompt` 字段，工作空间的三份 Markdown 文档完全取代了它。
 

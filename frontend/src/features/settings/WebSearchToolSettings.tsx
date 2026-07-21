@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowLeft, ArrowUp, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowUp, Plus, RefreshCw, Trash2 } from 'lucide-react';
 
 import type {
   AgentToolsConfig,
@@ -482,198 +482,246 @@ export function WebSearchToolSettings({
           </div>
           <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryAutoSaveNow} />
         </div>
-      ) : (
-        <div className="tool-config-heading">
-          <div className="tool-config-heading__main">
-            <div>
-              <h2>{t('tools.webSearch.defaultsTitle')}</h2>
-              <p>{t('tools.webSearch.defaultsDesc')}</p>
-            </div>
-          </div>
-          <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryAutoSaveNow} />
-        </div>
-      )}
+      ) : null}
 
-      <div className="card">
-        <div className="card-header"><h3>{t('tools.webSearch.basicSettings')}</h3></div>
-        <div className="setting-row">
-          <div className="setting-info">
-            <label>{t('tools.webSearch.enabled')}</label>
-            <p className="setting-desc">{t('tools.webSearch.enabledDesc')}</p>
-          </div>
-          <div className="setting-control">
-            {isAgentScope ? (
-              <label className="inherit-toggle">
-                <input type="checkbox" checked={enabledInherited} onChange={(e) => setEnabledInherited(e.target.checked)} />
-                <span>{t('tools.webSearch.inheritDefault')}</span>
-              </label>
+      <div className="terminal-settings-form">
+        <section className="settings-card basic-settings-card">
+          <div className="card-header">
+            <h3>{t('tools.webSearch.basicSettings')}</h3>
+            {!isAgentScope ? (
+              <span className="terminal-settings-save-status">
+                <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryAutoSaveNow} />
+              </span>
             ) : null}
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                aria-label={t('tools.webSearch.enabled')}
-                checked={webSearch.enabled}
-                disabled={isAgentScope && enabledInherited}
-                onChange={(e) => updateWebSearch({ enabled: e.target.checked })}
-              />
-              <span className="toggle-slider" />
-            </label>
           </div>
-        </div>
-
-        <div className="setting-row">
-          <div className="setting-info">
-            <label>{t('tools.webSearch.maxResults')}</label>
-            <p className="setting-desc">{t('tools.webSearch.maxResultsDesc')}</p>
-          </div>
-          <div className="setting-control">
-            {isAgentScope ? (
-              <label className="inherit-toggle">
-                <input type="checkbox" checked={maxResultsInherited} onChange={(e) => setMaxResultsInherited(e.target.checked)} />
-                <span>{t('tools.webSearch.inheritDefault')}</span>
-              </label>
-            ) : null}
-            <input
-              type="number"
-              min={1}
-              max={MAX_RESULTS}
-              value={webSearch.max_results}
-              disabled={isAgentScope && maxResultsInherited}
-              onChange={(e) => {
-                const value = Number(e.target.value);
-                if (!Number.isFinite(value)) return;
-                updateWebSearch({ max_results: Math.min(MAX_RESULTS, Math.max(1, Math.round(value))) });
-              }}
-            />
-          </div>
-        </div>
-
-        {!isAgentScope ? (
-          <>
+          <div className="card-body">
             <div className="setting-row">
               <div className="setting-info">
-                <label>{t('tools.webSearch.timeout')}</label>
-                <p className="setting-desc">{t('tools.webSearch.timeoutDesc')}</p>
+                <label>{t('tools.webSearch.enabled')}</label>
+                <p className="setting-desc">{t('tools.webSearch.enabledDesc')}</p>
               </div>
-              <div className="setting-control">
+              {isAgentScope ? (
+                <InheritanceControl
+                  inherited={Boolean(enabledInherited)}
+                  onChange={setEnabledInherited}
+                  t={t}
+                />
+              ) : null}
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  aria-label={t('tools.webSearch.enabled')}
+                  checked={webSearch.enabled}
+                  disabled={Boolean(isAgentScope && enabledInherited)}
+                  onChange={(e) => updateWebSearch({ enabled: e.target.checked })}
+                />
+                <span className="toggle-slider" />
+              </label>
+            </div>
+
+            <div className="setting-row">
+              <div className="setting-info">
+                <label>{t('tools.webSearch.maxResults')}</label>
+                <p className="setting-desc">{t('tools.webSearch.maxResultsDesc')}</p>
+              </div>
+              {isAgentScope ? (
+                <InheritanceControl
+                  inherited={Boolean(maxResultsInherited)}
+                  onChange={setMaxResultsInherited}
+                  t={t}
+                />
+              ) : null}
+              <div className="timeout-input">
                 <input
                   type="number"
-                  min={1000}
-                  max={60000}
-                  step={1000}
-                  value={webSearch.timeout_ms}
+                  min={1}
+                  max={MAX_RESULTS}
+                  disabled={Boolean(isAgentScope && maxResultsInherited)}
+                  value={Math.min(MAX_RESULTS, Math.max(1, webSearch.max_results || 1))}
                   onChange={(e) => {
                     const value = Number(e.target.value);
                     if (!Number.isFinite(value)) return;
-                    updateWebSearch({ timeout_ms: Math.min(60000, Math.max(1000, Math.round(value))) });
+                    updateWebSearch({ max_results: Math.min(MAX_RESULTS, Math.max(1, Math.round(value))) });
                   }}
                 />
               </div>
             </div>
 
-            <div className="setting-row">
-              <div className="setting-info">
-                <label>{t('tools.webSearch.keySelection')}</label>
-                <p className="setting-desc">{t('tools.webSearch.keySelectionDesc')}</p>
-              </div>
-              <div className="setting-control">
-                <select
-                  value={webSearch.key_selection}
-                  onChange={(e) => updateWebSearch({ key_selection: e.target.value as WebSearchKeySelection })}
-                >
-                  <option value="sequential">{t('tools.webSearch.keySelectionSequential')}</option>
-                  <option value="round_robin">{t('tools.webSearch.keySelectionRoundRobin')}</option>
-                  <option value="random">{t('tools.webSearch.keySelectionRandom')}</option>
-                </select>
-              </div>
-            </div>
-          </>
-        ) : null}
-      </div>
-
-      {!isAgentScope ? (
-        <div className="card">
-          <div className="card-header">
-            <h3>{t('tools.webSearch.sourcesTitle')}</h3>
-            <p className="card-description">{t('tools.webSearch.sourcesDesc')}</p>
-          </div>
-          <div className="agent-tool-list">
-            {webSearch.sources.map((source, index) => (
-              <div key={source.id} className="agent-tool-row web-search-source-row">
-                <div className="agent-tool-row__body">
-                  <div className="agent-tool-row__title">
-                    <strong>{providerLabel(source.provider, t)}</strong>
-                    <span className="mini-status-badge">
-                      <ShieldCheck size={12} />
-                      {source.id}
-                    </span>
+            {!isAgentScope ? (
+              <>
+                <div className="setting-row">
+                  <div className="setting-info">
+                    <label>{t('tools.webSearch.timeout')}</label>
+                    <p className="setting-desc">{t('tools.webSearch.timeoutDesc')}</p>
                   </div>
-                  <small>{t('tools.webSearch.sourcePriority', { index: String(index + 1) })}</small>
-                  <div className="web-search-keys">
-                    {(source.api_keys.length === 0) ? (
-                      <p className="muted">{t('tools.webSearch.noKeys')}</p>
-                    ) : (
-                      <ul className="web-search-key-list">
-                        {source.api_keys.map((key, keyIndex) => (
-                          <li key={`${source.id}-${keyIndex}`}>
-                            <code>{key}</code>
-                            <IconButton
-                              type="button"
-                              variant="ghost"
-                              label={t('tools.webSearch.removeKey')}
-                              onClick={() => removeKey(source.id, keyIndex)}
-                            >
-                              <Trash2 size={15} />
-                            </IconButton>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <div className="web-search-key-add">
-                      <input
-                        type="password"
-                        value={draftKeys[source.id] ?? ''}
-                        placeholder={t('tools.webSearch.keyPlaceholder')}
-                        onChange={(e) => setDraftKeys((current) => ({ ...current, [source.id]: e.target.value }))}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            addKey(source.id);
-                          }
-                        }}
-                      />
-                      <Button type="button" variant="secondary" icon={<Plus size={15} />} onClick={() => addKey(source.id)}>
-                        {t('tools.webSearch.addKey')}
-                      </Button>
-                      <Button type="button" variant="ghost" onClick={() => clearKeys(source.id)}>
-                        {t('tools.webSearch.clearKeys')}
-                      </Button>
+                  <div className="timeout-input">
+                    <input
+                      type="number"
+                      min={1000}
+                      max={60000}
+                      step={1000}
+                      value={webSearch.timeout_ms}
+                      onChange={(e) => {
+                        const value = Number(e.target.value);
+                        if (!Number.isFinite(value)) return;
+                        updateWebSearch({ timeout_ms: Math.min(60000, Math.max(1000, Math.round(value))) });
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="setting-row">
+                  <div className="setting-info">
+                    <label>{t('tools.webSearch.keySelection')}</label>
+                    <p className="setting-desc">{t('tools.webSearch.keySelectionDesc')}</p>
+                  </div>
+                  <select
+                    className="web-search-select"
+                    value={webSearch.key_selection}
+                    onChange={(e) => updateWebSearch({ key_selection: e.target.value as WebSearchKeySelection })}
+                  >
+                    <option value="sequential">{t('tools.webSearch.keySelectionSequential')}</option>
+                    <option value="round_robin">{t('tools.webSearch.keySelectionRoundRobin')}</option>
+                    <option value="random">{t('tools.webSearch.keySelectionRandom')}</option>
+                  </select>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </section>
+
+        {!isAgentScope ? (
+          <section className="settings-card web-search-sources-card">
+            <div className="card-header">
+              <div className="settings-section-title">
+                <h3>{t('tools.webSearch.sourcesTitle')}</h3>
+                <p>{t('tools.webSearch.sourcesDesc')}</p>
+              </div>
+              <span className="badge">{webSearch.sources.length}</span>
+            </div>
+            <div className="card-body">
+              <div className="web-search-source-list">
+                {webSearch.sources.map((source, index) => (
+                  <div
+                    key={source.id}
+                    className={`web-search-source ${source.enabled ? 'is-enabled' : 'is-disabled'}`}
+                  >
+                    <div className="web-search-source__header">
+                      <div className="web-search-source__meta">
+                        <strong>{providerLabel(source.provider, t)}</strong>
+                        <small>{t('tools.webSearch.sourcePriority', { index: String(index + 1) })}</small>
+                      </div>
+                      <div className="web-search-source__actions">
+                        <label
+                          className="toggle-switch"
+                          title={source.enabled ? t('tools.enabled') : t('tools.disabled')}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={source.enabled}
+                            onChange={(e) => updateSource(index, { enabled: e.target.checked })}
+                          />
+                          <span className="toggle-slider" />
+                        </label>
+                        <IconButton
+                          type="button"
+                          variant="ghost"
+                          label={t('tools.webSearch.moveUp')}
+                          onClick={() => moveSource(index, -1)}
+                          disabled={index === 0}
+                        >
+                          <ArrowUp size={16} />
+                        </IconButton>
+                        <IconButton
+                          type="button"
+                          variant="ghost"
+                          label={t('tools.webSearch.moveDown')}
+                          onClick={() => moveSource(index, 1)}
+                          disabled={index === webSearch.sources.length - 1}
+                        >
+                          <ArrowDown size={16} />
+                        </IconButton>
+                      </div>
+                    </div>
+
+                    <div className="web-search-keys">
+                      {source.api_keys.length === 0 ? (
+                        <p className="muted">{t('tools.webSearch.noKeys')}</p>
+                      ) : (
+                        <ul className="pattern-tags web-search-key-tags">
+                          {source.api_keys.map((key, keyIndex) => (
+                            <li key={`${source.id}-${keyIndex}`} className="pattern-tag">
+                              <code>{key}</code>
+                              <IconButton
+                                type="button"
+                                variant="ghost"
+                                className="remove-btn"
+                                label={t('tools.webSearch.removeKey')}
+                                onClick={() => removeKey(source.id, keyIndex)}
+                              >
+                                <Trash2 size={14} />
+                              </IconButton>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+
+                      <div className="pattern-input-wrapper web-search-key-add">
+                        <input
+                          type="password"
+                          className="pattern-input"
+                          value={draftKeys[source.id] ?? ''}
+                          placeholder={t('tools.webSearch.keyPlaceholder')}
+                          onChange={(e) => setDraftKeys((current) => ({ ...current, [source.id]: e.target.value }))}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              addKey(source.id);
+                            }
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="add-btn"
+                          icon={<Plus size={16} />}
+                          onClick={() => addKey(source.id)}
+                        >
+                          {t('tools.webSearch.addKey')}
+                        </Button>
+                        {source.api_keys.length > 0 ? (
+                          <Button type="button" variant="ghost" onClick={() => clearKeys(source.id)}>
+                            {t('tools.webSearch.clearKeys')}
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div className="agent-tool-row__actions">
-                  <label className="toggle-switch" title={source.enabled ? t('tools.enabled') : t('tools.disabled')}>
-                    <input
-                      type="checkbox"
-                      checked={source.enabled}
-                      onChange={(e) => updateSource(index, { enabled: e.target.checked })}
-                    />
-                    <span className="toggle-slider" />
-                  </label>
-                  <IconButton type="button" variant="ghost" label={t('tools.webSearch.moveUp')} onClick={() => moveSource(index, -1)} disabled={index === 0}>
-                    <ArrowUp size={16} />
-                  </IconButton>
-                  <IconButton type="button" variant="ghost" label={t('tools.webSearch.moveDown')} onClick={() => moveSource(index, 1)} disabled={index === webSearch.sources.length - 1}>
-                    <ArrowDown size={16} />
-                  </IconButton>
-                </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <p className="muted">{t('tools.webSearch.agentSecretsHint')}</p>
-      )}
+            </div>
+          </section>
+        ) : (
+          <section className="settings-card">
+            <div className="card-body">
+              <p className="card-description">{t('tools.webSearch.agentSecretsHint')}</p>
+            </div>
+          </section>
+        )}
+      </div>
     </div>
+  );
+}
+
+function InheritanceControl({ inherited, onChange, t }: {
+  inherited: boolean;
+  onChange: (inherited: boolean) => void;
+  t: (path: string) => string;
+}) {
+  return (
+    <label className="inherit-control">
+      <input type="checkbox" checked={inherited} onChange={(event) => onChange(event.target.checked)} />
+      <span>{t('tools.webSearch.inheritDefault')}</span>
+    </label>
   );
 }

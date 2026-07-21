@@ -127,6 +127,14 @@ pub async fn run_agent(
             });
         }));
     }
+    // Freeze tool definitions for this run so prompt-cache prefixes stay stable
+    // across tool iterations. Execution still hot-reloads config per tool call.
+    refresh_prepared_tools_config(&state, &mut prepared).await?;
+    let frozen_tools = state
+        .tool_registry
+        .definitions(&prepared.tools_config);
+    let max_llm_iterations = prepared.tools_config.max_llm_iterations();
+
     let runtime = AgentRuntime {
         state: &state,
         client: &client,
@@ -138,15 +146,10 @@ pub async fn run_agent(
 
     let mut iteration = 0_usize;
     loop {
-        refresh_prepared_tools_config(runtime.state, runtime.prepared).await?;
-        let max_llm_iterations = runtime.prepared.tools_config.max_llm_iterations();
         if iteration >= max_llm_iterations {
             break;
         }
-        let tools = runtime
-            .state
-            .tool_registry
-            .definitions(&runtime.prepared.tools_config);
+        let tools = frozen_tools.clone();
         emit(
             &events,
             AgentRunEvent::Phase {
@@ -224,14 +227,12 @@ pub async fn run_agent(
         }
 
         iteration += 1;
-        refresh_prepared_tools_config(runtime.state, runtime.prepared).await?;
         // Final reserved turn after the last tool-capable iteration.
-        if iteration >= runtime.prepared.tools_config.max_llm_iterations() {
+        if iteration >= max_llm_iterations {
             break;
         }
     }
 
-    let max_llm_iterations = runtime.prepared.tools_config.max_llm_iterations();
     let summary = match finalize_after_budget(&runtime, &mut messages, max_llm_iterations).await {
         Ok(summary) => summary,
         Err(error) => {
@@ -489,6 +490,135 @@ async fn refresh_prepared_tools_config(
     }
     prepared.tools_config = tools_config;
     Ok(())
+}
+
+const MAX_TOOL_RESULT_STDOUT_CHARS: usize = 24_000;
+const MAX_TOOL_RESULT_STDERR_CHARS: usize = 4_000;
+const MAX_WEB_SEARCH_SNIPPET_CHARS: usize = 600;
+const MAX_WEB_SEARCH_RESULTS_FOR_LLM: usize = 8;
+
+fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
+    match result {
+        ToolResult::Completed {
+            stdout,
+            stderr,
+            exit_code,
+            runtime,
+            output_cursor,
+            ..
+        } => {
+            let mut map = serde_json::Map::new();
+            map.insert("status".to_string(), Value::String("completed".to_string()));
+            map.insert(
+                "stdout".to_string(),
+                Value::String(compact_tool_stdout(stdout)),
+            );
+            let stderr = trim_chars(stderr, MAX_TOOL_RESULT_STDERR_CHARS);
+            if !stderr.is_empty() {
+                map.insert("stderr".to_string(), Value::String(stderr));
+            }
+            map.insert("exit_code".to_string(), json_i64(*exit_code as i64));
+            if let Some(runtime) = runtime {
+                map.insert("runtime".to_string(), Value::String(runtime.clone()));
+            }
+            if *output_cursor > 0 {
+                map.insert("output_cursor".to_string(), json_u64(*output_cursor));
+            }
+            Value::Object(map)
+        }
+        ToolResult::Running {
+            process_id,
+            message,
+            stdout,
+            stderr,
+            runtime,
+            output_cursor,
+            ..
+        } => {
+            let mut map = serde_json::Map::new();
+            map.insert("status".to_string(), Value::String("running".to_string()));
+            map.insert("process_id".to_string(), Value::String(process_id.clone()));
+            map.insert("message".to_string(), Value::String(message.clone()));
+            let stdout = compact_tool_stdout(stdout);
+            if !stdout.is_empty() {
+                map.insert("stdout".to_string(), Value::String(stdout));
+            }
+            let stderr = trim_chars(stderr, MAX_TOOL_RESULT_STDERR_CHARS);
+            if !stderr.is_empty() {
+                map.insert("stderr".to_string(), Value::String(stderr));
+            }
+            if let Some(runtime) = runtime {
+                map.insert("runtime".to_string(), Value::String(runtime.clone()));
+            }
+            if *output_cursor > 0 {
+                map.insert("output_cursor".to_string(), json_u64(*output_cursor));
+            }
+            Value::Object(map)
+        }
+        other => serde_json::to_value(other).unwrap_or(Value::Null),
+    }
+}
+
+fn compact_tool_stdout(stdout: &str) -> String {
+    if let Ok(mut value) = serde_json::from_str::<Value>(stdout) {
+        if compact_web_search_value(&mut value) {
+            return value.to_string();
+        }
+    }
+    trim_chars(stdout, MAX_TOOL_RESULT_STDOUT_CHARS)
+}
+
+fn compact_web_search_value(value: &mut Value) -> bool {
+    let Some(obj) = value.as_object_mut() else {
+        return false;
+    };
+    let is_search = obj.get("provider").is_some()
+        && obj.get("query").is_some()
+        && obj.get("results").is_some();
+    if !is_search {
+        return false;
+    }
+    if let Some(results) = obj.get_mut("results").and_then(Value::as_array_mut) {
+        if results.len() > MAX_WEB_SEARCH_RESULTS_FOR_LLM {
+            results.truncate(MAX_WEB_SEARCH_RESULTS_FOR_LLM);
+        }
+        for hit in results.iter_mut() {
+            if let Some(hit_obj) = hit.as_object_mut() {
+                hit_obj.remove("score");
+                if let Some(snippet) = hit_obj.get("snippet").and_then(Value::as_str) {
+                    let trimmed = trim_chars(snippet, MAX_WEB_SEARCH_SNIPPET_CHARS);
+                    hit_obj.insert("snippet".to_string(), Value::String(trimmed));
+                }
+            }
+        }
+    }
+    if let Some(results) = obj.get("results").and_then(Value::as_array) {
+        let count = results.len() as u64;
+        obj.insert("result_count".to_string(), json_u64(count));
+    }
+    true
+}
+
+fn trim_chars(input: &str, max_chars: usize) -> String {
+    let count = input.chars().count();
+    if count <= max_chars {
+        return input.to_string();
+    }
+    let keep = max_chars.saturating_sub(32);
+    let mut out: String = input.chars().take(keep).collect();
+    out.push_str(&format!(
+        "\n...[truncated {omitted} chars]",
+        omitted = count - keep
+    ));
+    out
+}
+
+fn json_i64(value: i64) -> Value {
+    Value::Number(value.into())
+}
+
+fn json_u64(value: u64) -> Value {
+    Value::Number(value.into())
 }
 
 fn tool_calls_with_permission_mode(
@@ -953,12 +1083,15 @@ async fn persist_tool_result(
     call_id: &str,
     result: &ToolResult,
 ) -> AppResult<()> {
+    // Persist and re-send a compact tool payload: drop volatile fields like
+    // duration_ms and trim oversized stdout/stderr so prompt-cache tails stay smaller.
+    let content = serde_json::to_string(&sanitize_tool_result_for_llm(result))?;
     let tool_message = ChatMessage {
         id: Uuid::new_v4(),
         agent_id: prepared.agent.id,
         conversation_id: prepared.user_message.conversation_id,
         role: ChatRole::Tool,
-        content: serde_json::to_string(result)?,
+        content,
         reasoning_content: None,
         status: ChatMessageStatus::Done,
         created_at: Utc::now(),
@@ -1087,3 +1220,67 @@ async fn emit(events: &Option<mpsc::Sender<AgentRunEvent>>, event: AgentRunEvent
 }
 
 
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn sanitize_completed_drops_duration_ms() {
+        let result = ToolResult::Completed {
+            stdout: "hello".into(),
+            stderr: String::new(),
+            exit_code: 0,
+            duration_ms: 1234,
+            runtime: Some("builtin_web_search".into()),
+            output_cursor: 0,
+        };
+        let value = sanitize_tool_result_for_llm(&result);
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["stdout"], "hello");
+        assert_eq!(value["exit_code"], 0);
+        assert_eq!(value["runtime"], "builtin_web_search");
+        assert!(value.get("duration_ms").is_none());
+    }
+
+    #[test]
+    fn sanitize_web_search_stdout_trims_snippets_and_scores() {
+        let long = "x".repeat(800);
+        let stdout = json!({
+            "provider": "tavily",
+            "source_id": "tavily",
+            "query": "rust",
+            "result_count": 2,
+            "results": [
+                {"title": "A", "url": "https://a.test", "snippet": long, "score": 0.9},
+                {"title": "B", "url": "https://b.test", "snippet": "short", "score": 0.1}
+            ]
+        })
+        .to_string();
+        let result = ToolResult::Completed {
+            stdout,
+            stderr: String::new(),
+            exit_code: 0,
+            duration_ms: 50,
+            runtime: Some("builtin_web_search".into()),
+            output_cursor: 0,
+        };
+        let value = sanitize_tool_result_for_llm(&result);
+        let compact: serde_json::Value =
+            serde_json::from_str(value["stdout"].as_str().unwrap()).unwrap();
+        assert_eq!(compact["result_count"], 2);
+        assert!(compact["results"][0].get("score").is_none());
+        assert!(compact["results"][0]["snippet"].as_str().unwrap().len() < 800);
+        assert!(compact["results"][0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("truncated"));
+    }
+
+    #[test]
+    fn trim_chars_keeps_short_text() {
+        assert_eq!(trim_chars("abc", 10), "abc");
+    }
+}

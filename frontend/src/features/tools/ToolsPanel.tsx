@@ -72,7 +72,6 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList }: ToolsPanelProps
                 onClick={() => { setActiveTool(def.key); onOpenMain(); }}
               />
             ))}
-            <p className="muted tools-coming-soon">{t('tools.comingSoon')}</p>
           </div>
         </div>
       )}

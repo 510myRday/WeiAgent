@@ -257,7 +257,6 @@
       "grantExpires": "到期：{time}",
       "grantExpired": "已过期"
     },
-    "comingSoon": "更多工具即将推出",
     "selectHint": "从左侧选择一个工具查看或修改配置。",
     "backToAgent": "返回 Agent 配置",
     "webSearch": {

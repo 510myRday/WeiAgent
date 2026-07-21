@@ -547,9 +547,15 @@ mod tests {
         assert!(prompt.contains("当前处理本轮对话的智能体"));
         assert!(prompt.contains(&format!("- Name: {}", stored.name)));
         assert!(prompt.contains(&format!("- ID: {}", stored.id)));
+        assert!(prompt.contains("## Runtime"));
+        assert!(prompt.contains(&format!(
+            "- Date: {}",
+            crate::tools::prompt::today_date()
+        )));
         assert!(prompt.contains("## Personality"));
         assert!(prompt.find("## Environment").unwrap() < prompt.find("## Agent").unwrap());
-        assert!(prompt.find("## Agent").unwrap() < prompt.find("## Personality").unwrap());
+        assert!(prompt.find("## Agent").unwrap() < prompt.find("## Runtime").unwrap());
+        assert!(prompt.find("## Runtime").unwrap() < prompt.find("## Personality").unwrap());
         assert!(prompt.contains("Calm and direct."));
         assert!(prompt.contains("User prefers concise plans."));
         assert!(prompt.contains("Ask only important questions."));

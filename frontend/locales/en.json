@@ -363,7 +363,6 @@
       "grantExpires": "Expires: {time}",
       "grantExpired": "Expired"
     },
-    "comingSoon": "More tools coming soon",
     "selectHint": "Select a tool on the left to view or modify its configuration.",
     "backToAgent": "Back to Agent Config",
     "webSearch": {

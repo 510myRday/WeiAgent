@@ -42,7 +42,7 @@ impl JsonStore {
     pub async fn build_agent_system_prompt(&self, agent: &Agent) -> AppResult<String> {
         let workspace = self.read_agent_workspace(agent.id).await?;
         let environment = crate::tools::prompt::build_environment_prefix(&self.data_dir);
-        // Runtime identity background: what "Agent" means here, and which one is active.
+        // Runtime identity: which agent is handling this turn.
         let agent_identity = format!(
             "## Agent\n\
 当前处理本轮对话的智能体（接收用户消息、调用工具并回复）：\n\
@@ -50,6 +50,8 @@ impl JsonStore {
 - ID: {}",
             agent.name, agent.id
         );
+        // Calendar date only (local TZ). Stable within a day for prompt cache;
+        // intentionally not a timestamp.
         let runtime_date = format!("## Runtime\n- Date: {}", crate::tools::prompt::today_date());
         let agent_sections = join_prompt_sections([
             ("Personality", workspace.personality.as_str()),

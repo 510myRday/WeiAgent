@@ -113,7 +113,10 @@ pub fn build_chat_request(
         OpenAiMessage {
             role: message.role.as_openai_role().to_string(),
             content: openai_message_content(message),
-            tool_calls: message.tool_calls.clone(),
+            tool_calls: message
+                .tool_calls
+                .as_ref()
+                .map(strip_tool_call_ui_fields),
             tool_call_id: if message.role.as_openai_role() == "tool" {
                 message.tool_call_id.clone()
             } else {
@@ -154,6 +157,28 @@ fn sanitized_openai_extra_body(extra_body: &serde_json::Value) -> serde_json::Va
         extra.remove(key);
     }
     serde_json::Value::Object(extra)
+}
+
+
+/// Strip UI-only fields (e.g. permission_mode) before sending tool_calls to the model.
+/// DB/history may keep them for the frontend; the model request must stay clean for
+/// prompt-cache stability and protocol compatibility.
+pub(crate) fn strip_tool_call_ui_fields(tool_calls: &serde_json::Value) -> serde_json::Value {
+    let Some(calls) = tool_calls.as_array() else {
+        return tool_calls.clone();
+    };
+    let cleaned = calls
+        .iter()
+        .map(|call| {
+            let Some(obj) = call.as_object() else {
+                return call.clone();
+            };
+            let mut cleaned = obj.clone();
+            cleaned.remove("permission_mode");
+            serde_json::Value::Object(cleaned)
+        })
+        .collect();
+    serde_json::Value::Array(cleaned)
 }
 
 fn openai_message_content(message: &ChatMessage) -> serde_json::Value {
@@ -400,7 +425,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::domain::{ChatMessageStatus, ChatRole};
+    use crate::domain::{Agent, ChatMessageStatus, ChatRole};
 
     #[test]
     fn deepseek_cache_usage_normalizes_hit_and_miss_tokens() {
@@ -476,5 +501,62 @@ mod tests {
         assert_eq!(selected[0].id, user.id);
         assert_eq!(selected[1].id, assistant.id);
         assert_eq!(selected[2].id, tool.id);
+    }
+
+    #[test]
+    fn strips_permission_mode_from_tool_calls_sent_to_model() {
+        let user = message(ChatRole::User, "run it");
+        let mut assistant = message(ChatRole::Assistant, "");
+        assistant.tool_calls = Some(json!([{
+            "id": "call-1",
+            "type": "function",
+            "permission_mode": "request_approval",
+            "function": {"name": "execute_terminal", "arguments": "{}"}
+        }]));
+        let mut tool = message(ChatRole::Tool, "ok");
+        tool.tool_call_id = Some("call-1".to_string());
+        let agent = Agent {
+            id: Uuid::new_v4(),
+            name: "a".into(),
+            description: "d".into(),
+            model_provider_id: Uuid::new_v4(),
+            model_id: "m".into(),
+            is_builtin: false,
+            avatar_icon: "bot".into(),
+            avatar_color: "#000".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let request = build_chat_request(
+            &agent,
+            &[user, assistant, tool],
+            false,
+            "system",
+            &serde_json::Value::Null,
+            None,
+            None,
+        );
+        let tool_calls = request.messages[2].tool_calls.as_ref().unwrap();
+        assert!(tool_calls[0].get("permission_mode").is_none());
+        assert_eq!(tool_calls[0]["id"], "call-1");
+        assert_eq!(tool_calls[0]["function"]["name"], "execute_terminal");
+    }
+
+    #[test]
+    fn strip_tool_call_ui_fields_preserves_core_shape() {
+        let cleaned = strip_tool_call_ui_fields(&json!([{
+            "id": "c",
+            "type": "function",
+            "permission_mode": "full_access",
+            "function": {"name": "web_search", "arguments": "{\"query\":\"x\"}"}
+        }]));
+        assert_eq!(
+            cleaned,
+            json!([{
+                "id": "c",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": "{\"query\":\"x\"}"}
+            }])
+        );
     }
 }
