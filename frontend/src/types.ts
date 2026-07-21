@@ -93,6 +93,8 @@ export type Agent = {
   avatar_icon: AvatarIcon;
   avatar_color: string;
   is_builtin: boolean;
+  /** Always-on auto-compact threshold (1-99). Default 90. */
+  context_compress_threshold_percent: number;
   created_at: string;
   updated_at: string;
 };
@@ -203,6 +205,8 @@ export type CreateAgentPayload = {
   model_id: string;
   avatar_icon: AvatarIcon;
   avatar_color: string;
+  /** Always-on auto-compact threshold (1-99). Default 90. */
+  context_compress_threshold_percent?: number;
 };
 
 export type UpdateAgentPayload = Partial<CreateAgentPayload>;
@@ -228,7 +232,7 @@ export type UpdateConversationPayload = {
 };
 
 export type ToolCallStatus = 'running' | 'pending_approval' | 'completed' | 'blocked' | 'rejected' | 'error';
-export type AgentRunPhase = 'idle' | 'waiting_for_model' | 'executing_tool' | 'waiting_for_approval';
+export type AgentRunPhase = 'idle' | 'waiting_for_model' | 'compacting_context' | 'executing_tool' | 'waiting_for_approval';
 export type AgentRunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
 export type AgentRun = {

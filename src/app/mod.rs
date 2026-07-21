@@ -1,5 +1,6 @@
 mod agent_executor;
 mod chat;
+pub(crate) mod context_compress;
 pub mod handlers;
 mod router;
 mod run_manager;
@@ -125,6 +126,7 @@ mod tests {
                 model_id: "test-model".to_string(),
                 avatar_icon: Some("bot".to_string()),
                 avatar_color: Some("#22c55e".to_string()),
+                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -542,6 +544,7 @@ mod tests {
                 model_id: "test-model".to_string(),
                 avatar_icon: Some("bot".to_string()),
                 avatar_color: Some("#22c55e".to_string()),
+                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -1325,6 +1328,7 @@ mod tests {
                 model_id: "test-model".to_string(),
                 avatar_icon: Some("bot".to_string()),
                 avatar_color: Some("#22c55e".to_string()),
+                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();

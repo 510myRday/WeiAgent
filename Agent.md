@@ -228,7 +228,7 @@ WeiAgent/
 
 1. `## Environment`：运行时环境前缀（应用名/版本、OS/架构、Shell、Default workspace）。**不含**时分秒等易变字段，以便跨轮次复用模型侧 prompt cache。
 2. `## Agent`：一句身份背景 + `Name`/`ID`，标明当前处理本轮对话的智能体。
-3. `## Runtime`：日历日期一行（`Date: YYYY-MM-DD`，本地时区）。有意只放**日期**不放时刻：模型需要“今天”的时间感，同时同一天内 system 前缀保持稳定。跨自然日会换前缀，属于预期行为。
+3. `## Runtime`：本地时区权威日历日（`Date: YYYY-MM-DD`）+ 明确信任说明。有意只放**日期**不放时刻：模型必须把该行当作当前对话的“今天”，不得沿用训练数据/知识截止日里更早的年份假设；同时同一天内 system 前缀保持稳定。跨自然日会换前缀，属于预期行为。
 4. `## Personality` / `## Memory` / `## Instructions`：分别来自工作空间的 `personality.md`、`memory.md`、`instructions.md`。
 
 拼接实现见 `storage/workspaces.rs` 的 `build_agent_system_prompt`；Environment 前缀见 `tools/prompt.rs`。

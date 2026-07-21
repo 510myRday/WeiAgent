@@ -175,6 +175,7 @@ mod tests {
                 model_id: "gpt-4o-mini".to_string(),
                 avatar_icon: Some("sparkles".to_string()),
                 avatar_color: Some("#3b82f6".to_string()),
+                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -226,6 +227,7 @@ mod tests {
                 model_id: "gpt-4o-mini".to_string(),
                 avatar_icon: Some("sparkles".to_string()),
                 avatar_color: Some("#3b82f6".to_string()),
+                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -302,6 +304,7 @@ mod tests {
                 model_id: "gpt-4o-mini".to_string(),
                 avatar_icon: Some("sparkles".to_string()),
                 avatar_color: Some("#3b82f6".to_string()),
+                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -359,6 +362,7 @@ mod tests {
                 model_id: "fast-model".to_string(),
                 avatar_icon: Some("rocket".to_string()),
                 avatar_color: Some("#ef4444".to_string()),
+                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -461,6 +465,7 @@ mod tests {
                     model_id: Some("core-model".to_string()),
                     avatar_icon: None,
                     avatar_color: None,
+                    context_compress_threshold_percent: None,
                 },
             )
             .await
@@ -524,6 +529,7 @@ mod tests {
                 model_id: "local-model".to_string(),
                 avatar_icon: Some("brain".to_string()),
                 avatar_color: Some("#8b5cf6".to_string()),
+                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -552,6 +558,8 @@ mod tests {
             "- Date: {}",
             crate::tools::prompt::today_date()
         )));
+        assert!(prompt.contains("必须以此为准"));
+        assert!(prompt.contains("Trust: absolute"));
         assert!(prompt.contains("## Personality"));
         assert!(prompt.find("## Environment").unwrap() < prompt.find("## Agent").unwrap());
         assert!(prompt.find("## Agent").unwrap() < prompt.find("## Runtime").unwrap());
@@ -579,6 +587,7 @@ mod tests {
                 model_id: "local-model".to_string(),
                 avatar_icon: Some("brain".to_string()),
                 avatar_color: Some("#8b5cf6".to_string()),
+                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -594,7 +603,8 @@ mod tests {
                         model_id: None,
                         avatar_icon: None,
                         avatar_color: None,
-                    },
+                    context_compress_threshold_percent: None,
+                },
                     workspace: UpdateAgentWorkspaceRequest {
                         personality: "Calm".to_string(),
                         memory: "Project context".to_string(),
@@ -623,7 +633,8 @@ mod tests {
                         model_id: Some("missing-model".to_string()),
                         avatar_icon: None,
                         avatar_color: None,
-                    },
+                    context_compress_threshold_percent: None,
+                },
                     workspace: UpdateAgentWorkspaceRequest {
                         personality: "Should not persist".to_string(),
                         memory: String::new(),
@@ -661,6 +672,7 @@ mod tests {
                 model_id: "avatar-model".to_string(),
                 avatar_icon: Some("compass".to_string()),
                 avatar_color: Some("#06b6d4".to_string()),
+                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -672,6 +684,7 @@ mod tests {
                 model_id: "avatar-model".to_string(),
                 avatar_icon: Some("compass".to_string()),
                 avatar_color: Some("#06b6d4".to_string()),
+                            context_compress_threshold_percent: None,
             })
             .await;
 

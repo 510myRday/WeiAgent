@@ -5,12 +5,14 @@ export function FormField({
   htmlFor,
   action,
   required = false,
+  hint,
   children,
 }: {
   label: ReactNode;
   htmlFor?: string;
   action?: ReactNode;
   required?: boolean;
+  hint?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -23,6 +25,7 @@ export function FormField({
         {action}
       </label>
       {children}
+      {hint ? <p className="form-field-hint">{hint}</p> : null}
     </div>
   );
 }

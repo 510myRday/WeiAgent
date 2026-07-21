@@ -36,6 +36,7 @@ const MAX_STREAM_CONTENT_BYTES: usize = 2 * 1024 * 1024;
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunPhase {
     WaitingForModel,
+    CompactingContext,
     ExecutingTool,
     WaitingForApproval,
 }
@@ -98,6 +99,68 @@ struct ToolBudget {
     total_calls: usize,
 }
 
+
+async fn ensure_messages_within_context(
+    runtime: &AgentRuntime<'_>,
+    messages: &mut Vec<ChatMessage>,
+) -> AppResult<()> {
+    let checkpoint = runtime
+        .state
+        .store
+        .read_context_checkpoint(runtime.prepared.user_message.conversation_id)
+        .await?;
+    let config = crate::app::context_compress::CompactionConfig::from_agent_and_provider(
+        &runtime.prepared.agent,
+        &runtime.prepared.provider,
+    );
+    if !crate::app::context_compress::needs_compaction(messages, &config) {
+        return Ok(());
+    }
+
+    emit(
+        runtime.events,
+        AgentRunEvent::Phase {
+            phase: AgentRunPhase::CompactingContext,
+            iteration: 0,
+            call_id: None,
+        },
+    )
+    .await?;
+
+    let outcome = crate::app::context_compress::ensure_within_threshold(
+        runtime.client,
+        &runtime.prepared.agent,
+        &runtime.prepared.provider,
+        &runtime.prepared.system_prompt,
+        &runtime.options,
+        messages.clone(),
+        checkpoint,
+        runtime.events.as_ref(),
+    )
+    .await?;
+
+    if outcome.did_compact {
+        tracing::info!(
+            before = outcome.estimated_tokens_before,
+            after = outcome.estimated_tokens_after,
+            reason = ?outcome.reason,
+            "auto-compacted conversation context"
+        );
+        *messages = outcome.messages;
+        if let Some(checkpoint) = outcome.checkpoint {
+            runtime
+                .state
+                .store
+                .write_context_checkpoint(
+                    runtime.prepared.user_message.conversation_id,
+                    checkpoint,
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn run_agent(
     state: AppState,
     mut prepared: PreparedChat,
@@ -150,6 +213,7 @@ pub async fn run_agent(
             break;
         }
         let tools = frozen_tools.clone();
+        ensure_messages_within_context(&runtime, &mut messages).await?;
         emit(
             &events,
             AgentRunEvent::Phase {
@@ -295,6 +359,7 @@ async fn finalize_after_budget(
     // Keep the budget notice in the in-memory LLM context only.
     messages.push(budget_notice);
 
+    ensure_messages_within_context(runtime, messages).await?;
     emit(
         runtime.events,
         AgentRunEvent::Phase {

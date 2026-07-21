@@ -58,9 +58,10 @@ function defaultWebSearch(): WebSearchToolConfig {
     timeout_ms: 15000,
     key_selection: 'sequential',
     sources: [
-      { id: 'tavily', provider: 'tavily', enabled: true, api_keys: [] },
-      { id: 'exa', provider: 'exa', enabled: true, api_keys: [] },
-      { id: 'jina', provider: 'jina', enabled: true, api_keys: [] },
+      { id: 'tavily', provider: 'tavily', enabled: true, api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'exa', provider: 'exa', enabled: true, api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'jina', provider: 'jina', enabled: true, api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'grok', provider: 'grok', enabled: true, api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
     ],
   };
 }
@@ -69,6 +70,9 @@ function normalizeWebSearchSources(sources: WebSearchSourceConfig[]): WebSearchS
   return sources.map((source) => ({
     ...source,
     api_keys: source.api_keys ?? [],
+    flaresolverr_url: source.flaresolverr_url ?? null,
+    flaresolverr_proxy_url: source.flaresolverr_proxy_url ?? null,
+    proxy_url: source.proxy_url ?? null,
   }));
 }
 
@@ -601,103 +605,194 @@ export function WebSearchToolSettings({
             </div>
             <div className="card-body">
               <div className="web-search-source-list">
-                {webSearch.sources.map((source, index) => (
-                  <div
-                    key={source.id}
-                    className={`web-search-source ${source.enabled ? 'is-enabled' : 'is-disabled'}`}
-                  >
-                    <div className="web-search-source__header">
-                      <div className="web-search-source__meta">
-                        <strong>{providerLabel(source.provider, t)}</strong>
-                        <small>{t('tools.webSearch.sourcePriority', { index: String(index + 1) })}</small>
-                      </div>
-                      <div className="web-search-source__actions">
-                        <label
-                          className="toggle-switch"
-                          title={source.enabled ? t('tools.enabled') : t('tools.disabled')}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={source.enabled}
-                            onChange={(e) => updateSource(index, { enabled: e.target.checked })}
-                          />
-                          <span className="toggle-slider" />
-                        </label>
-                        <IconButton
-                          type="button"
-                          variant="ghost"
-                          label={t('tools.webSearch.moveUp')}
-                          onClick={() => moveSource(index, -1)}
-                          disabled={index === 0}
-                        >
-                          <ArrowUp size={16} />
-                        </IconButton>
-                        <IconButton
-                          type="button"
-                          variant="ghost"
-                          label={t('tools.webSearch.moveDown')}
-                          onClick={() => moveSource(index, 1)}
-                          disabled={index === webSearch.sources.length - 1}
-                        >
-                          <ArrowDown size={16} />
-                        </IconButton>
-                      </div>
-                    </div>
+                {webSearch.sources.map((source, index) => {
+                  const keyCount = source.api_keys.length;
+                  const emptyLabel = t(source.provider === 'grok' ? 'tools.webSearch.noSso' : 'tools.webSearch.noKeys');
+                  const statusLabel = keyCount === 0
+                    ? emptyLabel
+                    : t('tools.webSearch.keyCount', { count: keyCount });
 
-                    <div className="web-search-keys">
-                      {source.api_keys.length === 0 ? (
-                        <p className="muted">{t('tools.webSearch.noKeys')}</p>
-                      ) : (
-                        <ul className="pattern-tags web-search-key-tags">
-                          {source.api_keys.map((key, keyIndex) => (
-                            <li key={`${source.id}-${keyIndex}`} className="pattern-tag">
-                              <code>{key}</code>
-                              <IconButton
+                  return (
+                    <div
+                      key={source.id}
+                      className={`web-search-source ${source.enabled ? 'is-enabled' : 'is-disabled'}`}
+                    >
+                      <div className="web-search-source__header">
+                        <div className="web-search-source__identity">
+                          <span
+                            className="web-search-source__priority"
+                            title={t('tools.webSearch.sourcePriority', { index: String(index + 1) })}
+                          >
+                            {index + 1}
+                          </span>
+                          <div className="web-search-source__meta">
+                            <strong>{providerLabel(source.provider, t)}</strong>
+                            <small>{statusLabel}</small>
+                          </div>
+                        </div>
+                        <div className="web-search-source__actions">
+                          <div
+                            className="web-search-source__reorder"
+                            role="group"
+                            aria-label={t('tools.webSearch.sourcePriority', { index: String(index + 1) })}
+                          >
+                            <IconButton
+                              type="button"
+                              variant="ghost"
+                              className="web-search-source__reorder-btn"
+                              label={t('tools.webSearch.moveUp')}
+                              onClick={() => moveSource(index, -1)}
+                              disabled={index === 0}
+                            >
+                              <ArrowUp size={15} />
+                            </IconButton>
+                            <IconButton
+                              type="button"
+                              variant="ghost"
+                              className="web-search-source__reorder-btn"
+                              label={t('tools.webSearch.moveDown')}
+                              onClick={() => moveSource(index, 1)}
+                              disabled={index === webSearch.sources.length - 1}
+                            >
+                              <ArrowDown size={15} />
+                            </IconButton>
+                          </div>
+                          <label
+                            className="toggle-switch web-search-source__toggle"
+                            title={source.enabled ? t('tools.enabled') : t('tools.disabled')}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={source.enabled}
+                              onChange={(e) => updateSource(index, { enabled: e.target.checked })}
+                            />
+                            <span className="toggle-slider" />
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="web-search-source__body">
+                        <div className="web-search-keys">
+                          <div className="web-search-keys__toolbar">
+                            <span className="web-search-keys__label">{t('tools.webSearch.keysLabel')}</span>
+                            {keyCount > 0 ? (
+                              <button
                                 type="button"
-                                variant="ghost"
-                                className="remove-btn"
-                                label={t('tools.webSearch.removeKey')}
-                                onClick={() => removeKey(source.id, keyIndex)}
+                                className="web-search-keys__clear"
+                                onClick={() => clearKeys(source.id)}
                               >
-                                <Trash2 size={14} />
-                              </IconButton>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
+                                {t('tools.webSearch.clearKeys')}
+                              </button>
+                            ) : null}
+                          </div>
 
-                      <div className="pattern-input-wrapper web-search-key-add">
-                        <input
-                          type="password"
-                          className="pattern-input"
-                          value={draftKeys[source.id] ?? ''}
-                          placeholder={t('tools.webSearch.keyPlaceholder')}
-                          onChange={(e) => setDraftKeys((current) => ({ ...current, [source.id]: e.target.value }))}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              addKey(source.id);
-                            }
-                          }}
-                        />
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          className="add-btn"
-                          icon={<Plus size={16} />}
-                          onClick={() => addKey(source.id)}
-                        >
-                          {t('tools.webSearch.addKey')}
-                        </Button>
-                        {source.api_keys.length > 0 ? (
-                          <Button type="button" variant="ghost" onClick={() => clearKeys(source.id)}>
-                            {t('tools.webSearch.clearKeys')}
-                          </Button>
+                          {keyCount === 0 ? (
+                            <div className="web-search-keys__empty">{emptyLabel}</div>
+                          ) : (
+                            <ul className="web-search-key-tags">
+                              {source.api_keys.map((key, keyIndex) => (
+                                <li key={`${source.id}-${keyIndex}`} className="web-search-key-chip">
+                                  <code>{key}</code>
+                                  <IconButton
+                                    type="button"
+                                    variant="ghost"
+                                    className="web-search-key-chip__remove"
+                                    label={t('tools.webSearch.removeKey')}
+                                    onClick={() => removeKey(source.id, keyIndex)}
+                                  >
+                                    <Trash2 size={13} />
+                                  </IconButton>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+
+                          <div className="web-search-key-add">
+                            <input
+                              id={`web-search-key-input-${source.id}`}
+                              type="password"
+                              className="pattern-input web-search-key-add__input"
+                              value={draftKeys[source.id] ?? ''}
+                              placeholder={t(source.provider === 'grok' ? 'tools.webSearch.ssoPlaceholder' : 'tools.webSearch.keyPlaceholder')}
+                              autoComplete="off"
+                              spellCheck={false}
+                              onChange={(e) => setDraftKeys((current) => ({ ...current, [source.id]: e.target.value }))}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  addKey(source.id);
+                                }
+                              }}
+                            />
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              className="web-search-key-add__btn"
+                              icon={<Plus size={15} />}
+                              onClick={() => addKey(source.id)}
+                              disabled={!(draftKeys[source.id] ?? '').trim()}
+                            >
+                              {t('tools.webSearch.addKey')}
+                            </Button>
+                          </div>
+                        </div>
+
+                        {source.provider === 'grok' ? (
+                          <div className="web-search-grok-extras">
+                            <div className="web-search-extra-field">
+                              <div className="web-search-extra-field__label">
+                                <label htmlFor={`grok-flaresolverr-${source.id}`}>{t('tools.webSearch.flaresolverrUrl')}</label>
+                                <p className="setting-desc">{t('tools.webSearch.flaresolverrUrlDesc')}</p>
+                              </div>
+                              <input
+                                id={`grok-flaresolverr-${source.id}`}
+                                type="text"
+                                className="pattern-input web-search-extra-input"
+                                value={source.flaresolverr_url ?? ''}
+                                placeholder={t('tools.webSearch.flaresolverrUrlPlaceholder')}
+                                onChange={(e) => updateSource(index, {
+                                  flaresolverr_url: e.target.value.trim() ? e.target.value.trim() : null,
+                                })}
+                              />
+                            </div>
+                            <div className="web-search-extra-field">
+                              <div className="web-search-extra-field__label">
+                                <label htmlFor={`grok-fs-proxy-${source.id}`}>{t('tools.webSearch.flaresolverrProxyUrl')}</label>
+                                <p className="setting-desc">{t('tools.webSearch.flaresolverrProxyUrlDesc')}</p>
+                              </div>
+                              <input
+                                id={`grok-fs-proxy-${source.id}`}
+                                type="text"
+                                className="pattern-input web-search-extra-input"
+                                value={source.flaresolverr_proxy_url ?? ''}
+                                placeholder={t('tools.webSearch.flaresolverrProxyUrlPlaceholder')}
+                                onChange={(e) => updateSource(index, {
+                                  flaresolverr_proxy_url: e.target.value.trim() ? e.target.value.trim() : null,
+                                })}
+                              />
+                            </div>
+                            <div className="web-search-extra-field">
+                              <div className="web-search-extra-field__label">
+                                <label htmlFor={`grok-proxy-${source.id}`}>{t('tools.webSearch.proxyUrl')}</label>
+                                <p className="setting-desc">{t('tools.webSearch.proxyUrlDesc')}</p>
+                              </div>
+                              <input
+                                id={`grok-proxy-${source.id}`}
+                                type="text"
+                                className="pattern-input web-search-extra-input"
+                                value={source.proxy_url ?? ''}
+                                placeholder={t('tools.webSearch.proxyUrlPlaceholder')}
+                                onChange={(e) => updateSource(index, {
+                                  proxy_url: e.target.value.trim() ? e.target.value.trim() : null,
+                                })}
+                              />
+                            </div>
+                          </div>
                         ) : null}
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </section>

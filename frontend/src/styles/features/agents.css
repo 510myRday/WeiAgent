@@ -185,8 +185,9 @@
 }
 
 .agent-model-row {
+  flex-wrap: wrap;
   display: grid;
-  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 14px;
   min-width: 0;
 }
@@ -318,4 +319,26 @@
 
 .agent-create-actions {
   justify-content: flex-end;
+}
+
+.agent-threshold-input {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.agent-threshold-input input {
+  width: 6rem;
+}
+
+.agent-threshold-unit {
+  color: var(--text-muted, #94a3b8);
+  font-size: 0.875rem;
+}
+
+.form-field-hint {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted, #94a3b8);
+  font-size: 0.8rem;
+  line-height: 1.4;
 }

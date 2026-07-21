@@ -339,6 +339,7 @@ fn run_event_size(event: &AgentRunEvent) -> usize {
 fn phase_name(phase: AgentRunPhase) -> &'static str {
     match phase {
         AgentRunPhase::WaitingForModel => "waiting_for_model",
+        AgentRunPhase::CompactingContext => "compacting_context",
         AgentRunPhase::ExecutingTool => "executing_tool",
         AgentRunPhase::WaitingForApproval => "waiting_for_approval",
     }

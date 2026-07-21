@@ -235,7 +235,7 @@ export function deleteLlmLog(logId: string): Promise<void> {
 }
 
 
-export type WebSearchProviderKind = 'tavily' | 'exa' | 'jina';
+export type WebSearchProviderKind = 'tavily' | 'exa' | 'jina' | 'grok';
 export type WebSearchKeySelection = 'sequential' | 'round_robin' | 'random';
 
 export type WebSearchSourceConfig = {
@@ -244,6 +244,9 @@ export type WebSearchSourceConfig = {
   enabled: boolean;
   base_url?: string | null;
   api_keys: string[];
+  flaresolverr_url?: string | null;
+  flaresolverr_proxy_url?: string | null;
+  proxy_url?: string | null;
 };
 
 export type WebSearchToolConfig = {
@@ -359,6 +362,9 @@ function normalizeToolDefaults(config: AgentToolsConfig): AgentToolsConfig {
       sources: (config.web_search?.sources ?? []).map((source) => ({
         ...source,
         api_keys: source.api_keys ?? [],
+        flaresolverr_url: source.flaresolverr_url ?? null,
+        flaresolverr_proxy_url: source.flaresolverr_proxy_url ?? null,
+        proxy_url: source.proxy_url ?? null,
       })),
     },
   };

@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        ChatMessage, ChatRole, Conversation, ConversationMessagePage, ConversationUsage,
-        CreateConversationRequest, UpdateConversationRequest,
+        ChatMessage, ChatRole, ContextCheckpoint, Conversation, ConversationMessagePage,
+        ConversationUsage, CreateConversationRequest, UpdateConversationRequest,
     },
     error::{AppError, AppResult},
     storage::{files::write_json, json_store::JsonStore},
@@ -136,6 +136,7 @@ impl JsonStore {
                 .to_string(),
             message_count: 0,
             is_pinned: false,
+            context_checkpoint: None,
             created_at: now,
             updated_at: now,
         };
@@ -247,6 +248,8 @@ impl JsonStore {
         existing.extend_from_slice(messages);
         write_json(&self.conversation_file(conversation_id), &existing).await?;
         conversation.message_count = existing.len();
+        // Truncation invalidates any summary that may cover deleted messages.
+        conversation.context_checkpoint = None;
         if is_generated_conversation_title(&conversation.title)
             && let Some(title) = title_from_first_user_message(&existing)
         {
@@ -394,6 +397,42 @@ impl JsonStore {
         }
         Ok(())
     }
+    pub async fn read_context_checkpoint(
+        &self,
+        conversation_id: Uuid,
+    ) -> AppResult<Option<ContextCheckpoint>> {
+        Ok(self.get_conversation(conversation_id).await?.context_checkpoint)
+    }
+
+    pub async fn write_context_checkpoint(
+        &self,
+        conversation_id: Uuid,
+        checkpoint: ContextCheckpoint,
+    ) -> AppResult<ContextCheckpoint> {
+        let _guard = self.lock.lock().await;
+        let mut conversations = self.read_conversations_unlocked().await?;
+        let conversation = conversations
+            .iter_mut()
+            .find(|conversation| conversation.id == conversation_id)
+            .ok_or(AppError::NotFound)?;
+        conversation.context_checkpoint = Some(checkpoint.clone());
+        conversation.updated_at = Utc::now();
+        self.write_conversations_unlocked(&conversations).await?;
+        Ok(checkpoint)
+    }
+
+    #[allow(dead_code)]
+    pub async fn clear_context_checkpoint(&self, conversation_id: Uuid) -> AppResult<()> {
+        let _guard = self.lock.lock().await;
+        let mut conversations = self.read_conversations_unlocked().await?;
+        let conversation = conversations
+            .iter_mut()
+            .find(|conversation| conversation.id == conversation_id)
+            .ok_or(AppError::NotFound)?;
+        conversation.context_checkpoint = None;
+        conversation.updated_at = Utc::now();
+        self.write_conversations_unlocked(&conversations).await
+    }
 }
 
 fn conversation_usage(messages: &[ChatMessage]) -> ConversationUsage {
@@ -418,3 +457,5 @@ fn conversation_usage(messages: &[ChatMessage]) -> ConversationUsage {
         cost_usd: usage.cost_usd,
     }
 }
+
+

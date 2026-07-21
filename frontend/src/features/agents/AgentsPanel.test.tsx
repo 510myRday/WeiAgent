@@ -24,6 +24,7 @@ const builtinAgent: Agent = {
   avatar_icon: 'bot',
   avatar_color: '#07c160',
   is_builtin: true,
+  context_compress_threshold_percent: 90,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
 };

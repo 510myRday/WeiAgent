@@ -32,6 +32,7 @@ const toolCallStatusSchema = picklist([
 ]);
 const agentRunPhaseSchema = picklist([
   'waiting_for_model',
+  'compacting_context',
   'executing_tool',
   'waiting_for_approval',
 ]);

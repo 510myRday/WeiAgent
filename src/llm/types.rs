@@ -524,6 +524,7 @@ mod tests {
             is_builtin: false,
             avatar_icon: "bot".into(),
             avatar_color: "#000".into(),
+            context_compress_threshold_percent: 90,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

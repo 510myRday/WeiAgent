@@ -6,9 +6,13 @@ pub mod runtime;
 pub mod settings;
 pub mod tools;
 
+#[allow(unused_imports)]
 pub use agents::{
     Agent, AgentProfileResponse, AgentResponse, AgentWorkspace, CreateAgentRequest,
     UpdateAgentProfileRequest, UpdateAgentRequest, UpdateAgentWorkspaceRequest,
+    DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT, MAX_CONTEXT_COMPRESS_THRESHOLD_PERCENT,
+    MIN_CONTEXT_COMPRESS_THRESHOLD_PERCENT, coerce_context_compress_threshold,
+    normalize_context_compress_threshold,
 };
 pub use chat::{
     AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, ConversationUsage,
@@ -16,7 +20,8 @@ pub use chat::{
     ThinkingLevel, TokenUsage,
 };
 pub use conversations::{
-    Conversation, ConversationMessagePage, CreateConversationRequest, UpdateConversationRequest,
+    ContextCheckpoint, Conversation, ConversationMessagePage, CreateConversationRequest,
+    UpdateConversationRequest,
 };
 pub use providers::{
     CreateModelProviderRequest, FetchProviderModelsRequest, ModelConfig, ModelProvider,
@@ -35,3 +40,4 @@ pub use tools::{
     TerminalPermissionMode, TerminalToolConfig, ToolResult, WebSearchKeySelection,
     WebSearchProviderKind, WebSearchSourceConfig, WebSearchToolConfig, WebSearchToolOverrides, // re-export
 };
+

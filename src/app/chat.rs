@@ -93,6 +93,12 @@ pub async fn prepare_chat(
         .store
         .read_conversation_messages(conversation_id)
         .await?;
+    let checkpoint = state
+        .store
+        .read_context_checkpoint(conversation_id)
+        .await?;
+    let history_for_llm =
+        crate::app::context_compress::build_llm_messages(&history, checkpoint.as_ref());
     let user_message = ChatMessage {
         id: Uuid::new_v4(),
         agent_id: agent.id,
@@ -107,7 +113,7 @@ pub async fn prepare_chat(
         attachments: attachments.to_vec(),
         usage: None,
     };
-    let mut messages_for_llm = history;
+    let mut messages_for_llm = history_for_llm;
     messages_for_llm.push(user_message.clone());
 
     Ok(PreparedChat {

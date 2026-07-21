@@ -115,6 +115,7 @@ pub enum WebSearchProviderKind {
     Tavily,
     Exa,
     Jina,
+    Grok,
 }
 
 impl WebSearchProviderKind {
@@ -123,6 +124,7 @@ impl WebSearchProviderKind {
             Self::Tavily => "tavily",
             Self::Exa => "exa",
             Self::Jina => "jina",
+            Self::Grok => "grok",
         }
     }
 
@@ -131,6 +133,7 @@ impl WebSearchProviderKind {
             Self::Tavily => "https://api.tavily.com",
             Self::Exa => "https://api.exa.ai",
             Self::Jina => "https://s.jina.ai",
+            Self::Grok => "https://grok.com",
         }
     }
 }
@@ -155,6 +158,15 @@ pub struct WebSearchSourceConfig {
     pub base_url: Option<String>,
     #[serde(default)]
     pub api_keys: Vec<String>,
+    /// FlareSolverr base URL, e.g. http://127.0.0.1:8191
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flaresolverr_url: Option<String>,
+    /// Proxy used by FlareSolverr browser when opening grok.com (LAN-reachable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flaresolverr_proxy_url: Option<String>,
+    /// Upstream proxy for Grok/CF traffic. Supports http:// and socks5://
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_url: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -184,6 +196,9 @@ fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
             enabled: true,
             base_url: None,
             api_keys: Vec::new(),
+            flaresolverr_url: None,
+            flaresolverr_proxy_url: None,
+            proxy_url: None,
         },
         WebSearchSourceConfig {
             id: "exa".to_string(),
@@ -191,6 +206,9 @@ fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
             enabled: true,
             base_url: None,
             api_keys: Vec::new(),
+            flaresolverr_url: None,
+            flaresolverr_proxy_url: None,
+            proxy_url: None,
         },
         WebSearchSourceConfig {
             id: "jina".to_string(),
@@ -198,6 +216,19 @@ fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
             enabled: true,
             base_url: None,
             api_keys: Vec::new(),
+            flaresolverr_url: None,
+            flaresolverr_proxy_url: None,
+            proxy_url: None,
+        },
+        WebSearchSourceConfig {
+            id: "grok".to_string(),
+            provider: WebSearchProviderKind::Grok,
+            enabled: true,
+            base_url: None,
+            api_keys: Vec::new(),
+            flaresolverr_url: None,
+            flaresolverr_proxy_url: None,
+            proxy_url: None,
         },
     ]
 }
@@ -595,10 +626,11 @@ mod tests {
         let config = AgentToolsConfig::default();
         assert!(!config.web_search.enabled);
         assert_eq!(config.web_search.max_results, DEFAULT_WEB_SEARCH_MAX_RESULTS);
-        assert_eq!(config.web_search.sources.len(), 3);
+        assert_eq!(config.web_search.sources.len(), 4);
         assert_eq!(config.web_search.sources[0].id, "tavily");
         assert_eq!(config.web_search.sources[1].id, "exa");
         assert_eq!(config.web_search.sources[2].id, "jina");
+        assert_eq!(config.web_search.sources[3].id, "grok");
         assert!(!config.web_search.has_usable_source());
     }
 
@@ -639,6 +671,9 @@ mod tests {
                 enabled: true,
                 base_url: None,
                 api_keys: vec!["sk-live-secret".to_string()],
+                flaresolverr_url: None,
+                flaresolverr_proxy_url: None,
+                proxy_url: None,
             }],
             ..WebSearchToolConfig::default()
         };
@@ -650,6 +685,9 @@ mod tests {
                 enabled: true,
                 base_url: None,
                 api_keys: vec!["__preserve__".to_string()],
+                flaresolverr_url: None,
+                flaresolverr_proxy_url: None,
+                proxy_url: None,
             }],
             ..stored.clone()
         };
@@ -663,6 +701,9 @@ mod tests {
                 enabled: true,
                 base_url: None,
                 api_keys: vec![],
+                flaresolverr_url: None,
+                flaresolverr_proxy_url: None,
+                proxy_url: None,
             }],
             ..stored.clone()
         };
@@ -676,6 +717,9 @@ mod tests {
                 enabled: true,
                 base_url: None,
                 api_keys: vec!["sk-new".to_string()],
+                flaresolverr_url: None,
+                flaresolverr_proxy_url: None,
+                proxy_url: None,
             }],
             ..stored.clone()
         };
@@ -697,7 +741,8 @@ mod tests {
         }))
         .unwrap();
         assert!(!config.web_search.enabled);
-        assert_eq!(config.web_search.sources.len(), 3);
+        assert_eq!(config.web_search.sources.len(), 4);
+        assert_eq!(config.web_search.sources[3].id, "grok");
     }
 
     #[test]

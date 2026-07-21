@@ -4,7 +4,7 @@ use crate::domain::{
 use crate::domain::tools::{MAX_WEB_SEARCH_QUERY_CHARS, MAX_WEB_SEARCH_RESULTS};
 
 use self::key_pool::key_attempt_order;
-use self::providers::{exa, jina, tavily};
+use self::providers::{exa, grok, jina, tavily};
 use self::types::{ProviderError, WebSearchOutput, sanitize_error_message};
 
 pub mod key_pool;
@@ -46,7 +46,7 @@ pub async fn execute_web_search(args: WebSearchArgs, config: &WebSearchToolConfi
     }
 
     let timeout = std::time::Duration::from_millis(config.timeout_ms());
-    let client = match reqwest::Client::builder().timeout(timeout).build() {
+    let control_client = match reqwest::Client::builder().timeout(timeout).build() {
         Ok(client) => client,
         Err(error) => {
             return ToolResult::Error {
@@ -76,6 +76,35 @@ pub async fn execute_web_search(args: WebSearchArgs, config: &WebSearchToolConfi
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| source.provider.default_base_url())
             .to_string();
+        let flaresolverr_url = source
+            .flaresolverr_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let flaresolverr_proxy_url = source
+            .flaresolverr_proxy_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let proxy_url = source
+            .proxy_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        // Non-Grok providers keep reqwest; Grok API uses wreq Chrome TLS emulation.
+        // Grok+local proxy needs a higher floor than the global 15s web_search timeout.
+        let grok_client = if source.provider == WebSearchProviderKind::Grok {
+            let grok_timeout = std::cmp::max(timeout, std::time::Duration::from_secs(90));
+            match providers::grok_support::build_emulated_client(grok_timeout, proxy_url) {
+                Ok(client) => Some(client),
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
 
         for index in order {
             let Some(api_key) = keys.get(index) else {
@@ -83,13 +112,31 @@ pub async fn execute_web_search(args: WebSearchArgs, config: &WebSearchToolConfi
             };
             let result = match source.provider {
                 WebSearchProviderKind::Tavily => {
-                    tavily::search(&client, &base_url, api_key, query, max_results).await
+                    tavily::search(&control_client, &base_url, api_key, query, max_results).await
                 }
                 WebSearchProviderKind::Exa => {
-                    exa::search(&client, &base_url, api_key, query, max_results).await
+                    exa::search(&control_client, &base_url, api_key, query, max_results).await
                 }
                 WebSearchProviderKind::Jina => {
-                    jina::search(&client, &base_url, api_key, query, max_results).await
+                    jina::search(&control_client, &base_url, api_key, query, max_results).await
+                }
+                WebSearchProviderKind::Grok => {
+                    let Some(grok_client) = grok_client.as_ref() else {
+                        last_error = Some("Grok emulated client missing".to_string());
+                        continue;
+                    };
+                    grok::search(
+                        grok_client,
+                        &control_client,
+                        &base_url,
+                        api_key,
+                        query,
+                        max_results,
+                        flaresolverr_url,
+                        flaresolverr_proxy_url,
+                        proxy_url,
+                    )
+                    .await
                 }
             };
 
@@ -209,6 +256,9 @@ mod tests {
             enabled: true,
             base_url: None,
             api_keys: vec!["a".to_string()],
+            flaresolverr_url: None,
+            flaresolverr_proxy_url: None,
+            proxy_url: None,
         };
         assert_eq!(source.provider.as_str(), "tavily");
     }

@@ -76,7 +76,10 @@
     "promptHint": "分别定义智能体的角色风格和执行规则。",
     "memoryHint": "记录需要长期保留并在后续对话中使用的背景信息。",
     "noProviders": "还没有可用的模型服务。配置模型提供商后才能创建或运行 Agent。",
-    "configureProvider": "配置模型服务"
+    "configureProvider": "配置模型服务",
+    "contextCompressThreshold": "上下文压缩阈值",
+    "contextCompressThresholdHint": "始终开启。当上下文用量达到模型窗口的该百分比时，会在任意模型调用前自动压缩（含工具循环中）。仅允许 1–99，默认 90。",
+    "contextCompressThresholdUnit": "%"
   },
   "chat": {
     "selectAgent": "选择智能体",
@@ -136,7 +139,8 @@
     "retryingHint": "模型暂时未响应，正在自动重试…",
     "contextUsageTitle": "上下文占用",
     "contextUsageUsed": "{percent}% 已用（剩余 {remaining}%）",
-    "contextUsageStats": "已用 {used}，共 {limit}"
+    "contextUsageStats": "已用 {used}，共 {limit}",
+    "compactingContext": "正在压缩上下文…"
   },
   "conversation": {
     "select": "选择会话",
@@ -288,6 +292,8 @@
       "sourcePriority": "优先级 {index}",
       "noKeys": "尚未配置 API Key",
       "keyPlaceholder": "输入 API Key 后添加",
+      "ssoPlaceholder": "SSO JWT / Cookie(sso+cf_clearance) / JSON {\"sso\":\"...\",\"cookies\":\"...\",\"x_statsig_id\":\"...\"}",
+      "noSso": "尚未配置 SSO",
       "addKey": "添加 Key",
       "removeKey": "删除 Key",
       "clearKeys": "清空 Key",
@@ -298,8 +304,20 @@
       "provider": {
         "tavily": "Tavily",
         "exa": "Exa",
-        "jina": "Jina"
-      }
+        "jina": "Jina",
+        "grok": "Grok (X)"
+      },
+      "proxyUrlPlaceholder": "http://127.0.0.1:10808 或 socks5://127.0.0.1:10808",
+      "flaresolverrUrl": "FlareSolverr 地址",
+      "flaresolverrUrlPlaceholder": "http://192.168.2.123:8191",
+      "proxyUrl": "Grok 访问代理",
+      "flaresolverrUrlDesc": "FlareSolverr 服务地址。例如 http://192.168.2.123:8191",
+      "flaresolverrProxyUrl": "FlareSolverr 代理",
+      "proxyUrlDesc": "给 WeiAgent 自己访问 Grok API 用。填什么就用什么。支持 http:// 与 socks5://。",
+      "flaresolverrProxyUrlDesc": "给 FlareSolverr 浏览器访问 grok.com 用。填什么就原样传给 FlareSolverr，不会改写。例如 http://127.0.0.1:10086",
+      "flaresolverrProxyUrlPlaceholder": "http://127.0.0.1:10086",
+      "keysLabel": "API 密钥",
+      "keyCount": "已配置 {count} 个 Key"
     }
   },
   "settings": {

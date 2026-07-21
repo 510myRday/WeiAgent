@@ -76,7 +76,10 @@
     "promptHint": "Define the agent's role, tone, and operating rules.",
     "memoryHint": "Keep background information that should remain available in later conversations.",
     "noProviders": "No model service is configured. Add a provider before creating or running an agent.",
-    "configureProvider": "Configure model service"
+    "configureProvider": "Configure model service",
+    "contextCompressThreshold": "Context compress threshold",
+    "contextCompressThresholdHint": "Always on. When usage reaches this percent of the model window, context is auto-compacted before any model call (including tool loops). Allowed range 1–99, default 90.",
+    "contextCompressThresholdUnit": "%"
   },
   "chat": {
     "selectAgent": "Select Agent",
@@ -136,7 +139,8 @@
     "retryingHint": "The model did not respond in time. Retrying automatically…",
     "contextUsageTitle": "Context usage",
     "contextUsageUsed": "{percent}% used ({remaining}% left)",
-    "contextUsageStats": "Used {used} of {limit}"
+    "contextUsageStats": "Used {used} of {limit}",
+    "compactingContext": "Compressing context…"
   },
   "conversation": {
     "select": "Select conversation",
@@ -394,6 +398,8 @@
       "sourcePriority": "Priority {index}",
       "noKeys": "No API keys configured",
       "keyPlaceholder": "Paste an API key and add it",
+      "ssoPlaceholder": "SSO JWT / Cookie(sso+cf_clearance) / JSON {\"sso\":\"...\",\"cookies\":\"...\",\"x_statsig_id\":\"...\"}",
+      "noSso": "No SSO tokens configured",
       "addKey": "Add key",
       "removeKey": "Remove key",
       "clearKeys": "Clear keys",
@@ -404,8 +410,20 @@
       "provider": {
         "tavily": "Tavily",
         "exa": "Exa",
-        "jina": "Jina"
-      }
+        "jina": "Jina",
+        "grok": "Grok (X)"
+      },
+      "proxyUrlPlaceholder": "http://127.0.0.1:10808 or socks5://127.0.0.1:10808",
+      "flaresolverrUrl": "FlareSolverr URL",
+      "flaresolverrUrlPlaceholder": "http://192.168.2.123:8191",
+      "proxyUrl": "Grok traffic proxy",
+      "flaresolverrUrlDesc": "FlareSolverr service address. Example: http://192.168.2.123:8191",
+      "flaresolverrProxyUrl": "FlareSolverr proxy",
+      "proxyUrlDesc": "Proxy for WeiAgent itself when calling Grok API. Used exactly as filled. Supports http:// and socks5://.",
+      "flaresolverrProxyUrlDesc": "Proxy for FlareSolverr browser when opening grok.com. Passed exactly as filled (no rewriting). Example: http://127.0.0.1:10086",
+      "flaresolverrProxyUrlPlaceholder": "http://127.0.0.1:10086",
+      "keysLabel": "API keys",
+      "keyCount": "{count} key(s) configured"
     }
   },
   "model": {

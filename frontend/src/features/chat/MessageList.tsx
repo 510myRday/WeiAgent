@@ -380,7 +380,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                     </Button>
                   </div>
                 ) : row.kind === 'waiting' ? (
-                  <WaitingBubble agent={activeAgent} settings={settings} retryStatus={retryStatus} />
+                  <WaitingBubble agent={activeAgent} settings={settings} retryStatus={retryStatus} runPhase={runPhase} />
                 ) : (
                   <MessageListItem
                     item={row.item}
@@ -475,16 +475,20 @@ function WaitingBubble({
   agent,
   settings,
   retryStatus,
+  runPhase,
 }: {
   agent?: Agent;
   settings: AppSettings;
   retryStatus: { attempt: number; maxAttempts: number; reason: string } | null;
+  runPhase: AgentRunPhase;
 }) {
   const { t } = useI18n();
   const isRetrying = Boolean(retryStatus);
   const label = isRetrying && retryStatus
     ? t('chat.retrying', { attempt: retryStatus.attempt, max: retryStatus.maxAttempts })
-    : t('chat.sending');
+    : runPhase === 'compacting_context'
+      ? t('chat.compactingContext')
+      : t('chat.sending');
   return (
     <article
       className={`message-row assistant is-streaming is-waiting${isRetrying ? ' is-retrying' : ''}`}

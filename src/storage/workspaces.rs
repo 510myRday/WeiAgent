@@ -51,8 +51,15 @@ impl JsonStore {
             agent.name, agent.id
         );
         // Calendar date only (local TZ). Stable within a day for prompt cache;
-        // intentionally not a timestamp.
-        let runtime_date = format!("## Runtime\n- Date: {}", crate::tools::prompt::today_date());
+        // intentionally not a timestamp. Worded as authoritative "today" so models
+        // do not fall back to older years from training/knowledge cutoffs.
+        let runtime_date = format!(
+            "## Runtime\n\
+本机本地时区的权威日历日（仅日期，不含时刻）。此为当前对话的“今天”，必须以此为准；不得沿用训练数据、知识截止日期或旧语境中更早的年份/日期假设。\n\
+- Date: {}\n\
+- Trust: absolute. If any prior belief conflicts with this date, discard that belief.",
+            crate::tools::prompt::today_date()
+        );
         let agent_sections = join_prompt_sections([
             ("Personality", workspace.personality.as_str()),
             ("Memory", workspace.memory.as_str()),
@@ -78,6 +85,10 @@ impl JsonStore {
                     LEGACY_AGENT_DESCRIPTION.to_string()
                 };
             }
+            agent.context_compress_threshold_percent =
+                crate::domain::coerce_context_compress_threshold(
+                    agent.context_compress_threshold_percent,
+                );
         }
 
         let existing_builtin = agents.iter().position(|agent| agent.is_builtin);
@@ -96,6 +107,7 @@ impl JsonStore {
                 is_builtin: true,
                 avatar_icon: BUILTIN_CEO_ICON.to_string(),
                 avatar_color: BUILTIN_CEO_COLOR.to_string(),
+                context_compress_threshold_percent: 90,
                 created_at: now,
                 updated_at: now,
             };
@@ -509,6 +521,45 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
                 )));
             }
         }
+        if let Some(flaresolverr_url) = source.flaresolverr_url.as_deref() {
+            let flaresolverr_url = flaresolverr_url.trim();
+            if !flaresolverr_url.is_empty()
+                && !(flaresolverr_url.starts_with("https://")
+                    || flaresolverr_url.starts_with("http://"))
+            {
+                return Err(crate::error::AppError::BadRequest(format!(
+                    "web_search source '{id}' flaresolverr_url must start with http:// or https://"
+                )));
+            }
+        }
+        if let Some(proxy_url) = source.proxy_url.as_deref() {
+            let proxy_url = proxy_url.trim();
+            if !proxy_url.is_empty()
+                && !(proxy_url.starts_with("http://")
+                    || proxy_url.starts_with("https://")
+                    || proxy_url.starts_with("socks5://")
+                    || proxy_url.starts_with("socks5h://")
+                    || proxy_url.starts_with("socks://"))
+            {
+                return Err(crate::error::AppError::BadRequest(format!(
+                    "web_search source '{id}' proxy_url must start with http://, https://, socks5:// or socks5h://"
+                )));
+            }
+        }
+        if let Some(proxy_url) = source.flaresolverr_proxy_url.as_deref() {
+            let proxy_url = proxy_url.trim();
+            if !proxy_url.is_empty()
+                && !(proxy_url.starts_with("http://")
+                    || proxy_url.starts_with("https://")
+                    || proxy_url.starts_with("socks5://")
+                    || proxy_url.starts_with("socks5h://")
+                    || proxy_url.starts_with("socks://"))
+            {
+                return Err(crate::error::AppError::BadRequest(format!(
+                    "web_search source '{id}' flaresolverr_proxy_url must start with http://, https://, socks5:// or socks5h://"
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -525,5 +576,6 @@ fn validate_tools_overrides(
     }
     validate_tools_config(&overrides.apply_to(defaults))
 }
+
 
 
