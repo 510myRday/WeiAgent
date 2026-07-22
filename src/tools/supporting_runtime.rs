@@ -720,7 +720,8 @@ async fn install_python(root: &Path, client: &reqwest::Client) -> AppResult<()> 
         .ok_or_else(|| AppError::Process("uv is required to install Python".to_string()))?;
     let install_dir = root.join("python");
     fs::create_dir_all(&install_dir).await?;
-    let target_version = latest_component_version(RuntimeComponentKind::Python, client, root).await?;
+    let target_version =
+        latest_component_version(RuntimeComponentKind::Python, client, root).await?;
     let output = Command::new(&uv)
         .args(["python", "install", &target_version])
         .env("UV_PYTHON_INSTALL_DIR", &install_dir)
@@ -784,15 +785,18 @@ async fn fetch_uv_release(client: &reqwest::Client) -> AppResult<GithubRelease> 
 }
 
 async fn fetch_git_tags(client: &reqwest::Client) -> AppResult<Vec<GithubTag>> {
-    github_api_request(client, "https://api.github.com/repos/git/git/tags?per_page=20")
-        .send()
-        .await
-        .map_err(download_error)?
-        .error_for_status()
-        .map_err(download_error)?
-        .json::<Vec<GithubTag>>()
-        .await
-        .map_err(download_error)
+    github_api_request(
+        client,
+        "https://api.github.com/repos/git/git/tags?per_page=20",
+    )
+    .send()
+    .await
+    .map_err(download_error)?
+    .error_for_status()
+    .map_err(download_error)?
+    .json::<Vec<GithubTag>>()
+    .await
+    .map_err(download_error)
 }
 
 async fn fetch_git_for_windows_release(client: &reqwest::Client) -> AppResult<GithubRelease> {
@@ -1132,8 +1136,7 @@ fn component_latest_cache_path(cache_root: &Path, kind: RuntimeComponentKind) ->
 
 fn component_latest_cache_is_fresh(cache: &ComponentLatestVersionCache) -> bool {
     let age = chrono::Utc::now().signed_duration_since(cache.checked_at);
-    age >= chrono::Duration::zero()
-        && age < chrono::Duration::hours(LATEST_VERSION_CACHE_HOURS)
+    age >= chrono::Duration::zero() && age < chrono::Duration::hours(LATEST_VERSION_CACHE_HOURS)
 }
 
 async fn read_component_latest_cache(
@@ -1297,12 +1300,14 @@ mod tests {
     fn component_latest_version_cache_expires_after_three_hours() {
         let fresh = ComponentLatestVersionCache {
             version: "2.55.0".to_string(),
-            checked_at: chrono::Utc::now() - chrono::Duration::hours(2)
+            checked_at: chrono::Utc::now()
+                - chrono::Duration::hours(2)
                 - chrono::Duration::minutes(59),
         };
         let stale = ComponentLatestVersionCache {
             version: "2.55.0".to_string(),
-            checked_at: chrono::Utc::now() - chrono::Duration::hours(3)
+            checked_at: chrono::Utc::now()
+                - chrono::Duration::hours(3)
                 - chrono::Duration::minutes(1),
         };
         assert!(component_latest_cache_is_fresh(&fresh));

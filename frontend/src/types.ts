@@ -7,6 +7,8 @@ export type AppSettings = {
   language: 'zh' | 'en';
   request_timeout_seconds: number;
   request_retry_attempts: number;
+  /** Global auto-compact threshold shared by every model and agent. */
+  context_compress_threshold_percent: number;
   llm_log_enabled: boolean;
 };
 
@@ -93,8 +95,6 @@ export type Agent = {
   avatar_icon: AvatarIcon;
   avatar_color: string;
   is_builtin: boolean;
-  /** Always-on auto-compact threshold (1-99). Default 90. */
-  context_compress_threshold_percent: number;
   created_at: string;
   updated_at: string;
 };
@@ -205,8 +205,6 @@ export type CreateAgentPayload = {
   model_id: string;
   avatar_icon: AvatarIcon;
   avatar_color: string;
-  /** Always-on auto-compact threshold (1-99). Default 90. */
-  context_compress_threshold_percent?: number;
 };
 
 export type UpdateAgentPayload = Partial<CreateAgentPayload>;

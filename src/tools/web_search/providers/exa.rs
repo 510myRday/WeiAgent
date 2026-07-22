@@ -2,7 +2,10 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::tools::web_search::types::{ProviderError, WebSearchHit, sanitize_error_message};
+use crate::tools::web_search::types::{
+    ProviderError, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind, WebSearchHit,
+    sanitize_error_message,
+};
 
 #[derive(Debug, Deserialize)]
 struct ExaResponse {
@@ -28,18 +31,29 @@ pub async fn search(
     client: &reqwest::Client,
     base_url: &str,
     api_key: &str,
-    query: &str,
-    max_results: u32,
-) -> Result<Vec<WebSearchHit>, ProviderError> {
+    request: &ProviderSearchRequest,
+) -> Result<ProviderSearchOutput, ProviderError> {
     let endpoint = format!("{}/search", base_url.trim_end_matches('/'));
-    let body = json!({
-        "query": query,
-        "numResults": max_results,
+    let mut body = json!({
+        "query": request.query,
+        "numResults": request.max_results,
         "contents": {
             "highlights": true,
             "text": { "maxCharacters": 1000 }
         }
     });
+    if let Some(object) = body.as_object_mut() {
+        if !request.allowed_domains.is_empty() {
+            object.insert("includeDomains".to_string(), json!(request.allowed_domains));
+        }
+        if !request.blocked_domains.is_empty() {
+            object.insert("excludeDomains".to_string(), json!(request.blocked_domains));
+        }
+        if let Some(days) = request.recency_days {
+            let start = chrono::Utc::now() - chrono::Duration::days(i64::from(days));
+            object.insert("startPublishedDate".to_string(), json!(start.to_rfc3339()));
+        }
+    }
 
     let response = client
         .post(&endpoint)
@@ -87,7 +101,7 @@ pub async fn search(
         ))
     })?;
 
-    Ok(parsed
+    let results = parsed
         .results
         .into_iter()
         .filter_map(|item| {
@@ -106,10 +120,68 @@ pub async fn search(
                     .unwrap_or_else(|| url.clone()),
                 url,
                 snippet,
+                kind: SearchHitKind::WebPage,
+                published_at: None,
                 score: item.score,
             })
         })
-        .collect())
+        .collect();
+    Ok(ProviderSearchOutput {
+        results,
+        ai_syntheses: Vec::new(),
+    })
+}
+
+pub fn classify_key_status(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("http 401")
+        || lower.contains("invalid_api_key")
+        || lower.contains("invalid api key")
+        || lower.contains("unauthorized")
+    {
+        return "invalid_key";
+    }
+    if lower.contains("http 402")
+        || lower.contains("no_more_credits")
+        || lower.contains("credits exhausted")
+        || lower.contains("spending budget exceeded")
+        || lower.contains("payment required")
+    {
+        return "quota_exhausted";
+    }
+    if lower.contains("http 429")
+        || lower.contains("rate limit")
+        || lower.contains("too many requests")
+    {
+        return "rate_limited";
+    }
+    if lower.contains("http 403")
+        || lower.contains("insufficient permissions")
+        || lower.contains("feature disabled")
+        || lower.contains("forbidden")
+    {
+        return "permission_denied";
+    }
+    if lower.contains("http 400") || lower.contains("invalid request") {
+        return "configuration_error";
+    }
+    if lower.contains("http 5")
+        || lower.contains("service unavailable")
+        || lower.contains("internal server error")
+        || lower.contains("bad gateway")
+    {
+        return "service_error";
+    }
+    if lower.contains("request failed")
+        || lower.contains("response body error")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("connect")
+        || lower.contains("dns")
+    {
+        return "network_error";
+    }
+    "error"
 }
 
 fn truncate(value: &str, max: usize) -> String {
@@ -143,5 +215,20 @@ mod tests {
         assert_eq!(parsed.results[0].title.as_deref(), Some("Exa Doc"));
         assert_eq!(parsed.results[0].highlights.as_ref().unwrap().len(), 2);
     }
-}
 
+    #[test]
+    fn classifies_exa_key_statuses() {
+        assert_eq!(
+            classify_key_status("Exa HTTP 401: INVALID_API_KEY"),
+            "invalid_key"
+        );
+        assert_eq!(
+            classify_key_status("Exa HTTP 402: NO_MORE_CREDITS"),
+            "quota_exhausted"
+        );
+        assert_eq!(
+            classify_key_status("Exa HTTP 429: rate limit exceeded"),
+            "rate_limited"
+        );
+    }
+}

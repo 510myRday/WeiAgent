@@ -20,7 +20,11 @@ use crate::{
             ExecuteTerminalRequest, MAX_SESSION_WAIT_MS, SandboxPermissions, TerminalManager,
             TerminalSessionAction, execute_terminal, process_read_to_result,
         },
-        web_search::{WebSearchArgs, execute_web_search},
+        web_search::{
+            WebSearchArgs, describe_web_search_sources,
+            evidence::{WebExtractArgs, execute_web_extract},
+            execute_web_search_with_status_updates,
+        },
     },
 };
 
@@ -70,7 +74,9 @@ impl ToolRegistry {
         registry.register(ExecuteTerminalTool);
         registry.register(TerminalSessionTool);
         registry.register(MultiEditFileTool);
+        registry.register(WebExtractTool);
         registry.register(WebSearchTool);
+        registry.register(WebSearchSourcesTool);
         registry
     }
 
@@ -243,8 +249,7 @@ impl AgentTool for ExecuteTerminalTool {
             Ok(config) => config,
             Err(message) => return ToolResult::Error { message },
         };
-        if terminal_config.permission_mode
-            == crate::domain::TerminalPermissionMode::RequestApproval
+        if terminal_config.permission_mode == crate::domain::TerminalPermissionMode::RequestApproval
             && sandbox_permissions == SandboxPermissions::RequireEscalated
             && justification
                 .as_deref()
@@ -707,8 +712,7 @@ impl AgentTool for MultiEditFileTool {
             Ok(config) => config,
             Err(message) => return ToolResult::Error { message },
         };
-        if terminal_config.permission_mode
-            == crate::domain::TerminalPermissionMode::RequestApproval
+        if terminal_config.permission_mode == crate::domain::TerminalPermissionMode::RequestApproval
             && args.sandbox_permissions == SandboxPermissions::RequireEscalated
         {
             let justification = args
@@ -865,7 +869,6 @@ impl AgentTool for MultiEditFileTool {
     }
 }
 
-
 struct WebSearchTool;
 
 #[async_trait]
@@ -873,7 +876,7 @@ impl AgentTool for WebSearchTool {
     fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
         tool_definition(
             "web_search",
-            "Search the public web and return ranked results with titles, URLs, and snippets. Use for up-to-date facts, docs, news, and references that are not already known from the conversation.",
+            "Search one or more complementary web sources in parallel. Returns deduplicated evidence candidates, per-source diagnostics, and separately labeled AI research syntheses. Use web_extract on important URLs before citing them.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -883,11 +886,70 @@ impl AgentTool for WebSearchTool {
                         "maxLength": 500,
                         "description": "Search query. Prefer concrete keywords or a short question."
                     },
-                    "max_results": {
+                    "additional_queries": {
+                        "type": "array",
+                        "maxItems": 3,
+                        "items": { "type": "string", "minLength": 1, "maxLength": 500 },
+                        "description": "Optional complementary query rewrites for parallel retrieval. Use for deep research, ambiguous wording, or likely vocabulary differences."
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["auto", "fast", "balanced", "deep", "custom"],
+                        "description": "Routing depth. fast uses one source at a time with fallback, balanced uses up to three independent sources in parallel, deep uses all eligible independent source groups, and custom follows source_ids/source_roles."
+                    },
+                    "source_roles": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "general_search",
+                                "semantic_research",
+                                "current_news",
+                                "official_docs",
+                                "technical_research",
+                                "academic_research",
+                                "fact_checking",
+                                "market_research",
+                                "product_research",
+                                "multilingual_search",
+                                "ai_research",
+                                "social_search"
+                            ]
+                        },
+                        "description": "Optional capability roles used to constrain server-side routing."
+                    },
+                    "source_ids": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "items": { "type": "string", "minLength": 1, "maxLength": 80 },
+                        "description": "Optional source IDs from web_search_sources. Prefer automatic routing unless a source characteristic materially fits the task."
+                    },
+                    "max_results_per_source": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 20,
-                        "description": "Maximum number of results to return. Defaults to the tool configuration when omitted."
+                        "description": "Maximum native results requested from each selected source."
+                    },
+                    "allowed_domains": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "uniqueItems": true,
+                        "items": { "type": "string", "minLength": 1, "maxLength": 253 },
+                        "description": "Only return results from these domains or their subdomains."
+                    },
+                    "blocked_domains": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "uniqueItems": true,
+                        "items": { "type": "string", "minLength": 1, "maxLength": 253 },
+                        "description": "Exclude results from these domains and their subdomains."
+                    },
+                    "recency_days": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3650,
+                        "description": "Prefer or require results published within this many days when supported by the source."
                     }
                 },
                 "required": ["query"],
@@ -897,7 +959,7 @@ impl AgentTool for WebSearchTool {
     }
 
     fn is_enabled(&self, config: &AgentToolsConfig) -> bool {
-        config.web_search.enabled && config.web_search.has_usable_source()
+        config.web_search.enabled
     }
 
     async fn execute(&self, arguments: Value, context: ToolExecutionContext) -> ToolResult {
@@ -909,7 +971,113 @@ impl AgentTool for WebSearchTool {
                 };
             }
         };
-        execute_web_search(args, &context.tools_config.web_search).await
+        let execution =
+            execute_web_search_with_status_updates(args, &context.tools_config.web_search).await;
+        if let Err(error) = context
+            .store
+            .update_web_search_key_statuses(&execution.status_updates)
+            .await
+        {
+            tracing::warn!(%error, "failed to persist web search key statuses");
+        }
+        execution.result
+    }
+}
+
+struct WebSearchSourcesTool;
+
+#[async_trait]
+impl AgentTool for WebSearchSourcesTool {
+    fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
+        tool_definition(
+            "web_search_sources",
+            "List the currently configured web search sources, their roles, strengths, limitations, cost/latency tiers, evidence type, independence group, capabilities, and health. Use before custom source selection; source state is dynamic and is intentionally not embedded in the stable web_search schema.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        )
+    }
+
+    fn is_enabled(&self, config: &AgentToolsConfig) -> bool {
+        config.web_search.enabled
+    }
+
+    async fn execute(&self, arguments: Value, context: ToolExecutionContext) -> ToolResult {
+        if !arguments.as_object().is_some_and(serde_json::Map::is_empty) {
+            return ToolResult::Error {
+                message: "web_search_sources accepts no arguments".to_string(),
+            };
+        }
+        let output = describe_web_search_sources(&context.tools_config.web_search);
+        match serde_json::to_string_pretty(&output) {
+            Ok(stdout) => ToolResult::Completed {
+                stdout,
+                stderr: String::new(),
+                exit_code: 0,
+                duration_ms: 0,
+                runtime: Some("builtin_web_search_sources".to_string()),
+                output_cursor: 0,
+            },
+            Err(error) => ToolResult::Error {
+                message: format!("failed to serialize web search sources: {error}"),
+            },
+        }
+    }
+}
+
+struct WebExtractTool;
+
+#[async_trait]
+impl AgentTool for WebExtractTool {
+    fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
+        tool_definition(
+            "web_extract",
+            "Open one to five public HTTP(S) URLs, follow safe redirects, extract HTML/text/PDF content, store the full evidence document, and return focused excerpts plus the final original URL for citation.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "urls": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 5,
+                        "uniqueItems": true,
+                        "items": { "type": "string", "format": "uri", "minLength": 8, "maxLength": 4096 },
+                        "description": "Original result URLs to open and verify. Prefer primary sources."
+                    },
+                    "query": {
+                        "type": "string",
+                        "maxLength": 500,
+                        "description": "Optional research question or keywords used to rank relevant excerpts."
+                    },
+                    "max_chars_per_url": {
+                        "type": "integer",
+                        "minimum": 1000,
+                        "maximum": 20000,
+                        "description": "Maximum excerpt characters returned per URL. Full extracted text remains in the evidence store."
+                    }
+                },
+                "required": ["urls"],
+                "additionalProperties": false
+            }),
+        )
+    }
+
+    fn is_enabled(&self, config: &AgentToolsConfig) -> bool {
+        config.web_search.enabled
+    }
+
+    async fn execute(&self, arguments: Value, context: ToolExecutionContext) -> ToolResult {
+        let args: WebExtractArgs = match serde_json::from_value(arguments) {
+            Ok(args) => args,
+            Err(error) => {
+                return ToolResult::Error {
+                    message: format!("Invalid web_extract arguments: {error}"),
+                };
+            }
+        };
+        execute_web_extract(args, &context.store.data_dir).await
     }
 }
 fn tool_definition(name: &str, description: &str, parameters: Value) -> ToolDefinition {
@@ -966,7 +1134,6 @@ fn build_execute_terminal_description() -> String {
         shell.display_name()
     )
 }
-
 
 async fn live_tools_config(context: &ToolExecutionContext) -> Result<AgentToolsConfig, String> {
     context
@@ -1180,23 +1347,39 @@ mod tests {
     }
 
     #[test]
-    fn web_search_enabled_only_with_keys() {
+    fn web_search_group_is_stable_across_key_and_health_changes() {
         let mut config = AgentToolsConfig::default();
         config.web_search.enabled = true;
-        let disabled = ToolRegistry::with_builtin_tools()
-            .definitions(&config)
-            .unwrap_or_default()
-            .into_iter()
-            .any(|item| item.function.name == "web_search");
-        assert!(!disabled);
+        let registry = ToolRegistry::with_builtin_tools();
+        let before = registry.definitions(&config).unwrap();
+        let names = before
+            .iter()
+            .filter_map(|item| {
+                item.function
+                    .name
+                    .starts_with("web_")
+                    .then_some(item.function.name.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["web_extract", "web_search", "web_search_sources"]
+        );
+        let before_hash = crate::llm::cache::tools_hash(Some(&before));
 
         config.web_search.sources[0].api_keys = vec!["sk-test".to_string()];
-        let enabled = ToolRegistry::with_builtin_tools()
-            .definitions(&config)
-            .unwrap_or_default()
-            .into_iter()
-            .any(|item| item.function.name == "web_search");
-        assert!(enabled);
+        config.web_search.sources[0].key_statuses =
+            vec![Some(crate::domain::WebSearchKeyStatusRecord {
+                status: "rate_limited".to_string(),
+                detail: "dynamic".to_string(),
+                checked_at: chrono::Utc::now().to_rfc3339(),
+            })];
+        config.web_search.sources[0].priority = 999;
+        for source in &mut config.web_search.sources {
+            source.enabled = false;
+        }
+        let after = registry.definitions(&config).unwrap();
+        assert_eq!(before_hash, crate::llm::cache::tools_hash(Some(&after)));
     }
 
     #[test]
@@ -1268,5 +1451,3 @@ mod tests {
         );
     }
 }
-
-

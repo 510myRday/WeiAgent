@@ -14,7 +14,9 @@ encoding_rs = "0.8"
 flate2 = "1"
 futures-util = "0.3"
 mime_guess = "2"
+pdf-extract = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "charset", "http2", "gzip", "deflate", "system-proxy", "socks"] }
+scraper = "0.23"
 wreq = { version = "6.0.0-rc.29", default-features = false, features = ["json", "gzip", "deflate", "brotli", "zstd", "socks", "system-proxy", "webpki-roots", "tokio-rt"] }
 wreq-util = "3.0.0-rc.14"
 rust-embed = "8"

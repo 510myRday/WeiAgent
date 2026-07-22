@@ -65,7 +65,6 @@ mod tests {
             is_builtin: false,
             avatar_icon: "bot".to_string(),
             avatar_color: "#22c55e".to_string(),
-            context_compress_threshold_percent: 90,
             created_at: now,
             updated_at: now,
         };

@@ -238,14 +238,32 @@ export function deleteLlmLog(logId: string): Promise<void> {
 
 export type WebSearchProviderKind = 'tavily' | 'exa' | 'jina' | 'grok';
 export type WebSearchKeySelection = 'sequential' | 'round_robin' | 'random';
+export type WebSearchSourceRole =
+  | 'general_search'
+  | 'semantic_research'
+  | 'current_news'
+  | 'official_docs'
+  | 'technical_research'
+  | 'academic_research'
+  | 'fact_checking'
+  | 'market_research'
+  | 'product_research'
+  | 'multilingual_search'
+  | 'ai_research'
+  | 'social_search';
 
 export type WebSearchSourceConfig = {
   id: string;
   provider: WebSearchProviderKind;
+  display_name: string;
   enabled: boolean;
+  deep_enabled: boolean;
+  priority: number;
+  independence_group: string;
+  roles: WebSearchSourceRole[];
   base_url?: string | null;
   api_keys: string[];
-  key_statuses?: Array<GrokKeyStatusRecord | null>;
+  key_statuses?: Array<WebSearchKeyStatusRecord | null>;
   flaresolverr_url?: string | null;
   flaresolverr_proxy_url?: string | null;
   proxy_url?: string | null;
@@ -259,43 +277,51 @@ export type WebSearchToolConfig = {
   sources: WebSearchSourceConfig[];
 };
 
-export type GrokKeyStatusRecord = {
-  status: GrokKeyStatus;
+export type WebSearchKeyStatusRecord = {
+  status: WebSearchKeyStatus;
   detail: string;
   checked_at: string;
 };
 
-export type GrokKeyStatus =
+export type WebSearchKeyStatus =
   | 'normal'
   | 'officially_blocked'
+  | 'invalid_key'
+  | 'quota_exhausted'
+  | 'rate_limited'
+  | 'permission_denied'
+  | 'configuration_error'
+  | 'service_error'
+  // Legacy persisted values retained for backward-compatible display.
   | 'quota_limited'
   | 'unauthorized'
   | 'anti_bot'
   | 'network_error'
   | 'error';
 
-export type GrokKeyCheckResult = {
+export type WebSearchKeyCheckResult = {
   key_index: number;
   key_hint: string;
-  status: GrokKeyStatus;
+  status: WebSearchKeyStatus;
   detail: string;
   latency_ms: number;
   checked_at: string;
 };
 
-export type GrokKeyCheckResponse = {
+export type WebSearchKeyCheckResponse = {
   source_id: string;
-  results: GrokKeyCheckResult[];
+  results: WebSearchKeyCheckResult[];
 };
 
-export type GrokKeyImportResponse = {
+export type WebSearchKeyImportResponse = {
   source_id: string;
   imported: number;
   duplicates: number;
+  blocked: number;
   source: WebSearchSourceConfig;
 };
 
-export type GrokKeyDeleteResponse = {
+export type WebSearchKeyDeleteResponse = {
   source_id: string;
   source: WebSearchSourceConfig;
 };
@@ -420,12 +446,12 @@ export function updateToolDefaults(config: AgentToolsConfig): Promise<AgentTools
   });
 }
 
-export function checkGrokKeys(
+export function checkWebSearchKeys(
   sourceId: string,
   keyIndices: number[] = [],
-): Promise<GrokKeyCheckResponse> {
-  return request<GrokKeyCheckResponse>(
-    '/api/tools/grok-keys/check',
+): Promise<WebSearchKeyCheckResponse> {
+  return request<WebSearchKeyCheckResponse>(
+    '/api/tools/web-search-keys/check',
     {
       method: 'POST',
       body: JSON.stringify({ source_id: sourceId, key_indices: keyIndices }),
@@ -435,12 +461,12 @@ export function checkGrokKeys(
   );
 }
 
-export function importGrokKeys(
+export function importWebSearchKeys(
   sourceId: string,
   apiKeys: string[],
-): Promise<GrokKeyImportResponse> {
-  return request<GrokKeyImportResponse>(
-    '/api/tools/grok-keys/import',
+): Promise<WebSearchKeyImportResponse> {
+  return request<WebSearchKeyImportResponse>(
+    '/api/tools/web-search-keys/import',
     {
       method: 'POST',
       body: JSON.stringify({ source_id: sourceId, api_keys: apiKeys }),
@@ -448,12 +474,12 @@ export function importGrokKeys(
   );
 }
 
-export function deleteGrokKey(
+export function deleteWebSearchKey(
   sourceId: string,
   keyIndex: number,
-): Promise<GrokKeyDeleteResponse> {
-  return request<GrokKeyDeleteResponse>(
-    '/api/tools/grok-keys/delete',
+): Promise<WebSearchKeyDeleteResponse> {
+  return request<WebSearchKeyDeleteResponse>(
+    '/api/tools/web-search-keys/delete',
     {
       method: 'POST',
       body: JSON.stringify({ source_id: sourceId, key_index: keyIndex }),

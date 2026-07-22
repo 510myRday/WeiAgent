@@ -1,5 +1,5 @@
-pub mod client;
 pub mod cache;
+pub mod client;
 pub mod http;
 pub mod protocol;
 pub mod registry;

@@ -249,7 +249,10 @@ fn has_multi_edit_grant(
         workspace.root.display().to_string(),
         workspace.cwd.display().to_string(),
     ];
-    if let Some(cwd) = requested_cwd.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(cwd) = requested_cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         candidates.push(cwd.to_string());
     }
     config.approval_grants.iter().any(|grant| {
@@ -695,7 +698,11 @@ fn stage_operation(
                 content,
             });
         }
-        MultiEditFileOperation::Move { from, to, overwrite } => {
+        MultiEditFileOperation::Move {
+            from,
+            to,
+            overwrite,
+        } => {
             let from_path = resolve_operation_path(cwd, from)?;
             let to_path = resolve_operation_path(cwd, to)?;
             ensure_unique(touched, &from_path)?;
@@ -952,7 +959,11 @@ fn choose_closest_match(content: &str, matches: &[usize], start_line: usize) -> 
         return None;
     }
     matches.iter().copied().min_by_key(|idx| {
-        let line = content[..*idx].bytes().filter(|byte| *byte == b'\n').count() + 1;
+        let line = content[..*idx]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1;
         line.abs_diff(start_line)
     })
 }

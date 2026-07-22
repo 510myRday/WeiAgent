@@ -45,7 +45,6 @@ const defaultAgentForm: CreateAgentPayload = {
   model_id: '',
   avatar_icon: 'bot',
   avatar_color: defaultAvatarColor('bot'),
-  context_compress_threshold_percent: 90,
 };
 
 const defaultWorkspaceForm: Pick<AgentWorkspace, 'personality' | 'memory' | 'instructions'> = {
@@ -386,9 +385,6 @@ export function AgentsPanel({
       model_id: agentForm.model_id.trim(),
       avatar_icon: agentForm.avatar_icon,
       avatar_color: agentForm.avatar_color,
-      context_compress_threshold_percent: clampCompressThreshold(
-        agentForm.context_compress_threshold_percent ?? 90,
-      ),
     };
     if (!payload.name || !payload.description || !payload.model_provider_id || !payload.model_id) {
       setActiveSection('basic');
@@ -630,34 +626,6 @@ export function AgentsPanel({
                           {selectedAgentProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}
                         </select>
                       </FormField>
-                      <FormField
-                        label={t('agentConfig.contextCompressThreshold')}
-                        htmlFor="agent-context-compress-threshold"
-                        hint={t('agentConfig.contextCompressThresholdHint')}
-                      >
-                        <div className="agent-threshold-input">
-                          <input
-                            id="agent-context-compress-threshold"
-                            type="number"
-                            min={1}
-                            max={99}
-                            step={1}
-                            value={clampCompressThreshold(agentForm.context_compress_threshold_percent ?? 90)}
-                            onChange={(e) => {
-                              setAgentForm({
-                                ...agentForm,
-                                context_compress_threshold_percent: clampCompressThreshold(
-                                  Number(e.target.value),
-                                ),
-                              });
-                              setAgentFormDirty(true);
-                            }}
-                            disabled={isSubmittingAgent}
-                            required
-                          />
-                          <span className="agent-threshold-unit">{t('agentConfig.contextCompressThresholdUnit')}</span>
-                        </div>
-                      </FormField>
                     </div>
                   )}
                 </div>
@@ -805,9 +773,6 @@ function agentPayloadFromAgent(agent: Agent): CreateAgentPayload {
     model_id: agent.model_id,
     avatar_icon: agent.avatar_icon,
     avatar_color: agent.avatar_color,
-    context_compress_threshold_percent: clampCompressThreshold(
-      agent.context_compress_threshold_percent ?? 90,
-    ),
   };
 }
 
@@ -819,15 +784,7 @@ function agentPayloadFromForm(agent: Agent, form: CreateAgentPayload): CreateAge
     model_id: form.model_id.trim(),
     avatar_icon: form.avatar_icon,
     avatar_color: form.avatar_color,
-    context_compress_threshold_percent: clampCompressThreshold(
-      form.context_compress_threshold_percent ?? 90,
-    ),
   };
-}
-
-function clampCompressThreshold(value: number): number {
-  if (!Number.isFinite(value)) return 90;
-  return Math.min(99, Math.max(1, Math.round(value)));
 }
 
 function serializeAgentSnapshot(

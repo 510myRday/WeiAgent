@@ -77,7 +77,10 @@ pub async fn prepare_chat(
     if tools_config.terminal.enabled && !state.codex_runtime.is_available_cached() {
         tools_config.terminal.enabled = false;
     }
-    let system_prompt = state.store.build_agent_system_prompt(&agent).await?;
+    let system_prompt = state
+        .store
+        .build_agent_system_prompt(&agent, &tools_config)
+        .await?;
     if system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
         return Err(AppError::BadRequest(format!(
             "agent system prompt exceeds {MAX_SYSTEM_PROMPT_BYTES} bytes"
@@ -93,10 +96,7 @@ pub async fn prepare_chat(
         .store
         .read_conversation_messages(conversation_id)
         .await?;
-    let checkpoint = state
-        .store
-        .read_context_checkpoint(conversation_id)
-        .await?;
+    let checkpoint = state.store.read_context_checkpoint(conversation_id).await?;
     let history_for_llm =
         crate::app::context_compress::build_llm_messages(&history, checkpoint.as_ref());
     let user_message = ChatMessage {

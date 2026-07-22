@@ -113,10 +113,7 @@ pub fn build_chat_request(
         OpenAiMessage {
             role: message.role.as_openai_role().to_string(),
             content: openai_message_content(message),
-            tool_calls: message
-                .tool_calls
-                .as_ref()
-                .map(strip_tool_call_ui_fields),
+            tool_calls: message.tool_calls.as_ref().map(strip_tool_call_ui_fields),
             tool_call_id: if message.role.as_openai_role() == "tool" {
                 message.tool_call_id.clone()
             } else {
@@ -158,7 +155,6 @@ fn sanitized_openai_extra_body(extra_body: &serde_json::Value) -> serde_json::Va
     }
     serde_json::Value::Object(extra)
 }
-
 
 /// Strip UI-only fields (e.g. permission_mode) before sending tool_calls to the model.
 /// DB/history may keep them for the frontend; the model request must stay clean for
@@ -390,7 +386,8 @@ pub struct OpenAiInputTokenDetails {
 
 impl OpenAiUsage {
     pub fn normalized(&self) -> TokenUsage {
-        let cached = self.prompt_tokens_details
+        let cached = self
+            .prompt_tokens_details
             .as_ref()
             .map_or(0, |details| details.cached_tokens)
             .max(self.prompt_cache_hit_tokens)
@@ -415,7 +412,11 @@ impl OpenAiUsage {
 
 fn ratio(hit: u64, uncached: u64) -> f64 {
     let denominator = hit.saturating_add(uncached);
-    if denominator == 0 { 0.0 } else { hit as f64 / denominator as f64 }
+    if denominator == 0 {
+        0.0
+    } else {
+        hit as f64 / denominator as f64
+    }
 }
 
 #[cfg(test)]
@@ -434,7 +435,8 @@ mod tests {
             "completion_tokens": 20,
             "prompt_cache_hit_tokens": 1200,
             "prompt_cache_miss_tokens": 600
-        })).unwrap();
+        }))
+        .unwrap();
         let normalized = usage.normalized();
         assert_eq!(normalized.input_tokens, 600);
         assert_eq!(normalized.cache_read_tokens, 1200);
@@ -524,7 +526,6 @@ mod tests {
             is_builtin: false,
             avatar_icon: "bot".into(),
             avatar_color: "#000".into(),
-            context_compress_threshold_percent: 90,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

@@ -1,329 +1,1267 @@
-use crate::domain::{
-    WebSearchProviderKind, WebSearchToolConfig, ToolResult,
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::{Duration, Instant};
+
+use futures_util::future::join_all;
+use serde::{Deserialize, Serialize};
+
+use crate::domain::tools::{
+    MAX_WEB_SEARCH_QUERIES, MAX_WEB_SEARCH_QUERY_CHARS, MAX_WEB_SEARCH_RESULTS,
+    WebSearchKeyStatusUpdate,
 };
-use crate::domain::tools::{MAX_WEB_SEARCH_QUERY_CHARS, MAX_WEB_SEARCH_RESULTS};
+use crate::domain::{
+    ToolResult, WebSearchKeyStatusRecord, WebSearchProviderKind, WebSearchSourceConfig,
+    WebSearchSourceRole, WebSearchToolConfig,
+};
 
 use self::key_pool::key_attempt_order;
 use self::providers::{exa, grok, jina, tavily};
-use crate::domain::tools::mask_api_key;
-
 use self::types::{
-    ProviderError, WebSearchKeyAttempt, WebSearchOutput, sanitize_error_message,
+    AggregatedSearchResult, ProviderError, ProviderSearchOutput, ProviderSearchRequest,
+    SearchHitKind, SearchMode, SearchSourceDescriptor, SourceRunSummary, WebSearchOutput,
+    sanitize_error_message,
 };
 
+pub mod evidence;
 pub mod key_pool;
 pub mod providers;
 pub mod types;
 
-#[derive(Debug, Clone, serde::Deserialize)]
+const MAX_SELECTED_SOURCES: usize = 6;
+const MAX_FILTER_DOMAINS: usize = 20;
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebSearchArgs {
     pub query: String,
     #[serde(default)]
-    pub max_results: Option<u32>,
+    pub additional_queries: Vec<String>,
+    #[serde(default)]
+    pub mode: SearchMode,
+    #[serde(default)]
+    pub source_roles: Vec<WebSearchSourceRole>,
+    #[serde(default)]
+    pub source_ids: Vec<String>,
+    #[serde(default)]
+    pub max_results_per_source: Option<u32>,
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    #[serde(default)]
+    pub blocked_domains: Vec<String>,
+    #[serde(default)]
+    pub recency_days: Option<u32>,
 }
 
-pub async fn execute_web_search(args: WebSearchArgs, config: &WebSearchToolConfig) -> ToolResult {
-    let started = std::time::Instant::now();
-    let query = args.query.trim();
-    if query.is_empty() {
-        return ToolResult::Error {
-            message: "query must not be empty".to_string(),
-        };
+#[derive(Debug, Clone, Serialize)]
+pub struct WebSearchSourcesOutput {
+    pub sources: Vec<SearchSourceDescriptor>,
+    pub routing_modes: Vec<&'static str>,
+    pub guidance: &'static str,
+}
+
+pub fn describe_web_search_sources(config: &WebSearchToolConfig) -> WebSearchSourcesOutput {
+    let mut sources = config
+        .sources
+        .iter()
+        .map(SearchSourceDescriptor::from_config)
+        .collect::<Vec<_>>();
+    sources.sort_by(|left, right| {
+        left.priority
+            .cmp(&right.priority)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    WebSearchSourcesOutput {
+        sources,
+        routing_modes: vec!["auto", "fast", "balanced", "deep", "custom"],
+        guidance: "Use source_ids only when a documented source characteristic materially fits the task. AI syntheses are hypotheses, not independent evidence.",
     }
-    if query.chars().count() > MAX_WEB_SEARCH_QUERY_CHARS {
-        return ToolResult::Error {
-            message: format!("query must be at most {MAX_WEB_SEARCH_QUERY_CHARS} characters"),
-        };
+}
+
+pub(crate) struct WebSearchExecution {
+    pub result: ToolResult,
+    pub status_updates: Vec<WebSearchKeyStatusUpdate>,
+}
+
+pub(crate) async fn execute_web_search_with_status_updates(
+    args: WebSearchArgs,
+    config: &WebSearchToolConfig,
+) -> WebSearchExecution {
+    let started = Instant::now();
+    let queries = match normalize_queries(&args) {
+        Ok(queries) => queries,
+        Err(message) => return execution_error(message),
+    };
+    if args.allowed_domains.len() > MAX_FILTER_DOMAINS
+        || args.blocked_domains.len() > MAX_FILTER_DOMAINS
+    {
+        return execution_error(format!(
+            "allowed_domains and blocked_domains each support at most {MAX_FILTER_DOMAINS} entries"
+        ));
+    }
+    if args.recency_days == Some(0) {
+        return execution_error("recency_days must be at least 1".to_string());
+    }
+
+    let actual_mode = resolve_mode(&args.mode, &queries);
+    let selected_sources = match select_sources(config, &args, &actual_mode) {
+        Ok(sources) => sources,
+        Err(message) => return execution_error(message),
+    };
+    if selected_sources.is_empty() {
+        return execution_error("no enabled web search source matches this request".to_string());
     }
 
     let max_results = args
-        .max_results
+        .max_results_per_source
         .unwrap_or_else(|| config.max_results())
         .clamp(1, MAX_WEB_SEARCH_RESULTS);
+    let allowed_domains = normalize_domains(&args.allowed_domains);
+    let blocked_domains = normalize_domains(&args.blocked_domains);
+    let executions = if actual_mode == SearchMode::Fast {
+        let mut attempts = Vec::new();
+        for source in &selected_sources {
+            let batch = execute_source_batch(
+                std::slice::from_ref(source),
+                &queries,
+                max_results,
+                &allowed_domains,
+                &blocked_domains,
+                args.recency_days,
+                config,
+            )
+            .await;
+            let succeeded = batch.iter().any(|execution| {
+                execution.output.as_ref().is_some_and(|output| {
+                    !output.results.is_empty() || !output.ai_syntheses.is_empty()
+                })
+            });
+            attempts.extend(batch);
+            if succeeded {
+                break;
+            }
+        }
+        attempts
+    } else {
+        execute_source_batch(
+            &selected_sources,
+            &queries,
+            max_results,
+            &allowed_domains,
+            &blocked_domains,
+            args.recency_days,
+            config,
+        )
+        .await
+    };
 
-    let sources: Vec<_> = config.usable_sources().cloned().collect();
-    if sources.is_empty() {
-        return ToolResult::Error {
-            message: "web_search has no enabled source with API keys".to_string(),
-        };
+    let mut status_update_map = BTreeMap::new();
+    let mut source_runs = Vec::new();
+    let mut provider_outputs = Vec::new();
+    let mut attempted_sources = Vec::new();
+    let mut attempted_source_ids = HashSet::new();
+    for execution in executions {
+        if attempted_source_ids.insert(execution.source.id.clone()) {
+            attempted_sources.push(execution.source.clone());
+        }
+        for update in execution.status_updates {
+            merge_status_update(&mut status_update_map, update);
+        }
+        source_runs.push(execution.summary);
+        if let Some(output) = execution.output {
+            provider_outputs.push((execution.source, execution.query, output));
+        }
     }
 
-    let timeout = std::time::Duration::from_millis(config.timeout_ms());
+    let mut ai_syntheses = provider_outputs
+        .iter()
+        .flat_map(|(_, _, output)| output.ai_syntheses.clone())
+        .collect::<Vec<_>>();
+    ai_syntheses.truncate(8);
+    let results = aggregate_results(&provider_outputs, &allowed_domains, &blocked_domains);
+    let selected_descriptors = attempted_sources
+        .iter()
+        .map(SearchSourceDescriptor::from_config)
+        .collect::<Vec<_>>();
+    let output = WebSearchOutput {
+        mode: actual_mode,
+        queries,
+        result_count: results.len(),
+        results,
+        ai_syntheses,
+        selected_sources: selected_descriptors,
+        source_runs,
+        citation_instruction: "Extract and verify the most relevant original pages before citing. Place each Markdown link next to the claim it supports. AI syntheses are unverified and do not count as independent evidence.".to_string(),
+    };
+    let status_updates = status_update_map.into_values().collect::<Vec<_>>();
+
+    match serde_json::to_string_pretty(&output) {
+        Ok(stdout) => WebSearchExecution {
+            result: ToolResult::Completed {
+                stdout,
+                stderr: String::new(),
+                exit_code: 0,
+                duration_ms: started.elapsed().as_millis() as u64,
+                runtime: Some("builtin_web_search".to_string()),
+                output_cursor: 0,
+            },
+            status_updates,
+        },
+        Err(error) => WebSearchExecution {
+            result: ToolResult::Error {
+                message: format!("failed to serialize search results: {error}"),
+            },
+            status_updates,
+        },
+    }
+}
+
+fn merge_status_update(
+    updates: &mut BTreeMap<(String, usize, String), WebSearchKeyStatusUpdate>,
+    update: WebSearchKeyStatusUpdate,
+) {
+    let key = (
+        update.source_id.clone(),
+        update.key_index,
+        update.api_key.clone(),
+    );
+    match updates.get(&key) {
+        Some(existing)
+            if key_status_severity(&existing.record.status)
+                >= key_status_severity(&update.record.status) => {}
+        _ => {
+            updates.insert(key, update);
+        }
+    }
+}
+
+fn key_status_severity(status: &str) -> u8 {
+    match status {
+        "officially_blocked" => 9,
+        "invalid_key" | "unauthorized" => 8,
+        "quota_exhausted" | "permission_denied" | "configuration_error" => 7,
+        "quota_limited" | "rate_limited" => 6,
+        "anti_bot" => 5,
+        "network_error" | "service_error" => 4,
+        "error" => 3,
+        "normal" => 0,
+        _ => 2,
+    }
+}
+
+async fn execute_source_batch(
+    sources: &[WebSearchSourceConfig],
+    queries: &[String],
+    max_results: u32,
+    allowed_domains: &[String],
+    blocked_domains: &[String],
+    recency_days: Option<u32>,
+    config: &WebSearchToolConfig,
+) -> Vec<SourceExecution> {
+    let selected_keys = sources
+        .iter()
+        .map(|source| (source.id.clone(), select_source_key(source, config)))
+        .collect::<HashMap<_, _>>();
+    let requests = queries
+        .iter()
+        .flat_map(|query| {
+            let selected_keys = &selected_keys;
+            sources.iter().cloned().map(move |source| {
+                let selected_key = selected_keys.get(&source.id).cloned().flatten();
+                (
+                    source,
+                    ProviderSearchRequest {
+                        query: query.clone(),
+                        max_results,
+                        allowed_domains: allowed_domains.to_vec(),
+                        blocked_domains: blocked_domains.to_vec(),
+                        recency_days,
+                    },
+                    selected_key,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    join_all(requests.into_iter().map(|(source, request, selected_key)| {
+        execute_source_query_with_timeout(source, request, selected_key, config)
+    }))
+    .await
+}
+
+async fn execute_source_query_with_timeout(
+    source: WebSearchSourceConfig,
+    request: ProviderSearchRequest,
+    selected_key: Option<(usize, String)>,
+    config: &WebSearchToolConfig,
+) -> SourceExecution {
+    let deadline = if source.provider == WebSearchProviderKind::Grok {
+        Duration::from_millis(config.timeout_ms()).max(Duration::from_secs(90))
+    } else {
+        Duration::from_millis(config.timeout_ms())
+    };
+    let timeout_source = source.clone();
+    let timeout_query = request.query.clone();
+    let timeout_key = selected_key.clone();
+    let started = Instant::now();
+    match tokio::time::timeout(
+        deadline,
+        execute_source_query(source, request, selected_key, config),
+    )
+    .await
+    {
+        Ok(execution) => execution,
+        Err(_) => {
+            let status_updates = timeout_key
+                .map(|(key_index, api_key)| {
+                    vec![key_status_update(
+                        &timeout_source.id,
+                        key_index,
+                        &api_key,
+                        "network_error".to_string(),
+                        "source request timed out".to_string(),
+                    )]
+                })
+                .unwrap_or_default();
+            source_failure(
+                timeout_source,
+                timeout_query,
+                started,
+                "timed_out",
+                format!("source request exceeded {} ms", deadline.as_millis()),
+                status_updates,
+            )
+        }
+    }
+}
+
+fn select_source_key(
+    source: &WebSearchSourceConfig,
+    config: &WebSearchToolConfig,
+) -> Option<(usize, String)> {
+    let keys = source
+        .api_keys
+        .iter()
+        .enumerate()
+        .map(|(key_index, key)| (key_index, key.trim().to_string()))
+        .filter(|(_, key)| !key.is_empty() && !source.is_api_key_blocked(key))
+        .collect::<Vec<_>>();
+    let index = key_attempt_order(&source.id, keys.len(), &config.key_selection)
+        .into_iter()
+        .min_by_key(|index| key_health_rank(source, keys[*index].0))?;
+    keys.get(index).cloned()
+}
+
+fn execution_error(message: String) -> WebSearchExecution {
+    WebSearchExecution {
+        result: ToolResult::Error { message },
+        status_updates: Vec::new(),
+    }
+}
+
+fn normalize_queries(args: &WebSearchArgs) -> Result<Vec<String>, String> {
+    let mut raw = Vec::with_capacity(1 + args.additional_queries.len());
+    raw.push(args.query.as_str());
+    raw.extend(args.additional_queries.iter().map(String::as_str));
+    if raw.len() > MAX_WEB_SEARCH_QUERIES {
+        return Err(format!(
+            "web_search supports at most {MAX_WEB_SEARCH_QUERIES} queries per call"
+        ));
+    }
+    let mut seen = HashSet::new();
+    let mut queries = Vec::new();
+    for query in raw {
+        let query = query.trim();
+        if query.is_empty() {
+            continue;
+        }
+        if query.chars().count() > MAX_WEB_SEARCH_QUERY_CHARS {
+            return Err(format!(
+                "each query must be at most {MAX_WEB_SEARCH_QUERY_CHARS} characters"
+            ));
+        }
+        let key = query.to_lowercase();
+        if seen.insert(key) {
+            queries.push(query.to_string());
+        }
+    }
+    if queries.is_empty() {
+        return Err("query must not be empty".to_string());
+    }
+    Ok(queries)
+}
+
+fn resolve_mode(requested: &SearchMode, queries: &[String]) -> SearchMode {
+    if requested != &SearchMode::Auto {
+        return requested.clone();
+    }
+    let query = queries.join(" ").to_lowercase();
+    if [
+        "deep research",
+        "comprehensive",
+        "in-depth",
+        "深度调研",
+        "深入调研",
+        "全面调研",
+        "系统调研",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        SearchMode::Deep
+    } else if [
+        "latest", "current", "today", "news", "compare", "最新", "当前", "今天", "新闻", "对比",
+        "比较",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        SearchMode::Balanced
+    } else {
+        SearchMode::Fast
+    }
+}
+
+fn select_sources(
+    config: &WebSearchToolConfig,
+    args: &WebSearchArgs,
+    mode: &SearchMode,
+) -> Result<Vec<WebSearchSourceConfig>, String> {
+    if mode == &SearchMode::Custom && args.source_ids.is_empty() && args.source_roles.is_empty() {
+        return Err("custom mode requires source_ids or source_roles".to_string());
+    }
+    let requested_ids = args
+        .source_ids
+        .iter()
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<HashSet<_>>();
+    let requested_roles = args.source_roles.iter().cloned().collect::<HashSet<_>>();
+    let inferred_roles = if requested_roles.is_empty() {
+        infer_source_roles(args)
+    } else {
+        HashSet::new()
+    };
+    let mut candidates = config
+        .sources
+        .iter()
+        .filter(|source| source.enabled)
+        .filter(|source| {
+            requested_ids.is_empty() || requested_ids.contains(&source.id.trim().to_lowercase())
+        })
+        .filter(|source| {
+            requested_roles.is_empty()
+                || source
+                    .roles()
+                    .iter()
+                    .any(|role| requested_roles.contains(role))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !requested_ids.is_empty() {
+        let found = candidates
+            .iter()
+            .map(|source| source.id.trim().to_lowercase())
+            .collect::<HashSet<_>>();
+        let missing = requested_ids
+            .difference(&found)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(format!(
+                "unknown or disabled web search source_ids: {}",
+                missing.join(", ")
+            ));
+        }
+    }
+    candidates.sort_by(|left, right| {
+        let left_fit = left
+            .roles()
+            .iter()
+            .filter(|role| inferred_roles.contains(role))
+            .count();
+        let right_fit = right
+            .roles()
+            .iter()
+            .filter(|role| inferred_roles.contains(role))
+            .count();
+        right_fit
+            .cmp(&left_fit)
+            .then_with(|| left.priority.cmp(&right.priority))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    if !requested_ids.is_empty() || mode == &SearchMode::Custom {
+        candidates.truncate(MAX_SELECTED_SOURCES);
+        return Ok(candidates);
+    }
+
+    candidates.retain(WebSearchSourceConfig::has_available_key);
+    let limit = match mode {
+        SearchMode::Fast => 3,
+        SearchMode::Balanced | SearchMode::Auto => 3,
+        SearchMode::Deep => MAX_SELECTED_SOURCES,
+        SearchMode::Custom => MAX_SELECTED_SOURCES,
+    };
+    let mut groups = HashSet::new();
+    let mut selected = Vec::new();
+    for source in candidates {
+        if mode == &SearchMode::Deep && !source.deep_enabled {
+            continue;
+        }
+        if groups.insert(source.independence_group().to_lowercase()) {
+            selected.push(source);
+        }
+        if selected.len() >= limit {
+            break;
+        }
+    }
+    Ok(selected)
+}
+
+fn infer_source_roles(args: &WebSearchArgs) -> HashSet<WebSearchSourceRole> {
+    let query = std::iter::once(args.query.as_str())
+        .chain(args.additional_queries.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let mut roles = HashSet::new();
+    if [
+        "latest", "current", "today", "news", "breaking", "最新", "当前", "今天", "新闻", "近期",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        roles.insert(WebSearchSourceRole::CurrentNews);
+    }
+    if args.recency_days.is_some() {
+        roles.insert(WebSearchSourceRole::CurrentNews);
+    }
+    if [
+        "twitter", "x.com", "social", "reddit", "推特", "社交", "舆情", "帖子",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        roles.insert(WebSearchSourceRole::SocialSearch);
+    }
+    if [
+        "verify",
+        "fact check",
+        "true or false",
+        "rumor",
+        "misinformation",
+        "核实",
+        "核验",
+        "事实核查",
+        "真假",
+        "谣言",
+        "是否属实",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        roles.insert(WebSearchSourceRole::FactChecking);
+    }
+    if [
+        "docs",
+        "documentation",
+        "api",
+        "sdk",
+        "github",
+        "official",
+        "文档",
+        "官方",
+        "源码",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        roles.insert(WebSearchSourceRole::OfficialDocs);
+        roles.insert(WebSearchSourceRole::TechnicalResearch);
+        roles.insert(WebSearchSourceRole::SemanticResearch);
+    }
+    if [
+        "developer",
+        "programming",
+        "software",
+        "source code",
+        "bug",
+        "error",
+        "技术",
+        "开发",
+        "编程",
+        "代码",
+        "源码",
+        "报错",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        roles.insert(WebSearchSourceRole::TechnicalResearch);
+        roles.insert(WebSearchSourceRole::SemanticResearch);
+    }
+    if [
+        "paper",
+        "academic",
+        "journal",
+        "doi",
+        "arxiv",
+        "literature",
+        "论文",
+        "学术",
+        "期刊",
+        "文献",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        roles.insert(WebSearchSourceRole::AcademicResearch);
+        roles.insert(WebSearchSourceRole::SemanticResearch);
+    }
+    if [
+        "market",
+        "industry",
+        "business",
+        "company",
+        "financial",
+        "revenue",
+        "market share",
+        "市场",
+        "行业",
+        "商业",
+        "公司",
+        "财报",
+        "营收",
+        "份额",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        roles.insert(WebSearchSourceRole::MarketResearch);
+    }
+    if [
+        "compare",
+        "comparison",
+        "review",
+        "recommend",
+        "versus",
+        " vs ",
+        "price",
+        "buy",
+        "对比",
+        "比较",
+        "评测",
+        "推荐",
+        "价格",
+        "购买",
+        "哪个好",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        roles.insert(WebSearchSourceRole::ProductResearch);
+    }
+    if [
+        "multilingual",
+        "cross-language",
+        "non-english",
+        "多语言",
+        "跨语言",
+        "外文",
+        "日文",
+        "韩文",
+        "德文",
+        "法文",
+        "西班牙文",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        roles.insert(WebSearchSourceRole::MultilingualSearch);
+    }
+    if [
+        "related",
+        "similar",
+        "concept",
+        "background",
+        "discover",
+        "相关",
+        "相似",
+        "概念",
+        "背景",
+        "探索",
+        "综述",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        roles.insert(WebSearchSourceRole::SemanticResearch);
+    }
+    if [
+        "synthesize",
+        "research brief",
+        "executive summary",
+        "综合分析",
+        "综合调研",
+        "调研报告",
+        "汇总分析",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+    {
+        roles.insert(WebSearchSourceRole::AiResearch);
+    }
+    if roles.is_empty() {
+        roles.insert(WebSearchSourceRole::GeneralSearch);
+    }
+    roles
+}
+
+struct SourceExecution {
+    source: WebSearchSourceConfig,
+    query: String,
+    output: Option<ProviderSearchOutput>,
+    summary: SourceRunSummary,
+    status_updates: Vec<WebSearchKeyStatusUpdate>,
+}
+
+async fn execute_source_query(
+    source: WebSearchSourceConfig,
+    request: ProviderSearchRequest,
+    selected_key: Option<(usize, String)>,
+    config: &WebSearchToolConfig,
+) -> SourceExecution {
+    let started = Instant::now();
+    let provider = source.provider.as_str().to_string();
+    let query = request.query.clone();
+    let Some((key_index, api_key)) = selected_key else {
+        return source_failure(
+            source,
+            query,
+            started,
+            "unavailable",
+            "source has no usable credential".to_string(),
+            Vec::new(),
+        );
+    };
+    let timeout = Duration::from_millis(config.timeout_ms());
     let control_client = match reqwest::Client::builder().timeout(timeout).build() {
         Ok(client) => client,
         Err(error) => {
-            return ToolResult::Error {
-                message: format!("failed to build HTTP client: {error}"),
-            };
+            return source_failure(
+                source,
+                query,
+                started,
+                "failed",
+                format!("failed to build HTTP client: {error}"),
+                Vec::new(),
+            );
         }
     };
-
-    let mut last_error: Option<String> = None;
-    let mut key_attempts: Vec<WebSearchKeyAttempt> = Vec::new();
-
-    for source in sources {
-        let keys: Vec<String> = source
-            .api_keys
-            .iter()
-            .map(|key| key.trim().to_string())
-            .filter(|key| !key.is_empty())
-            .collect();
-        if keys.is_empty() {
-            continue;
+    let base_url = source
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| source.provider.default_base_url())
+        .to_string();
+    let result = match source.provider {
+        WebSearchProviderKind::Tavily => {
+            tavily::search(&control_client, &base_url, &api_key, &request).await
         }
-
-        let order = key_attempt_order(&source.id, keys.len(), &config.key_selection);
-        let base_url = source
-            .base_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| source.provider.default_base_url())
-            .to_string();
-        let flaresolverr_url = source
-            .flaresolverr_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let flaresolverr_proxy_url = source
-            .flaresolverr_proxy_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let proxy_url = source
-            .proxy_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        // Non-Grok providers keep reqwest; Grok API uses wreq Chrome TLS emulation.
-        // Grok+local proxy needs a higher floor than the global 15s web_search timeout.
-        let grok_client = if source.provider == WebSearchProviderKind::Grok {
-            let grok_timeout = std::cmp::max(timeout, std::time::Duration::from_secs(90));
-            match providers::grok_support::build_emulated_client(grok_timeout, proxy_url) {
-                Ok(client) => Some(client),
-                Err(error) => {
-                    last_error = Some(error);
-                    continue;
-                }
-            }
-        } else {
-            None
-        };
-
-        for index in order {
-            let Some(api_key) = keys.get(index) else {
-                continue;
-            };
-            let result = match source.provider {
-                WebSearchProviderKind::Tavily => {
-                    tavily::search(&control_client, &base_url, api_key, query, max_results).await
-                }
-                WebSearchProviderKind::Exa => {
-                    exa::search(&control_client, &base_url, api_key, query, max_results).await
-                }
-                WebSearchProviderKind::Jina => {
-                    jina::search(&control_client, &base_url, api_key, query, max_results).await
-                }
-                WebSearchProviderKind::Grok => {
-                    let Some(grok_client) = grok_client.as_ref() else {
-                        last_error = Some("Grok emulated client missing".to_string());
-                        continue;
-                    };
+        WebSearchProviderKind::Exa => {
+            exa::search(&control_client, &base_url, &api_key, &request).await
+        }
+        WebSearchProviderKind::Jina => {
+            jina::search(&control_client, &base_url, &api_key, &request).await
+        }
+        WebSearchProviderKind::Grok => {
+            let grok_timeout = std::cmp::max(timeout, Duration::from_secs(90));
+            match providers::grok_support::build_emulated_client(
+                grok_timeout,
+                source.proxy_url.as_deref(),
+            ) {
+                Ok(client) => {
                     grok::search(
-                        grok_client,
+                        &client,
                         &control_client,
                         &base_url,
-                        api_key,
-                        query,
-                        max_results,
-                        flaresolverr_url,
-                        flaresolverr_proxy_url,
-                        proxy_url,
+                        &api_key,
+                        &request,
+                        grok::GrokSearchOptions {
+                            source_id: &source.id,
+                            flaresolverr_url: source.flaresolverr_url.as_deref(),
+                            flaresolverr_proxy_url: source.flaresolverr_proxy_url.as_deref(),
+                            proxy_url: source.proxy_url.as_deref(),
+                        },
                     )
                     .await
                 }
-            };
-
-            match result {
-                Ok(hits) => {
-                    key_attempts.push(WebSearchKeyAttempt {
-                        provider: source.provider.as_str().to_string(),
-                        source_id: source.id.clone(),
-                        key_index: index,
-                        key_hint: mask_api_key(api_key),
-                        status: "normal".to_string(),
-                        message: "request succeeded".to_string(),
-                    });
-                    let output = WebSearchOutput {
-                        provider: source.provider.as_str().to_string(),
-                        source_id: source.id.clone(),
-                        query: query.to_string(),
-                        result_count: hits.len(),
-                        results: hits,
-                        key_attempts,
-                    };
-                    let stdout = match serde_json::to_string_pretty(&output) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            return ToolResult::Error {
-                                message: format!("failed to serialize search results: {error}"),
-                            };
-                        }
-                    };
-                    return ToolResult::Completed {
-                        stdout,
-                        stderr: String::new(),
-                        exit_code: 0,
-                        duration_ms: started.elapsed().as_millis() as u64,
-                        runtime: Some("builtin_web_search".to_string()),
-                        output_cursor: 0,
-                    };
-                }
-                Err(ProviderError::Fatal(message)) => {
-                    let message = sanitize_error_message(&message, api_key);
-                    key_attempts.push(WebSearchKeyAttempt {
-                        provider: source.provider.as_str().to_string(),
-                        source_id: source.id.clone(),
-                        key_index: index,
-                        key_hint: mask_api_key(api_key),
-                        status: key_status(source.provider.clone(), &message),
-                        message: message.clone(),
-                    });
-                    return ToolResult::Error {
-                        message: format_search_failure(&message, &key_attempts),
-                    };
-                }
-                Err(ProviderError::Retryable(message)) => {
-                    let message = sanitize_error_message(&message, api_key);
-                    key_attempts.push(WebSearchKeyAttempt {
-                        provider: source.provider.as_str().to_string(),
-                        source_id: source.id.clone(),
-                        key_index: index,
-                        key_hint: mask_api_key(api_key),
-                        status: key_status(source.provider.clone(), &message),
-                        message: message.clone(),
-                    });
-                    last_error = Some(message);
-                }
+                Err(error) => Err(ProviderError::Retryable(error)),
             }
         }
-    }
+    };
 
-    ToolResult::Error {
-        message: format_search_failure(
-            &last_error.unwrap_or_else(|| {
-                "web_search failed: all configured sources and API keys were exhausted".to_string()
-            }),
-            &key_attempts,
-        ),
+    match result {
+        Ok(output) => {
+            let result_count = output.results.len();
+            let status = if result_count == 0 && output.ai_syntheses.is_empty() {
+                "soft_miss"
+            } else {
+                "success"
+            };
+            let update = key_status_update(
+                &source.id,
+                key_index,
+                &api_key,
+                "normal".to_string(),
+                "request succeeded".to_string(),
+            );
+            SourceExecution {
+                summary: SourceRunSummary {
+                    source_id: source.id.clone(),
+                    provider: provider.clone(),
+                    query: query.clone(),
+                    status: status.to_string(),
+                    result_count,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    detail: None,
+                },
+                source,
+                query,
+                output: Some(output),
+                status_updates: vec![update],
+            }
+        }
+        Err(error) => {
+            let message = sanitize_error_message(error.message(), &api_key);
+            let status = classify_key_status(source.provider.clone(), &message);
+            let update =
+                key_status_update(&source.id, key_index, &api_key, status, message.clone());
+            source_failure(source, query, started, "failed", message, vec![update])
+        }
     }
 }
 
-fn key_status(provider: WebSearchProviderKind, message: &str) -> String {
-    if provider == WebSearchProviderKind::Grok {
-        return grok::classify_key_status(message).to_string();
+fn key_health_rank(source: &WebSearchSourceConfig, original_key_index: usize) -> u8 {
+    match source
+        .key_statuses
+        .get(original_key_index)
+        .and_then(Option::as_ref)
+        .map(|record| record.status.as_str())
+    {
+        Some("normal") => 0,
+        None => 1,
+        Some("rate_limited" | "network_error" | "service_error" | "anti_bot") => 2,
+        Some("quota_limited") => 3,
+        Some(
+            "quota_exhausted"
+            | "permission_denied"
+            | "configuration_error"
+            | "invalid_key"
+            | "unauthorized"
+            | "officially_blocked",
+        ) => 4,
+        Some(_) => 3,
     }
-    "error".to_string()
 }
 
-fn format_search_failure(message: &str, attempts: &[WebSearchKeyAttempt]) -> String {
-    if attempts.is_empty() {
-        return message.to_string();
+fn source_failure(
+    source: WebSearchSourceConfig,
+    query: String,
+    started: Instant,
+    status: &str,
+    detail: String,
+    status_updates: Vec<WebSearchKeyStatusUpdate>,
+) -> SourceExecution {
+    SourceExecution {
+        summary: SourceRunSummary {
+            source_id: source.id.clone(),
+            provider: source.provider.as_str().to_string(),
+            query: query.clone(),
+            status: status.to_string(),
+            result_count: 0,
+            duration_ms: started.elapsed().as_millis() as u64,
+            detail: Some(detail),
+        },
+        source,
+        query,
+        output: None,
+        status_updates,
     }
-    let diagnostics = attempts
-        .iter()
-        .map(|attempt| {
-            format!(
-                "{}#{} {} {}: {}",
-                attempt.provider,
-                attempt.key_index + 1,
-                attempt.key_hint,
-                attempt.status,
-                attempt.message
-            )
+}
+
+#[derive(Debug)]
+struct AggregateEntry {
+    score: f64,
+    title: String,
+    url: String,
+    snippet: String,
+    kind: SearchHitKind,
+    published_at: Option<String>,
+    source_ids: HashSet<String>,
+    provider_kinds: HashSet<String>,
+    independence_groups: HashSet<String>,
+    matched_queries: HashSet<String>,
+}
+
+fn aggregate_results(
+    outputs: &[(WebSearchSourceConfig, String, ProviderSearchOutput)],
+    allowed_domains: &[String],
+    blocked_domains: &[String],
+) -> Vec<AggregatedSearchResult> {
+    let mut entries: HashMap<String, AggregateEntry> = HashMap::new();
+    for (source, query, output) in outputs {
+        for (rank, hit) in output.results.iter().enumerate() {
+            let Some(url) = canonicalize_url(&hit.url) else {
+                continue;
+            };
+            if !url_allowed(&url, allowed_domains, blocked_domains) {
+                continue;
+            }
+            let entry = entries
+                .entry(url.clone())
+                .or_insert_with(|| AggregateEntry {
+                    score: 0.0,
+                    title: hit.title.clone(),
+                    url: url.clone(),
+                    snippet: hit.snippet.clone(),
+                    kind: hit.kind.clone(),
+                    published_at: hit.published_at.clone(),
+                    source_ids: HashSet::new(),
+                    provider_kinds: HashSet::new(),
+                    independence_groups: HashSet::new(),
+                    matched_queries: HashSet::new(),
+                });
+            entry.score += 1.0 / (60.0 + rank as f64 + 1.0);
+            if hit.snippet.chars().count() > entry.snippet.chars().count() {
+                entry.snippet = hit.snippet.clone();
+            }
+            if evidence_priority(&hit.kind) > evidence_priority(&entry.kind) {
+                entry.kind = hit.kind.clone();
+            }
+            entry.source_ids.insert(source.id.clone());
+            entry
+                .provider_kinds
+                .insert(source.provider.provider_kind().to_string());
+            if hit.kind != SearchHitKind::GrokModelProvidedUrl {
+                entry
+                    .independence_groups
+                    .insert(source.independence_group().to_string());
+            }
+            entry.matched_queries.insert(query.clone());
+        }
+    }
+    let mut ranked = entries.into_values().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .independence_groups
+            .len()
+            .cmp(&left.independence_groups.len())
+            .then_with(|| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap_or(Ordering::Equal)
+            })
+            .then_with(|| left.url.cmp(&right.url))
+    });
+    ranked.truncate(MAX_WEB_SEARCH_RESULTS as usize);
+    ranked
+        .into_iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let mut source_ids = entry.source_ids.into_iter().collect::<Vec<_>>();
+            let mut provider_kinds = entry.provider_kinds.into_iter().collect::<Vec<_>>();
+            let mut independence_groups = entry.independence_groups.into_iter().collect::<Vec<_>>();
+            let mut matched_queries = entry.matched_queries.into_iter().collect::<Vec<_>>();
+            source_ids.sort();
+            provider_kinds.sort();
+            independence_groups.sort();
+            matched_queries.sort();
+            AggregatedSearchResult {
+                rank: index + 1,
+                title: entry.title,
+                url: entry.url,
+                snippet: truncate_chars(&entry.snippet, 500),
+                evidence_kind: entry.kind,
+                source_ids,
+                provider_kinds,
+                corroboration_count: independence_groups.len(),
+                independence_groups,
+                matched_queries,
+                published_at: entry.published_at,
+            }
         })
-        .collect::<Vec<_>>()
-        .join(" | ");
-    format!("{message}; key diagnostics: {diagnostics}")
+        .collect()
+}
+
+fn evidence_priority(kind: &SearchHitKind) -> u8 {
+    match kind {
+        SearchHitKind::WebPage | SearchHitKind::GrokNativeSearchResult => 3,
+        SearchHitKind::XSearchResult => 2,
+        SearchHitKind::GrokModelProvidedUrl => 1,
+    }
+}
+
+fn canonicalize_url(raw: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(raw.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    url.set_fragment(None);
+    let kept = url
+        .query_pairs()
+        .filter(|(key, _)| {
+            let key = key.to_ascii_lowercase();
+            !key.starts_with("utm_")
+                && !matches!(
+                    key.as_ref(),
+                    "fbclid" | "gclid" | "dclid" | "mc_cid" | "mc_eid" | "ref"
+                )
+        })
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    url.set_query(None);
+    if !kept.is_empty() {
+        url.query_pairs_mut().extend_pairs(kept);
+    }
+    Some(url.to_string())
+}
+
+fn normalize_domains(values: &[String]) -> Vec<String> {
+    let mut domains = values
+        .iter()
+        .filter_map(|value| {
+            let value = value.trim().trim_start_matches("*.").trim_end_matches('.');
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.to_ascii_lowercase())
+            }
+        })
+        .collect::<Vec<_>>();
+    domains.sort();
+    domains.dedup();
+    domains
+}
+
+fn url_allowed(url: &str, allowed: &[String], blocked: &[String]) -> bool {
+    let Some(host) = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+    else {
+        return false;
+    };
+    if blocked.iter().any(|domain| domain_matches(&host, domain)) {
+        return false;
+    }
+    allowed.is_empty() || allowed.iter().any(|domain| domain_matches(&host, domain))
+}
+
+fn domain_matches(host: &str, domain: &str) -> bool {
+    host == domain || host.ends_with(&format!(".{domain}"))
+}
+
+fn truncate_chars(value: &str, max: usize) -> String {
+    let mut chars = value.chars();
+    let head = chars.by_ref().take(max).collect::<String>();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
+fn key_status_update(
+    source_id: &str,
+    key_index: usize,
+    api_key: &str,
+    status: String,
+    detail: String,
+) -> WebSearchKeyStatusUpdate {
+    WebSearchKeyStatusUpdate {
+        source_id: source_id.to_string(),
+        key_index,
+        api_key: api_key.to_string(),
+        record: WebSearchKeyStatusRecord {
+            status,
+            detail,
+            checked_at: chrono::Utc::now().to_rfc3339(),
+        },
+    }
+}
+
+pub(crate) fn classify_key_status(provider: WebSearchProviderKind, message: &str) -> String {
+    match provider {
+        WebSearchProviderKind::Tavily => tavily::classify_key_status(message),
+        WebSearchProviderKind::Exa => exa::classify_key_status(message),
+        WebSearchProviderKind::Jina => jina::classify_key_status(message),
+        WebSearchProviderKind::Grok => grok::classify_key_status(message),
+    }
+    .to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{WebSearchKeySelection, WebSearchSourceConfig, WebSearchToolConfig};
 
-    fn futures_executor_block<F: std::future::Future>(future: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(future)
-    }
-
-    #[test]
-    fn empty_query_is_rejected() {
-        let config = WebSearchToolConfig::default();
-        let result = futures_executor_block(execute_web_search(
-            WebSearchArgs {
-                query: "   ".to_string(),
-                max_results: None,
-            },
-            &config,
-        ));
-        assert!(matches!(result, ToolResult::Error { .. }));
-    }
-
-    #[test]
-    fn no_keys_returns_error() {
-        let config = WebSearchToolConfig {
-            enabled: true,
-            ..WebSearchToolConfig::default()
-        };
-        let result = futures_executor_block(execute_web_search(
-            WebSearchArgs {
-                query: "rust async".to_string(),
-                max_results: Some(3),
-            },
-            &config,
-        ));
-        match result {
-            ToolResult::Error { message } => {
-                assert!(message.contains("no enabled source"));
-            }
-            other => panic!("expected error, got {other:?}"),
+    fn args(query: &str) -> WebSearchArgs {
+        WebSearchArgs {
+            query: query.to_string(),
+            additional_queries: Vec::new(),
+            mode: SearchMode::Auto,
+            source_roles: Vec::new(),
+            source_ids: Vec::new(),
+            max_results_per_source: None,
+            allowed_domains: Vec::new(),
+            blocked_domains: Vec::new(),
+            recency_days: None,
         }
     }
 
     #[test]
-    fn usable_source_detection() {
-        let mut config = WebSearchToolConfig::default();
-        assert!(!config.has_usable_source());
-        config.sources[0].api_keys = vec!["sk-test".to_string()];
-        assert!(config.has_usable_source());
-        config.sources[0].enabled = false;
-        assert!(!config.has_usable_source());
+    fn empty_query_is_rejected() {
+        let error = normalize_queries(&args("  ")).unwrap_err();
+        assert!(error.contains("must not be empty"));
     }
 
     #[test]
-    fn key_selection_field_is_honored_by_order_helper() {
-        let order = key_pool::key_attempt_order("x", 2, &WebSearchKeySelection::Sequential);
-        assert_eq!(order, vec![0, 1]);
+    fn auto_detects_deep_research() {
+        assert_eq!(
+            resolve_mode(&SearchMode::Auto, &["请做深度调研".to_string()]),
+            SearchMode::Deep
+        );
     }
 
     #[test]
-    fn source_config_clone_keeps_provider() {
-        let source = WebSearchSourceConfig {
-            id: "tavily".to_string(),
-            provider: WebSearchProviderKind::Tavily,
+    fn source_role_inference_covers_common_search_intents() {
+        let roles = infer_source_roles(&args("核验最新 API 官方文档，并做行业市场和产品价格对比"));
+        assert!(roles.contains(&WebSearchSourceRole::CurrentNews));
+        assert!(roles.contains(&WebSearchSourceRole::FactChecking));
+        assert!(roles.contains(&WebSearchSourceRole::OfficialDocs));
+        assert!(roles.contains(&WebSearchSourceRole::TechnicalResearch));
+        assert!(roles.contains(&WebSearchSourceRole::MarketResearch));
+        assert!(roles.contains(&WebSearchSourceRole::ProductResearch));
+    }
+
+    #[test]
+    fn generic_queries_fall_back_to_general_search() {
+        assert_eq!(
+            infer_source_roles(&args("北京天气")),
+            HashSet::from([WebSearchSourceRole::GeneralSearch])
+        );
+    }
+
+    #[test]
+    fn canonical_url_removes_tracking_and_fragments() {
+        assert_eq!(
+            canonicalize_url("https://Example.com/a?utm_source=x&id=2#part").as_deref(),
+            Some("https://example.com/a?id=2")
+        );
+    }
+
+    #[test]
+    fn balanced_selection_uses_independent_groups() {
+        let mut config = WebSearchToolConfig {
             enabled: true,
-            base_url: None,
-            api_keys: vec!["a".to_string()],
-            key_statuses: Vec::new(),
-            flaresolverr_url: None,
-            flaresolverr_proxy_url: None,
-            proxy_url: None,
+            ..WebSearchToolConfig::default()
         };
-        assert_eq!(source.provider.as_str(), "tavily");
+        for source in &mut config.sources {
+            source.api_keys = vec!["key".to_string()];
+        }
+        config.sources[1].independence_group = config.sources[0].independence_group.clone();
+        let selected = select_sources(&config, &args("rust"), &SearchMode::Balanced).unwrap();
+        let groups = selected
+            .iter()
+            .map(|source| source.independence_group().to_string())
+            .collect::<HashSet<_>>();
+        assert_eq!(groups.len(), selected.len());
+        assert_eq!(selected.len(), 3);
+    }
+
+    #[test]
+    fn aggregation_does_not_count_model_provided_urls_as_independent_evidence() {
+        let config = WebSearchToolConfig::default();
+        let exa = config.sources[1].clone();
+        let grok = config.sources[3].clone();
+        let outputs = vec![
+            (
+                exa,
+                "rust".to_string(),
+                ProviderSearchOutput {
+                    results: vec![types::WebSearchHit {
+                        title: "Rust".to_string(),
+                        url: "https://www.rust-lang.org/?utm_source=test".to_string(),
+                        snippet: "Official language site".to_string(),
+                        kind: SearchHitKind::WebPage,
+                        published_at: None,
+                        score: Some(0.9),
+                    }],
+                    ai_syntheses: Vec::new(),
+                },
+            ),
+            (
+                grok,
+                "rust language".to_string(),
+                ProviderSearchOutput {
+                    results: vec![types::WebSearchHit {
+                        title: "Rust generated source".to_string(),
+                        url: "https://www.rust-lang.org/".to_string(),
+                        snippet: "Model-provided candidate".to_string(),
+                        kind: SearchHitKind::GrokModelProvidedUrl,
+                        published_at: None,
+                        score: None,
+                    }],
+                    ai_syntheses: Vec::new(),
+                },
+            ),
+        ];
+        let results = aggregate_results(&outputs, &[], &[]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].corroboration_count, 1);
+        assert_eq!(results[0].source_ids, vec!["exa", "grok"]);
+        assert_eq!(results[0].evidence_kind, SearchHitKind::WebPage);
+    }
+
+    #[test]
+    fn current_queries_prioritize_complementary_current_sources() {
+        let mut config = WebSearchToolConfig {
+            enabled: true,
+            ..WebSearchToolConfig::default()
+        };
+        for source in &mut config.sources {
+            source.api_keys = vec!["key".to_string()];
+        }
+        let selected = select_sources(
+            &config,
+            &args("latest Rust release news"),
+            &SearchMode::Balanced,
+        )
+        .unwrap();
+        assert_eq!(selected[0].id, "tavily");
+        assert_eq!(selected[1].id, "grok");
+    }
+
+    #[test]
+    fn key_status_merge_keeps_the_worst_parallel_result() {
+        let mut updates = BTreeMap::new();
+        merge_status_update(
+            &mut updates,
+            key_status_update("exa", 0, "secret", "normal".to_string(), "ok".to_string()),
+        );
+        merge_status_update(
+            &mut updates,
+            key_status_update(
+                "exa",
+                0,
+                "secret",
+                "rate_limited".to_string(),
+                "limited".to_string(),
+            ),
+        );
+        assert_eq!(
+            updates.into_values().next().unwrap().record.status,
+            "rate_limited"
+        );
     }
 }

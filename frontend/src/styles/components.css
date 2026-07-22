@@ -449,7 +449,8 @@
   height: 100%;
   margin: 0;
   padding: 16px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid #d8dee8;
   border-radius: var(--radius-xs);
   background: #e8edf3;
@@ -457,7 +458,9 @@
   font-family: var(--font-mono);
   font-size: var(--font-size-ui);
   line-height: var(--line-height-normal);
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   tab-size: 4;
 }
 

@@ -629,5 +629,3 @@ fn json_event<T: serde::Serialize>(name: &'static str, value: &T) -> Event {
                 .data(format!("failed to serialize {name} event: {error}"))
         })
 }
-
-

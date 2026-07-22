@@ -8,7 +8,7 @@ use std::{
 };
 
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -763,12 +763,7 @@ fn build_filter_clause(filter: &LlmLogListFilter) -> (String, Vec<String>) {
         params.push(model_id.to_string());
     }
 
-    if let Some(q) = filter
-        .q
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
+    if let Some(q) = filter.q.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
         let pattern = format!("%{}%", q.to_ascii_lowercase());
         clauses.push(
             "(lower(agent_name) LIKE ?
@@ -839,7 +834,6 @@ fn suffix_at_most(value: &str, max_bytes: usize) -> &str {
     &value[start..]
 }
 
-
 pub fn finalize_response_for_log(raw_response: &str) -> String {
     // A head/tail stream preview must remain a stream preview so the UI can
     // show the explicit middle-truncation marker instead of silently
@@ -855,13 +849,15 @@ pub fn finalize_response_for_log(raw_response: &str) -> String {
     // Non-streaming JSON body.
     if !looks_like_sse(raw_response) {
         if let Ok(value) = serde_json::from_str::<Value>(raw_response) {
-            return serde_json::to_string_pretty(&value).unwrap_or_else(|_| raw_response.to_string());
+            return serde_json::to_string_pretty(&value)
+                .unwrap_or_else(|_| raw_response.to_string());
         }
         return raw_response.to_string();
     }
 
     if let Some(aggregated) = aggregate_stream_payloads(&payloads) {
-        return serde_json::to_string_pretty(&aggregated).unwrap_or_else(|_| raw_response.to_string());
+        return serde_json::to_string_pretty(&aggregated)
+            .unwrap_or_else(|_| raw_response.to_string());
     }
 
     // Fallback: keep the last payload that looks like a complete object with usage/content.
@@ -1038,7 +1034,9 @@ fn aggregate_anthropic(payloads: &[Value]) -> Option<Value> {
             payload
                 .get("type")
                 .and_then(Value::as_str)
-                .is_some_and(|kind| kind.starts_with("message") || kind.starts_with("content_block"))
+                .is_some_and(|kind| {
+                    kind.starts_with("message") || kind.starts_with("content_block")
+                })
         })
         .collect();
     if relevant.is_empty() {
@@ -1101,7 +1099,9 @@ fn aggregate_anthropic(payloads: &[Value]) -> Option<Value> {
 fn aggregate_gemini(payloads: &[Value]) -> Option<Value> {
     let gemini: Vec<&Value> = payloads
         .iter()
-        .filter(|payload| payload.get("candidates").is_some() || payload.get("usageMetadata").is_some())
+        .filter(|payload| {
+            payload.get("candidates").is_some() || payload.get("usageMetadata").is_some()
+        })
         .collect();
     if gemini.is_empty() {
         return None;
@@ -1121,7 +1121,10 @@ fn aggregate_gemini(payloads: &[Value]) -> Option<Value> {
         }
         if let Some(candidates) = payload.get("candidates").and_then(Value::as_array) {
             for candidate in candidates {
-                if let Some(parts) = candidate.pointer("/content/parts").and_then(Value::as_array) {
+                if let Some(parts) = candidate
+                    .pointer("/content/parts")
+                    .and_then(Value::as_array)
+                {
                     for part in parts {
                         if let Some(chunk) = part.get("text").and_then(Value::as_str) {
                             text.push_str(chunk);
@@ -1166,13 +1169,22 @@ fn aggregate_openai_responses(payloads: &[Value]) -> Option<Value> {
     let mut id = Value::Null;
     let mut model = Value::Null;
     for payload in relevant {
-        if let Some(value) = payload.pointer("/response/id").or_else(|| payload.get("id")) {
+        if let Some(value) = payload
+            .pointer("/response/id")
+            .or_else(|| payload.get("id"))
+        {
             id = value.clone();
         }
-        if let Some(value) = payload.pointer("/response/model").or_else(|| payload.get("model")) {
+        if let Some(value) = payload
+            .pointer("/response/model")
+            .or_else(|| payload.get("model"))
+        {
             model = value.clone();
         }
-        if let Some(value) = payload.get("usage").or_else(|| payload.pointer("/response/usage")) {
+        if let Some(value) = payload
+            .get("usage")
+            .or_else(|| payload.pointer("/response/usage"))
+        {
             usage = value.clone();
         }
         if let Some(chunk) = payload.pointer("/delta").and_then(Value::as_str) {
@@ -1420,7 +1432,8 @@ mod tests {
         let detail = logger.get_log(&id).await.unwrap();
         assert!(detail.raw_request.is_empty());
         assert!(
-            detail.raw_response.as_deref().unwrap_or("").is_empty() || detail.raw_response.is_none()
+            detail.raw_response.as_deref().unwrap_or("").is_empty()
+                || detail.raw_response.is_none()
         );
         assert!(!detail.summary.has_payload);
 
@@ -1623,7 +1636,8 @@ mod tests {
 
         let (total, days): (i64, i64) = logger
             .with_conn_for_test(|conn| {
-                let total = conn.query_row("SELECT COUNT(*) FROM llm_requests", [], |row| row.get(0))?;
+                let total =
+                    conn.query_row("SELECT COUNT(*) FROM llm_requests", [], |row| row.get(0))?;
                 let days = conn.query_row(
                     "SELECT COUNT(DISTINCT strftime('%Y-%m-%d', created_at_ms / 1000, 'unixepoch'))
                      FROM llm_requests",

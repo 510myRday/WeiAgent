@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Terminal tool configuration stored in data/agents/{agent_id}/tools.json.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -54,6 +55,8 @@ pub const MAX_WEB_SEARCH_TIMEOUT_MS: u64 = 60_000;
 pub const MAX_WEB_SEARCH_SOURCES: usize = 8;
 pub const MAX_WEB_SEARCH_KEYS_PER_SOURCE: usize = 16;
 pub const MAX_WEB_SEARCH_QUERY_CHARS: usize = 500;
+pub const MAX_WEB_SEARCH_QUERIES: usize = 4;
+pub const MAX_WEB_EXTRACT_URLS: usize = 5;
 
 fn default_max_llm_iterations() -> u32 {
     DEFAULT_MAX_LLM_ITERATIONS
@@ -118,6 +121,49 @@ pub enum WebSearchProviderKind {
     Grok,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchSourceRole {
+    GeneralSearch,
+    SemanticResearch,
+    CurrentNews,
+    OfficialDocs,
+    TechnicalResearch,
+    AcademicResearch,
+    FactChecking,
+    MarketResearch,
+    ProductResearch,
+    MultilingualSearch,
+    AiResearch,
+    SocialSearch,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchLatencyTier {
+    Fast,
+    Medium,
+    Slow,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchCostTier {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WebSearchSourceCapabilities {
+    pub domain_filter: bool,
+    pub recency_filter: bool,
+    pub native_citations: bool,
+    pub ai_synthesis: bool,
+    pub social_results: bool,
+}
+
 impl WebSearchProviderKind {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -134,6 +180,149 @@ impl WebSearchProviderKind {
             Self::Exa => "https://api.exa.ai",
             Self::Jina => "https://s.jina.ai",
             Self::Grok => "https://grok.com",
+        }
+    }
+
+    pub fn default_display_name(&self) -> &'static str {
+        match self {
+            Self::Tavily => "Tavily",
+            Self::Exa => "Exa",
+            Self::Jina => "Jina Search",
+            Self::Grok => "Grok Research",
+        }
+    }
+
+    pub fn provider_kind(&self) -> &'static str {
+        match self {
+            Self::Tavily => "search_index",
+            Self::Exa | Self::Jina => "semantic_search",
+            Self::Grok => "ai_research",
+        }
+    }
+
+    pub fn evidence_kind(&self) -> &'static str {
+        match self {
+            Self::Grok => "ai_synthesis_and_candidates",
+            _ => "web_evidence_candidates",
+        }
+    }
+
+    pub fn default_roles(&self) -> Vec<WebSearchSourceRole> {
+        match self {
+            Self::Tavily => vec![
+                WebSearchSourceRole::GeneralSearch,
+                WebSearchSourceRole::CurrentNews,
+                WebSearchSourceRole::FactChecking,
+                WebSearchSourceRole::MarketResearch,
+                WebSearchSourceRole::ProductResearch,
+            ],
+            Self::Exa => vec![
+                WebSearchSourceRole::SemanticResearch,
+                WebSearchSourceRole::OfficialDocs,
+                WebSearchSourceRole::TechnicalResearch,
+                WebSearchSourceRole::AcademicResearch,
+                WebSearchSourceRole::FactChecking,
+                WebSearchSourceRole::ProductResearch,
+            ],
+            Self::Jina => vec![
+                WebSearchSourceRole::GeneralSearch,
+                WebSearchSourceRole::SemanticResearch,
+                WebSearchSourceRole::OfficialDocs,
+                WebSearchSourceRole::TechnicalResearch,
+                WebSearchSourceRole::FactChecking,
+                WebSearchSourceRole::MultilingualSearch,
+            ],
+            Self::Grok => vec![
+                WebSearchSourceRole::AiResearch,
+                WebSearchSourceRole::CurrentNews,
+                WebSearchSourceRole::SocialSearch,
+                WebSearchSourceRole::FactChecking,
+                WebSearchSourceRole::MarketResearch,
+                WebSearchSourceRole::ProductResearch,
+            ],
+        }
+    }
+
+    pub fn capabilities(&self) -> WebSearchSourceCapabilities {
+        match self {
+            Self::Tavily => WebSearchSourceCapabilities {
+                domain_filter: true,
+                recency_filter: true,
+                native_citations: true,
+                ai_synthesis: false,
+                social_results: false,
+            },
+            Self::Exa => WebSearchSourceCapabilities {
+                domain_filter: true,
+                recency_filter: true,
+                native_citations: true,
+                ai_synthesis: false,
+                social_results: false,
+            },
+            Self::Jina => WebSearchSourceCapabilities {
+                domain_filter: true,
+                recency_filter: false,
+                native_citations: true,
+                ai_synthesis: false,
+                social_results: false,
+            },
+            Self::Grok => WebSearchSourceCapabilities {
+                domain_filter: false,
+                recency_filter: true,
+                native_citations: true,
+                ai_synthesis: true,
+                social_results: true,
+            },
+        }
+    }
+
+    pub fn latency_tier(&self) -> WebSearchLatencyTier {
+        match self {
+            Self::Tavily | Self::Exa => WebSearchLatencyTier::Fast,
+            Self::Jina => WebSearchLatencyTier::Medium,
+            Self::Grok => WebSearchLatencyTier::Slow,
+        }
+    }
+
+    pub fn cost_tier(&self) -> WebSearchCostTier {
+        match self {
+            Self::Jina => WebSearchCostTier::Low,
+            Self::Tavily | Self::Exa => WebSearchCostTier::Medium,
+            Self::Grok => WebSearchCostTier::High,
+        }
+    }
+
+    pub fn strengths(&self) -> &'static [&'static str] {
+        match self {
+            Self::Tavily => &["broad web coverage", "current events", "clean snippets"],
+            Self::Exa => &[
+                "semantic discovery",
+                "technical research",
+                "related documents",
+            ],
+            Self::Jina => &[
+                "multilingual search",
+                "page-oriented results",
+                "simple retrieval",
+            ],
+            Self::Grok => &[
+                "research synthesis",
+                "query expansion",
+                "X/social discovery",
+            ],
+        }
+    }
+
+    pub fn limitations(&self) -> &'static [&'static str] {
+        match self {
+            Self::Tavily => &["snippets are evidence candidates, not full pages"],
+            Self::Exa => &["semantic ranking may miss exact-keyword matches"],
+            Self::Jina => &["limited native recency controls"],
+            Self::Grok => &[
+                "generated synthesis is unverified",
+                "model-provided URLs require extraction before citation",
+                "higher latency and cost",
+            ],
         }
     }
 }
@@ -157,17 +346,38 @@ pub struct WebSearchKeyStatusRecord {
     pub checked_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WebSearchKeyStatusUpdate {
+    pub source_id: String,
+    pub key_index: usize,
+    pub api_key: String,
+    pub record: WebSearchKeyStatusRecord,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct WebSearchSourceConfig {
     pub id: String,
     pub provider: WebSearchProviderKind,
+    #[serde(default)]
+    pub display_name: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub deep_enabled: bool,
+    #[serde(default = "default_web_search_source_priority")]
+    pub priority: u16,
+    #[serde(default)]
+    pub independence_group: String,
+    #[serde(default)]
+    pub roles: Vec<WebSearchSourceRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(default)]
     pub api_keys: Vec<String>,
+    /// SHA-256 fingerprints of keys confirmed as officially blocked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_api_key_hashes: Vec<String>,
     /// Status slots aligned with api_keys. Null means this key has not been checked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key_statuses: Vec<Option<WebSearchKeyStatusRecord>>,
@@ -184,6 +394,10 @@ pub struct WebSearchSourceConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_web_search_source_priority() -> u16 {
+    100
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -203,51 +417,36 @@ pub struct WebSearchToolConfig {
 
 fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
     vec![
-        WebSearchSourceConfig {
-            id: "tavily".to_string(),
-            provider: WebSearchProviderKind::Tavily,
-            enabled: true,
-            base_url: None,
-            api_keys: Vec::new(),
-            key_statuses: Vec::new(),
-            flaresolverr_url: None,
-            flaresolverr_proxy_url: None,
-            proxy_url: None,
-        },
-        WebSearchSourceConfig {
-            id: "exa".to_string(),
-            provider: WebSearchProviderKind::Exa,
-            enabled: true,
-            base_url: None,
-            api_keys: Vec::new(),
-            key_statuses: Vec::new(),
-            flaresolverr_url: None,
-            flaresolverr_proxy_url: None,
-            proxy_url: None,
-        },
-        WebSearchSourceConfig {
-            id: "jina".to_string(),
-            provider: WebSearchProviderKind::Jina,
-            enabled: true,
-            base_url: None,
-            api_keys: Vec::new(),
-            key_statuses: Vec::new(),
-            flaresolverr_url: None,
-            flaresolverr_proxy_url: None,
-            proxy_url: None,
-        },
-        WebSearchSourceConfig {
-            id: "grok".to_string(),
-            provider: WebSearchProviderKind::Grok,
-            enabled: true,
-            base_url: None,
-            api_keys: Vec::new(),
-            key_statuses: Vec::new(),
-            flaresolverr_url: None,
-            flaresolverr_proxy_url: None,
-            proxy_url: None,
-        },
+        default_web_search_source("tavily", WebSearchProviderKind::Tavily, 10),
+        default_web_search_source("exa", WebSearchProviderKind::Exa, 20),
+        default_web_search_source("jina", WebSearchProviderKind::Jina, 30),
+        default_web_search_source("grok", WebSearchProviderKind::Grok, 40),
     ]
+}
+
+fn default_web_search_source(
+    id: &str,
+    provider: WebSearchProviderKind,
+    priority: u16,
+) -> WebSearchSourceConfig {
+    let roles = provider.default_roles();
+    WebSearchSourceConfig {
+        id: id.to_string(),
+        display_name: provider.default_display_name().to_string(),
+        independence_group: provider.as_str().to_string(),
+        roles,
+        provider,
+        enabled: true,
+        deep_enabled: true,
+        priority,
+        base_url: None,
+        api_keys: Vec::new(),
+        blocked_api_key_hashes: Vec::new(),
+        key_statuses: Vec::new(),
+        flaresolverr_url: None,
+        flaresolverr_proxy_url: None,
+        proxy_url: None,
+    }
 }
 
 impl Default for WebSearchToolConfig {
@@ -271,26 +470,6 @@ impl WebSearchToolConfig {
         self.timeout_ms.clamp(1, MAX_WEB_SEARCH_TIMEOUT_MS)
     }
 
-    pub fn has_usable_source(&self) -> bool {
-        self.sources.iter().any(|source| {
-            source.enabled
-                && source
-                    .api_keys
-                    .iter()
-                    .any(|key| !key.trim().is_empty())
-        })
-    }
-
-    pub fn usable_sources(&self) -> impl Iterator<Item = &WebSearchSourceConfig> {
-        self.sources.iter().filter(|source| {
-            source.enabled
-                && source
-                    .api_keys
-                    .iter()
-                    .any(|key| !key.trim().is_empty())
-        })
-    }
-
     /// Replace secrets with masked values for API responses.
     pub fn redact_secrets(&self) -> Self {
         let mut redacted = self.clone();
@@ -301,6 +480,7 @@ impl WebSearchToolConfig {
                 .map(|key| mask_api_key(key))
                 .filter(|key| !key.is_empty())
                 .collect();
+            source.blocked_api_key_hashes.clear();
         }
         redacted
     }
@@ -312,12 +492,39 @@ impl WebSearchToolConfig {
     pub fn merge_secret_update(&self, incoming: &Self) -> Self {
         let mut merged = incoming.clone();
         for source in &mut merged.sources {
-            let previous_keys = self
+            let incoming_blocked_hashes = std::mem::take(&mut source.blocked_api_key_hashes);
+            let previous_source = self
                 .sources
                 .iter()
-                .find(|existing| existing.id == source.id)
+                .find(|existing| existing.id == source.id);
+            let previous_keys = previous_source
                 .map(|existing| existing.api_keys.clone())
                 .unwrap_or_default();
+            source.blocked_api_key_hashes = previous_source
+                .map(|existing| existing.blocked_api_key_hashes.clone())
+                .unwrap_or_default();
+            for hash in incoming_blocked_hashes {
+                if is_api_key_fingerprint(&hash)
+                    && !source
+                        .blocked_api_key_hashes
+                        .iter()
+                        .any(|value| value == &hash)
+                {
+                    source.blocked_api_key_hashes.push(hash);
+                }
+            }
+            if let Some(previous_source) = previous_source {
+                for (key_index, status) in previous_source.key_statuses.iter().enumerate() {
+                    if status
+                        .as_ref()
+                        .is_some_and(|record| record.status == "officially_blocked")
+                    {
+                        if let Some(api_key) = previous_source.api_keys.get(key_index) {
+                            source.remember_blocked_api_key(api_key);
+                        }
+                    }
+                }
+            }
 
             if source.api_keys.is_empty() {
                 // Distinguish clear vs preserve:
@@ -358,12 +565,88 @@ impl WebSearchToolConfig {
                     }
                     continue;
                 }
+                if source.is_api_key_blocked(trimmed) {
+                    continue;
+                }
                 next_keys.push(trimmed.to_string());
             }
             source.api_keys = next_keys;
         }
         merged
     }
+}
+
+impl WebSearchSourceConfig {
+    pub fn display_name(&self) -> &str {
+        let value = self.display_name.trim();
+        if value.is_empty() {
+            self.provider.default_display_name()
+        } else {
+            value
+        }
+    }
+
+    pub fn independence_group(&self) -> &str {
+        let value = self.independence_group.trim();
+        if value.is_empty() {
+            self.provider.as_str()
+        } else {
+            value
+        }
+    }
+
+    pub fn roles(&self) -> Vec<WebSearchSourceRole> {
+        if self.roles.is_empty() {
+            self.provider.default_roles()
+        } else {
+            self.roles.clone()
+        }
+    }
+
+    pub fn has_available_key(&self) -> bool {
+        self.api_keys
+            .iter()
+            .any(|key| !key.trim().is_empty() && !self.is_api_key_blocked(key))
+    }
+}
+
+impl WebSearchSourceConfig {
+    pub fn is_api_key_blocked(&self, api_key: &str) -> bool {
+        let hash = api_key_fingerprint(api_key);
+        !hash.is_empty()
+            && self
+                .blocked_api_key_hashes
+                .iter()
+                .any(|value| value == &hash)
+    }
+
+    pub fn remember_blocked_api_key(&mut self, api_key: &str) -> bool {
+        let hash = api_key_fingerprint(api_key);
+        if hash.is_empty()
+            || self
+                .blocked_api_key_hashes
+                .iter()
+                .any(|value| value == &hash)
+        {
+            return false;
+        }
+        self.blocked_api_key_hashes.push(hash);
+        true
+    }
+}
+
+pub fn api_key_fingerprint(api_key: &str) -> String {
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(trimmed.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn is_api_key_fingerprint(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 pub fn mask_api_key(api_key: &str) -> String {
@@ -642,13 +925,16 @@ mod tests {
     fn web_search_defaults_are_disabled_with_builtin_sources() {
         let config = AgentToolsConfig::default();
         assert!(!config.web_search.enabled);
-        assert_eq!(config.web_search.max_results, DEFAULT_WEB_SEARCH_MAX_RESULTS);
+        assert_eq!(
+            config.web_search.max_results,
+            DEFAULT_WEB_SEARCH_MAX_RESULTS
+        );
         assert_eq!(config.web_search.sources.len(), 4);
         assert_eq!(config.web_search.sources[0].id, "tavily");
         assert_eq!(config.web_search.sources[1].id, "exa");
         assert_eq!(config.web_search.sources[2].id, "jina");
         assert_eq!(config.web_search.sources[3].id, "grok");
-        assert!(!config.web_search.has_usable_source());
+        assert!(!config.web_search.sources[0].has_available_key());
     }
 
     #[test]
@@ -680,14 +966,20 @@ mod tests {
 
     #[test]
     fn web_search_secret_merge_preserves_and_clears() {
-        let stored = WebSearchToolConfig {
+        let mut stored = WebSearchToolConfig {
             enabled: true,
             sources: vec![WebSearchSourceConfig {
                 id: "tavily".to_string(),
                 provider: WebSearchProviderKind::Tavily,
+                display_name: "Tavily".to_string(),
                 enabled: true,
+                deep_enabled: true,
+                priority: 10,
+                independence_group: "tavily".to_string(),
+                roles: WebSearchProviderKind::Tavily.default_roles(),
                 base_url: None,
                 api_keys: vec!["sk-live-secret".to_string()],
+                blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
                 flaresolverr_url: None,
                 flaresolverr_proxy_url: None,
@@ -695,14 +987,21 @@ mod tests {
             }],
             ..WebSearchToolConfig::default()
         };
+        stored.sources[0].remember_blocked_api_key("sk-blocked");
 
         let preserve = WebSearchToolConfig {
             sources: vec![WebSearchSourceConfig {
                 id: "tavily".to_string(),
                 provider: WebSearchProviderKind::Tavily,
+                display_name: "Tavily".to_string(),
                 enabled: true,
+                deep_enabled: true,
+                priority: 10,
+                independence_group: "tavily".to_string(),
+                roles: WebSearchProviderKind::Tavily.default_roles(),
                 base_url: None,
                 api_keys: vec!["__preserve__".to_string()],
+                blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
                 flaresolverr_url: None,
                 flaresolverr_proxy_url: None,
@@ -711,15 +1010,24 @@ mod tests {
             ..stored.clone()
         };
         let merged = stored.merge_secret_update(&preserve);
-        assert_eq!(merged.sources[0].api_keys, vec!["sk-live-secret".to_string()]);
+        assert_eq!(
+            merged.sources[0].api_keys,
+            vec!["sk-live-secret".to_string()]
+        );
 
         let clear = WebSearchToolConfig {
             sources: vec![WebSearchSourceConfig {
                 id: "tavily".to_string(),
                 provider: WebSearchProviderKind::Tavily,
+                display_name: "Tavily".to_string(),
                 enabled: true,
+                deep_enabled: true,
+                priority: 10,
+                independence_group: "tavily".to_string(),
+                roles: WebSearchProviderKind::Tavily.default_roles(),
                 base_url: None,
                 api_keys: vec![],
+                blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
                 flaresolverr_url: None,
                 flaresolverr_proxy_url: None,
@@ -734,9 +1042,15 @@ mod tests {
             sources: vec![WebSearchSourceConfig {
                 id: "tavily".to_string(),
                 provider: WebSearchProviderKind::Tavily,
+                display_name: "Tavily".to_string(),
                 enabled: true,
+                deep_enabled: true,
+                priority: 10,
+                independence_group: "tavily".to_string(),
+                roles: WebSearchProviderKind::Tavily.default_roles(),
                 base_url: None,
-                api_keys: vec!["sk-new".to_string()],
+                api_keys: vec!["sk-new".to_string(), "sk-blocked".to_string()],
+                blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
                 flaresolverr_url: None,
                 flaresolverr_proxy_url: None,
@@ -746,6 +1060,17 @@ mod tests {
         };
         let replaced = stored.merge_secret_update(&replace);
         assert_eq!(replaced.sources[0].api_keys, vec!["sk-new".to_string()]);
+        assert!(replaced.sources[0].is_api_key_blocked("sk-blocked"));
+        assert!(
+            stored.redact_secrets().sources[0]
+                .blocked_api_key_hashes
+                .is_empty()
+        );
+
+        let mut backend_update = stored.clone();
+        backend_update.sources[0].remember_blocked_api_key("sk-newly-blocked");
+        let merged = stored.merge_secret_update(&backend_update);
+        assert!(merged.sources[0].is_api_key_blocked("sk-newly-blocked"));
     }
 
     #[test]
@@ -771,7 +1096,10 @@ mod tests {
         let mut config = AgentToolsConfig::default();
         config.web_search.sources[0].api_keys = vec!["sk-abcdefgh".to_string()];
         let redacted = config.redact_secrets();
-        assert_eq!(redacted.web_search.sources[0].api_keys, vec!["****efgh".to_string()]);
+        assert_eq!(
+            redacted.web_search.sources[0].api_keys,
+            vec!["****efgh".to_string()]
+        );
         assert_ne!(
             redacted.web_search.sources[0].api_keys[0],
             config.web_search.sources[0].api_keys[0]

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Check,
@@ -68,6 +68,36 @@ function formatToolArguments(args: ToolArguments): string | null {
   }
 }
 
+export function formatToolOutput(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) return content;
+
+  const formatted = prettyJsonValue(trimmed);
+  if (formatted) return formatted;
+
+  const lines = trimmed.split(/\r?\n/);
+  if (lines.length <= 1) return content;
+  const formattedLines = lines.map((line) => {
+    if (!line.trim()) return '';
+    return prettyJsonValue(line.trim());
+  });
+  if (formattedLines.some((line) => line === null)) return content;
+  return formattedLines.join('\n');
+}
+
+function prettyJsonValue(value: string): string | null {
+  try {
+    let parsed: unknown = JSON.parse(value);
+    if (typeof parsed === 'string' && /^[\[{]/.test(parsed.trim())) {
+      parsed = JSON.parse(parsed);
+    }
+    if (parsed === null || typeof parsed !== 'object') return null;
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return null;
+  }
+}
+
 function ToolNameBadge({ name }: { name: string }) {
   return (
     <span className="tool-card__tool-badge" title={name}>
@@ -107,6 +137,10 @@ function TerminalContent({
   const { copied, copy } = useClipboard();
   const isCommand = tone === 'command';
   const isArgs = tone === 'args';
+  const displayContent = useMemo(
+    () => (isCommand ? content : formatToolOutput(content)),
+    [content, isCommand],
+  );
   const title = isCommand
     ? t('toolCard.commandTitle')
     : isArgs
@@ -129,14 +163,14 @@ function TerminalContent({
     const observer = new ResizeObserver(updateOverflow);
     observer.observe(preview);
     return () => observer.disconnect();
-  }, [content]);
+  }, [displayContent]);
 
   const shellTone = tone === 'args' ? 'command' : tone;
 
   return (
     <>
       <div className={`tool-card__output-shell tool-card__output-shell--${shellTone}`}>
-        <pre ref={previewRef} className={`tool-card__output tool-card__output--${shellTone}`}>{content}</pre>
+        <pre ref={previewRef} className={`tool-card__output tool-card__output--${shellTone}`}>{displayContent}</pre>
         {isOverflowing ? (
           <div className="tool-card__output-footer">
             <button type="button" onClick={() => setIsExpanded(true)} aria-label={showAllLabel}>
@@ -157,12 +191,12 @@ function TerminalContent({
         className={`terminal-output-modal terminal-output-modal--${shellTone}`}
         bodyClassName="terminal-output-modal__body"
         headerActions={(
-          <IconButton variant="ghost" type="button" onClick={() => void copy(content)} label={copyLabel}>
+          <IconButton variant="ghost" type="button" onClick={() => void copy(displayContent)} label={copyLabel}>
             {copied ? <Check size={18} /> : <Copy size={18} />}
           </IconButton>
         )}
       >
-        <pre className={`terminal-output-modal__content terminal-output-modal__content--${shellTone}`}>{content}</pre>
+        <pre className={`terminal-output-modal__content terminal-output-modal__content--${shellTone}`}>{displayContent}</pre>
       </Dialog>
     </>
   );

@@ -4,12 +4,16 @@ import {
   ArrowLeft,
   ArrowUp,
   CheckCircle2,
+  ChevronDown,
   CircleAlert,
   CircleX,
   Clock3,
+  KeyRound,
   LoaderCircle,
   Plus,
   RefreshCw,
+  ScanSearch,
+  Settings2,
   Trash2,
 } from 'lucide-react';
 
@@ -17,19 +21,20 @@ import type {
   AgentToolsConfig,
   AgentToolsOverrides,
   AgentToolsSettings,
-  GrokKeyCheckResult,
-  GrokKeyStatusRecord,
-  GrokKeyStatus,
+  WebSearchKeyCheckResult,
+  WebSearchKeyStatusRecord,
+  WebSearchKeyStatus,
   WebSearchKeySelection,
   WebSearchProviderKind,
+  WebSearchSourceRole,
   WebSearchSourceConfig,
   WebSearchToolConfig,
 } from '../../api';
 import {
   readAgentToolsConfig,
-  checkGrokKeys,
-  deleteGrokKey,
-  importGrokKeys,
+  checkWebSearchKeys,
+  deleteWebSearchKey,
+  importWebSearchKeys,
   readToolDefaults,
   updateAgentToolsConfig,
   updateToolDefaults,
@@ -37,7 +42,7 @@ import {
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
 import { useBeforeUnloadGuard } from '../../hooks';
-import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../components/ui';
+import { AutoSaveIndicator, Button, Dialog, IconButton, useFeedback } from '../../components/ui';
 
 interface WebSearchToolSettingsProps {
   scope: 'defaults' | 'agent';
@@ -47,6 +52,9 @@ interface WebSearchToolSettingsProps {
 }
 
 type AutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+
+type SourceSection = 'preferences' | 'keys' | 'connection';
+type ExpandedSourceSections = Record<string, Partial<Record<SourceSection, boolean>>>;
 
 type PendingSave =
   | {
@@ -68,6 +76,23 @@ const AUTO_SAVE_RETRY_DELAY_MS = 1200;
 const AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
 const MAX_RESULTS = 20;
 const PRESERVE_KEYS_MARKER = '__preserve__';
+const SOURCE_ROLE_GROUPS: Array<{
+  key: 'discovery' | 'content' | 'intent';
+  roles: WebSearchSourceRole[];
+}> = [
+  {
+    key: 'discovery',
+    roles: ['general_search', 'semantic_research', 'multilingual_search', 'ai_research'],
+  },
+  {
+    key: 'content',
+    roles: ['current_news', 'official_docs', 'technical_research', 'academic_research', 'social_search'],
+  },
+  {
+    key: 'intent',
+    roles: ['fact_checking', 'market_research', 'product_research'],
+  },
+];
 
 function defaultWebSearch(): WebSearchToolConfig {
   return {
@@ -76,17 +101,22 @@ function defaultWebSearch(): WebSearchToolConfig {
     timeout_ms: 15000,
     key_selection: 'sequential',
     sources: [
-      { id: 'tavily', provider: 'tavily', enabled: true, api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'exa', provider: 'exa', enabled: true, api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'jina', provider: 'jina', enabled: true, api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'grok', provider: 'grok', enabled: true, api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'tavily', provider: 'tavily', display_name: 'Tavily', enabled: true, deep_enabled: true, priority: 10, independence_group: 'tavily', roles: ['general_search', 'current_news', 'fact_checking', 'market_research', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'exa', provider: 'exa', display_name: 'Exa', enabled: true, deep_enabled: true, priority: 20, independence_group: 'exa', roles: ['semantic_research', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'jina', provider: 'jina', display_name: 'Jina Search', enabled: true, deep_enabled: true, priority: 30, independence_group: 'jina', roles: ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'grok', provider: 'grok', display_name: 'Grok Research', enabled: true, deep_enabled: true, priority: 40, independence_group: 'grok', roles: ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
     ],
   };
 }
 
 function normalizeWebSearchSources(sources: WebSearchSourceConfig[]): WebSearchSourceConfig[] {
-  return sources.map((source) => ({
+  return sources.map((source, index) => ({
     ...source,
+    display_name: providerLabelFallback(source.provider),
+    deep_enabled: source.deep_enabled ?? true,
+    priority: (index + 1) * 10,
+    independence_group: source.provider,
+    roles: source.roles?.length ? source.roles : defaultRoles(source.provider),
     api_keys: source.api_keys ?? [],
     key_statuses: source.key_statuses ?? [],
     flaresolverr_url: source.flaresolverr_url ?? null,
@@ -95,18 +125,36 @@ function normalizeWebSearchSources(sources: WebSearchSourceConfig[]): WebSearchS
   }));
 }
 
+function providerLabelFallback(provider: WebSearchProviderKind): string {
+  return provider === 'jina' ? 'Jina Search' : provider === 'grok' ? 'Grok Research' : provider[0].toUpperCase() + provider.slice(1);
+}
+
+function defaultRoles(provider: WebSearchProviderKind): WebSearchSourceRole[] {
+  if (provider === 'tavily') {
+    return ['general_search', 'current_news', 'fact_checking', 'market_research', 'product_research'];
+  }
+  if (provider === 'exa') {
+    return ['semantic_research', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'product_research'];
+  }
+  if (provider === 'jina') {
+    return ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'];
+  }
+  return ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'];
+}
+
 function withWebSearch(config: AgentToolsConfig): AgentToolsConfig {
   const backendSources = config.web_search?.sources ?? [];
   const backendIds = new Set(backendSources.map((s) => s.id));
   const missingDefaults = defaultWebSearch().sources.filter(
     (defaultSource) => !backendIds.has(defaultSource.id),
   );
+  const sources = normalizeWebSearchSources(backendSources.concat(missingDefaults));
   return {
     ...config,
     web_search: {
       ...defaultWebSearch(),
       ...config.web_search,
-      sources: normalizeWebSearchSources(backendSources).concat(missingDefaults),
+      sources,
     },
   };
 }
@@ -133,9 +181,9 @@ function providerLabel(provider: WebSearchProviderKind, t: (key: string) => stri
   return t(`tools.webSearch.provider.${provider}`);
 }
 
-function hydrateKeyStatuses(sources: WebSearchSourceConfig[]): Record<string, Record<number, GrokKeyCheckResult>> {
-  return sources.reduce<Record<string, Record<number, GrokKeyCheckResult>>>((result, source) => {
-    const statuses = (source.key_statuses ?? []).reduce<Record<number, GrokKeyCheckResult>>((byIndex, status, keyIndex) => {
+function hydrateKeyStatuses(sources: WebSearchSourceConfig[]): Record<string, Record<number, WebSearchKeyCheckResult>> {
+  return sources.reduce<Record<string, Record<number, WebSearchKeyCheckResult>>>((result, source) => {
+    const statuses = (source.key_statuses ?? []).reduce<Record<number, WebSearchKeyCheckResult>>((byIndex, status, keyIndex) => {
       if (status) {
         byIndex[keyIndex] = {
           key_index: keyIndex,
@@ -153,25 +201,31 @@ function hydrateKeyStatuses(sources: WebSearchSourceConfig[]): Record<string, Re
   }, {});
 }
 
-function keyStatusRank(status?: GrokKeyStatus): number {
+function keyStatusRank(status?: WebSearchKeyStatus): number {
   switch (status) {
     case 'normal': return 0;
     case undefined: return 1;
-    case 'quota_limited': return 2;
-    case 'anti_bot': return 3;
-    case 'network_error': return 4;
-    case 'error': return 5;
-    case 'unauthorized': return 6;
-    case 'officially_blocked': return 7;
-    default: return 8;
+    case 'rate_limited': return 2;
+    case 'quota_limited': return 3;
+    case 'quota_exhausted': return 4;
+    case 'permission_denied': return 5;
+    case 'anti_bot': return 6;
+    case 'network_error': return 7;
+    case 'service_error': return 8;
+    case 'configuration_error': return 9;
+    case 'error': return 10;
+    case 'unauthorized': return 11;
+    case 'invalid_key': return 12;
+    case 'officially_blocked': return 13;
+    default: return 14;
   }
 }
 
 function mergeCheckedStatuses(
   source: WebSearchSourceConfig,
-  results: GrokKeyCheckResult[],
+  results: WebSearchKeyCheckResult[],
 ): WebSearchSourceConfig {
-  const statuses: Array<GrokKeyStatusRecord | null> = [...(source.key_statuses ?? [])];
+  const statuses: Array<WebSearchKeyStatusRecord | null> = [...(source.key_statuses ?? [])];
   while (statuses.length < source.api_keys.length) statuses.push(null);
   results.forEach((result) => {
     statuses[result.key_index] = {
@@ -184,16 +238,50 @@ function mergeCheckedStatuses(
   return { ...source, key_statuses: statuses };
 }
 
-function keyStatusLabel(status: GrokKeyStatus, t: (key: string) => string) {
+function keyStatusLabel(status: WebSearchKeyStatus, t: (key: string) => string) {
   return t(`tools.webSearch.keyStatus.${status}`);
 }
 
-function keyStatusIcon(status: GrokKeyStatus) {
+function keyStatusIcon(status: WebSearchKeyStatus) {
   if (status === 'normal') return <CheckCircle2 size={14} />;
-  if (status === 'officially_blocked' || status === 'unauthorized') return <CircleX size={14} />;
-  if (status === 'quota_limited' || status === 'anti_bot') return <CircleAlert size={14} />;
+  if (status === 'officially_blocked' || status === 'unauthorized' || status === 'invalid_key') return <CircleX size={14} />;
+  if (status === 'quota_limited' || status === 'quota_exhausted' || status === 'rate_limited' || status === 'permission_denied' || status === 'anti_bot') return <CircleAlert size={14} />;
   if (status === 'network_error') return <Clock3 size={14} />;
   return <CircleAlert size={14} />;
+}
+
+function formatCheckedAt(value: string): string {
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? value : new Date(timestamp).toLocaleString();
+}
+
+function defaultExpandedSources(sources: WebSearchSourceConfig[]): Record<string, boolean> {
+  const preferred = sources.find((source) => source.provider === 'grok') ?? sources[0];
+  return preferred ? { [preferred.id]: true } : {};
+}
+
+function defaultExpandedSourceSections(sources: WebSearchSourceConfig[]): ExpandedSourceSections {
+  return Object.fromEntries(sources.map((source) => [source.id, { preferences: true }]));
+}
+
+function summarizeKeyStatuses(
+  keyCount: number,
+  statuses: Record<number, WebSearchKeyCheckResult>,
+) {
+  let healthy = 0;
+  let issues = 0;
+  let checked = 0;
+  Object.entries(statuses).forEach(([keyIndex, status]) => {
+    if (Number(keyIndex) >= keyCount) return;
+    checked += 1;
+    if (status.status === 'normal') healthy += 1;
+    else issues += 1;
+  });
+  return {
+    healthy,
+    issues,
+    unchecked: Math.max(0, keyCount - checked),
+  };
 }
 
 export function WebSearchToolSettings({
@@ -202,7 +290,7 @@ export function WebSearchToolSettings({
   onBack,
 }: WebSearchToolSettingsProps) {
   const { t } = useI18n();
-  const { toast } = useFeedback();
+  const { confirm, toast } = useFeedback();
   const contextKey = scope === 'defaults' ? 'defaults' : `agent:${agentId ?? ''}`;
   const [defaults, setDefaults] = useState<AgentToolsConfig | null>(null);
   const [agentSettings, setAgentSettings] = useState<AgentToolsSettings | null>(null);
@@ -213,10 +301,13 @@ export function WebSearchToolSettings({
   const [draftKeys, setDraftKeys] = useState<Record<string, string>>({});
   const [keysDirty, setKeysDirty] = useState<Record<string, boolean>>({});
   const [selectedKeyIndices, setSelectedKeyIndices] = useState<Record<string, number[]>>({});
-  const [keyStatuses, setKeyStatuses] = useState<Record<string, Record<number, GrokKeyCheckResult>>>({});
+  const [expandedSources, setExpandedSources] = useState<Record<string, boolean>>({});
+  const [expandedSourceSections, setExpandedSourceSections] = useState<ExpandedSourceSections>({});
+  const [keyStatuses, setKeyStatuses] = useState<Record<string, Record<number, WebSearchKeyCheckResult>>>({});
   const [checkingKeys, setCheckingKeys] = useState<Record<string, boolean>>({});
   const [importingKeys, setImportingKeys] = useState<Record<string, boolean>>({});
   const [deletingKeys, setDeletingKeys] = useState<Record<string, boolean>>({});
+  const [addKeySourceId, setAddKeySourceId] = useState<string | null>(null);
 
   const isMountedRef = useRef(true);
   const activeContextRef = useRef(contextKey);
@@ -260,8 +351,11 @@ export function WebSearchToolSettings({
         setDefaults(normalized);
         setAgentSettings(null);
         setDraftKeys({});
+        setAddKeySourceId(null);
         setKeysDirty({});
         setSelectedKeyIndices({});
+        setExpandedSources(defaultExpandedSources(normalized.web_search.sources));
+        setExpandedSourceSections(defaultExpandedSourceSections(normalized.web_search.sources));
         setKeyStatuses(hydrateKeyStatuses(normalized.web_search.sources));
         const serialized = JSON.stringify(normalized);
         latestSerializedRef.current.set(contextKey, serialized);
@@ -282,7 +376,10 @@ export function WebSearchToolSettings({
           };
           setAgentSettings(normalized);
           setDefaults(normalized.defaults);
+          setAddKeySourceId(null);
           setSelectedKeyIndices({});
+          setExpandedSources(defaultExpandedSources(normalized.effective.web_search.sources));
+          setExpandedSourceSections(defaultExpandedSourceSections(normalized.effective.web_search.sources));
           setKeyStatuses(hydrateKeyStatuses(normalized.effective.web_search.sources));
           const serialized = JSON.stringify(normalized.overrides);
           latestSerializedRef.current.set(contextKey, serialized);
@@ -501,7 +598,21 @@ export function WebSearchToolSettings({
     const sources = [...config.web_search.sources];
     const [item] = sources.splice(index, 1);
     sources.splice(target, 0, item);
-    updateWebSearch({ sources });
+    updateWebSearch({
+      sources: sources.map((source, sourceIndex) => ({
+        ...source,
+        priority: (sourceIndex + 1) * 10,
+      })),
+    });
+  }
+
+  function toggleSourceRole(index: number, role: WebSearchSourceRole, checked: boolean) {
+    if (!config || scope !== 'defaults') return;
+    const source = config.web_search.sources[index];
+    const roles = checked
+      ? Array.from(new Set([...source.roles, role]))
+      : source.roles.filter((value) => value !== role);
+    updateSource(index, { roles });
   }
 
   async function addKeys(sourceId: string) {
@@ -515,74 +626,44 @@ export function WebSearchToolSettings({
     const source = config.web_search.sources.find((item) => item.id === sourceId);
     if (!source) return;
 
-    if (source.provider === 'grok') {
-      setImportingKeys((current) => ({ ...current, [sourceId]: true }));
-      try {
-        const response = await importGrokKeys(sourceId, values);
-        const sources = config.web_search.sources.map((item) => (
-          item.id === sourceId ? response.source : item
-        ));
-        setKeysDirty((current) => ({ ...current, [sourceId]: true }));
-        updateWebSearch({ sources });
-        setKeyStatuses((current) => ({
-          ...current,
-          [sourceId]: hydrateKeyStatuses([response.source])[sourceId] ?? {},
-        }));
-        setDraftKeys((current) => ({ ...current, [sourceId]: '' }));
-        const message = t('tools.webSearch.keyImportSummary', {
-          imported: response.imported,
-          duplicates: response.duplicates,
-        });
-        if (response.imported > 0) toast.success(message);
-        else toast.info(message);
-      } catch (error) {
-        toast.error(error instanceof Error ? error.message : t('tools.webSearch.saveFailed'));
-      } finally {
-        setImportingKeys((current) => ({ ...current, [sourceId]: false }));
-      }
-      return;
-    }
-
-    let importedCount = 0;
-    let duplicateCount = 0;
-    const sources = config.web_search.sources.map((source) => {
-      if (source.id !== sourceId) return source;
-      const existing = source.api_keys.filter((key) => key !== PRESERVE_KEYS_MARKER);
-      const existingSet = new Set(existing);
-      const seen = new Set<string>();
-      const additions = values.filter((value) => {
-        if (existingSet.has(value) || seen.has(value)) {
-          duplicateCount += 1;
-          return false;
-        }
-        seen.add(value);
-        importedCount += 1;
-        return true;
-      });
-      const apiKeys = [...existing, ...additions];
-      const keyStatuses: Array<GrokKeyStatusRecord | null> = [...(source.key_statuses ?? [])];
-      while (keyStatuses.length < apiKeys.length) keyStatuses.push(null);
-      keyStatuses.length = apiKeys.length;
-      return {
-        ...source,
-        api_keys: apiKeys,
-        key_statuses: keyStatuses,
-      };
-    });
-    if (importedCount > 0) {
+    setImportingKeys((current) => ({ ...current, [sourceId]: true }));
+    try {
+      const response = await importWebSearchKeys(sourceId, values);
+      const sources = config.web_search.sources.map((item) => (
+        item.id === sourceId ? response.source : item
+      ));
       setKeysDirty((current) => ({ ...current, [sourceId]: true }));
       updateWebSearch({ sources });
+      setKeyStatuses((current) => ({
+        ...current,
+        [sourceId]: hydrateKeyStatuses([response.source])[sourceId] ?? {},
+      }));
+      setDraftKeys((current) => ({ ...current, [sourceId]: '' }));
+      const message = t(
+        source.provider === 'grok'
+          ? 'tools.webSearch.grokKeyImportSummary'
+          : 'tools.webSearch.keyImportSummary',
+        {
+          imported: response.imported,
+          duplicates: response.duplicates,
+          blocked: response.blocked,
+        },
+      );
+      if (response.imported > 0) toast.success(message);
+      else toast.info(message);
+      setAddKeySourceId((current) => current === sourceId ? null : current);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('tools.webSearch.saveFailed'));
+    } finally {
+      setImportingKeys((current) => ({ ...current, [sourceId]: false }));
     }
-    setDraftKeys((current) => ({ ...current, [sourceId]: '' }));
-    if (importedCount > 0) {
-      setKeyStatuses((current) => ({ ...current, [sourceId]: {} }));
+  }
+
+  function closeAddKeyDialog() {
+    if (addKeySourceId) {
+      setDraftKeys((current) => ({ ...current, [addKeySourceId]: '' }));
     }
-    const message = t('tools.webSearch.keyImportSummary', {
-      imported: importedCount,
-      duplicates: duplicateCount,
-    });
-    if (importedCount > 0) toast.success(message);
-    else toast.info(message);
+    setAddKeySourceId(null);
   }
 
   async function removeKey(sourceId: string, keyIndex: number) {
@@ -590,43 +671,100 @@ export function WebSearchToolSettings({
     const source = config.web_search.sources.find((item) => item.id === sourceId);
     if (!source) return;
 
-    if (source.provider === 'grok') {
-      setDeletingKeys((current) => ({ ...current, [sourceId]: true }));
-      try {
-        const response = await deleteGrokKey(sourceId, keyIndex);
+    setDeletingKeys((current) => ({ ...current, [sourceId]: true }));
+    try {
+      const response = await deleteWebSearchKey(sourceId, keyIndex);
+      const sources = config.web_search.sources.map((item) => (
+        item.id === sourceId ? response.source : item
+      ));
+      setKeysDirty((current) => ({ ...current, [sourceId]: true }));
+      setSelectedKeyIndices((current) => ({ ...current, [sourceId]: [] }));
+      setKeyStatuses((current) => ({
+        ...current,
+        [sourceId]: hydrateKeyStatuses([response.source])[sourceId] ?? {},
+      }));
+      updateWebSearch({ sources });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('tools.webSearch.saveFailed'));
+    } finally {
+      setDeletingKeys((current) => ({ ...current, [sourceId]: false }));
+    }
+  }
+
+  function toggleSource(sourceId: string) {
+    setExpandedSources((current) => ({
+      ...current,
+      [sourceId]: !current[sourceId],
+    }));
+  }
+
+  function toggleSourceSection(sourceId: string, section: SourceSection) {
+    setExpandedSourceSections((current) => ({
+      ...current,
+      [sourceId]: {
+        ...current[sourceId],
+        [section]: !current[sourceId]?.[section],
+      },
+    }));
+  }
+
+  async function deleteSelectedKeys(sourceId: string) {
+    if (!config || scope !== 'defaults') return;
+    const source = config.web_search.sources.find((item) => item.id === sourceId);
+    const selected = selectedKeyIndices[sourceId] ?? [];
+    if (!source || selected.length === 0) return;
+
+    const confirmed = await confirm({
+      title: t('tools.webSearch.deleteSelectedTitle'),
+      message: t('tools.webSearch.deleteSelectedConfirm', { count: selected.length }),
+      confirmLabel: t('tools.webSearch.deleteSelected'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+
+    setDeletingKeys((current) => ({ ...current, [sourceId]: true }));
+    let latestSource = source;
+    let deletedCount = 0;
+    try {
+      const indices = [...selected].sort((left, right) => right - left);
+      for (const keyIndex of indices) {
+        const response = await deleteWebSearchKey(sourceId, keyIndex);
+        latestSource = response.source;
+        deletedCount += 1;
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('tools.webSearch.saveFailed'));
+    } finally {
+      if (deletedCount > 0) {
         const sources = config.web_search.sources.map((item) => (
-          item.id === sourceId ? response.source : item
+          item.id === sourceId ? latestSource : item
         ));
         setKeysDirty((current) => ({ ...current, [sourceId]: true }));
         setSelectedKeyIndices((current) => ({ ...current, [sourceId]: [] }));
         setKeyStatuses((current) => ({
           ...current,
-          [sourceId]: hydrateKeyStatuses([response.source])[sourceId] ?? {},
+          [sourceId]: hydrateKeyStatuses([latestSource])[sourceId] ?? {},
         }));
         updateWebSearch({ sources });
-      } catch (error) {
-        toast.error(error instanceof Error ? error.message : t('tools.webSearch.saveFailed'));
-      } finally {
-        setDeletingKeys((current) => ({ ...current, [sourceId]: false }));
       }
-      return;
+      setDeletingKeys((current) => ({ ...current, [sourceId]: false }));
     }
-
-    const sources = config.web_search.sources.map((source) => {
-      if (source.id !== sourceId) return source;
-      return {
-        ...source,
-        api_keys: source.api_keys.filter((_, index) => index !== keyIndex),
-        key_statuses: (source.key_statuses ?? []).filter((_, index) => index !== keyIndex),
-      };
-    });
-    setKeysDirty((current) => ({ ...current, [sourceId]: true }));
-    setKeyStatuses((current) => ({ ...current, [sourceId]: {} }));
-    updateWebSearch({ sources });
   }
 
-  function clearKeys(sourceId: string) {
+  async function clearKeys(sourceId: string) {
     if (!config || scope !== 'defaults') return;
+    const source = config.web_search.sources.find((item) => item.id === sourceId);
+    if (!source || source.api_keys.length === 0) return;
+    const confirmed = await confirm({
+      title: t('tools.webSearch.clearKeysTitle'),
+      message: t('tools.webSearch.clearKeysConfirm', {
+        provider: providerLabel(source.provider, t),
+        count: source.api_keys.length,
+      }),
+      confirmLabel: t('tools.webSearch.clearKeys'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     const sources = config.web_search.sources.map((source) => (
       source.id === sourceId ? { ...source, api_keys: [] } : source
     ));
@@ -659,20 +797,23 @@ export function WebSearchToolSettings({
     if (checkingKeys[sourceId] || indices.length === 0) return;
     setCheckingKeys((current) => ({ ...current, [sourceId]: true }));
     try {
-      const response = await checkGrokKeys(sourceId, indices);
-      const next = response.results.reduce<Record<number, GrokKeyCheckResult>>((result, item) => {
+      const response = await checkWebSearchKeys(sourceId, indices);
+      const next = response.results.reduce<Record<number, WebSearchKeyCheckResult>>((result, item) => {
         result[item.key_index] = item;
         return result;
       }, {});
       setKeyStatuses((current) => ({ ...current, [sourceId]: { ...(current[sourceId] ?? {}), ...next } }));
-      if (scope === 'defaults' && config) {
-        const sources = config.web_search.sources.map((source) => (
-          source.id === sourceId ? mergeCheckedStatuses(source, response.results) : source
-        ));
-        setDefaults((current) => (current ? withWebSearch({
-          ...current,
-          web_search: { ...current.web_search, sources },
-        }) : current));
+      if (scope === 'defaults') {
+        setDefaults((current) => {
+          if (!current) return current;
+          const sources = current.web_search.sources.map((source) => (
+            source.id === sourceId ? mergeCheckedStatuses(source, response.results) : source
+          ));
+          return withWebSearch({
+            ...current,
+            web_search: { ...current.web_search, sources },
+          });
+        });
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('tools.webSearch.checkFailed'));
@@ -701,6 +842,10 @@ export function WebSearchToolSettings({
 
   const isAgentScope = scope === 'agent';
   const webSearch = config.web_search;
+  const addKeySource = addKeySourceId
+    ? webSearch.sources.find((source) => source.id === addKeySourceId) ?? null
+    : null;
+  const isAddingKeys = addKeySource ? Boolean(importingKeys[addKeySource.id]) : false;
   const enabledInherited = isAgentScope && overrides?.web_search?.enabled === undefined;
   const maxResultsInherited = isAgentScope && overrides?.web_search?.max_results === undefined;
 
@@ -845,30 +990,77 @@ export function WebSearchToolSettings({
                   const selected = selectedKeyIndices[source.id] ?? [];
                   const sourceStatuses = keyStatuses[source.id] ?? {};
                   const isChecking = Boolean(checkingKeys[source.id]);
+                  const isDeleting = Boolean(deletingKeys[source.id]);
+                  const isExpanded = Boolean(expandedSources[source.id]);
+                  const isPreferencesExpanded = Boolean(expandedSourceSections[source.id]?.preferences);
+                  const isKeysExpanded = Boolean(expandedSourceSections[source.id]?.keys);
+                  const isConnectionExpanded = Boolean(expandedSourceSections[source.id]?.connection);
+                  const allSelected = keyCount > 0 && selected.length === keyCount;
+                  const statusSummary = summarizeKeyStatuses(keyCount, sourceStatuses);
                   const emptyLabel = t(source.provider === 'grok' ? 'tools.webSearch.noSso' : 'tools.webSearch.noKeys');
-                  const statusLabel = keyCount === 0
-                    ? emptyLabel
-                    : t('tools.webSearch.keyCount', { count: keyCount });
-
+                  const sourceBodyId = `web-search-source-body-${source.id}`;
+                  const preferencesBodyId = `web-search-preferences-body-${source.id}`;
+                  const keysBodyId = `web-search-keys-body-${source.id}`;
+                  const connectionBodyId = `web-search-connection-body-${source.id}`;
                   return (
                     <div
                       key={source.id}
-                      className={`web-search-source ${source.enabled ? 'is-enabled' : 'is-disabled'}`}
+                      className={`web-search-source ${source.enabled ? 'is-enabled' : 'is-disabled'} ${isExpanded ? 'is-expanded' : 'is-collapsed'}`}
                     >
                       <div className="web-search-source__header">
-                        <div className="web-search-source__identity">
+                        <button
+                          type="button"
+                          className="web-search-source__summary"
+                          aria-expanded={isExpanded}
+                          aria-controls={sourceBodyId}
+                          onClick={() => toggleSource(source.id)}
+                        >
                           <span
                             className="web-search-source__priority"
                             title={t('tools.webSearch.sourcePriority', { index: String(index + 1) })}
                           >
                             {index + 1}
                           </span>
-                          <div className="web-search-source__meta">
-                            <strong>{providerLabel(source.provider, t)}</strong>
-                            <small>{statusLabel}</small>
-                          </div>
-                        </div>
+                          <span className="web-search-source__meta">
+                            <span className="web-search-source__title-line">
+                              <strong>{providerLabel(source.provider, t)}</strong>
+                            </span>
+                            <span className="web-search-source__health" aria-label={t('tools.webSearch.statusSummary')}>
+                              <span className="is-total">
+                                <KeyRound size={13} />
+                                {t('tools.webSearch.totalKeyCount', { count: keyCount })}
+                              </span>
+                              <span className="is-healthy">
+                                <CheckCircle2 size={13} />
+                                {t('tools.webSearch.healthyCount', { count: statusSummary.healthy })}
+                              </span>
+                              <span className="is-issue">
+                                <CircleAlert size={13} />
+                                {t('tools.webSearch.issueCount', { count: statusSummary.issues })}
+                              </span>
+                              <span className="is-unchecked">
+                                <Clock3 size={13} />
+                                {t('tools.webSearch.uncheckedCount', { count: statusSummary.unchecked })}
+                              </span>
+                            </span>
+                          </span>
+                          <ChevronDown size={18} className="web-search-source__chevron" />
+                        </button>
                         <div className="web-search-source__actions">
+                          <label
+                            className="toggle-switch web-search-source__toggle"
+                            title={source.enabled ? t('tools.enabled') : t('tools.disabled')}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={source.enabled}
+                              onChange={(e) => updateSource(index, { enabled: e.target.checked })}
+                            />
+                            <span className="toggle-slider" />
+                            <span className="web-search-source__toggle-text">
+                              {t(source.enabled ? 'tools.enabled' : 'tools.disabled')}
+                            </span>
+                          </label>
                           <div
                             className="web-search-source__reorder"
                             role="group"
@@ -895,202 +1087,314 @@ export function WebSearchToolSettings({
                               <ArrowDown size={15} />
                             </IconButton>
                           </div>
-                          <label
-                            className="toggle-switch web-search-source__toggle"
-                            title={source.enabled ? t('tools.enabled') : t('tools.disabled')}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={source.enabled}
-                              onChange={(e) => updateSource(index, { enabled: e.target.checked })}
-                            />
-                            <span className="toggle-slider" />
-                          </label>
                         </div>
                       </div>
 
-                      <div className="web-search-source__body">
-                        <div className="web-search-keys">
-                          <div className="web-search-keys__toolbar">
-                            <span className="web-search-keys__label">{t('tools.webSearch.keysLabel')}</span>
-                            {source.provider === 'grok' && keyCount > 0 ? (
-                              <div className="web-search-keys__checks">
-                                <button
-                                  type="button"
-                                  className="web-search-keys__select"
-                                  onClick={() => selectAllKeys(source.id, selected.length === keyCount ? 0 : keyCount)}
-                                >
-                                  {selected.length === keyCount
-                                    ? t('tools.webSearch.clearSelection')
-                                    : t('tools.webSearch.selectAll')}
-                                </button>
-                                <Button
-                                  type="button"
-                                  variant="secondary"
-                                  className="web-search-keys__check-btn"
-                                  icon={isChecking ? <LoaderCircle size={14} className="spin" /> : <CheckCircle2 size={14} />}
-                                  onClick={() => checkSourceKeys(source.id, selected.length > 0 ? selected : source.api_keys.map((_, i) => i))}
-                                  disabled={isChecking}
-                                >
-                                  {selected.length > 0
-                                    ? t('tools.webSearch.checkSelected', { count: selected.length })
-                                    : t('tools.webSearch.checkAll')}
-                                </Button>
-                              </div>
-                            ) : null}
-                            {keyCount > 0 ? (
+                      {isExpanded ? (
+                        <div className="web-search-source__body" id={sourceBodyId}>
+                          <section className={`web-search-subsection web-search-source-profile ${isPreferencesExpanded ? 'is-open' : ''}`}>
+                            <div className="web-search-subsection__header">
                               <button
                                 type="button"
-                                className="web-search-keys__clear"
-                                onClick={() => clearKeys(source.id)}
+                                className="web-search-subsection__toggle"
+                                aria-expanded={isPreferencesExpanded}
+                                aria-controls={preferencesBodyId}
+                                onClick={() => toggleSourceSection(source.id, 'preferences')}
                               >
-                                {t('tools.webSearch.clearKeys')}
+                                <span className="web-search-section-icon"><Settings2 size={15} /></span>
+                                <span className="web-search-subsection__copy">
+                                  <strong>{t('tools.webSearch.sourceProfile')}</strong>
+                                  <small>{t('tools.webSearch.sourceProfileDesc')}</small>
+                                </span>
+                                <ChevronDown size={16} className="web-search-subsection__chevron" />
                               </button>
+                            </div>
+                            {isPreferencesExpanded ? (
+                              <div
+                                className="web-search-subsection__content web-search-source-profile__content"
+                                id={preferencesBodyId}
+                              >
+                                <div className="web-search-source-profile__groups">
+                                  {SOURCE_ROLE_GROUPS.map((group) => (
+                                    <fieldset className="web-search-source-profile__group" key={group.key}>
+                                      <legend>{t(`tools.webSearch.sourcePreferenceGroup.${group.key}`)}</legend>
+                                      <div className="web-search-source-profile__options">
+                                        {group.roles.map((role) => (
+                                          <label key={role} title={t(`tools.webSearch.sourceRoleDesc.${role}`)}>
+                                            <input
+                                              type="checkbox"
+                                              checked={source.roles.includes(role)}
+                                              onChange={(event) => toggleSourceRole(index, role, event.target.checked)}
+                                            />
+                                            <span>{t(`tools.webSearch.sourceRole.${role}`)}</span>
+                                          </label>
+                                        ))}
+                                        {group.key === 'intent' ? (
+                                          <label title={t('tools.webSearch.deepEnabledDesc')}>
+                                            <input
+                                              type="checkbox"
+                                              checked={source.deep_enabled}
+                                              onChange={(event) => updateSource(index, { deep_enabled: event.target.checked })}
+                                            />
+                                            <span>{t('tools.webSearch.deepEnabled')}</span>
+                                          </label>
+                                        ) : null}
+                                      </div>
+                                    </fieldset>
+                                  ))}
+                                </div>
+                              </div>
                             ) : null}
-                          </div>
+                          </section>
 
-                          {keyCount === 0 ? (
-                            <div className="web-search-keys__empty">{emptyLabel}</div>
-                          ) : (
-                            <ul className="web-search-key-tags">
-                              {source.api_keys
-                                .map((key, keyIndex) => ({ key, keyIndex, status: sourceStatuses[keyIndex] }))
-                                .sort((left, right) => (
-                                  keyStatusRank(left.status?.status) - keyStatusRank(right.status?.status)
-                                  || left.keyIndex - right.keyIndex
-                                ))
-                                .map(({ key, keyIndex, status }) => {
-                                return (
-                                <li key={`${source.id}-${keyIndex}`} className="web-search-key-chip">
-                                  {source.provider === 'grok' ? (
+                          <section className={`web-search-subsection web-search-keys ${isKeysExpanded ? 'is-open' : ''}`}>
+                            <div className={`web-search-subsection__header web-search-keys__heading ${selected.length > 0 ? 'has-selection' : ''}`}>
+                              <button
+                                type="button"
+                                className="web-search-subsection__toggle"
+                                aria-expanded={isKeysExpanded}
+                                aria-controls={keysBodyId}
+                                onClick={() => toggleSourceSection(source.id, 'keys')}
+                              >
+                                <span className="web-search-section-icon"><KeyRound size={15} /></span>
+                                <span className="web-search-subsection__copy">
+                                  <strong>{t('tools.webSearch.keysLabel')}</strong>
+                                  <small>{t('tools.webSearch.keysSectionDesc')}</small>
+                                </span>
+                                <ChevronDown size={16} className="web-search-subsection__chevron" />
+                              </button>
+                              <div className="web-search-keys__toolbar">
+                                {isKeysExpanded && keyCount > 0 ? (
+                                  <label className="web-search-keys__select-all">
                                     <input
                                       type="checkbox"
-                                      className="web-search-key-chip__select"
-                                      aria-label={t('tools.webSearch.selectKey', { index: keyIndex + 1 })}
-                                      checked={selected.includes(keyIndex)}
-                                      onChange={(event) => toggleKeySelection(source.id, keyIndex, event.target.checked)}
+                                      checked={allSelected}
+                                      ref={(node) => {
+                                        if (node) node.indeterminate = selected.length > 0 && !allSelected;
+                                      }}
+                                      onChange={() => selectAllKeys(source.id, allSelected ? 0 : keyCount)}
                                     />
-                                  ) : null}
-                                  <code>{key}</code>
-                                  {status ? (
-                                    <span
-                                      className={`web-search-key-status is-${status.status}`}
-                                      title={status.detail}
-                                    >
-                                      {keyStatusIcon(status.status)}
-                                      <span>{keyStatusLabel(status.status, t)}</span>
-                                    </span>
-                                  ) : null}
-                                  {source.provider === 'grok' ? (
-                                    <IconButton
-                                      type="button"
-                                      variant="ghost"
-                                      className="web-search-key-chip__check"
-                                      label={t('tools.webSearch.checkOne')}
-                                      onClick={() => checkSourceKeys(source.id, [keyIndex])}
-                                      disabled={isChecking}
-                                    >
-                                      {isChecking ? <LoaderCircle size={13} className="spin" /> : <CheckCircle2 size={13} />}
-                                    </IconButton>
-                                  ) : null}
-                                  <IconButton
+                                    <span>{allSelected ? t('tools.webSearch.clearSelection') : t('tools.webSearch.selectAll')}</span>
+                                  </label>
+                                ) : null}
+                                {isKeysExpanded && keyCount > 0 ? (
+                                  <Button
                                     type="button"
-                                    variant="ghost"
-                                    className="web-search-key-chip__remove"
-                                      label={t('tools.webSearch.removeKey')}
-                                      onClick={() => removeKey(source.id, keyIndex)}
-                                      disabled={Boolean(deletingKeys[source.id])}
-                                    >
-                                    {deletingKeys[source.id] ? <LoaderCircle size={13} className="spin" /> : <Trash2 size={13} />}
-                                  </IconButton>
-                                </li>
-                                );
-                              })}
-                            </ul>
-                          )}
+                                    variant="secondary"
+                                    className="web-search-keys__check-btn"
+                                    icon={isChecking ? <LoaderCircle size={14} className="is-spinning" /> : <ScanSearch size={15} />}
+                                    title={t('tools.webSearch.keyCheckHint')}
+                                    onClick={() => checkSourceKeys(source.id, selected.length > 0 ? selected : source.api_keys.map((_, keyIndex) => keyIndex))}
+                                    disabled={isChecking || isDeleting}
+                                  >
+                                    {selected.length > 0
+                                      ? t('tools.webSearch.checkSelected', { count: selected.length })
+                                      : t('tools.webSearch.checkAll')}
+                                  </Button>
+                                ) : null}
+                                {isKeysExpanded && selected.length > 0 ? (
+                                  <Button
+                                    type="button"
+                                    variant="danger"
+                                    className="web-search-keys__delete-selected"
+                                    icon={isDeleting ? <LoaderCircle size={14} className="is-spinning" /> : <Trash2 size={14} />}
+                                    onClick={() => void deleteSelectedKeys(source.id)}
+                                    disabled={isDeleting || isChecking}
+                                  >
+                                    {t('tools.webSearch.deleteSelected')}
+                                  </Button>
+                                ) : null}
+                                {isKeysExpanded && keyCount > 0 ? (
+                                  <Button
+                                    type="button"
+                                    variant="danger"
+                                    className="web-search-keys__clear"
+                                    icon={<Trash2 size={14} />}
+                                    onClick={() => void clearKeys(source.id)}
+                                    disabled={isDeleting || isChecking}
+                                  >
+                                    {t('tools.webSearch.clearKeys')}
+                                  </Button>
+                                ) : null}
+                                <IconButton
+                                  type="button"
+                                  variant="default"
+                                  className="web-search-keys__add"
+                                  label={t('tools.webSearch.addKey')}
+                                  onClick={() => setAddKeySourceId(source.id)}
+                                  disabled={isDeleting || isChecking || Boolean(importingKeys[source.id])}
+                                >
+                                  {importingKeys[source.id]
+                                    ? <LoaderCircle size={17} className="is-spinning" />
+                                    : <Plus size={18} />}
+                                </IconButton>
+                              </div>
+                            </div>
 
-                          <div className="web-search-key-add">
-                            <textarea
-                              id={`web-search-key-input-${source.id}`}
-                              className="pattern-input web-search-key-add__input"
-                              value={draftKeys[source.id] ?? ''}
-                              placeholder={t(source.provider === 'grok' ? 'tools.webSearch.ssoPlaceholder' : 'tools.webSearch.keyPlaceholder')}
-                              autoComplete="off"
-                              spellCheck={false}
-                              onChange={(e) => setDraftKeys((current) => ({ ...current, [source.id]: e.target.value }))}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                                  e.preventDefault();
-                                  addKeys(source.id);
-                                }
-                              }}
-                            />
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              className="web-search-key-add__btn"
-                              icon={<Plus size={15} />}
-                              onClick={() => addKeys(source.id)}
-                              disabled={Boolean(importingKeys[source.id]) || !(draftKeys[source.id] ?? '').trim()}
-                            >
-                              {t('tools.webSearch.addKey')}
-                            </Button>
-                          </div>
+                            {isKeysExpanded ? (
+                              <div className="web-search-subsection__content web-search-keys__content" id={keysBodyId}>
+                                {keyCount === 0 ? (
+                                  <div className="web-search-keys__empty">
+                                    <KeyRound size={18} />
+                                    <div>
+                                      <strong>{emptyLabel}</strong>
+                                      <span>{t('tools.webSearch.emptyKeysHint')}</span>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <ul className="web-search-key-list">
+                                    {source.api_keys
+                                      .map((key, keyIndex) => ({ key, keyIndex, status: sourceStatuses[keyIndex] }))
+                                      .sort((left, right) => (
+                                        keyStatusRank(left.status?.status) - keyStatusRank(right.status?.status)
+                                        || left.keyIndex - right.keyIndex
+                                      ))
+                                      .map(({ key, keyIndex, status }) => (
+                                        <li
+                                          key={`${source.id}-${keyIndex}`}
+                                          className={`web-search-key-card ${selected.includes(keyIndex) ? 'is-selected' : ''}`}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            className="web-search-key-card__select"
+                                            aria-label={t('tools.webSearch.selectKey', { index: keyIndex + 1 })}
+                                            checked={selected.includes(keyIndex)}
+                                            onChange={(event) => toggleKeySelection(source.id, keyIndex, event.target.checked)}
+                                          />
+                                          <div className="web-search-key-card__content">
+                                            <div className="web-search-key-card__topline">
+                                              <code title={key}>{key}</code>
+                                              {status ? (
+                                                <span
+                                                  className={`web-search-key-status is-${status.status}`}
+                                                  title={status.detail}
+                                                >
+                                                  {keyStatusIcon(status.status)}
+                                                  <span>{keyStatusLabel(status.status, t)}</span>
+                                                </span>
+                                              ) : (
+                                                <span className="web-search-key-status is-unchecked">
+                                                  <Clock3 size={14} />
+                                                  <span>{t('tools.webSearch.unchecked')}</span>
+                                                </span>
+                                              )}
+                                            </div>
+                                            {status ? (
+                                              <small className="web-search-key-card__status-detail" title={status.detail}>
+                                                <time dateTime={status.checked_at}>{formatCheckedAt(status.checked_at)}</time>
+                                                <span aria-hidden="true">·</span>
+                                                <span>{status.detail}</span>
+                                              </small>
+                                            ) : null}
+                                          </div>
+                                          <div className="web-search-key-card__actions">
+                                            <IconButton
+                                              type="button"
+                                              variant="ghost"
+                                              className="web-search-key-card__check"
+                                              label={t('tools.webSearch.checkOne')}
+                                              title={t('tools.webSearch.keyCheckHint')}
+                                              onClick={() => checkSourceKeys(source.id, [keyIndex])}
+                                              disabled={isChecking || isDeleting}
+                                            >
+                                              {isChecking ? <LoaderCircle size={14} className="is-spinning" /> : <ScanSearch size={15} />}
+                                            </IconButton>
+                                            <IconButton
+                                              type="button"
+                                              variant="ghost"
+                                              className="web-search-key-card__remove"
+                                              label={t('tools.webSearch.removeKey')}
+                                              onClick={() => removeKey(source.id, keyIndex)}
+                                              disabled={isDeleting || isChecking}
+                                            >
+                                              {isDeleting ? <LoaderCircle size={14} className="is-spinning" /> : <Trash2 size={14} />}
+                                            </IconButton>
+                                          </div>
+                                        </li>
+                                      ))}
+                                  </ul>
+                                )}
+                              </div>
+                            ) : null}
+                          </section>
+
+                          {source.provider === 'grok' ? (
+                            <section className={`web-search-subsection web-search-grok-extras ${isConnectionExpanded ? 'is-open' : ''}`}>
+                              <div className="web-search-subsection__header">
+                                <button
+                                  type="button"
+                                  className="web-search-subsection__toggle"
+                                  aria-expanded={isConnectionExpanded}
+                                  aria-controls={connectionBodyId}
+                                  onClick={() => toggleSourceSection(source.id, 'connection')}
+                                >
+                                  <span className="web-search-section-icon"><Settings2 size={15} /></span>
+                                  <span className="web-search-subsection__copy">
+                                    <strong>{t('tools.webSearch.advancedSettings')}</strong>
+                                    <small>{t('tools.webSearch.advancedSettingsDesc')}</small>
+                                  </span>
+                                  <ChevronDown size={16} className="web-search-subsection__chevron" />
+                                </button>
+                              </div>
+                              {isConnectionExpanded ? (
+                                <div
+                                  className="web-search-subsection__content web-search-grok-extras__content"
+                                  id={connectionBodyId}
+                                >
+                                  <div className="web-search-extra-field">
+                                    <div className="web-search-extra-field__label">
+                                      <label htmlFor={`grok-flaresolverr-${source.id}`}>{t('tools.webSearch.flaresolverrUrl')}</label>
+                                      <p className="setting-desc">{t('tools.webSearch.flaresolverrUrlDesc')}</p>
+                                    </div>
+                                    <input
+                                      id={`grok-flaresolverr-${source.id}`}
+                                      type="text"
+                                      className="pattern-input web-search-extra-input"
+                                      value={source.flaresolverr_url ?? ''}
+                                      placeholder={t('tools.webSearch.flaresolverrUrlPlaceholder')}
+                                      onChange={(e) => updateSource(index, {
+                                        flaresolverr_url: e.target.value.trim() ? e.target.value.trim() : null,
+                                      })}
+                                    />
+                                  </div>
+                                  <div className="web-search-extra-field">
+                                    <div className="web-search-extra-field__label">
+                                      <label htmlFor={`grok-fs-proxy-${source.id}`}>{t('tools.webSearch.flaresolverrProxyUrl')}</label>
+                                      <p className="setting-desc">{t('tools.webSearch.flaresolverrProxyUrlDesc')}</p>
+                                    </div>
+                                    <input
+                                      id={`grok-fs-proxy-${source.id}`}
+                                      type="text"
+                                      className="pattern-input web-search-extra-input"
+                                      value={source.flaresolverr_proxy_url ?? ''}
+                                      placeholder={t('tools.webSearch.flaresolverrProxyUrlPlaceholder')}
+                                      onChange={(e) => updateSource(index, {
+                                        flaresolverr_proxy_url: e.target.value.trim() ? e.target.value.trim() : null,
+                                      })}
+                                    />
+                                  </div>
+                                  <div className="web-search-extra-field">
+                                    <div className="web-search-extra-field__label">
+                                      <label htmlFor={`grok-proxy-${source.id}`}>{t('tools.webSearch.proxyUrl')}</label>
+                                      <p className="setting-desc">{t('tools.webSearch.proxyUrlDesc')}</p>
+                                    </div>
+                                    <input
+                                      id={`grok-proxy-${source.id}`}
+                                      type="text"
+                                      className="pattern-input web-search-extra-input"
+                                      value={source.proxy_url ?? ''}
+                                      placeholder={t('tools.webSearch.proxyUrlPlaceholder')}
+                                      onChange={(e) => updateSource(index, {
+                                        proxy_url: e.target.value.trim() ? e.target.value.trim() : null,
+                                      })}
+                                    />
+                                  </div>
+                                </div>
+                              ) : null}
+                            </section>
+                          ) : null}
                         </div>
-
-                        {source.provider === 'grok' ? (
-                          <div className="web-search-grok-extras">
-                            <div className="web-search-extra-field">
-                              <div className="web-search-extra-field__label">
-                                <label htmlFor={`grok-flaresolverr-${source.id}`}>{t('tools.webSearch.flaresolverrUrl')}</label>
-                                <p className="setting-desc">{t('tools.webSearch.flaresolverrUrlDesc')}</p>
-                              </div>
-                              <input
-                                id={`grok-flaresolverr-${source.id}`}
-                                type="text"
-                                className="pattern-input web-search-extra-input"
-                                value={source.flaresolverr_url ?? ''}
-                                placeholder={t('tools.webSearch.flaresolverrUrlPlaceholder')}
-                                onChange={(e) => updateSource(index, {
-                                  flaresolverr_url: e.target.value.trim() ? e.target.value.trim() : null,
-                                })}
-                              />
-                            </div>
-                            <div className="web-search-extra-field">
-                              <div className="web-search-extra-field__label">
-                                <label htmlFor={`grok-fs-proxy-${source.id}`}>{t('tools.webSearch.flaresolverrProxyUrl')}</label>
-                                <p className="setting-desc">{t('tools.webSearch.flaresolverrProxyUrlDesc')}</p>
-                              </div>
-                              <input
-                                id={`grok-fs-proxy-${source.id}`}
-                                type="text"
-                                className="pattern-input web-search-extra-input"
-                                value={source.flaresolverr_proxy_url ?? ''}
-                                placeholder={t('tools.webSearch.flaresolverrProxyUrlPlaceholder')}
-                                onChange={(e) => updateSource(index, {
-                                  flaresolverr_proxy_url: e.target.value.trim() ? e.target.value.trim() : null,
-                                })}
-                              />
-                            </div>
-                            <div className="web-search-extra-field">
-                              <div className="web-search-extra-field__label">
-                                <label htmlFor={`grok-proxy-${source.id}`}>{t('tools.webSearch.proxyUrl')}</label>
-                                <p className="setting-desc">{t('tools.webSearch.proxyUrlDesc')}</p>
-                              </div>
-                              <input
-                                id={`grok-proxy-${source.id}`}
-                                type="text"
-                                className="pattern-input web-search-extra-input"
-                                value={source.proxy_url ?? ''}
-                                placeholder={t('tools.webSearch.proxyUrlPlaceholder')}
-                                onChange={(e) => updateSource(index, {
-                                  proxy_url: e.target.value.trim() ? e.target.value.trim() : null,
-                                })}
-                              />
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -1105,6 +1409,64 @@ export function WebSearchToolSettings({
           </section>
         )}
       </div>
+
+      {addKeySource ? (
+        <Dialog
+          open
+          title={t('tools.webSearch.addKeysDialogTitle', { provider: providerLabel(addKeySource.provider, t) })}
+          description={t(addKeySource.provider === 'grok' ? 'tools.webSearch.addGrokKeysHint' : 'tools.webSearch.addKeysHint')}
+          icon={<KeyRound size={19} />}
+          closeLabel={t('common.close')}
+          onClose={() => {
+            if (!isAddingKeys) closeAddKeyDialog();
+          }}
+          closeOnBackdrop={!isAddingKeys}
+          closeOnEscape={!isAddingKeys}
+          size="sm"
+          className="web-search-key-dialog"
+          bodyClassName="web-search-key-dialog__body"
+          footer={(
+            <>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={closeAddKeyDialog}
+                disabled={isAddingKeys}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                icon={isAddingKeys ? <LoaderCircle size={15} className="is-spinning" /> : <Plus size={15} />}
+                onClick={() => void addKeys(addKeySource.id)}
+                disabled={isAddingKeys || !(draftKeys[addKeySource.id] ?? '').trim()}
+              >
+                {t('tools.webSearch.addKey')}
+              </Button>
+            </>
+          )}
+        >
+          <label className="web-search-key-dialog__field" htmlFor={`web-search-key-input-${addKeySource.id}`}>
+            <span>{t('tools.webSearch.keysLabel')}</span>
+            <textarea
+              id={`web-search-key-input-${addKeySource.id}`}
+              className="pattern-input web-search-key-dialog__input"
+              value={draftKeys[addKeySource.id] ?? ''}
+              placeholder={t(addKeySource.provider === 'grok' ? 'tools.webSearch.ssoPlaceholder' : 'tools.webSearch.keyPlaceholder')}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) => setDraftKeys((current) => ({ ...current, [addKeySource.id]: event.target.value }))}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                  event.preventDefault();
+                  void addKeys(addKeySource.id);
+                }
+              }}
+            />
+          </label>
+        </Dialog>
+      ) : null}
     </div>
   );
 }

@@ -1,12 +1,15 @@
 use base64::Engine as _;
-use wreq::header::{HeaderMap, HeaderName, HeaderValue};
-use wreq::StatusCode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use wreq::StatusCode;
+use wreq::header::{HeaderMap, HeaderName, HeaderValue};
 
-use crate::tools::web_search::types::{sanitize_error_message, ProviderError, WebSearchHit};
+use crate::tools::web_search::types::{
+    AiSynthesis, ProviderError, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind,
+    WebSearchHit, sanitize_error_message,
+};
 
 const DEFAULT_MODE: &str = "fast";
 const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
@@ -41,6 +44,14 @@ struct StatsigCacheEntry {
     expires_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct GrokSearchOptions<'a> {
+    pub source_id: &'a str,
+    pub flaresolverr_url: Option<&'a str>,
+    pub flaresolverr_proxy_url: Option<&'a str>,
+    pub proxy_url: Option<&'a str>,
+}
+
 fn statsig_cache() -> &'static Mutex<BTreeMap<String, StatsigCacheEntry>> {
     static CACHE: OnceLock<Mutex<BTreeMap<String, StatsigCacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -51,15 +62,11 @@ pub async fn search(
     control_client: &reqwest::Client,
     base_url: &str,
     api_key: &str,
-    query: &str,
-    max_results: u32,
-    flaresolverr_url: Option<&str>,
-    flaresolverr_proxy_url: Option<&str>,
-    proxy_url: Option<&str>,
-) -> Result<Vec<WebSearchHit>, ProviderError> {
-    let mut cred = parse_credential(api_key).map_err(|message| {
-        ProviderError::Retryable(sanitize_error_message(&message, api_key))
-    })?;
+    request: &ProviderSearchRequest,
+    options: GrokSearchOptions<'_>,
+) -> Result<ProviderSearchOutput, ProviderError> {
+    let mut cred = parse_credential(api_key)
+        .map_err(|message| ProviderError::Retryable(sanitize_error_message(&message, api_key)))?;
     if cred.sso.is_empty() {
         return Err(ProviderError::Retryable(
             "Grok SSO token is empty".to_string(),
@@ -68,12 +75,13 @@ pub async fn search(
 
     let base = base_url.trim_end_matches('/');
     let endpoint = format!("{base}/rest/app-chat/conversations/new");
-    let prompt = build_search_prompt(query, max_results);
+    let prompt = build_search_prompt(request);
     let body = build_web_chat_payload(&prompt, DEFAULT_MODE);
-    let flaresolverr = super::grok_support::normalize_flaresolverr_url(flaresolverr_url);
-    let flaresolverr_proxy = super::grok_support::normalize_optional_url(flaresolverr_proxy_url);
+    let flaresolverr = super::grok_support::normalize_flaresolverr_url(options.flaresolverr_url);
+    let flaresolverr_proxy =
+        super::grok_support::normalize_optional_url(options.flaresolverr_proxy_url);
     // API traffic proxy is applied on wreq client in web_search::mod; also used for statsig signer egress.
-    let proxy = super::grok_support::normalize_optional_url(proxy_url);
+    let proxy = super::grok_support::normalize_optional_url(options.proxy_url);
 
     // NOTE: Do NOT inject FlareSolverr cf_clearance into wreq chat.
     // FS runs a real browser fingerprint; wreq emulates Chrome TLS separately.
@@ -131,7 +139,12 @@ pub async fn search(
                     }
                     return Err(classify_upstream_error(&error, api_key));
                 }
-                return map_hits(parsed, query, max_results);
+                return map_hits(
+                    parsed,
+                    &request.query,
+                    request.max_results,
+                    options.source_id,
+                );
             }
             Err(error) => {
                 let message = error.message().to_string();
@@ -160,7 +173,6 @@ pub async fn search(
     )))
 }
 
-
 async fn execute_chat(
     client: &wreq::Client,
     base: &str,
@@ -169,9 +181,8 @@ async fn execute_chat(
     statsig: Option<&str>,
     body: &Value,
 ) -> Result<Vec<u8>, ProviderError> {
-    let headers = build_request_headers(base, cred, statsig).map_err(|message| {
-        ProviderError::Retryable(sanitize_error_message(&message, &cred.sso))
-    })?;
+    let headers = build_request_headers(base, cred, statsig)
+        .map_err(|message| ProviderError::Retryable(sanitize_error_message(&message, &cred.sso)))?;
 
     // Chrome TLS/JA3/H2 via wreq emulation (scheme B); cookies still from SSO + FlareSolverr.
     // Proxy/idle-pool flakiness shows up as Connect/timeout — retry a few times before bubbling up.
@@ -263,34 +274,45 @@ fn map_hits(
     parsed: ParsedChat,
     query: &str,
     max_results: u32,
-) -> Result<Vec<WebSearchHit>, ProviderError> {
+    source_id: &str,
+) -> Result<ProviderSearchOutput, ProviderError> {
     let mut hits = parse_structured_hits(&parsed.text, max_results);
-    if hits.is_empty() {
-        let snippet = truncate(parsed.text.trim(), MAX_SNIPPET_CHARS);
-        if !snippet.is_empty() {
-            hits.push(WebSearchHit {
-                title: format!("Grok summary: {}", truncate(query, 80)),
-                url: "https://grok.com".to_string(),
-                snippet,
-                score: None,
-            });
-        }
-    }
+    let answer = parse_structured_answer(&parsed.text)
+        .or_else(|| (!parsed.text.trim().is_empty()).then(|| parsed.text.trim().to_string()));
     for source in parsed.sources {
-        if hits.len() as u32 >= max_results {
-            break;
+        if let Some(existing) = hits.iter_mut().find(|hit| hit.url == source.url) {
+            existing.kind = source.kind;
+            if source.snippet.chars().count() > existing.snippet.chars().count() {
+                existing.snippet = source.snippet;
+            }
+            continue;
         }
-        if !hits.iter().any(|hit| hit.url == source.url) {
+        if (hits.len() as u32) < max_results {
             hits.push(source);
         }
     }
     hits.truncate(max_results as usize);
-    if hits.is_empty() {
+    if hits.is_empty() && answer.is_none() {
         return Err(ProviderError::Retryable(
             "Grok returned no search results".to_string(),
         ));
     }
-    Ok(hits)
+    let ai_syntheses = answer
+        .map(|answer| {
+            vec![AiSynthesis {
+                source_id: source_id.to_string(),
+                provider: "grok".to_string(),
+                query: query.to_string(),
+                answer: truncate(&answer, 1_200),
+                verification_status: "unverified".to_string(),
+                evidence_counted: false,
+            }]
+        })
+        .unwrap_or_default();
+    Ok(ProviderSearchOutput {
+        results: hits,
+        ai_syntheses,
+    })
 }
 
 fn classify_upstream_error(error: &str, api_key: &str) -> ProviderError {
@@ -319,7 +341,10 @@ pub fn classify_key_status(message: &str) -> &'static str {
     {
         return "quota_limited";
     }
-    if lower.contains("http 401") || lower.contains("unauthorized") || lower.contains("invalid token") {
+    if lower.contains("http 401")
+        || lower.contains("unauthorized")
+        || lower.contains("invalid token")
+    {
         return "unauthorized";
     }
     if is_anti_bot_message(message) {
@@ -358,9 +383,31 @@ fn is_transport_retryable(message: &str) -> bool {
             && (lower.contains("connect") || lower.contains("tunnel") || lower.contains("failed"))
 }
 
-fn build_search_prompt(query: &str, max_results: u32) -> String {
+fn build_search_prompt(request: &ProviderSearchRequest) -> String {
+    let domain_instruction = if request.allowed_domains.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Restrict sources to these domains: {}.",
+            request.allowed_domains.join(", ")
+        )
+    };
+    let blocked_instruction = if request.blocked_domains.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Exclude these domains: {}.",
+            request.blocked_domains.join(", ")
+        )
+    };
+    let recency_instruction = request
+        .recency_days
+        .map(|days| format!(" Prefer information published within the last {days} days."))
+        .unwrap_or_default();
     format!(
-        "You are the web research backend for another AI. Search the public web for the query, then synthesize the most useful direct answer. Return ONLY valid JSON (no markdown fences or commentary) in exactly this shape: {{\"answer\":\"...\",\"sources\":[{{\"title\":\"...\",\"url\":\"...\",\"snippet\":\"...\"}}]}}. The answer is required, concise, self-contained, and must contain the actual conclusion or explanation rather than a list of links. The sources array is optional and may be empty; include at most {max_results} high-quality supporting sources when useful. Sources supplement the answer and must never replace it. Prefer primary sources and do not invent facts or URLs. Query: {query}"
+        "You are the web research backend for another AI. Search the public web for the query, then synthesize the most useful direct answer. Return ONLY valid JSON (no markdown fences or commentary) in exactly this shape: {{\"answer\":\"...\",\"sources\":[{{\"title\":\"...\",\"url\":\"...\",\"snippet\":\"...\"}}]}}. The answer is required, concise, self-contained, and must contain the actual conclusion or explanation rather than a list of links. The sources array is optional and may be empty; include at most {max_results} high-quality supporting sources when useful. Sources supplement the answer and must never replace it. Prefer primary sources and do not invent facts or URLs.{domain_instruction}{blocked_instruction}{recency_instruction} Query: {query}",
+        max_results = request.max_results,
+        query = request.query,
     )
 }
 
@@ -426,11 +473,13 @@ fn parse_credential(raw: &str) -> Result<GrokCredential, String> {
         if let Some(bm) = first_string(obj, &["__cf_bm"]) {
             extra.insert("__cf_bm".to_string(), bm.to_string());
         }
-        let statsig_id =
-            first_string(obj, &["x_statsig_id", "x-statsig-id", "statsig_id", "statsig"])
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
+        let statsig_id = first_string(
+            obj,
+            &["x_statsig_id", "x-statsig-id", "statsig_id", "statsig"],
+        )
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
         let user_agent = first_string(obj, &["user_agent", "ua", "User-Agent"])
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -543,10 +592,7 @@ fn normalize_sso_token(value: &str) -> String {
 }
 
 fn build_sso_cookie(cred: &GrokCredential) -> String {
-    let mut parts = vec![
-        format!("sso={}", cred.sso),
-        format!("sso-rw={}", cred.sso),
-    ];
+    let mut parts = vec![format!("sso={}", cred.sso), format!("sso-rw={}", cred.sso)];
     // Cloudflare clearance + stable session identity cookies observed on successful chat.
     for (name, value) in &cred.extra_cookies {
         if !is_allowed_extra_cookie(name) {
@@ -607,7 +653,10 @@ fn drop_foreign_clearance_cookie(cred: &mut GrokCredential) {
     });
     let removed = before.saturating_sub(cred.extra_cookies.len());
     if removed > 0 {
-        tracing::info!(removed, "Grok dropped foreign clearance cookies before retry");
+        tracing::info!(
+            removed,
+            "Grok dropped foreign clearance cookies before retry"
+        );
     }
 }
 
@@ -626,11 +675,7 @@ fn build_request_headers(
     set_header(&mut headers, "Content-Type", "application/json")?;
     set_header(&mut headers, "Accept", "*/*")?;
     set_header(&mut headers, "Accept-Encoding", "gzip, deflate, br, zstd")?;
-    set_header(
-        &mut headers,
-        "Accept-Language",
-        "zh-CN,zh;q=0.9,en;q=0.8",
-    )?;
+    set_header(&mut headers, "Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")?;
     set_header(&mut headers, "User-Agent", ua)?;
     apply_chromium_client_hints(&mut headers, ua)?;
     set_header(&mut headers, "Origin", base)?;
@@ -672,11 +717,7 @@ fn apply_chromium_client_hints(headers: &mut HeaderMap, user_agent: &str) -> Res
     set_header(
         headers,
         "sec-ch-ua-mobile",
-        if lower.contains("mobile") {
-            "?1"
-        } else {
-            "?0"
-        },
+        if lower.contains("mobile") { "?1" } else { "?0" },
     )?;
     let platform = if lower.contains("windows") {
         "\"Windows\""
@@ -727,7 +768,13 @@ async fn resolve_statsig_id(
     flaresolverr_proxy_url: Option<&str>,
 ) -> Result<Option<String>, String> {
     // Silence unused when we skip slow remote/FS signing by default.
-    let _ = (client, control_client, proxy_url, flaresolverr_url, flaresolverr_proxy_url);
+    let _ = (
+        client,
+        control_client,
+        proxy_url,
+        flaresolverr_url,
+        flaresolverr_proxy_url,
+    );
 
     // 1) Explicit credential override (manual 70-byte or x0 string in JSON/cookie config).
     if let Some(manual) = cred
@@ -739,7 +786,9 @@ async fn resolve_statsig_id(
         if usable_statsig_id(manual) {
             return Ok(Some(manual.to_string()));
         }
-        tracing::warn!("Grok credential x_statsig_id is not usable (need 70-byte base64 or x0 fallback); ignoring");
+        tracing::warn!(
+            "Grok credential x_statsig_id is not usable (need 70-byte base64 or x0 fallback); ignoring"
+        );
     }
 
     let path = url_path(endpoint);
@@ -878,12 +927,7 @@ async fn warm_session_cookies(
         if !is_allowed_extra_cookie(name) {
             continue;
         }
-        let cookie_value = rest
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let cookie_value = rest.split(';').next().unwrap_or("").trim().to_string();
         if cookie_value.is_empty() {
             continue;
         }
@@ -1324,7 +1368,10 @@ async fn request_statsig_signature_via_flaresolverr(
 
     let mut headers = BTreeMap::new();
     headers.insert("Content-Type".to_string(), "application/json".to_string());
-    headers.insert("Accept".to_string(), "application/json, text/plain, */*".to_string());
+    headers.insert(
+        "Accept".to_string(),
+        "application/json, text/plain, */*".to_string(),
+    );
     headers.insert("User-Agent".to_string(), ua.to_string());
     headers.insert("Origin".to_string(), origin.clone());
     headers.insert("Referer".to_string(), format!("{origin}/"));
@@ -1574,6 +1621,8 @@ fn collect_web_search_results(parsed: &mut ParsedChat, value: Option<&Value>) {
                 title: title.to_string(),
                 url: url.to_string(),
                 snippet: truncate(snippet, MAX_SNIPPET_CHARS),
+                kind: SearchHitKind::GrokNativeSearchResult,
+                published_at: None,
                 score: None,
             },
         );
@@ -1630,6 +1679,8 @@ fn collect_x_search_results(parsed: &mut ParsedChat, value: Option<&Value>) {
                 },
                 url,
                 snippet: truncate(text, MAX_SNIPPET_CHARS),
+                kind: SearchHitKind::XSearchResult,
+                published_at: None,
                 score: None,
             },
         );
@@ -1670,25 +1721,6 @@ fn parse_structured_hits(text: &str, max_results: u32) -> Vec<WebSearchHit> {
 fn value_to_hits(value: &Value, max_results: u32) -> Vec<WebSearchHit> {
     let mut hits = Vec::new();
     let mut seen = HashSet::new();
-
-    if let Value::Object(map) = value {
-        if let Some(answer) = map
-            .get("answer")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|answer| !answer.is_empty())
-        {
-            if max_results > 0 {
-                hits.push(WebSearchHit {
-                    title: "Grok answer".to_string(),
-                    url: "https://grok.com".to_string(),
-                    snippet: truncate(answer, MAX_SNIPPET_CHARS),
-                    score: None,
-                });
-                seen.insert("https://grok.com".to_string());
-            }
-        }
-    }
 
     let items = match value {
         Value::Array(items) => items.clone(),
@@ -1737,10 +1769,33 @@ fn value_to_hits(value: &Value, max_results: u32) -> Vec<WebSearchHit> {
             title: title.to_string(),
             url: url.to_string(),
             snippet: truncate(snippet, MAX_SNIPPET_CHARS),
+            kind: SearchHitKind::GrokModelProvidedUrl,
+            published_at: None,
             score: None,
         });
     }
     hits
+}
+
+fn parse_structured_answer(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let candidates = [
+        trimmed.to_string(),
+        strip_markdown_fence(trimmed),
+        extract_json_object(trimmed).unwrap_or_default(),
+    ];
+    candidates.into_iter().find_map(|candidate| {
+        let value = serde_json::from_str::<Value>(candidate.trim()).ok()?;
+        value
+            .get("answer")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|answer| !answer.is_empty())
+            .map(str::to_string)
+    })
 }
 
 fn strip_markdown_fence(text: &str) -> String {
@@ -1766,6 +1821,15 @@ fn strip_markdown_fence(text: &str) -> String {
 fn extract_json_array(text: &str) -> Option<String> {
     let start = text.find('[')?;
     let end = text.rfind(']')?;
+    if end <= start {
+        return None;
+    }
+    Some(text[start..=end].to_string())
+}
+
+fn extract_json_object(text: &str) -> Option<String> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
     if end <= start {
         return None;
     }
@@ -1855,8 +1919,7 @@ mod tests {
 
     #[test]
     fn parses_structured_json_array() {
-        let text =
-            r#"[{"title":"Rust","url":"https://www.rust-lang.org","snippet":"lang"}]"#;
+        let text = r#"[{"title":"Rust","url":"https://www.rust-lang.org","snippet":"lang"}]"#;
         let hits = parse_structured_hits(text, 5);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "Rust");
@@ -1866,15 +1929,23 @@ mod tests {
     fn parses_grok_answer_with_optional_sources() {
         let text = r#"{"answer":"Rust is memory safe.","sources":[{"title":"Rust","url":"https://www.rust-lang.org","snippet":"Official site"}]}"#;
         let hits = parse_structured_hits(text, 5);
-        assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].title, "Grok answer");
-        assert_eq!(hits[0].snippet, "Rust is memory safe.");
-        assert_eq!(hits[1].url, "https://www.rust-lang.org");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://www.rust-lang.org");
+        assert_eq!(
+            parse_structured_answer(text).as_deref(),
+            Some("Rust is memory safe.")
+        );
     }
 
     #[test]
     fn search_prompt_prioritizes_answer_over_links() {
-        let prompt = build_search_prompt("Rust", 3);
+        let prompt = build_search_prompt(&ProviderSearchRequest {
+            query: "Rust".to_string(),
+            max_results: 3,
+            allowed_domains: Vec::new(),
+            blocked_domains: Vec::new(),
+            recency_days: None,
+        });
         assert!(prompt.contains("\"answer\""));
         assert!(prompt.contains("sources array is optional"));
         assert!(prompt.contains("must never replace it"));
@@ -1972,8 +2043,14 @@ mod tests {
             ),
             "officially_blocked"
         );
-        assert_eq!(classify_key_status("Grok HTTP 429: quota exceeded"), "quota_limited");
-        assert_eq!(classify_key_status("Grok HTTP 401: unauthorized"), "unauthorized");
+        assert_eq!(
+            classify_key_status("Grok HTTP 429: quota exceeded"),
+            "quota_limited"
+        );
+        assert_eq!(
+            classify_key_status("Grok HTTP 401: unauthorized"),
+            "unauthorized"
+        );
         assert_eq!(
             classify_key_status("Grok HTTP 403: Request rejected by anti-bot rules."),
             "anti_bot"
@@ -1990,5 +2067,4 @@ mod tests {
         let body = format!(r#"{{"x-statsig-id":"{encoded}"}}"#);
         assert_eq!(parse_statsig_signature_body(&body).unwrap(), encoded);
     }
-
 }

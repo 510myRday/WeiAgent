@@ -9,8 +9,8 @@ use crate::{
     domain::{Agent, ChatMessage, ChatRole, ImageSource, ModelProvider, ThinkingLevel, TokenUsage},
     error::{AppError, AppResult},
     llm::{
+        cache::{PromptCacheMode, apply_provider_extra, build_context, effective_capabilities},
         client::{ChatClient, ChatStream, RequestOptions},
-        cache::{apply_provider_extra, build_context, effective_capabilities, PromptCacheMode},
         http::StreamLineParser,
         protocol::common::{
             ProtocolAdapter, ProtocolClient, add_query_parameter, encode_path_segment,
@@ -442,7 +442,11 @@ fn parse_gemini_usage(value: &Value) -> TokenUsage {
         cache_read_tokens: cached,
         total_prompt_tokens: prompt,
         uncached_input_tokens: prompt.saturating_sub(cached),
-        cache_hit_ratio: if prompt == 0 { 0.0 } else { cached as f64 / prompt as f64 },
+        cache_hit_ratio: if prompt == 0 {
+            0.0
+        } else {
+            cached as f64 / prompt as f64
+        },
     }
 }
 
@@ -640,11 +644,18 @@ mod tests {
 
     fn test_provider() -> ModelProvider {
         ModelProvider {
-            id: Uuid::new_v4(), provider_type: crate::domain::ProviderType::GoogleGemini,
-            name: "test".into(), base_url: "http://localhost".into(), api_key: "key".into(),
-            models: vec!["gemini-3-pro".into()], model_configs: vec![], extra_body: Value::Null,
-            prompt_cache: Default::default(), cache_capabilities: None,
-            created_at: Utc::now(), updated_at: Utc::now(),
+            id: Uuid::new_v4(),
+            provider_type: crate::domain::ProviderType::GoogleGemini,
+            name: "test".into(),
+            base_url: "http://localhost".into(),
+            api_key: "key".into(),
+            models: vec!["gemini-3-pro".into()],
+            model_configs: vec![],
+            extra_body: Value::Null,
+            prompt_cache: Default::default(),
+            cache_capabilities: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
         }
     }
 
@@ -652,8 +663,7 @@ mod tests {
     fn request_maps_function_response() {
         let mut messages = fixture();
         let provider = test_provider();
-        messages[0].reasoning_content =
-            Some("saved-reasoning-must-not-be-sent".to_string());
+        messages[0].reasoning_content = Some("saved-reasoning-must-not-be-sent".to_string());
         messages.insert(
             0,
             ChatMessage {
@@ -715,9 +725,12 @@ mod tests {
                     })
                 })
         );
-        assert!(!request.to_string().contains("saved-reasoning-must-not-be-sent"));
+        assert!(
+            !request
+                .to_string()
+                .contains("saved-reasoning-must-not-be-sent")
+        );
     }
-
 
     #[test]
     fn omits_thinking_config_when_level_is_off() {

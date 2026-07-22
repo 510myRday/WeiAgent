@@ -1,7 +1,10 @@
 use reqwest::StatusCode;
 use serde::Deserialize;
 
-use crate::tools::web_search::types::{ProviderError, WebSearchHit, sanitize_error_message};
+use crate::tools::web_search::types::{
+    ProviderError, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind, WebSearchHit,
+    sanitize_error_message,
+};
 
 /// Browser-like UA helps when the provider sits behind Cloudflare bot filters.
 const JINA_USER_AGENT: &str =
@@ -31,10 +34,9 @@ pub async fn search(
     client: &reqwest::Client,
     base_url: &str,
     api_key: &str,
-    query: &str,
-    max_results: u32,
-) -> Result<Vec<WebSearchHit>, ProviderError> {
-    let endpoint = build_endpoint(base_url, query, max_results)?;
+    request: &ProviderSearchRequest,
+) -> Result<ProviderSearchOutput, ProviderError> {
+    let endpoint = build_endpoint(base_url, &request.query, request.max_results)?;
 
     let response = client
         .get(endpoint)
@@ -51,15 +53,12 @@ pub async fn search(
         })?;
 
     let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|error| {
-            ProviderError::Retryable(sanitize_error_message(
-                &format!("Jina response body error: {error}"),
-                api_key,
-            ))
-        })?;
+    let text = response.text().await.map_err(|error| {
+        ProviderError::Retryable(sanitize_error_message(
+            &format!("Jina response body error: {error}"),
+            api_key,
+        ))
+    })?;
 
     if status == StatusCode::UNAUTHORIZED
         || status == StatusCode::FORBIDDEN
@@ -85,7 +84,7 @@ pub async fn search(
         ))
     })?;
 
-    Ok(parsed
+    let results = parsed
         .data
         .into_iter()
         .filter_map(|item| {
@@ -106,10 +105,79 @@ pub async fn search(
                     .unwrap_or_else(|| url.clone()),
                 url,
                 snippet,
+                kind: SearchHitKind::WebPage,
+                published_at: None,
                 score: item.score,
             })
         })
-        .collect())
+        .collect();
+    Ok(ProviderSearchOutput {
+        results,
+        ai_syntheses: Vec::new(),
+    })
+}
+
+pub fn classify_key_status(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("http 401")
+        || lower.contains("auth_invalid_api_key")
+        || lower.contains("auth_missing_api_key")
+        || lower.contains("invalid api key")
+        || lower.contains("authentication required")
+        || lower.contains("unauthorized")
+    {
+        return "invalid_key";
+    }
+    if lower.contains("authz_insufficient_balance")
+        || lower.contains("insufficient account balance")
+        || lower.contains("payment required")
+        || lower.contains("credits exhausted")
+        || lower.contains("quota exceeded")
+    {
+        return "quota_exhausted";
+    }
+    if lower.contains("http 429")
+        || lower.contains("rate_request_limit_exceeded")
+        || lower.contains("rate_token_limit_exceeded")
+        || lower.contains("rate_concurrency_limit_exceeded")
+        || lower.contains("rate_ip_limit_exceeded")
+        || lower.contains("rate limit exceeded")
+        || lower.contains("too many requests")
+    {
+        return "rate_limited";
+    }
+    if lower.contains("authz_resource_limit_exceeded")
+        || lower.contains("resource limit exceeded for your plan")
+        || lower.contains("http 403")
+        || lower.contains("forbidden")
+    {
+        return "permission_denied";
+    }
+    if lower.contains("http 400")
+        || lower.contains("input_model_not_found")
+        || lower.contains("invalid authorization format")
+        || lower.contains("base url is invalid")
+    {
+        return "configuration_error";
+    }
+    if lower.contains("http 5")
+        || lower.contains("internal_error")
+        || lower.contains("service_unavailable")
+        || lower.contains("service_timeout")
+        || lower.contains("service temporarily unavailable")
+    {
+        return "service_error";
+    }
+    if lower.contains("request failed")
+        || lower.contains("response body error")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("connect")
+        || lower.contains("dns")
+    {
+        return "network_error";
+    }
+    "error"
 }
 
 fn build_endpoint(
@@ -117,9 +185,8 @@ fn build_endpoint(
     query: &str,
     max_results: u32,
 ) -> Result<reqwest::Url, ProviderError> {
-    let mut endpoint = reqwest::Url::parse(base_url.trim_end_matches('/')).map_err(|error| {
-        ProviderError::Fatal(format!("Jina base URL is invalid: {error}"))
-    })?;
+    let mut endpoint = reqwest::Url::parse(base_url.trim_end_matches('/'))
+        .map_err(|error| ProviderError::Fatal(format!("Jina base URL is invalid: {error}")))?;
     endpoint
         .path_segments_mut()
         .map_err(|_| ProviderError::Fatal("Jina base URL cannot accept a path".to_string()))?
@@ -148,7 +215,10 @@ mod tests {
     #[test]
     fn builds_encoded_search_endpoint() {
         let endpoint = build_endpoint("https://s.jina.ai", "rust async/await", 7).unwrap();
-        assert_eq!(endpoint.as_str(), "https://s.jina.ai/rust%20async%2Fawait?num=7&type=web");
+        assert_eq!(
+            endpoint.as_str(),
+            "https://s.jina.ai/rust%20async%2Fawait?num=7&type=web"
+        );
     }
 
     #[test]
@@ -184,11 +254,29 @@ mod tests {
                     title: item.title.unwrap_or_else(|| url.clone()),
                     url,
                     snippet,
+                    kind: SearchHitKind::WebPage,
+                    published_at: None,
                     score: item.score,
                 })
             })
             .collect();
         assert_eq!(hits[0].snippet, "from content");
         assert_eq!(hits[1].snippet, "from desc");
+    }
+
+    #[test]
+    fn classifies_jina_key_statuses() {
+        assert_eq!(
+            classify_key_status("Jina HTTP 401: AUTH_INVALID_API_KEY"),
+            "invalid_key"
+        );
+        assert_eq!(
+            classify_key_status("Jina HTTP 403: AUTHZ_INSUFFICIENT_BALANCE"),
+            "quota_exhausted"
+        );
+        assert_eq!(
+            classify_key_status("Jina HTTP 429: RATE_REQUEST_LIMIT_EXCEEDED"),
+            "rate_limited"
+        );
     }
 }

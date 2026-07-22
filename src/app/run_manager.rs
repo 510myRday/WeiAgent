@@ -432,4 +432,3 @@ mod tests {
         assert!(*registration.cancel.borrow());
     }
 }
-

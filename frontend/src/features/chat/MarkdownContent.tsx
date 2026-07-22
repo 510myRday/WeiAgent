@@ -1,10 +1,13 @@
 import { lazy, memo, Suspense, useMemo } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly';
 import remarkGfm from 'remark-gfm';
 
 import { MarkdownCodeBlock } from './MarkdownCodeBlock';
+import { MarkdownImage, markdownUrlTransform } from './MarkdownImage';
+import { MarkdownLink } from './MarkdownLink';
+import { MarkdownTable } from './MarkdownTable';
 import {
   containsMathMarkdown,
   normalizeLooseStrongMarkdown,
@@ -13,19 +16,33 @@ import {
 
 const MathMarkdownContent = lazy(() => import('./MathMarkdownContent'));
 
-function PlainMarkdownContent({ content }: { content: string }) {
+type MarkdownContentProps = {
+  content: string;
+};
+
+function markdownComponents(): Components {
+  return {
+    a: ({ node: _node, ...props }) => <MarkdownLink {...props} />,
+    pre: MarkdownCodeBlock,
+    img: ({ node: _node, ...props }) => <MarkdownImage {...props} />,
+    table: ({ node: _node, ...props }) => <MarkdownTable {...props} />,
+  };
+}
+
+function PlainMarkdownContent({ content }: MarkdownContentProps) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkCjkFriendly]}
       rehypePlugins={[rehypeHighlight]}
-      components={{ pre: MarkdownCodeBlock }}
+      components={markdownComponents()}
+      urlTransform={markdownUrlTransform}
     >
       {content}
     </ReactMarkdown>
   );
 }
 
-export const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
+export const MarkdownContent = memo(function MarkdownContent({ content }: MarkdownContentProps) {
   const normalized = useMemo(
     () => normalizeMathMarkdown(normalizeLooseStrongMarkdown(content)),
     [content],

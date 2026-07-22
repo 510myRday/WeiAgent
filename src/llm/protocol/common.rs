@@ -14,7 +14,7 @@ use crate::{
         },
         types::{ChatCompletionOutput, ToolCall, ToolDefinition},
     },
-    storage::{llm_logs::LlmLogMetrics, LlmLogger},
+    storage::{LlmLogger, llm_logs::LlmLogMetrics},
 };
 
 pub(crate) trait ProtocolAdapter: Clone + Send + Sync + 'static {
@@ -113,7 +113,6 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
             .last()
             .map(|message| message.conversation_id.to_string());
 
-
         let response = match self
             .http
             .retry_send(&options, || {
@@ -148,15 +147,15 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
+                Some(agent_id.as_str()),
+                conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some(&error),
-                    LlmLogMetrics::timed(started),
+                LlmLogMetrics::timed(started),
             );
             return Err(AppError::Llm(error));
         }
@@ -283,15 +282,15 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
+                Some(agent_id.as_str()),
+                conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some(&error),
-                    LlmLogMetrics::timed(started),
+                LlmLogMetrics::timed(started),
             );
             return Err(AppError::Llm(error));
         }

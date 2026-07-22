@@ -177,12 +177,10 @@ mod tests {
             } if arguments == "{\"command\": \"echo hi\"}"
         ));
         assert!(matches!(&events[2], StreamEvent::FinishedWithToolCalls));
-        assert!(
-            !events.iter().any(|event| matches!(
+        assert!(!events.iter().any(|event| matches!(
                 event,
                 StreamEvent::ToolCallStart { id, name, .. } if id.is_empty() || name.is_empty()
-            ))
-        );
+        )));
     }
 
     #[test]

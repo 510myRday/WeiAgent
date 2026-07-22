@@ -175,16 +175,13 @@ impl CodexRuntimeManager {
         let manager = self.clone();
         tokio::spawn(async move {
             manager.run_latest_version_refresh_cycle("startup").await;
-            let mut ticker =
-                tokio::time::interval(supporting_runtime::latest_version_cache_ttl());
+            let mut ticker = tokio::time::interval(supporting_runtime::latest_version_cache_ttl());
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // The first tick completes immediately; skip it because startup already checked.
             ticker.tick().await;
             loop {
                 ticker.tick().await;
-                manager
-                    .run_latest_version_refresh_cycle("scheduled")
-                    .await;
+                manager.run_latest_version_refresh_cycle("scheduled").await;
             }
         });
         Ok(status)
@@ -928,7 +925,8 @@ fn component_update_available(detected: Option<&str>, target: Option<&str>) -> b
 
 fn latest_cache_is_fresh(cache: &LatestVersionCache) -> bool {
     let age = chrono::Utc::now().signed_duration_since(cache.checked_at);
-    age >= chrono::Duration::zero() && age < chrono::Duration::hours(supporting_runtime::LATEST_VERSION_CACHE_HOURS)
+    age >= chrono::Duration::zero()
+        && age < chrono::Duration::hours(supporting_runtime::LATEST_VERSION_CACHE_HOURS)
 }
 
 async fn probe_codex(program: &Path, codex_home: &Path) -> Result<ProbedRuntime, String> {

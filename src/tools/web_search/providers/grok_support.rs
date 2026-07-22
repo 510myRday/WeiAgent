@@ -1,11 +1,11 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::sync::{Mutex, OnceLock};
 use std::collections::BTreeMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use wreq_util::Emulation;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use wreq_util::Emulation;
 
 const DEFAULT_FLARESOLVERR_TIMEOUT_MS: u64 = 90_000;
 const FLARESOLVERR_CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -87,14 +87,16 @@ pub fn build_emulated_client(
         builder = builder.proxy(proxy);
         tracing::info!(%proxy_url, timeout_secs = timeout.as_secs(), "Grok API client will use proxy with Chrome146 TLS emulation");
     } else {
-        tracing::info!(timeout_secs = timeout.as_secs(), "Grok API client using Chrome146 TLS emulation without explicit proxy");
+        tracing::info!(
+            timeout_secs = timeout.as_secs(),
+            "Grok API client using Chrome146 TLS emulation without explicit proxy"
+        );
     }
 
     builder
         .build()
         .map_err(|error| format!("failed to build emulated Grok HTTP client: {error}"))
 }
-
 
 pub async fn resolve_clearance(
     control_client: &reqwest::Client,
@@ -231,7 +233,10 @@ pub async fn resolve_clearance(
             fs_proxy.as_deref().unwrap_or("none")
         ));
     }
-    if !cookies.keys().any(|k| k.eq_ignore_ascii_case("cf_clearance")) {
+    if !cookies
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("cf_clearance"))
+    {
         tracing::warn!(
             cookies = %cookies.keys().cloned().collect::<Vec<_>>().join(","),
             "FlareSolverr cookies missing cf_clearance"
@@ -257,7 +262,6 @@ pub async fn resolve_clearance(
     put_cached_clearance(&cache_key, &bundle);
     Ok(bundle)
 }
-
 
 #[derive(Debug, Clone)]
 pub struct FlareSolverrHttpResult {
@@ -375,9 +379,19 @@ pub async fn flaresolverr_request_post(
     let mut cookies = BTreeMap::new();
     if let Some(items) = solution.get("cookies").and_then(Value::as_array) {
         for item in items {
-            let Some(obj) = item.as_object() else { continue };
-            let name = obj.get("name").and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
-            let value = obj.get("value").and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
+            let Some(obj) = item.as_object() else {
+                continue;
+            };
+            let name = obj
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty());
+            let value = obj
+                .get("value")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty());
             if let (Some(name), Some(value)) = (name, value) {
                 cookies.insert(name.to_string(), value.to_string());
             }
@@ -520,5 +534,4 @@ mod tests {
             Some("http://192.168.2.123:8191")
         );
     }
-
 }

@@ -9,7 +9,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::app::{
     AppState,
-    handlers::{agents, conversations, llm_logs, providers, settings, tools},
+    handlers::{agents, assets, conversations, llm_logs, providers, settings, tools},
     static_assets::serve_frontend,
 };
 
@@ -98,6 +98,7 @@ fn api_router() -> Router<AppState> {
             "/api/conversations/{conversation_id}/usage",
             get(conversations::read_conversation_usage),
         )
+        .route("/api/assets/local", get(assets::read_local_asset))
         .route(
             "/api/conversations/{conversation_id}/messages/stream",
             post(conversations::send_message_stream),
@@ -127,16 +128,28 @@ fn api_router() -> Router<AppState> {
             get(tools::read_tool_defaults).put(tools::update_tool_defaults),
         )
         .route(
+            "/api/tools/web-search-keys/check",
+            post(tools::check_web_search_keys),
+        )
+        .route(
+            "/api/tools/web-search-keys/import",
+            post(tools::import_web_search_keys),
+        )
+        .route(
+            "/api/tools/web-search-keys/delete",
+            post(tools::delete_web_search_key),
+        )
+        .route(
             "/api/tools/grok-keys/check",
-            post(tools::check_grok_keys),
+            post(tools::check_web_search_keys),
         )
         .route(
             "/api/tools/grok-keys/import",
-            post(tools::import_grok_keys),
+            post(tools::import_web_search_keys),
         )
         .route(
             "/api/tools/grok-keys/delete",
-            post(tools::delete_grok_key),
+            post(tools::delete_web_search_key),
         )
         .route(
             "/api/tools/codex-runtime",

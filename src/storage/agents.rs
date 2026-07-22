@@ -6,7 +6,6 @@ use crate::{
     domain::{
         Agent, AgentProfileResponse, AgentResponse, AgentWorkspace, CreateAgentRequest,
         ModelProvider, UpdateAgentProfileRequest, UpdateAgentRequest,
-        coerce_context_compress_threshold, normalize_context_compress_threshold,
     },
     error::{AppError, AppResult},
     storage::{
@@ -44,13 +43,6 @@ impl JsonStore {
         let mut agents = self.read_agents_unlocked().await?;
         validate_unique_avatar(&agents, None, &avatar_icon, &avatar_color)?;
         let now = Utc::now();
-        let threshold = match request.context_compress_threshold_percent {
-            Some(value) => normalize_context_compress_threshold(value)
-                .map_err(AppError::BadRequest)?,
-            None => coerce_context_compress_threshold(
-                crate::domain::DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT,
-            ),
-        };
         let agent = Agent {
             id: Uuid::new_v4(),
             name: request.name.trim().to_string(),
@@ -60,7 +52,6 @@ impl JsonStore {
             is_builtin: false,
             avatar_icon,
             avatar_color,
-            context_compress_threshold_percent: threshold,
             created_at: now,
             updated_at: now,
         };
@@ -227,14 +218,6 @@ fn apply_agent_update(
     agent.model_id = next_model_id;
     agent.avatar_icon = next_avatar_icon;
     agent.avatar_color = next_avatar_color;
-    if let Some(value) = request.context_compress_threshold_percent {
-        agent.context_compress_threshold_percent =
-            normalize_context_compress_threshold(value).map_err(AppError::BadRequest)?;
-    } else {
-        agent.context_compress_threshold_percent =
-            coerce_context_compress_threshold(agent.context_compress_threshold_percent);
-    }
     agent.updated_at = Utc::now();
     Ok(agent.clone())
 }
-

@@ -8,8 +8,8 @@ use crate::{
     domain::{Agent, ChatMessage, ChatRole, ModelProvider, ThinkingLevel},
     error::{AppError, AppResult},
     llm::{
-        client::{ChatClient, ChatStream, RequestOptions},
         cache::{apply_openai_fields, apply_provider_extra, build_context},
+        client::{ChatClient, ChatStream, RequestOptions},
         http::StreamLineParser,
         protocol::common::{
             ProtocolAdapter, ProtocolClient, bearer_get, bearer_post, default_models,
@@ -247,10 +247,7 @@ fn build_openai_responses_request(
             }),
         );
         reasoning.insert("summary".to_string(), Value::String("auto".to_string()));
-        body.insert(
-            "reasoning".to_string(),
-            Value::Object(reasoning),
-        );
+        body.insert("reasoning".to_string(), Value::Object(reasoning));
     }
     if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
         body.insert(
@@ -393,14 +390,13 @@ impl OpenAiResponsesStreamParser {
                 .filter(|delta| !delta.is_empty())
                 .map(|delta| vec![Ok(StreamEvent::TextDelta(delta.to_string()))])
                 .unwrap_or_default(),
-            Some(
-                "response.reasoning_summary_text.delta"
-                | "response.reasoning_text.delta",
-            ) => value["delta"]
-                .as_str()
-                .filter(|delta| !delta.is_empty())
-                .map(|delta| vec![Ok(StreamEvent::ReasoningDelta(delta.to_string()))])
-                .unwrap_or_default(),
+            Some("response.reasoning_summary_text.delta" | "response.reasoning_text.delta") => {
+                value["delta"]
+                    .as_str()
+                    .filter(|delta| !delta.is_empty())
+                    .map(|delta| vec![Ok(StreamEvent::ReasoningDelta(delta.to_string()))])
+                    .unwrap_or_default()
+            }
             Some("response.output_item.added") => self.function_item(value, false),
             Some("response.output_item.done") => self.function_item(value, true),
             Some("response.function_call_arguments.delta") => {
@@ -530,7 +526,6 @@ mod tests {
             is_builtin: false,
             avatar_icon: "bot".to_string(),
             avatar_color: "#22c55e".to_string(),
-            context_compress_threshold_percent: 90,
             created_at: now,
             updated_at: now,
         };
@@ -595,11 +590,18 @@ mod tests {
 
     fn test_provider() -> ModelProvider {
         ModelProvider {
-            id: Uuid::new_v4(), provider_type: crate::domain::ProviderType::OpenAiResponses,
-            name: "test".into(), base_url: "http://localhost".into(), api_key: "key".into(),
-            models: vec!["test-model".into()], model_configs: vec![], extra_body: Value::Null,
-            prompt_cache: Default::default(), cache_capabilities: None,
-            created_at: Utc::now(), updated_at: Utc::now(),
+            id: Uuid::new_v4(),
+            provider_type: crate::domain::ProviderType::OpenAiResponses,
+            name: "test".into(),
+            base_url: "http://localhost".into(),
+            api_key: "key".into(),
+            models: vec!["test-model".into()],
+            model_configs: vec![],
+            extra_body: Value::Null,
+            prompt_cache: Default::default(),
+            cache_capabilities: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
         }
     }
 
@@ -607,8 +609,7 @@ mod tests {
     fn request_maps_tool_history() {
         let (agent, mut messages) = fixture();
         let provider = test_provider();
-        messages[1].reasoning_content =
-            Some("saved-reasoning-must-not-be-sent".to_string());
+        messages[1].reasoning_content = Some("saved-reasoning-must-not-be-sent".to_string());
         let request = build_openai_responses_request(
             &agent,
             &provider,
@@ -637,7 +638,11 @@ mod tests {
                 item["type"] == "function_call_output" && item["call_id"] == "call-1"
             })
         );
-        assert!(!request.to_string().contains("saved-reasoning-must-not-be-sent"));
+        assert!(
+            !request
+                .to_string()
+                .contains("saved-reasoning-must-not-be-sent")
+        );
     }
 
     #[test]
@@ -700,9 +705,8 @@ mod tests {
             StreamEvent::TextDelta(text) if text == "hello"
         ));
 
-        let events = parser.parse_line(
-            r#"data: {"type":"response.reasoning_summary_text.delta","delta":"plan"}"#,
-        );
+        let events = parser
+            .parse_line(r#"data: {"type":"response.reasoning_summary_text.delta","delta":"plan"}"#);
         assert!(matches!(
             events.into_iter().next().unwrap().unwrap(),
             StreamEvent::ReasoningDelta(text) if text == "plan"

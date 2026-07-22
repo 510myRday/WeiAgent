@@ -147,19 +147,20 @@ pub fn build_context(
     let static_prefix_hash = system_prompt_hash(system_prompt);
     let capabilities = effective_capabilities(provider);
     let config = &provider.prompt_cache;
-    let cache_key = (config.use_stable_key && capabilities.stable_cache_key
+    let cache_key = (config.use_stable_key
+        && capabilities.stable_cache_key
         && !matches!(config.mode, PromptCacheMode::Disabled))
-        .then(|| {
-            format!(
-                "weiagent:{}:{}:{}:{}:{}:{}",
-                provider.id,
-                model_id,
-                agent_id,
-                protocol,
-                &tools_hash[..16],
-                &static_prefix_hash[..16]
-            )
-        });
+    .then(|| {
+        format!(
+            "weiagent:{}:{}:{}:{}:{}:{}",
+            provider.id,
+            model_id,
+            agent_id,
+            protocol,
+            &tools_hash[..16],
+            &static_prefix_hash[..16]
+        )
+    });
     CacheContext {
         provider_type: provider.provider_type.clone(),
         provider_id: provider.id,
@@ -174,7 +175,11 @@ pub fn build_context(
     }
 }
 
-pub fn apply_openai_fields(body: &mut Map<String, Value>, provider: &ModelProvider, context: &CacheContext) {
+pub fn apply_openai_fields(
+    body: &mut Map<String, Value>,
+    provider: &ModelProvider,
+    context: &CacheContext,
+) {
     let config = &provider.prompt_cache;
     let capabilities = effective_capabilities(provider);
     if matches!(config.mode, PromptCacheMode::Disabled)
@@ -214,7 +219,10 @@ pub fn apply_provider_extra(body: &mut Map<String, Value>, context: &CacheContex
 }
 
 fn hash_json(value: &Value) -> String {
-    serde_json::to_vec(value).map_or_else(|_| hash_bytes(value.to_string().as_bytes()), |bytes| hash_bytes(&bytes))
+    serde_json::to_vec(value).map_or_else(
+        |_| hash_bytes(value.to_string().as_bytes()),
+        |bytes| hash_bytes(&bytes),
+    )
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {
@@ -230,11 +238,21 @@ mod tests {
 
     fn provider() -> ModelProvider {
         ModelProvider {
-            id: Uuid::new_v4(), provider_type: ProviderType::OpenAiResponses,
-            name: "test".into(), base_url: "http://localhost".into(), api_key: "TOKEN".into(),
-            models: vec!["model".into()], model_configs: vec![], extra_body: Value::Null,
-            prompt_cache: PromptCacheConfig { use_stable_key: true, ..Default::default() },
-            cache_capabilities: None, created_at: Utc::now(), updated_at: Utc::now(),
+            id: Uuid::new_v4(),
+            provider_type: ProviderType::OpenAiResponses,
+            name: "test".into(),
+            base_url: "http://localhost".into(),
+            api_key: "TOKEN".into(),
+            models: vec!["model".into()],
+            model_configs: vec![],
+            extra_body: Value::Null,
+            prompt_cache: PromptCacheConfig {
+                use_stable_key: true,
+                ..Default::default()
+            },
+            cache_capabilities: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
         }
     }
 

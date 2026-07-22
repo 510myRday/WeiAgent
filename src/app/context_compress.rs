@@ -10,16 +10,20 @@ use uuid::Uuid;
 use crate::{
     domain::{
         Agent, ChatMessage, ChatMessageStatus, ChatRole, ContextCheckpoint, ModelProvider,
-        ThinkingLevel, coerce_context_compress_threshold,
+        ProviderType, ThinkingLevel, settings::coerce_context_compress_threshold,
     },
     error::{AppError, AppResult},
-    llm::client::{DynChatClient, RequestOptions},
+    llm::{
+        client::{DynChatClient, RequestOptions},
+        types::ToolDefinition,
+    },
 };
 
-/// Rough bytes-per-token for local estimation when provider usage is missing.
-const BYTES_PER_TOKEN: usize = 4;
-/// Soft reserve so compact prompts and the next user turn fit under the window.
-const COMPACTION_OUTPUT_RESERVE_TOKENS: u64 = 2_048;
+const MIN_OUTPUT_RESERVE_TOKENS: u64 = 512;
+const STANDARD_OUTPUT_RESERVE_TOKENS: u64 = 4_096;
+const THINKING_OUTPUT_RESERVE_TOKENS: u64 = 32_768;
+const COMPACTION_MAX_OUTPUT_TOKENS: u64 = 2_048;
+const IMAGE_TOKEN_ESTIMATE: u64 = 2_048;
 /// Keep at least this many newest message groups after a summary rewrite.
 const DEFAULT_RETAINED_TAIL_GROUPS: usize = 2;
 /// Hard cap for text included in the summarizer input per message.
@@ -28,10 +32,10 @@ const MAX_SUMMARY_MESSAGE_CHARS: usize = 4_000;
 const MAX_SUMMARY_TOOL_CHARS: usize = 2_000;
 /// Maximum summary characters kept in the checkpoint.
 const MAX_SUMMARY_CHARS: usize = 12_000;
+const SUMMARY_ANCHOR_PREFIX: &str = "[Conversation summary — auto-compacted]";
 
-const COMPACTION_USER_PROMPT: &str = "\
-[SYSTEM TASK: CONTEXT COMPACTION]
-We are compressing conversation context because the model window is approaching its limit.
+const COMPACTION_SYSTEM_PROMPT: &str = "\
+You are a context compaction engine.
 Do not call tools. Do not continue the user task. Produce a dense handoff summary only.
 
 Summarize the conversation so a future model turn can continue the work without the older messages.
@@ -52,14 +56,23 @@ Rules:
 - Output plain text only.
 ";
 
+const COMPACTION_USER_PROMPT: &str =
+    "Compact the supplied conversation state using the required handoff structure.";
+
 #[derive(Debug, Clone)]
 pub struct CompactionConfig {
     pub context_size: u32,
     pub threshold_percent: u8,
+    pub output_reserve_tokens: u64,
 }
 
 impl CompactionConfig {
-    pub fn from_agent_and_provider(agent: &Agent, provider: &ModelProvider) -> Self {
+    pub fn from_agent_provider_and_threshold(
+        agent: &Agent,
+        provider: &ModelProvider,
+        threshold_percent: u8,
+        thinking_level: Option<ThinkingLevel>,
+    ) -> Self {
         let context_size = provider
             .model_configs
             .iter()
@@ -67,11 +80,21 @@ impl CompactionConfig {
             .map(|config| config.context_size)
             .filter(|size| *size > 0)
             .unwrap_or(128_000);
+        let context_size_u64 = u64::from(context_size.max(1));
+        let desired_output_reserve =
+            if thinking_level.is_some_and(|level| level != ThinkingLevel::Off) {
+                THINKING_OUTPUT_RESERVE_TOKENS
+            } else {
+                STANDARD_OUTPUT_RESERVE_TOKENS
+            };
+        let proportional_reserve = (context_size_u64 / 4).max(MIN_OUTPUT_RESERVE_TOKENS);
+        let output_reserve_tokens = desired_output_reserve
+            .min(proportional_reserve)
+            .min(context_size_u64.saturating_sub(1));
         Self {
             context_size,
-            threshold_percent: coerce_context_compress_threshold(
-                agent.context_compress_threshold_percent,
-            ),
+            threshold_percent: coerce_context_compress_threshold(threshold_percent),
+            output_reserve_tokens,
         }
     }
 
@@ -79,19 +102,15 @@ impl CompactionConfig {
         let percent = u64::from(self.threshold_percent);
         let size = u64::from(self.context_size.max(1));
         // threshold is 1..=99 so this is always < context_size.
-        ((size.saturating_mul(percent)) / 100).max(1)
+        let threshold_limit = ((size.saturating_mul(percent)) / 100).max(1);
+        let output_safe_limit = size.saturating_sub(self.output_reserve_tokens).max(1);
+        threshold_limit.min(output_safe_limit)
     }
 
     pub fn target_tokens_after_compact(&self) -> u64 {
         let soft = self.soft_limit_tokens();
         let sixty_percent = soft.saturating_mul(60) / 100;
-        let reserved = soft
-            .saturating_sub(COMPACTION_OUTPUT_RESERVE_TOKENS)
-            .max(1);
-        sixty_percent
-            .min(reserved)
-            .min(soft.saturating_sub(1).max(1))
-            .max(1)
+        sixty_percent.min(soft.saturating_sub(1).max(1)).max(1)
     }
 }
 
@@ -143,7 +162,7 @@ pub fn build_llm_messages(
     let summary_message = summary_anchor_message(covered, checkpoint);
     let mut out = Vec::with_capacity(tail.len() + 1);
     out.push(summary_message);
-    out.extend(tail.iter().cloned());
+    out.extend(tail.iter().cloned().map(clear_message_usage));
     out
 }
 
@@ -161,10 +180,7 @@ fn summary_anchor_message(covered: &[ChatMessage], checkpoint: &ContextCheckpoin
         agent_id,
         conversation_id,
         role: ChatRole::User,
-        content: format!(
-            "[Conversation summary — auto-compacted]\n{}",
-            checkpoint.summary.trim()
-        ),
+        content: format!("{SUMMARY_ANCHOR_PREFIX}\n{}", checkpoint.summary.trim()),
         reasoning_content: None,
         status: ChatMessageStatus::Done,
         created_at: checkpoint.created_at,
@@ -176,73 +192,207 @@ fn summary_anchor_message(covered: &[ChatMessage], checkpoint: &ContextCheckpoin
 }
 
 pub fn estimate_messages_tokens(messages: &[ChatMessage]) -> u64 {
-    let bytes: usize = messages.iter().map(estimate_message_bytes).sum();
-    // +8 tokens of framing overhead per message keeps estimates conservative.
-    let framing = messages.len().saturating_mul(8) as u64;
-    ((bytes / BYTES_PER_TOKEN) as u64).saturating_add(framing).max(1)
+    messages.iter().map(estimate_message_tokens).sum::<u64>()
 }
 
-fn estimate_message_bytes(message: &ChatMessage) -> usize {
-    message.content.len()
-        + message
-            .reasoning_content
-            .as_ref()
-            .map_or(0, String::len)
-        + message
-            .tool_call_id
-            .as_ref()
-            .map_or(0, String::len)
-        + message
-            .tool_calls
-            .as_ref()
-            .map_or(0, |value| value.to_string().len())
-        + message
-            .attachments
-            .iter()
-            .map(|attachment| match &attachment.source {
-                crate::domain::ImageSource::Base64 { data } => data.len(),
-                crate::domain::ImageSource::Url { url } => url.len(),
-            })
-            .sum::<usize>()
+fn estimate_text_tokens(value: &str) -> u64 {
+    let mut ascii = 0_u64;
+    let mut non_ascii = 0_u64;
+    for character in value.chars() {
+        if character.is_ascii() {
+            ascii = ascii.saturating_add(1);
+        } else {
+            non_ascii = non_ascii.saturating_add(1);
+        }
+    }
+    ascii.div_ceil(4).saturating_add(non_ascii)
 }
 
-pub fn latest_usage_context_tokens(messages: &[ChatMessage]) -> Option<u64> {
-    messages.iter().rev().find_map(|message| {
-        message.usage.as_ref().map(|usage| {
+fn estimate_message_tokens(message: &ChatMessage) -> u64 {
+    let tool_call_tokens = message
+        .tool_calls
+        .as_ref()
+        .map_or(0, |value| estimate_text_tokens(&value.to_string()));
+    let attachment_tokens = message.attachments.iter().fold(0_u64, |total, attachment| {
+        total.saturating_add(match &attachment.source {
+            crate::domain::ImageSource::Base64 { .. } => IMAGE_TOKEN_ESTIMATE,
+            crate::domain::ImageSource::Url { url } => {
+                IMAGE_TOKEN_ESTIMATE.saturating_add(estimate_text_tokens(url))
+            }
+        })
+    });
+    8_u64
+        .saturating_add(estimate_text_tokens(&message.content))
+        .saturating_add(
+            message
+                .reasoning_content
+                .as_deref()
+                .map_or(0, estimate_text_tokens),
+        )
+        .saturating_add(
+            message
+                .tool_call_id
+                .as_deref()
+                .map_or(0, estimate_text_tokens),
+        )
+        .saturating_add(tool_call_tokens)
+        .saturating_add(attachment_tokens)
+}
+
+fn fixed_request_tokens(system_prompt: &str, tools: Option<&[ToolDefinition]>) -> u64 {
+    let tool_tokens = tools.map_or(0, |definitions| {
+        serde_json::to_string(definitions)
+            .map(|value| estimate_text_tokens(&value))
+            .unwrap_or_default()
+    });
+    estimate_text_tokens(system_prompt)
+        .saturating_add(tool_tokens)
+        .saturating_add(16)
+}
+
+fn usage_context_tokens(message: &ChatMessage) -> Option<u64> {
+    message.usage.as_ref().map(|usage| {
+        let prompt_tokens = if usage.tokens.total_prompt_tokens > 0 {
+            usage.tokens.total_prompt_tokens
+        } else {
             usage
                 .tokens
                 .input_tokens
                 .saturating_add(usage.tokens.cache_read_tokens)
-                .saturating_add(usage.tokens.output_tokens)
-        })
+                .saturating_add(usage.tokens.cache_write_tokens)
+        };
+        prompt_tokens.saturating_add(usage.tokens.output_tokens)
     })
+}
+
+fn latest_usage_context_tokens(messages: &[ChatMessage]) -> Option<(usize, u64)> {
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, message)| usage_context_tokens(message).map(|tokens| (index, tokens)))
 }
 
 pub fn projected_context_tokens(messages: &[ChatMessage]) -> u64 {
     let estimate = estimate_messages_tokens(messages);
     match latest_usage_context_tokens(messages) {
-        Some(usage) => usage.max(estimate),
+        Some((index, usage)) => usage
+            .saturating_add(estimate_messages_tokens(
+                &messages[index.saturating_add(1)..],
+            ))
+            .max(estimate),
         None => estimate,
     }
 }
 
-pub fn needs_compaction(messages: &[ChatMessage], config: &CompactionConfig) -> bool {
-    projected_context_tokens(messages) >= config.soft_limit_tokens()
+fn clear_message_usage(mut message: ChatMessage) -> ChatMessage {
+    message.usage = None;
+    message
 }
 
-/// Ensure `messages` fit under the agent threshold. May call the model for a summary.
+fn compaction_instruction_message(agent: &Agent, covered: &[ChatMessage]) -> ChatMessage {
+    ChatMessage {
+        id: Uuid::new_v4(),
+        agent_id: agent.id,
+        conversation_id: covered
+            .last()
+            .map(|message| message.conversation_id)
+            .unwrap_or_else(Uuid::nil),
+        role: ChatRole::User,
+        content: COMPACTION_USER_PROMPT.to_string(),
+        reasoning_content: None,
+        status: ChatMessageStatus::Done,
+        created_at: Utc::now(),
+        tool_calls: None,
+        tool_call_id: None,
+        attachments: Vec::new(),
+        usage: None,
+    }
+}
+
+fn provider_for_compaction(provider: &ModelProvider) -> ModelProvider {
+    let mut provider = provider.clone();
+    let mut extra = provider.extra_body.as_object().cloned().unwrap_or_default();
+    match provider.provider_type {
+        ProviderType::OpenAiCompatible | ProviderType::AnthropicMessages => {
+            extra.insert(
+                "max_tokens".to_string(),
+                serde_json::json!(COMPACTION_MAX_OUTPUT_TOKENS),
+            );
+        }
+        ProviderType::OpenAiResponses => {
+            extra.insert(
+                "max_output_tokens".to_string(),
+                serde_json::json!(COMPACTION_MAX_OUTPUT_TOKENS),
+            );
+        }
+        ProviderType::GoogleGemini => {
+            let mut generation_config = extra
+                .get("generationConfig")
+                .and_then(serde_json::Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            generation_config.insert(
+                "maxOutputTokens".to_string(),
+                serde_json::json!(COMPACTION_MAX_OUTPUT_TOKENS),
+            );
+            extra.insert(
+                "generationConfig".to_string(),
+                serde_json::Value::Object(generation_config),
+            );
+        }
+    }
+    provider.extra_body = serde_json::Value::Object(extra);
+    provider
+}
+
+pub fn projected_request_tokens(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    tools: Option<&[ToolDefinition]>,
+) -> u64 {
+    let full_estimate = estimate_messages_tokens(messages)
+        .saturating_add(fixed_request_tokens(system_prompt, tools));
+    match latest_usage_context_tokens(messages) {
+        Some((index, usage)) => usage
+            .saturating_add(estimate_messages_tokens(
+                &messages[index.saturating_add(1)..],
+            ))
+            .max(full_estimate),
+        None => full_estimate,
+    }
+}
+
+pub fn needs_compaction(
+    messages: &[ChatMessage],
+    config: &CompactionConfig,
+    system_prompt: &str,
+    tools: Option<&[ToolDefinition]>,
+) -> bool {
+    projected_request_tokens(messages, system_prompt, tools) >= config.soft_limit_tokens()
+}
+
+/// Ensure `messages` fit under the global threshold. May call the model for a summary.
 pub async fn ensure_within_threshold<T: Send>(
     client: &DynChatClient,
     agent: &Agent,
     provider: &ModelProvider,
+    config: &CompactionConfig,
     system_prompt: &str,
     options: &RequestOptions,
+    tools: Option<&[ToolDefinition]>,
     messages: Vec<ChatMessage>,
     existing_checkpoint: Option<ContextCheckpoint>,
     cancel: Option<&tokio::sync::mpsc::Sender<T>>,
 ) -> AppResult<CompactOutcome> {
-    let config = CompactionConfig::from_agent_and_provider(agent, provider);
-    let before = projected_context_tokens(&messages);
+    let fixed_prompt_tokens = fixed_request_tokens(system_prompt, tools);
+    if fixed_prompt_tokens >= config.soft_limit_tokens() {
+        return Err(AppError::BadRequest(format!(
+            "system prompt and tool definitions require about {fixed_prompt_tokens} tokens, exceeding the safe input budget of {} tokens for this model",
+            config.soft_limit_tokens()
+        )));
+    }
+    let before = projected_request_tokens(&messages, system_prompt, tools);
     if before < config.soft_limit_tokens() {
         return Ok(CompactOutcome {
             messages,
@@ -261,9 +411,10 @@ pub async fn ensure_within_threshold<T: Send>(
         provider,
         system_prompt,
         options,
+        tools,
         &messages,
         existing_checkpoint.as_ref(),
-        &config,
+        config,
         cancel,
     )
     .await
@@ -274,7 +425,8 @@ pub async fn ensure_within_threshold<T: Send>(
             Ok(compact_structurally(
                 messages,
                 existing_checkpoint,
-                &config,
+                config,
+                fixed_prompt_tokens,
                 before,
             ))
         }
@@ -287,6 +439,7 @@ async fn compact_with_summary<T>(
     provider: &ModelProvider,
     system_prompt: &str,
     options: &RequestOptions,
+    tools: Option<&[ToolDefinition]>,
     messages: &[ChatMessage],
     existing_checkpoint: Option<&ContextCheckpoint>,
     config: &CompactionConfig,
@@ -295,56 +448,47 @@ async fn compact_with_summary<T>(
 where
     T: Send,
 {
-    let before = projected_context_tokens(messages);
+    let before = projected_request_tokens(messages, system_prompt, tools);
     let (covered, tail) = split_for_compaction(messages, DEFAULT_RETAINED_TAIL_GROUPS);
     if covered.is_empty() {
         return Ok(compact_structurally(
             messages.to_vec(),
             existing_checkpoint.cloned(),
             config,
+            fixed_request_tokens(system_prompt, tools),
             before,
         ));
     }
 
     let mut summary_input = build_summarizer_messages(covered, existing_checkpoint);
+    let previous_summary_id = existing_checkpoint
+        .filter(|checkpoint| !checkpoint.summary.trim().is_empty())
+        .and_then(|_| summary_input.first().map(|message| message.id));
     // Keep the summarizer request itself under budget.
-    summary_input = trim_messages_to_token_budget(
-        summary_input,
-        config
-            .soft_limit_tokens()
-            .saturating_sub(COMPACTION_OUTPUT_RESERVE_TOKENS)
-            .max(1),
+    let summary_fixed_tokens = fixed_request_tokens(COMPACTION_SYSTEM_PROMPT, None).saturating_add(
+        estimate_message_tokens(&compaction_instruction_message(agent, covered)),
     );
+    let summary_input_budget = u64::from(config.context_size)
+        .saturating_sub(COMPACTION_MAX_OUTPUT_TOKENS)
+        .saturating_sub(summary_fixed_tokens)
+        .max(1);
+    summary_input =
+        trim_messages_to_token_budget(summary_input, summary_input_budget, previous_summary_id);
 
     let mut summary_messages = summary_input;
-    summary_messages.push(ChatMessage {
-        id: Uuid::new_v4(),
-        agent_id: agent.id,
-        conversation_id: covered
-            .last()
-            .map(|message| message.conversation_id)
-            .unwrap_or_else(Uuid::nil),
-        role: ChatRole::User,
-        content: COMPACTION_USER_PROMPT.to_string(),
-        reasoning_content: None,
-        status: ChatMessageStatus::Done,
-        created_at: Utc::now(),
-        tool_calls: None,
-        tool_call_id: None,
-        attachments: Vec::new(),
-        usage: None,
-    });
+    summary_messages.push(compaction_instruction_message(agent, covered));
 
     let mut compact_options = options.clone();
     compact_options.thinking_level = Some(ThinkingLevel::Off);
     // One retry is enough for compaction; keep it snappy.
     compact_options.retry_attempts = compact_options.retry_attempts.min(2).max(1);
 
+    let compaction_provider = provider_for_compaction(provider);
     let completion = client.complete(
         agent,
-        provider,
+        &compaction_provider,
         &summary_messages,
-        system_prompt,
+        COMPACTION_SYSTEM_PROMPT,
         compact_options,
         None,
     );
@@ -384,33 +528,26 @@ where
     };
 
     let mut rebuilt = vec![summary_anchor_message(covered, &checkpoint)];
-    rebuilt.extend(tail.iter().cloned());
+    rebuilt.extend(tail.iter().cloned().map(clear_message_usage));
 
     // If still oversized (huge tail), structurally trim the tail while keeping the summary.
-    let after_estimate = projected_context_tokens(&rebuilt);
+    let request_fixed_tokens = fixed_request_tokens(system_prompt, tools);
+    let target_message_tokens = config
+        .target_tokens_after_compact()
+        .saturating_sub(request_fixed_tokens)
+        .max(1);
+    let after_estimate = projected_request_tokens(&rebuilt, system_prompt, tools);
     let rebuilt = if after_estimate >= config.soft_limit_tokens() {
-        let mut trimmed = trim_messages_to_token_budget(
+        trim_messages_to_token_budget(
             rebuilt,
-            config.target_tokens_after_compact().max(1),
-        );
-        // Ensure summary remains first if present.
-        if trimmed
-            .first()
-            .is_none_or(|message| message.id != checkpoint.covers_until_message_id)
-        {
-            let mut with_summary = vec![summary_anchor_message(covered, &checkpoint)];
-            with_summary.extend(trimmed);
-            trimmed = trim_messages_to_token_budget(
-                with_summary,
-                config.target_tokens_after_compact().max(1),
-            );
-        }
-        trimmed
+            target_message_tokens,
+            Some(checkpoint.covers_until_message_id),
+        )
     } else {
         rebuilt
     };
 
-    let after = projected_context_tokens(&rebuilt);
+    let after = projected_request_tokens(&rebuilt, system_prompt, tools);
     Ok(CompactOutcome {
         messages: rebuilt,
         checkpoint: Some(checkpoint),
@@ -425,9 +562,13 @@ fn compact_structurally(
     messages: Vec<ChatMessage>,
     existing_checkpoint: Option<ContextCheckpoint>,
     config: &CompactionConfig,
+    fixed_prompt_tokens: u64,
     before: u64,
 ) -> CompactOutcome {
-    let target = config.target_tokens_after_compact().max(1);
+    let target = config
+        .target_tokens_after_compact()
+        .saturating_sub(fixed_prompt_tokens)
+        .max(1);
     let (covered, tail) = split_for_compaction(&messages, DEFAULT_RETAINED_TAIL_GROUPS.max(1));
     let mechanical = mechanical_summary(covered, existing_checkpoint.as_ref());
     let covers_until = covered
@@ -437,7 +578,7 @@ fn compact_structurally(
 
     let Some(covers_until_message_id) = covers_until else {
         return CompactOutcome {
-            messages: trim_messages_to_token_budget(messages, target),
+            messages: trim_messages_to_token_budget(messages, target, None),
             checkpoint: existing_checkpoint,
             reason: CompactReason::StructuralTrim,
             did_compact: true,
@@ -463,9 +604,10 @@ fn compact_structurally(
         covered
     };
     let mut rebuilt = vec![summary_anchor_message(covered_for_anchor, &checkpoint)];
-    rebuilt.extend(tail.iter().cloned());
-    let rebuilt = trim_messages_to_token_budget(rebuilt, target);
-    let after = projected_context_tokens(&rebuilt);
+    rebuilt.extend(tail.iter().cloned().map(clear_message_usage));
+    let rebuilt =
+        trim_messages_to_token_budget(rebuilt, target, Some(checkpoint.covers_until_message_id));
+    let after = projected_context_tokens(&rebuilt).saturating_add(fixed_prompt_tokens);
     CompactOutcome {
         messages: rebuilt,
         checkpoint: Some(checkpoint),
@@ -562,6 +704,12 @@ fn build_summarizer_messages(
         }
     }
     for message in covered {
+        if existing_checkpoint.is_some_and(|checkpoint| {
+            message.id == checkpoint.covers_until_message_id
+                && message.content.starts_with(SUMMARY_ANCHOR_PREFIX)
+        }) {
+            continue;
+        }
         out.push(truncate_message_for_summary(message));
     }
     out
@@ -583,9 +731,9 @@ fn truncate_message_for_summary(message: &ChatMessage) -> ChatMessage {
         let count = cloned.attachments.len();
         cloned.attachments.clear();
         if !cloned.content.contains("[attachments omitted") {
-            cloned.content.push_str(&format!(
-                "\n[attachments omitted: {count} image(s)]"
-            ));
+            cloned
+                .content
+                .push_str(&format!("\n[attachments omitted: {count} image(s)]"));
         }
     }
     cloned.usage = None;
@@ -596,6 +744,9 @@ fn truncate_chars(input: &str, max_chars: usize) -> String {
     let count = input.chars().count();
     if count <= max_chars {
         return input.to_string();
+    }
+    if max_chars < 64 {
+        return input.chars().take(max_chars).collect();
     }
     let keep_head = max_chars.saturating_mul(70) / 100;
     let keep_tail = max_chars.saturating_sub(keep_head + 32);
@@ -608,34 +759,58 @@ fn truncate_chars(input: &str, max_chars: usize) -> String {
         .chars()
         .rev()
         .collect();
-    format!("{head}\n…[truncated {omitted} chars]…\n{tail}", omitted = count - keep_head - keep_tail)
+    format!(
+        "{head}\n…[truncated {omitted} chars]…\n{tail}",
+        omitted = count - keep_head - keep_tail
+    )
 }
 
-fn trim_messages_to_token_budget(messages: Vec<ChatMessage>, budget_tokens: u64) -> Vec<ChatMessage> {
-    if messages.is_empty() || projected_context_tokens(&messages) <= budget_tokens {
+fn trim_messages_to_token_budget(
+    messages: Vec<ChatMessage>,
+    budget_tokens: u64,
+    required_prefix_id: Option<Uuid>,
+) -> Vec<ChatMessage> {
+    let messages = messages
+        .into_iter()
+        .map(clear_message_usage)
+        .collect::<Vec<_>>();
+    if messages.is_empty() || estimate_messages_tokens(&messages) <= budget_tokens {
         return messages;
     }
     let groups = owned_context_groups(&messages);
     if groups.is_empty() {
         return messages;
     }
+    let required_index =
+        required_prefix_id.and_then(|id| messages.iter().position(|message| message.id == id));
+    let required_message = required_index.map(|index| messages[index].clone());
+    let required_tokens = required_message
+        .as_ref()
+        .map_or(0, |message| estimate_message_tokens(message));
+    let available_for_tail = budget_tokens.saturating_sub(required_tokens);
     let mut selected_rev: Vec<Vec<usize>> = Vec::new();
     let mut tokens = 0_u64;
     for group in groups.iter().rev() {
+        if required_index.is_some_and(|required| group.contains(&required)) {
+            continue;
+        }
         let group_messages: Vec<ChatMessage> = group.iter().map(|&i| messages[i].clone()).collect();
         let group_tokens = estimate_messages_tokens(&group_messages);
-        if !selected_rev.is_empty() && tokens.saturating_add(group_tokens) > budget_tokens {
+        if !selected_rev.is_empty() && tokens.saturating_add(group_tokens) > available_for_tail {
             break;
         }
         tokens = tokens.saturating_add(group_tokens);
         selected_rev.push(group.clone());
-        if selected_rev.len() == 1 && tokens > budget_tokens {
-            // Single oversized newest group: hard-trim its tool payloads.
+        if selected_rev.len() == 1 && tokens > available_for_tail {
+            // The newest complete group is mandatory; force-fit it below.
             break;
         }
     }
     selected_rev.reverse();
     let mut out = Vec::new();
+    if let Some(required) = required_message {
+        out.push(required);
+    }
     for group in selected_rev {
         for index in group {
             out.push(messages[index].clone());
@@ -648,14 +823,92 @@ fn trim_messages_to_token_budget(messages: Vec<ChatMessage>, budget_tokens: u64)
             last.attachments.clear();
             out.push(last);
         }
-    } else if projected_context_tokens(&out) > budget_tokens {
-        for message in &mut out {
-            if message.role == ChatRole::Tool {
-                message.content = truncate_chars(&message.content, 800);
-            }
+    }
+    force_fit_messages(out, budget_tokens, required_prefix_id)
+}
+
+fn force_fit_messages(
+    mut messages: Vec<ChatMessage>,
+    budget_tokens: u64,
+    required_prefix_id: Option<Uuid>,
+) -> Vec<ChatMessage> {
+    if estimate_messages_tokens(&messages) <= budget_tokens {
+        return messages;
+    }
+
+    for message in &mut messages {
+        message.usage = None;
+        message.reasoning_content = None;
+        if !message.attachments.is_empty() {
+            let count = message.attachments.len();
+            message.attachments.clear();
+            message.content.push_str(&format!(
+                "\n[attachments omitted during emergency trim: {count}]"
+            ));
+        }
+        if message.role == ChatRole::Tool {
+            message.content = truncate_chars(&message.content, 800);
+        }
+        compact_tool_call_arguments(message);
+    }
+
+    while estimate_messages_tokens(&messages) > budget_tokens {
+        let candidate = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| message.content.chars().count() > 16)
+            .max_by_key(|(_, message)| message.content.chars().count())
+            .map(|(index, _)| index);
+        let Some(index) = candidate else {
+            break;
+        };
+        let current = messages[index].content.chars().count();
+        messages[index].content = truncate_chars(&messages[index].content, current / 2);
+    }
+
+    while estimate_messages_tokens(&messages) > budget_tokens && messages.len() > 2 {
+        let groups = owned_context_groups(&messages);
+        let removable = groups
+            .iter()
+            .take(groups.len().saturating_sub(1))
+            .find(|group| {
+                !group
+                    .iter()
+                    .any(|&index| required_prefix_id.is_some_and(|id| messages[index].id == id))
+            });
+        let Some(group) = removable else {
+            break;
+        };
+        for &index in group.iter().rev() {
+            messages.remove(index);
         }
     }
-    out
+
+    messages
+}
+
+fn compact_tool_call_arguments(message: &mut ChatMessage) {
+    let Some(calls) = message
+        .tool_calls
+        .as_mut()
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for call in calls {
+        let Some(arguments) = call
+            .get_mut("function")
+            .and_then(|function| function.get_mut("arguments"))
+        else {
+            continue;
+        };
+        if arguments
+            .as_str()
+            .is_some_and(|value| value.chars().count() > 2_000)
+        {
+            *arguments = serde_json::Value::String(r#"{"_context_compacted":true}"#.to_string());
+        }
+    }
 }
 
 fn mechanical_summary(
@@ -664,8 +917,13 @@ fn mechanical_summary(
 ) -> String {
     let mut lines = Vec::new();
     lines.push("1. User goal".to_string());
-    if let Some(first_user) = covered.iter().find(|message| message.role == ChatRole::User) {
-        lines.push(format!("- {}", truncate_chars(first_user.content.trim(), 400)));
+    if let Some(first_user) = covered.iter().find(|message| {
+        message.role == ChatRole::User && !message.content.starts_with(SUMMARY_ANCHOR_PREFIX)
+    }) {
+        lines.push(format!(
+            "- {}",
+            truncate_chars(first_user.content.trim(), 400)
+        ));
     } else if let Some(checkpoint) = existing_checkpoint {
         lines.push(format!(
             "- (from prior summary) {}",
@@ -716,7 +974,22 @@ fn normalize_summary(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT;
+    use crate::{
+        domain::{ModelUsage, TokenUsage, settings::DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT},
+        llm::types::FunctionDefinition,
+    };
+
+    fn test_config(
+        context_size: u32,
+        threshold_percent: u8,
+        output_reserve_tokens: u64,
+    ) -> CompactionConfig {
+        CompactionConfig {
+            context_size,
+            threshold_percent,
+            output_reserve_tokens,
+        }
+    }
 
     fn msg(role: ChatRole, content: &str) -> ChatMessage {
         ChatMessage {
@@ -737,16 +1010,12 @@ mod tests {
 
     #[test]
     fn soft_limit_respects_threshold_band() {
-        let config = CompactionConfig {
-            context_size: 100_000,
-            threshold_percent: 90,
-        };
+        let config = test_config(100_000, 90, 4_096);
         assert_eq!(config.soft_limit_tokens(), 90_000);
-        let config = CompactionConfig {
-            context_size: 100_000,
-            threshold_percent: 1,
-        };
+        let config = test_config(100_000, 1, 4_096);
         assert_eq!(config.soft_limit_tokens(), 1_000);
+        let small = test_config(8_000, 90, 2_000);
+        assert_eq!(small.soft_limit_tokens(), 6_000);
     }
 
     #[test]
@@ -771,6 +1040,71 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_rewrite_drops_stale_usage_snapshot() {
+        let old_user = msg(ChatRole::User, "old");
+        let old_assistant = msg(ChatRole::Assistant, "old answer");
+        let mut retained = msg(ChatRole::Assistant, "recent answer");
+        retained.usage = Some(ModelUsage {
+            tokens: TokenUsage {
+                total_prompt_tokens: 90_000,
+                output_tokens: 5_000,
+                ..TokenUsage::default()
+            },
+            total_tokens: 95_000,
+            cost_usd: None,
+            provider_id: Uuid::new_v4(),
+            model_id: "test".to_string(),
+        });
+        let checkpoint = ContextCheckpoint {
+            summary: "compact state".to_string(),
+            covers_until_message_id: old_assistant.id,
+            created_at: Utc::now(),
+            generation: 1,
+            source_tokens_estimate: 95_000,
+        };
+
+        let built = build_llm_messages(&[old_user, old_assistant, retained], Some(&checkpoint));
+
+        assert!(built.iter().all(|message| message.usage.is_none()));
+        assert!(projected_context_tokens(&built) < 1_000);
+    }
+
+    #[test]
+    fn repeated_compaction_includes_previous_summary_once() {
+        let covered = vec![
+            ChatMessage {
+                id: Uuid::new_v4(),
+                agent_id: Uuid::new_v4(),
+                conversation_id: Uuid::new_v4(),
+                role: ChatRole::User,
+                content: format!("{SUMMARY_ANCHOR_PREFIX}\nprevious state"),
+                reasoning_content: None,
+                status: ChatMessageStatus::Done,
+                created_at: Utc::now(),
+                tool_calls: None,
+                tool_call_id: None,
+                attachments: Vec::new(),
+                usage: None,
+            },
+            msg(ChatRole::User, "new work"),
+        ];
+        let checkpoint = ContextCheckpoint {
+            summary: "previous state".to_string(),
+            covers_until_message_id: covered[0].id,
+            created_at: Utc::now(),
+            generation: 1,
+            source_tokens_estimate: 100,
+        };
+
+        let summary_input = build_summarizer_messages(&covered, Some(&checkpoint));
+        let occurrences = summary_input
+            .iter()
+            .filter(|message| message.content.contains("previous state"))
+            .count();
+        assert_eq!(occurrences, 1);
+    }
+
+    #[test]
     fn structural_trim_reduces_projected_tokens() {
         let mut messages = Vec::new();
         for i in 0..20 {
@@ -784,11 +1118,8 @@ mod tests {
             ));
         }
         let before = projected_context_tokens(&messages);
-        let config = CompactionConfig {
-            context_size: 8_000,
-            threshold_percent: DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT,
-        };
-        let outcome = compact_structurally(messages, None, &config, before);
+        let config = test_config(8_000, DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT, 2_000);
+        let outcome = compact_structurally(messages, None, &config, 200, before);
         assert!(outcome.did_compact);
         assert!(outcome.estimated_tokens_after < before);
         assert!(outcome.checkpoint.is_some());
@@ -797,12 +1128,48 @@ mod tests {
     #[test]
     fn needs_compaction_uses_soft_limit() {
         let messages = vec![msg(ChatRole::User, &"a".repeat(20_000))];
-        let config = CompactionConfig {
-            context_size: 1_000,
-            threshold_percent: 50,
-        };
-        assert!(needs_compaction(&messages, &config));
+        let config = test_config(1_000, 50, 100);
+        assert!(needs_compaction(&messages, &config, "", None));
         let tiny = vec![msg(ChatRole::User, "hi")];
-        assert!(!needs_compaction(&tiny, &config));
+        assert!(!needs_compaction(&tiny, &config, "", None));
+    }
+
+    #[test]
+    fn request_budget_counts_system_prompt_and_tools() {
+        let messages = vec![msg(ChatRole::User, "hi")];
+        let tools = vec![ToolDefinition {
+            kind: "function".to_string(),
+            function: FunctionDefinition {
+                name: "large_tool".to_string(),
+                description: "x".repeat(4_000),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        }];
+        let config = test_config(1_000, 90, 100);
+
+        assert!(needs_compaction(
+            &messages,
+            &config,
+            &"s".repeat(1_000),
+            Some(&tools),
+        ));
+    }
+
+    #[test]
+    fn emergency_trim_keeps_summary_and_latest_group() {
+        let mut summary = msg(
+            ChatRole::User,
+            &format!("{SUMMARY_ANCHOR_PREFIX}\n{}", "s".repeat(4_000)),
+        );
+        let latest = msg(ChatRole::User, &"latest".repeat(2_000));
+        let summary_id = summary.id;
+        summary.usage = None;
+
+        let trimmed =
+            trim_messages_to_token_budget(vec![summary, latest.clone()], 800, Some(summary_id));
+
+        assert_eq!(trimmed.first().map(|message| message.id), Some(summary_id));
+        assert_eq!(trimmed.last().map(|message| message.id), Some(latest.id));
+        assert!(estimate_messages_tokens(&trimmed) <= 800);
     }
 }

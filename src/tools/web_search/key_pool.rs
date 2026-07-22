@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::domain::WebSearchKeySelection;
 
@@ -47,9 +47,7 @@ fn shuffle_indices(order: &mut [usize]) {
         .unwrap_or(0xC0FFEE)
         ^ (order.len() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     for i in (1..order.len()).rev() {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
         let j = (state as usize) % (i + 1);
         order.swap(i, j);
     }

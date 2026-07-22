@@ -27,9 +27,10 @@ mod tests {
 
     use super::*;
     use crate::domain::{
-        ChatMessage, ChatMessageStatus, ChatRole, CreateAgentRequest, CreateConversationRequest,
-        CreateModelProviderRequest, ProviderType, UpdateAgentProfileRequest, UpdateAgentRequest,
-        UpdateAgentWorkspaceRequest, UpdateConversationRequest, UpdateModelProviderRequest,
+        ChatMessage, ChatMessageStatus, ChatRole, ContextCheckpoint, CreateAgentRequest,
+        CreateConversationRequest, CreateModelProviderRequest, ProviderType,
+        UpdateAgentProfileRequest, UpdateAgentRequest, UpdateAgentWorkspaceRequest,
+        UpdateConversationRequest, UpdateModelProviderRequest,
     };
 
     fn provider_request(name: &str, model: &str) -> CreateModelProviderRequest {
@@ -89,6 +90,126 @@ mod tests {
         assert!(!updated.effective.terminal.enabled);
         assert_eq!(updated.effective.max_llm_iterations, 12);
         assert_eq!(updated.effective.terminal.default_timeout_ms, 45_000);
+    }
+
+    #[tokio::test]
+    async fn web_search_attempts_update_matching_key_statuses() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let mut defaults = store.read_tool_defaults().await.unwrap();
+        let source = defaults
+            .web_search
+            .sources
+            .iter_mut()
+            .find(|source| source.id == "grok")
+            .unwrap();
+        source.api_keys = vec!["grok-a".to_string(), "grok-b".to_string()];
+        let tavily = defaults
+            .web_search
+            .sources
+            .iter_mut()
+            .find(|source| source.id == "tavily")
+            .unwrap();
+        tavily.api_keys = vec!["tvly-a".to_string()];
+        store.update_tool_defaults(defaults).await.unwrap();
+
+        let updates = vec![
+            crate::domain::tools::WebSearchKeyStatusUpdate {
+                source_id: "grok".to_string(),
+                key_index: 0,
+                api_key: "grok-b".to_string(),
+                record: crate::domain::WebSearchKeyStatusRecord {
+                    status: "quota_limited".to_string(),
+                    detail: "quota exceeded".to_string(),
+                    checked_at: "2026-07-22T00:00:00Z".to_string(),
+                },
+            },
+            crate::domain::tools::WebSearchKeyStatusUpdate {
+                source_id: "grok".to_string(),
+                key_index: 0,
+                api_key: "stale-key".to_string(),
+                record: crate::domain::WebSearchKeyStatusRecord {
+                    status: "unauthorized".to_string(),
+                    detail: "stale".to_string(),
+                    checked_at: "2026-07-22T00:00:01Z".to_string(),
+                },
+            },
+            crate::domain::tools::WebSearchKeyStatusUpdate {
+                source_id: "grok".to_string(),
+                key_index: 0,
+                api_key: "grok-a".to_string(),
+                record: crate::domain::WebSearchKeyStatusRecord {
+                    status: "officially_blocked".to_string(),
+                    detail: "account is blocked".to_string(),
+                    checked_at: "2026-07-22T00:00:02Z".to_string(),
+                },
+            },
+            crate::domain::tools::WebSearchKeyStatusUpdate {
+                source_id: "tavily".to_string(),
+                key_index: 0,
+                api_key: "tvly-a".to_string(),
+                record: crate::domain::WebSearchKeyStatusRecord {
+                    status: "normal".to_string(),
+                    detail: "request succeeded".to_string(),
+                    checked_at: "2026-07-22T00:00:03Z".to_string(),
+                },
+            },
+        ];
+
+        let updated = store
+            .update_web_search_key_statuses(&updates)
+            .await
+            .unwrap();
+        assert_eq!(updated, 3);
+
+        let saved = store.read_tool_defaults().await.unwrap();
+        let source = saved
+            .web_search
+            .sources
+            .iter()
+            .find(|source| source.id == "grok")
+            .unwrap();
+        assert_eq!(
+            source.key_statuses[0].as_ref().unwrap().status,
+            "officially_blocked"
+        );
+        assert_eq!(
+            source.key_statuses[1].as_ref().unwrap().status,
+            "quota_limited"
+        );
+        assert!(source.is_api_key_blocked("grok-a"));
+        assert_eq!(
+            source.api_keys,
+            vec!["grok-a".to_string(), "grok-b".to_string()]
+        );
+        let tavily = saved
+            .web_search
+            .sources
+            .iter()
+            .find(|source| source.id == "tavily")
+            .unwrap();
+        assert_eq!(tavily.api_keys, vec!["tvly-a".to_string()]);
+        assert_eq!(tavily.key_statuses[0].as_ref().unwrap().status, "normal");
+
+        let mut client_update = saved.redact_secrets();
+        let source = client_update
+            .web_search
+            .sources
+            .iter_mut()
+            .find(|source| source.id == "grok")
+            .unwrap();
+        source.api_keys.clear();
+        source.key_statuses.clear();
+        store.update_tool_defaults(client_update).await.unwrap();
+        let cleared = store.read_tool_defaults().await.unwrap();
+        let source = cleared
+            .web_search
+            .sources
+            .iter()
+            .find(|source| source.id == "grok")
+            .unwrap();
+        assert!(source.api_keys.is_empty());
+        assert!(source.is_api_key_blocked("grok-a"));
     }
 
     #[tokio::test]
@@ -175,7 +296,6 @@ mod tests {
                 model_id: "gpt-4o-mini".to_string(),
                 avatar_icon: Some("sparkles".to_string()),
                 avatar_color: Some("#3b82f6".to_string()),
-                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -212,6 +332,152 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conversation_append_preserves_context_checkpoint() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let agent = store
+            .list_agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.is_builtin)
+            .unwrap();
+        let conversation = store
+            .create_conversation(agent.id, CreateConversationRequest { title: None })
+            .await
+            .unwrap();
+        let old = ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: agent.id,
+            conversation_id: conversation.id,
+            role: ChatRole::User,
+            content: "old".to_string(),
+            reasoning_content: None,
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        };
+        store
+            .append_conversation_messages(conversation.id, std::slice::from_ref(&old))
+            .await
+            .unwrap();
+        let checkpoint = ContextCheckpoint {
+            summary: "old state".to_string(),
+            covers_until_message_id: old.id,
+            created_at: Utc::now(),
+            generation: 1,
+            source_tokens_estimate: 100,
+        };
+        store
+            .write_context_checkpoint(conversation.id, checkpoint.clone())
+            .await
+            .unwrap();
+        let new_message = ChatMessage {
+            id: Uuid::new_v4(),
+            content: "new".to_string(),
+            ..old
+        };
+
+        store
+            .append_conversation_messages(conversation.id, &[new_message])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .read_context_checkpoint(conversation.id)
+                .await
+                .unwrap(),
+            Some(checkpoint)
+        );
+    }
+
+    #[tokio::test]
+    async fn history_restart_only_invalidates_intersected_checkpoint() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let agent = store
+            .list_agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.is_builtin)
+            .unwrap();
+        let conversation = store
+            .create_conversation(agent.id, CreateConversationRequest { title: None })
+            .await
+            .unwrap();
+        let make_message = |role, content: &str| ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: agent.id,
+            conversation_id: conversation.id,
+            role,
+            content: content.to_string(),
+            reasoning_content: None,
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        };
+        let first_user = make_message(ChatRole::User, "first");
+        let first_assistant = make_message(ChatRole::Assistant, "answer");
+        let second_user = make_message(ChatRole::User, "second");
+        let second_assistant = make_message(ChatRole::Assistant, "answer two");
+        store
+            .append_conversation_messages(
+                conversation.id,
+                &[
+                    first_user.clone(),
+                    first_assistant.clone(),
+                    second_user.clone(),
+                    second_assistant,
+                ],
+            )
+            .await
+            .unwrap();
+        let checkpoint = ContextCheckpoint {
+            summary: "first turn".to_string(),
+            covers_until_message_id: first_assistant.id,
+            created_at: Utc::now(),
+            generation: 1,
+            source_tokens_estimate: 100,
+        };
+        store
+            .write_context_checkpoint(conversation.id, checkpoint.clone())
+            .await
+            .unwrap();
+
+        store
+            .truncate_conversation_from_message(conversation.id, second_user.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .read_context_checkpoint(conversation.id)
+                .await
+                .unwrap(),
+            Some(checkpoint)
+        );
+
+        store
+            .truncate_conversation_from_message(conversation.id, first_user.id)
+            .await
+            .unwrap();
+        assert!(
+            store
+                .read_context_checkpoint(conversation.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn paginates_messages_on_user_turn_boundaries() {
         let temp_dir = tempfile::tempdir().unwrap();
         let store = JsonStore::new(temp_dir.path()).await.unwrap();
@@ -227,7 +493,6 @@ mod tests {
                 model_id: "gpt-4o-mini".to_string(),
                 avatar_icon: Some("sparkles".to_string()),
                 avatar_color: Some("#3b82f6".to_string()),
-                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -304,7 +569,6 @@ mod tests {
                 model_id: "gpt-4o-mini".to_string(),
                 avatar_icon: Some("sparkles".to_string()),
                 avatar_color: Some("#3b82f6".to_string()),
-                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -362,7 +626,6 @@ mod tests {
                 model_id: "fast-model".to_string(),
                 avatar_icon: Some("rocket".to_string()),
                 avatar_color: Some("#ef4444".to_string()),
-                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -465,7 +728,6 @@ mod tests {
                     model_id: Some("core-model".to_string()),
                     avatar_icon: None,
                     avatar_color: None,
-                    context_compress_threshold_percent: None,
                 },
             )
             .await
@@ -529,7 +791,6 @@ mod tests {
                 model_id: "local-model".to_string(),
                 avatar_icon: Some("brain".to_string()),
                 avatar_color: Some("#8b5cf6".to_string()),
-                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -547,17 +808,18 @@ mod tests {
             .unwrap();
 
         let stored = store.get_agent(agent.id).await.unwrap();
-        let prompt = store.build_agent_system_prompt(&stored).await.unwrap();
+        let mut tools_config = crate::domain::AgentToolsConfig::default();
+        let prompt = store
+            .build_agent_system_prompt(&stored, &tools_config)
+            .await
+            .unwrap();
         assert!(prompt.starts_with("## Environment"));
         assert!(prompt.contains("## Agent"));
         assert!(prompt.contains("当前处理本轮对话的智能体"));
         assert!(prompt.contains(&format!("- Name: {}", stored.name)));
         assert!(prompt.contains(&format!("- ID: {}", stored.id)));
         assert!(prompt.contains("## Runtime"));
-        assert!(prompt.contains(&format!(
-            "- Date: {}",
-            crate::tools::prompt::today_date()
-        )));
+        assert!(prompt.contains(&format!("- Date: {}", crate::tools::prompt::today_date())));
         assert!(prompt.contains("必须以此为准"));
         assert!(prompt.contains("Trust: absolute"));
         assert!(prompt.contains("## Personality"));
@@ -567,8 +829,39 @@ mod tests {
         assert!(prompt.contains("Calm and direct."));
         assert!(prompt.contains("User prefers concise plans."));
         assert!(prompt.contains("Ask only important questions."));
-        let again = store.build_agent_system_prompt(&stored).await.unwrap();
+        let again = store
+            .build_agent_system_prompt(&stored, &tools_config)
+            .await
+            .unwrap();
         assert_eq!(prompt, again);
+        assert!(!prompt.contains("Web Search Policy V1"));
+
+        tools_config.web_search.enabled = true;
+        let search_prompt = store
+            .build_agent_system_prompt(&stored, &tools_config)
+            .await
+            .unwrap();
+        assert!(search_prompt.contains("## Web Search Policy V1"));
+        let search_hash = crate::llm::cache::system_prompt_hash(&search_prompt);
+        tools_config.web_search.sources[0].api_keys = vec!["dynamic-key".to_string()];
+        tools_config.web_search.sources[0].priority = 999;
+        tools_config.web_search.sources[0].key_statuses =
+            vec![Some(crate::domain::WebSearchKeyStatusRecord {
+                status: "normal".to_string(),
+                detail: "dynamic health".to_string(),
+                checked_at: chrono::Utc::now().to_rfc3339(),
+            })];
+        for source in &mut tools_config.web_search.sources {
+            source.enabled = false;
+        }
+        let source_changed_prompt = store
+            .build_agent_system_prompt(&stored, &tools_config)
+            .await
+            .unwrap();
+        assert_eq!(
+            search_hash,
+            crate::llm::cache::system_prompt_hash(&source_changed_prompt)
+        );
     }
 
     #[tokio::test]
@@ -587,7 +880,6 @@ mod tests {
                 model_id: "local-model".to_string(),
                 avatar_icon: Some("brain".to_string()),
                 avatar_color: Some("#8b5cf6".to_string()),
-                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -603,8 +895,7 @@ mod tests {
                         model_id: None,
                         avatar_icon: None,
                         avatar_color: None,
-                    context_compress_threshold_percent: None,
-                },
+                    },
                     workspace: UpdateAgentWorkspaceRequest {
                         personality: "Calm".to_string(),
                         memory: "Project context".to_string(),
@@ -633,8 +924,7 @@ mod tests {
                         model_id: Some("missing-model".to_string()),
                         avatar_icon: None,
                         avatar_color: None,
-                    context_compress_threshold_percent: None,
-                },
+                    },
                     workspace: UpdateAgentWorkspaceRequest {
                         personality: "Should not persist".to_string(),
                         memory: String::new(),
@@ -672,7 +962,6 @@ mod tests {
                 model_id: "avatar-model".to_string(),
                 avatar_icon: Some("compass".to_string()),
                 avatar_color: Some("#06b6d4".to_string()),
-                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -684,7 +973,6 @@ mod tests {
                 model_id: "avatar-model".to_string(),
                 avatar_icon: Some("compass".to_string()),
                 avatar_color: Some("#06b6d4".to_string()),
-                            context_compress_threshold_percent: None,
             })
             .await;
 

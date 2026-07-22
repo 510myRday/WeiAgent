@@ -215,6 +215,13 @@ function isValidRuntimeSettings(settings: AppSettings): boolean {
   ) {
     return false;
   }
+  if (
+    !Number.isInteger(settings.context_compress_threshold_percent)
+    || settings.context_compress_threshold_percent < 1
+    || settings.context_compress_threshold_percent > 99
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -225,6 +232,7 @@ function serializeRuntimeSettings(settings: AppSettings): string {
     log_level: settings.log_level,
     request_timeout_seconds: settings.request_timeout_seconds,
     request_retry_attempts: settings.request_retry_attempts,
+    context_compress_threshold_percent: settings.context_compress_threshold_percent,
     llm_log_enabled: settings.llm_log_enabled,
     // Keep avatar/language in the payload for saves, but treat them as owned elsewhere
     // so external Sidebar updates do not thrash auto-save status.
@@ -956,7 +964,12 @@ export function SettingsPanel({
           {activeSection === 'runtime' ? (
             <div className="form-card entity-form narrow-form">
               <div className="form-grid two-column">
-                <FormField label={t('settings.host')} htmlFor="settings-host" required>
+                <FormField
+                  label={t('settings.host')}
+                  htmlFor="settings-host"
+                  hint={t('settings.restartHint')}
+                  required
+                >
                   <select
                     id="settings-host"
                     value={settingsForm.host}
@@ -989,12 +1002,16 @@ export function SettingsPanel({
                   </select>
                 </FormField>
               </div>
-              <p className="hint-text">{t('settings.restartHint')}</p>
             </div>
           ) : activeSection === 'agent' ? (
-            <div className="form-card entity-form narrow-form">
+            <div className="form-card entity-form narrow-form model-agent-settings-card">
               <div className="form-grid two-column">
-                <FormField label={t('settings.requestTimeout')} htmlFor="settings-timeout" required>
+                <FormField
+                  label={t('settings.requestTimeout')}
+                  htmlFor="settings-timeout"
+                  hint={t('settings.agentRetryHint')}
+                  required
+                >
                   <input
                     id="settings-timeout"
                     type="number"
@@ -1017,7 +1034,37 @@ export function SettingsPanel({
                   />
                 </FormField>
               </div>
-              <p className="hint-text small-hint">{t('settings.agentRetryHint')}</p>
+              <div className="setting-row settings-context-policy">
+                <div className="setting-info">
+                  <label htmlFor="settings-context-compress-threshold">
+                    {t('settings.contextCompressThreshold')}
+                    <span className="required-marker" aria-hidden="true">*</span>
+                  </label>
+                  <p className="setting-desc">{t('settings.contextCompressThresholdHint')}</p>
+                </div>
+                <label
+                  className="timeout-input settings-percent-input"
+                  htmlFor="settings-context-compress-threshold"
+                >
+                  <input
+                    id="settings-context-compress-threshold"
+                    type="number"
+                    min={1}
+                    max={99}
+                    step={1}
+                    value={clampCompressThreshold(
+                      settingsForm.context_compress_threshold_percent ?? 90,
+                    )}
+                    onChange={(e) => patchRuntimeSettings({
+                      context_compress_threshold_percent: clampCompressThreshold(
+                        Number(e.target.value),
+                      ),
+                    })}
+                    required
+                  />
+                  <span className="unit">{t('settings.contextCompressThresholdUnit')}</span>
+                </label>
+              </div>
             </div>
           ) : (
             <div className="provider-page">
@@ -1325,6 +1372,11 @@ export function SettingsPanel({
       />
     </>
   );
+}
+
+function clampCompressThreshold(value: number): number {
+  if (!Number.isFinite(value)) return 90;
+  return Math.min(99, Math.max(1, Math.round(value)));
 }
 
 

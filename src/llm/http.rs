@@ -14,8 +14,8 @@ use crate::{
         types::StreamEvent,
     },
     storage::{
-        llm_logs::{elapsed_ms, LlmLogMetrics},
         LlmLogger,
+        llm_logs::{LlmLogMetrics, elapsed_ms},
     },
 };
 
@@ -238,9 +238,9 @@ pub(crate) fn stream_metrics(
     usage: Option<&TokenUsage>,
 ) -> LlmLogMetrics {
     let mut metrics = LlmLogMetrics::timed(started).with_first_token(first_token_ms);
-    if let Some(usage) = usage.filter(|usage| {
-        usage.total_tokens() > 0 || usage.total_prompt_tokens > 0
-    }) {
+    if let Some(usage) =
+        usage.filter(|usage| usage.total_tokens() > 0 || usage.total_prompt_tokens > 0)
+    {
         metrics.input_tokens = Some(usage.input_tokens);
         metrics.output_tokens = Some(usage.output_tokens);
         metrics.cache_read_tokens = Some(usage.cache_read_tokens);
@@ -609,7 +609,12 @@ mod tests {
         let mut bytes = 0;
         let mut truncated = false;
         capture_log_line("HEAD", &mut lines, &mut bytes, &mut truncated);
-        capture_log_line(&"M".repeat(MAX_LLM_LOG_BYTES), &mut lines, &mut bytes, &mut truncated);
+        capture_log_line(
+            &"M".repeat(MAX_LLM_LOG_BYTES),
+            &mut lines,
+            &mut bytes,
+            &mut truncated,
+        );
         capture_log_line("TAIL", &mut lines, &mut bytes, &mut truncated);
 
         let formatted = format_stream_log(&lines, truncated);

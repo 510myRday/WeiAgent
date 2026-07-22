@@ -191,6 +191,10 @@ pub fn validate_settings(settings: &AppSettings) -> AppResult<()> {
             "request_retry_attempts must be between 1 and 10".to_string(),
         ));
     }
+    crate::domain::settings::normalize_context_compress_threshold(
+        settings.context_compress_threshold_percent,
+    )
+    .map_err(AppError::BadRequest)?;
     Ok(())
 }
 
@@ -246,6 +250,15 @@ mod tests {
         assert!(validate_settings(&settings).is_err());
     }
 
+    #[test]
+    fn settings_reject_invalid_global_context_threshold() {
+        let mut settings = AppSettings::default();
+        settings.context_compress_threshold_percent = 0;
+        assert!(validate_settings(&settings).is_err());
+        settings.context_compress_threshold_percent = 100;
+        assert!(validate_settings(&settings).is_err());
+    }
+
     #[tokio::test]
     async fn reading_settings_does_not_rewrite_the_file() {
         let directory = tempfile::tempdir().unwrap();
@@ -258,6 +271,29 @@ mod tests {
         let settings = read_settings(&path).await.unwrap();
         assert_eq!(settings, AppSettings::default());
         assert_eq!(fs::read_to_string(path).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn loading_legacy_settings_persists_default_global_threshold() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut legacy = serde_json::to_value(AppSettings::default()).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("context_compress_threshold_percent");
+        fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap())
+            .await
+            .unwrap();
+
+        let settings = load_or_init_settings(&path).await.unwrap();
+        assert_eq!(
+            settings.context_compress_threshold_percent,
+            crate::domain::settings::DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT
+        );
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).await.unwrap()).unwrap();
+        assert_eq!(persisted["context_compress_threshold_percent"], 90);
     }
 
     #[test]

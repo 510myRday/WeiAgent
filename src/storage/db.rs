@@ -1,9 +1,7 @@
-use std::{
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use uuid::Uuid;
 
 use crate::{
@@ -81,7 +79,10 @@ pub fn open_connection(db_path: &Path) -> AppResult<Connection> {
     conn.execute_batch(SCHEMA_SQL)?;
     // Older installations have the provider table already; add cache columns
     // without disturbing their existing rows.
-    let _ = conn.execute("ALTER TABLE model_providers ADD COLUMN prompt_cache_json TEXT NOT NULL DEFAULT '{}'", []);
+    let _ = conn.execute(
+        "ALTER TABLE model_providers ADD COLUMN prompt_cache_json TEXT NOT NULL DEFAULT '{}'",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE model_providers ADD COLUMN cache_capabilities_json TEXT NOT NULL DEFAULT 'null'", []);
     Ok(conn)
 }

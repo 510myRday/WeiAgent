@@ -7,8 +7,8 @@ use crate::{
     domain::{Agent, ChatMessage, ModelProvider},
     error::{AppError, AppResult},
     llm::{
-        client::{ChatClient, ChatStream, RequestOptions},
         cache::{apply_openai_fields, apply_provider_extra, build_context},
+        client::{ChatClient, ChatStream, RequestOptions},
         http::{
             LlmHttp, MAX_SSE_LINE_BUFFER_BYTES, capture_log_line, decode_remaining_sse_line,
             drain_sse_line, format_stream_log, read_response_body_limited, spawn_log,
@@ -21,7 +21,10 @@ use crate::{
             build_chat_request,
         },
     },
-    storage::{llm_logs::{elapsed_ms, LlmLogMetrics}, LlmLogger},
+    storage::{
+        LlmLogger,
+        llm_logs::{LlmLogMetrics, elapsed_ms},
+    },
 };
 
 #[derive(Clone)]
@@ -104,7 +107,6 @@ impl ChatClient for OpenAiChatClient {
             .last()
             .map(|message| message.conversation_id.to_string());
 
-
         let response = match self
             .http
             .retry_send(&options, || {
@@ -160,16 +162,16 @@ impl ChatClient for OpenAiChatClient {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
+                Some(agent_id.as_str()),
+                conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some(&format!("upstream returned {status}")),
-                    LlmLogMetrics::timed(started),
-                );
+                LlmLogMetrics::timed(started),
+            );
             return Err(AppError::Llm(format!("upstream returned {status}: {body}")));
         }
 
@@ -200,16 +202,16 @@ impl ChatClient for OpenAiChatClient {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
+                Some(agent_id.as_str()),
+                conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some("empty model response"),
-                    LlmLogMetrics::timed(started),
-                );
+                LlmLogMetrics::timed(started),
+            );
             AppError::Llm("empty model response".to_string())
         })?;
 
@@ -219,16 +221,16 @@ impl ChatClient for OpenAiChatClient {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
+                Some(agent_id.as_str()),
+                conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some(&error.to_string()),
-                    LlmLogMetrics::timed(started),
-                );
+                LlmLogMetrics::timed(started),
+            );
             return Err(error);
         }
 
@@ -239,32 +241,32 @@ impl ChatClient for OpenAiChatClient {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
+                Some(agent_id.as_str()),
+                conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some("empty model response"),
-                    LlmLogMetrics::timed(started),
-                );
+                LlmLogMetrics::timed(started),
+            );
             return Err(AppError::Llm("empty model response".to_string()));
         }
 
         self.http.spawn_log(
             log_enabled,
             &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
+            Some(agent_id.as_str()),
+            conversation_id.as_deref(),
             &agent.model_id,
             &provider.name,
             &request_json,
             Some(&body),
             Some(status.as_u16()),
             None,
-                    LlmLogMetrics::timed(started),
-                );
+            LlmLogMetrics::timed(started),
+        );
 
         Ok(ChatCompletionOutput {
             content,
@@ -317,7 +319,6 @@ impl ChatClient for OpenAiChatClient {
             .last()
             .map(|message| message.conversation_id.to_string());
 
-
         let response = match self
             .http
             .retry_send(&options, || {
@@ -356,16 +357,16 @@ impl ChatClient for OpenAiChatClient {
             self.http.spawn_log(
                 log_enabled,
                 &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
+                Some(agent_id.as_str()),
+                conversation_id.as_deref(),
                 &agent.model_id,
                 &provider.name,
                 &request_json,
                 Some(&body),
                 Some(status.as_u16()),
                 Some(&format!("upstream returned {status}")),
-                    LlmLogMetrics::timed(started),
-                );
+                LlmLogMetrics::timed(started),
+            );
             return Err(AppError::Llm(format!("upstream returned {status}: {body}")));
         }
 
@@ -705,7 +706,6 @@ mod tests {
             is_builtin: false,
             avatar_icon: "bot".to_string(),
             avatar_color: "#22c55e".to_string(),
-            context_compress_threshold_percent: 90,
             created_at: now,
             updated_at: now,
         };
@@ -773,7 +773,6 @@ mod tests {
             is_builtin: false,
             avatar_icon: "bot".to_string(),
             avatar_color: "#22c55e".to_string(),
-            context_compress_threshold_percent: 90,
             created_at: now,
             updated_at: now,
         };

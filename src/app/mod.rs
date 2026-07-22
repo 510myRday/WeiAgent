@@ -126,7 +126,6 @@ mod tests {
                 model_id: "test-model".to_string(),
                 avatar_icon: Some("bot".to_string()),
                 avatar_color: Some("#22c55e".to_string()),
-                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -139,7 +138,9 @@ mod tests {
             llm_registry: Arc::new(MockLlmRegistry {
                 client: Arc::new(MockChatClient),
             }),
-            llm_logger: Arc::new(LlmLogger::new(tempfile::tempdir().unwrap().path(), false).unwrap()),
+            llm_logger: Arc::new(
+                LlmLogger::new(tempfile::tempdir().unwrap().path(), false).unwrap(),
+            ),
             terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
             codex_runtime: test_codex_runtime(&temp_dir),
@@ -544,7 +545,6 @@ mod tests {
                 model_id: "test-model".to_string(),
                 avatar_icon: Some("bot".to_string()),
                 avatar_color: Some("#22c55e".to_string()),
-                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();
@@ -1328,7 +1328,6 @@ mod tests {
                 model_id: "test-model".to_string(),
                 avatar_icon: Some("bot".to_string()),
                 avatar_color: Some("#22c55e".to_string()),
-                            context_compress_threshold_percent: None,
             })
             .await
             .unwrap();

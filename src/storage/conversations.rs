@@ -248,8 +248,6 @@ impl JsonStore {
         existing.extend_from_slice(messages);
         write_json(&self.conversation_file(conversation_id), &existing).await?;
         conversation.message_count = existing.len();
-        // Truncation invalidates any summary that may cover deleted messages.
-        conversation.context_checkpoint = None;
         if is_generated_conversation_title(&conversation.title)
             && let Some(title) = title_from_first_user_message(&existing)
         {
@@ -290,10 +288,23 @@ impl JsonStore {
         let derived_title = title_from_first_user_message(&existing);
         let title_tracks_first_message = is_generated_conversation_title(&conversation.title)
             || derived_title.as_deref() == Some(conversation.title.as_str());
+        let checkpoint_survives =
+            conversation
+                .context_checkpoint
+                .as_ref()
+                .is_some_and(|checkpoint| {
+                    existing
+                        .iter()
+                        .position(|message| message.id == checkpoint.covers_until_message_id)
+                        .is_some_and(|checkpoint_index| checkpoint_index < index)
+                });
         existing.truncate(index);
         write_json(&self.conversation_file(conversation_id), &existing).await?;
 
         conversation.message_count = existing.len();
+        if !checkpoint_survives {
+            conversation.context_checkpoint = None;
+        }
         if title_tracks_first_message {
             conversation.title = title_from_first_user_message(&existing)
                 .unwrap_or_else(|| "New Conversation".to_string());
@@ -316,8 +327,20 @@ impl JsonStore {
         let mut existing = self
             .read_conversation_messages_unchecked(conversation_id)
             .await?;
-        if let Some(stored) = existing.iter_mut().find(|stored| stored.id == message.id) {
-            *stored = message;
+        if let Some(message_index) = existing.iter().position(|stored| stored.id == message.id) {
+            let invalidates_checkpoint = conversation
+                .context_checkpoint
+                .as_ref()
+                .and_then(|checkpoint| {
+                    existing
+                        .iter()
+                        .position(|stored| stored.id == checkpoint.covers_until_message_id)
+                })
+                .is_none_or(|checkpoint_index| message_index <= checkpoint_index);
+            existing[message_index] = message;
+            if invalidates_checkpoint {
+                conversation.context_checkpoint = None;
+            }
         } else {
             existing.push(message);
         }
@@ -401,7 +424,10 @@ impl JsonStore {
         &self,
         conversation_id: Uuid,
     ) -> AppResult<Option<ContextCheckpoint>> {
-        Ok(self.get_conversation(conversation_id).await?.context_checkpoint)
+        Ok(self
+            .get_conversation(conversation_id)
+            .await?
+            .context_checkpoint)
     }
 
     pub async fn write_context_checkpoint(
@@ -420,24 +446,33 @@ impl JsonStore {
         self.write_conversations_unlocked(&conversations).await?;
         Ok(checkpoint)
     }
-
 }
 
 fn conversation_usage(messages: &[ChatMessage]) -> ConversationUsage {
     // Latest model call is a snapshot of current context-window occupancy.
     // Summing every historical turn overcounts (turn1 50 + turn2 50 is still
     // ~50 tokens of context, not 100).
-    let Some(usage) = messages.iter().rev().find_map(|message| message.usage.as_ref()) else {
+    let Some(usage) = messages
+        .iter()
+        .rev()
+        .find_map(|message| message.usage.as_ref())
+    else {
         return ConversationUsage::default();
     };
 
-    // Prompt tokens (fresh input + cache hits) plus the latest completion occupy
-    // the window for the next turn. Cache writes are billing-only.
-    let context_tokens = usage
-        .tokens
-        .input_tokens
-        .saturating_add(usage.tokens.cache_read_tokens)
-        .saturating_add(usage.tokens.output_tokens);
+    // The provider-normalized prompt total includes uncached, cache-read, and
+    // cache-write prompt tokens. Add the latest completion because it becomes
+    // part of the next request's history.
+    let prompt_tokens = if usage.tokens.total_prompt_tokens > 0 {
+        usage.tokens.total_prompt_tokens
+    } else {
+        usage
+            .tokens
+            .input_tokens
+            .saturating_add(usage.tokens.cache_read_tokens)
+            .saturating_add(usage.tokens.cache_write_tokens)
+    };
+    let context_tokens = prompt_tokens.saturating_add(usage.tokens.output_tokens);
 
     ConversationUsage {
         tokens: usage.tokens.clone(),
@@ -445,4 +480,3 @@ fn conversation_usage(messages: &[ChatMessage]) -> ConversationUsage {
         cost_usd: usage.cost_usd,
     }
 }
-

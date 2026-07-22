@@ -12,20 +12,34 @@ const defaultSettings: AppSettings = {
   language: 'zh',
   request_timeout_seconds: 60,
   request_retry_attempts: 5,
+  context_compress_threshold_percent: 90,
   llm_log_enabled: false,
 };
+
+function normalizeSettings(settings: AppSettings): AppSettings {
+  const threshold = Number(settings.context_compress_threshold_percent);
+  return {
+    ...defaultSettings,
+    ...settings,
+    context_compress_threshold_percent: Number.isInteger(threshold)
+      && threshold >= 1
+      && threshold <= 99
+      ? threshold
+      : 90,
+  };
+}
 
 export function useSettings() {
   const [settingsForm, setSettingsForm] = useState<AppSettings>(defaultSettings);
 
   const refreshSettings = useCallback(async () => {
-    const next = await readSettings();
+    const next = normalizeSettings(await readSettings());
     setSettingsForm(next);
     return next;
   }, []);
 
   const saveSettings = useCallback(async (payload: AppSettings) => {
-    const updated = await updateSettings(payload);
+    const updated = normalizeSettings(await updateSettings(payload));
     setSettingsForm(updated);
     return updated;
   }, []);

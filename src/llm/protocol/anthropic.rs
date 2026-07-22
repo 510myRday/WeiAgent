@@ -8,8 +8,8 @@ use crate::{
     domain::{Agent, ChatMessage, ChatRole, ImageSource, ModelProvider, ThinkingLevel, TokenUsage},
     error::{AppError, AppResult},
     llm::{
+        cache::{PromptCacheMode, apply_provider_extra, build_context, effective_capabilities},
         client::{ChatClient, ChatStream, RequestOptions},
-        cache::{apply_provider_extra, build_context, effective_capabilities, PromptCacheMode},
         http::StreamLineParser,
         protocol::common::{
             ProtocolAdapter, ProtocolClient, add_query_parameter, default_models, merge_extra_body,
@@ -294,11 +294,10 @@ fn build_anthropic_request(
     };
     if cache_enabled {
         let mut block = json!({"type": "text", "text": system_prompt});
-        block["cache_control"] = provider
-            .prompt_cache
-            .anthropic_ttl
-            .as_ref()
-            .map_or_else(|| json!({"type": "ephemeral"}), |ttl| json!({"type": "ephemeral", "ttl": ttl}));
+        block["cache_control"] = provider.prompt_cache.anthropic_ttl.as_ref().map_or_else(
+            || json!({"type": "ephemeral"}),
+            |ttl| json!({"type": "ephemeral", "ttl": ttl}),
+        );
         body.insert("system".to_string(), json!([block]));
     } else {
         body.insert("system".to_string(), json!(system_prompt));
@@ -354,7 +353,10 @@ fn build_anthropic_request(
         );
     }
     if cache_enabled && context.explicit_breakpoints {
-        if let Some(last) = body["tools"].as_array_mut().and_then(|tools| tools.last_mut()) {
+        if let Some(last) = body["tools"]
+            .as_array_mut()
+            .and_then(|tools| tools.last_mut())
+        {
             last["cache_control"] = json!({"type": "ephemeral"});
         }
     }
@@ -439,7 +441,11 @@ fn parse_anthropic_usage(value: &Value) -> TokenUsage {
         cache_read_tokens: read,
         total_prompt_tokens: input.saturating_add(write).saturating_add(read),
         uncached_input_tokens: input,
-        cache_hit_ratio: if input.saturating_add(read) == 0 { 0.0 } else { read as f64 / input.saturating_add(read) as f64 },
+        cache_hit_ratio: if input.saturating_add(read) == 0 {
+            0.0
+        } else {
+            read as f64 / input.saturating_add(read) as f64
+        },
     }
 }
 
@@ -499,9 +505,7 @@ impl AnthropicStreamParser {
                     Some("thinking") => block["thinking"]
                         .as_str()
                         .filter(|thinking| !thinking.is_empty())
-                        .map(|thinking| {
-                            vec![Ok(StreamEvent::ReasoningDelta(thinking.to_string()))]
-                        })
+                        .map(|thinking| vec![Ok(StreamEvent::ReasoningDelta(thinking.to_string()))])
                         .unwrap_or_default(),
                     Some("tool_use") => {
                         self.saw_tool_calls = true;
@@ -533,9 +537,7 @@ impl AnthropicStreamParser {
                 Some("thinking_delta") => value["delta"]["thinking"]
                     .as_str()
                     .filter(|thinking| !thinking.is_empty())
-                    .map(|thinking| {
-                        vec![Ok(StreamEvent::ReasoningDelta(thinking.to_string()))]
-                    })
+                    .map(|thinking| vec![Ok(StreamEvent::ReasoningDelta(thinking.to_string()))])
                     .unwrap_or_default(),
                 Some("input_json_delta") => {
                     let index = value["index"].as_u64().unwrap_or(0) as usize;
@@ -632,7 +634,6 @@ mod tests {
             is_builtin: false,
             avatar_icon: "bot".to_string(),
             avatar_color: "#22c55e".to_string(),
-            context_compress_threshold_percent: 90,
             created_at: now,
             updated_at: now,
         };
@@ -676,11 +677,18 @@ mod tests {
 
     fn test_provider() -> ModelProvider {
         ModelProvider {
-            id: Uuid::new_v4(), provider_type: crate::domain::ProviderType::AnthropicMessages,
-            name: "test".into(), base_url: "http://localhost".into(), api_key: "key".into(),
-            models: vec!["test-model".into()], model_configs: vec![], extra_body: Value::Null,
-            prompt_cache: Default::default(), cache_capabilities: None,
-            created_at: Utc::now(), updated_at: Utc::now(),
+            id: Uuid::new_v4(),
+            provider_type: crate::domain::ProviderType::AnthropicMessages,
+            name: "test".into(),
+            base_url: "http://localhost".into(),
+            api_key: "key".into(),
+            models: vec!["test-model".into()],
+            model_configs: vec![],
+            extra_body: Value::Null,
+            prompt_cache: Default::default(),
+            cache_capabilities: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
         }
     }
 
@@ -688,8 +696,7 @@ mod tests {
     fn request_maps_tools_and_allows_max_tokens_override() {
         let (agent, mut messages) = fixture();
         let provider = test_provider();
-        messages[0].reasoning_content =
-            Some("saved-reasoning-must-not-be-sent".to_string());
+        messages[0].reasoning_content = Some("saved-reasoning-must-not-be-sent".to_string());
         messages.insert(
             0,
             ChatMessage {
@@ -728,7 +735,11 @@ mod tests {
         assert_eq!(request["max_tokens"], 8192);
         assert_eq!(request["thinking"]["type"], "enabled");
         assert_eq!(request["thinking"]["budget_tokens"], 8192);
-        assert!(!request.to_string().contains("saved-reasoning-must-not-be-sent"));
+        assert!(
+            !request
+                .to_string()
+                .contains("saved-reasoning-must-not-be-sent")
+        );
         assert!(
             request["messages"]
                 .as_array()

@@ -15,6 +15,11 @@ const BUILTIN_MASTER_NAME: &str = "Master";
 const BUILTIN_MASTER_DESCRIPTION: &str =
     "Coordinates tasks, delegates work, and drives complex jobs to completion.";
 const LEGACY_AGENT_DESCRIPTION: &str = "Custom AI agent";
+const WEB_SEARCH_POLICY_V1: &str = "## Web Search Policy V1\n\
+Use web search when the user requests browsing, current information, source links, precise attribution, or information likely to have changed.\n\n\
+Use fast for simple lookups, balanced for current facts and comparisons, and deep for comprehensive research, conflicting claims, or explicit deep investigation. For research, issue complementary query rewrites in one call, retry empty searches with materially different wording, and use multiple independent source groups.\n\n\
+Use web_search_sources before custom source selection. Search APIs return evidence candidates. AI research syntheses are useful hypotheses and query directions, but are unverified and never count as independent evidence.\n\n\
+Open the most relevant original pages with web_extract, prefer primary sources, and verify important or disputed claims with independent evidence. Cite the original page using a Markdown link placed next to the supported claim.";
 
 impl JsonStore {
     pub async fn read_agent_workspace(&self, id: Uuid) -> AppResult<AgentWorkspace> {
@@ -39,7 +44,11 @@ impl JsonStore {
         self.read_agent_workspace_unlocked(id).await
     }
 
-    pub async fn build_agent_system_prompt(&self, agent: &Agent) -> AppResult<String> {
+    pub async fn build_agent_system_prompt(
+        &self,
+        agent: &Agent,
+        tools_config: &crate::domain::AgentToolsConfig,
+    ) -> AppResult<String> {
         let workspace = self.read_agent_workspace(agent.id).await?;
         let environment = crate::tools::prompt::build_environment_prefix(&self.data_dir);
         // Runtime identity: which agent is handling this turn.
@@ -65,11 +74,22 @@ impl JsonStore {
             ("Memory", workspace.memory.as_str()),
             ("Instructions", workspace.instructions.as_str()),
         ]);
-        if agent_sections.is_empty() {
-            Ok(format!("{environment}\n\n{agent_identity}\n\n{runtime_date}"))
+        let web_search_policy = if tools_config.web_search.enabled {
+            WEB_SEARCH_POLICY_V1
         } else {
-            Ok(format!("{environment}\n\n{agent_identity}\n\n{runtime_date}\n\n{agent_sections}"))
-        }
+            ""
+        };
+        Ok([
+            environment.as_str(),
+            agent_identity.as_str(),
+            runtime_date.as_str(),
+            web_search_policy,
+            agent_sections.as_str(),
+        ]
+        .into_iter()
+        .filter(|section| !section.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n"))
     }
 
     pub(super) async fn ensure_builtin_agents(&self) -> AppResult<()> {
@@ -85,10 +105,6 @@ impl JsonStore {
                     LEGACY_AGENT_DESCRIPTION.to_string()
                 };
             }
-            agent.context_compress_threshold_percent =
-                crate::domain::coerce_context_compress_threshold(
-                    agent.context_compress_threshold_percent,
-                );
         }
 
         let existing_builtin = agents.iter().position(|agent| agent.is_builtin);
@@ -107,7 +123,6 @@ impl JsonStore {
                 is_builtin: true,
                 avatar_icon: BUILTIN_CEO_ICON.to_string(),
                 avatar_color: BUILTIN_CEO_COLOR.to_string(),
-                context_compress_threshold_percent: 90,
                 created_at: now,
                 updated_at: now,
             };
@@ -171,6 +186,65 @@ impl JsonStore {
             .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
         crate::fsutil::write_atomic(&self.tool_defaults_file, content).await?;
         Ok(config)
+    }
+
+    pub async fn update_web_search_key_statuses(
+        &self,
+        updates: &[crate::domain::tools::WebSearchKeyStatusUpdate],
+    ) -> AppResult<usize> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+
+        let _guard = self.lock.lock().await;
+        let mut config = self.read_tool_defaults_unlocked().await?;
+        let mut updated = 0;
+
+        for update in updates {
+            let Some(source) = config
+                .web_search
+                .sources
+                .iter_mut()
+                .find(|source| source.id == update.source_id)
+            else {
+                continue;
+            };
+            let blocked_recorded = update.record.status == "officially_blocked"
+                && source.remember_blocked_api_key(&update.api_key);
+            let key_index = source
+                .api_keys
+                .get(update.key_index)
+                .filter(|key| key.trim() == update.api_key)
+                .map(|_| update.key_index)
+                .or_else(|| {
+                    source
+                        .api_keys
+                        .iter()
+                        .position(|key| key.trim() == update.api_key)
+                });
+            let Some(key_index) = key_index else {
+                if blocked_recorded {
+                    updated += 1;
+                }
+                continue;
+            };
+
+            source
+                .key_statuses
+                .resize_with(source.api_keys.len(), || None);
+            source.key_statuses.truncate(source.api_keys.len());
+            source.key_statuses[key_index] = Some(update.record.clone());
+            updated += 1;
+        }
+
+        if updated == 0 {
+            return Ok(0);
+        }
+        validate_tools_config(&config)?;
+        let content = serde_json::to_string_pretty(&config)
+            .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
+        crate::fsutil::write_atomic(&self.tool_defaults_file, content).await?;
+        Ok(updated)
     }
 
     pub async fn read_agent_tools_settings(
@@ -500,6 +574,11 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
                 "web_search source id must not be empty".to_string(),
             ));
         }
+        if id.len() > 80 {
+            return Err(crate::error::AppError::BadRequest(
+                "web_search source id must be no longer than 80 bytes".to_string(),
+            ));
+        }
         if !source_ids.insert(id.to_string()) {
             return Err(crate::error::AppError::BadRequest(format!(
                 "duplicate web_search source id '{id}'"
@@ -509,6 +588,22 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
             return Err(crate::error::AppError::BadRequest(format!(
                 "web_search source '{id}' has too many API keys (max {})",
                 crate::domain::tools::MAX_WEB_SEARCH_KEYS_PER_SOURCE
+            )));
+        }
+        if source.display_name.chars().count() > 100 {
+            return Err(crate::error::AppError::BadRequest(format!(
+                "web_search source '{id}' display_name must be at most 100 characters"
+            )));
+        }
+        if source.independence_group.chars().count() > 80 {
+            return Err(crate::error::AppError::BadRequest(format!(
+                "web_search source '{id}' independence_group must be at most 80 characters"
+            )));
+        }
+        let mut roles = std::collections::HashSet::new();
+        if source.roles.iter().any(|role| !roles.insert(role)) {
+            return Err(crate::error::AppError::BadRequest(format!(
+                "web_search source '{id}' roles must be unique"
             )));
         }
         if let Some(base_url) = source.base_url.as_deref() {
@@ -576,6 +671,3 @@ fn validate_tools_overrides(
     }
     validate_tools_config(&overrides.apply_to(defaults))
 }
-
-
-

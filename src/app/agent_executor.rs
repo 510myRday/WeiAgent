@@ -99,21 +99,29 @@ struct ToolBudget {
     total_calls: usize,
 }
 
-
 async fn ensure_messages_within_context(
     runtime: &AgentRuntime<'_>,
     messages: &mut Vec<ChatMessage>,
+    tools: Option<&[ToolDefinition]>,
 ) -> AppResult<()> {
     let checkpoint = runtime
         .state
         .store
         .read_context_checkpoint(runtime.prepared.user_message.conversation_id)
         .await?;
-    let config = crate::app::context_compress::CompactionConfig::from_agent_and_provider(
+    let settings = runtime.state.store.read_settings().await?;
+    let config = crate::app::context_compress::CompactionConfig::from_agent_provider_and_threshold(
         &runtime.prepared.agent,
         &runtime.prepared.provider,
+        settings.context_compress_threshold_percent,
+        runtime.options.thinking_level,
     );
-    if !crate::app::context_compress::needs_compaction(messages, &config) {
+    if !crate::app::context_compress::needs_compaction(
+        messages,
+        &config,
+        &runtime.prepared.system_prompt,
+        tools,
+    ) {
         return Ok(());
     }
 
@@ -131,8 +139,10 @@ async fn ensure_messages_within_context(
         runtime.client,
         &runtime.prepared.agent,
         &runtime.prepared.provider,
+        &config,
         &runtime.prepared.system_prompt,
         &runtime.options,
+        tools,
         messages.clone(),
         checkpoint,
         runtime.events.as_ref(),
@@ -151,10 +161,7 @@ async fn ensure_messages_within_context(
             runtime
                 .state
                 .store
-                .write_context_checkpoint(
-                    runtime.prepared.user_message.conversation_id,
-                    checkpoint,
-                )
+                .write_context_checkpoint(runtime.prepared.user_message.conversation_id, checkpoint)
                 .await?;
         }
     }
@@ -193,9 +200,7 @@ pub async fn run_agent(
     // Freeze tool definitions for this run so prompt-cache prefixes stay stable
     // across tool iterations. Execution still hot-reloads config per tool call.
     refresh_prepared_tools_config(&state, &mut prepared).await?;
-    let frozen_tools = state
-        .tool_registry
-        .definitions(&prepared.tools_config);
+    let frozen_tools = state.tool_registry.definitions(&prepared.tools_config);
     let max_llm_iterations = prepared.tools_config.max_llm_iterations();
 
     let runtime = AgentRuntime {
@@ -213,7 +218,7 @@ pub async fn run_agent(
             break;
         }
         let tools = frozen_tools.clone();
-        ensure_messages_within_context(&runtime, &mut messages).await?;
+        ensure_messages_within_context(&runtime, &mut messages, tools.as_deref()).await?;
         emit(
             &events,
             AgentRunEvent::Phase {
@@ -359,7 +364,7 @@ async fn finalize_after_budget(
     // Keep the budget notice in the in-memory LLM context only.
     messages.push(budget_notice);
 
-    ensure_messages_within_context(runtime, messages).await?;
+    ensure_messages_within_context(runtime, messages, None).await?;
     emit(
         runtime.events,
         AgentRunEvent::Phase {
@@ -414,7 +419,7 @@ async fn execute_tool_calls(
     iteration: usize,
 ) -> AppResult<()> {
     for (index, call) in tool_calls.into_iter().enumerate() {
-        refresh_prepared_tools_config(state, prepared).await?;
+        refresh_live_terminal_config(state, prepared).await?;
         let parsed_arguments = serde_json::from_str::<Value>(&call.function.arguments);
         let display_arguments = parsed_arguments
             .as_ref()
@@ -541,7 +546,6 @@ async fn execute_tool_calls(
     Ok(())
 }
 
-
 async fn refresh_prepared_tools_config(
     state: &AppState,
     prepared: &mut PreparedChat,
@@ -557,10 +561,26 @@ async fn refresh_prepared_tools_config(
     Ok(())
 }
 
+async fn refresh_live_terminal_config(
+    state: &AppState,
+    prepared: &mut PreparedChat,
+) -> AppResult<()> {
+    let mut live = state
+        .store
+        .read_agent_tools_config(prepared.agent.id)
+        .await?;
+    if live.terminal.enabled && !state.codex_runtime.is_available_cached() {
+        live.terminal.enabled = false;
+    }
+    prepared.tools_config.terminal = live.terminal;
+    Ok(())
+}
+
 const MAX_TOOL_RESULT_STDOUT_CHARS: usize = 24_000;
 const MAX_TOOL_RESULT_STDERR_CHARS: usize = 4_000;
 const MAX_WEB_SEARCH_SNIPPET_CHARS: usize = 600;
-const MAX_WEB_SEARCH_RESULTS_FOR_LLM: usize = 8;
+const MAX_WEB_SEARCH_RESULTS_FOR_LLM: usize = 15;
+const MAX_WEB_EXTRACT_EXCERPT_CHARS: usize = 8_000;
 
 fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
     match result {
@@ -629,6 +649,9 @@ fn compact_tool_stdout(stdout: &str) -> String {
         if compact_web_search_value(&mut value) {
             return value.to_string();
         }
+        if compact_web_extract_value(&mut value) {
+            return trim_chars(&value.to_string(), 48_000);
+        }
     }
     trim_chars(stdout, MAX_TOOL_RESULT_STDOUT_CHARS)
 }
@@ -637,8 +660,8 @@ fn compact_web_search_value(value: &mut Value) -> bool {
     let Some(obj) = value.as_object_mut() else {
         return false;
     };
-    let is_search = obj.get("provider").is_some()
-        && obj.get("query").is_some()
+    let is_search = obj.get("queries").is_some()
+        && obj.get("source_runs").is_some()
         && obj.get("results").is_some();
     if !is_search {
         return false;
@@ -657,9 +680,55 @@ fn compact_web_search_value(value: &mut Value) -> bool {
             }
         }
     }
+    if let Some(syntheses) = obj.get_mut("ai_syntheses").and_then(Value::as_array_mut) {
+        syntheses.truncate(6);
+        for synthesis in syntheses {
+            if let Some(answer) = synthesis.get("answer").and_then(Value::as_str) {
+                let answer = trim_chars(answer, 1_200);
+                if let Some(map) = synthesis.as_object_mut() {
+                    map.insert("answer".to_string(), Value::String(answer));
+                }
+            }
+        }
+    }
     if let Some(results) = obj.get("results").and_then(Value::as_array) {
         let count = results.len() as u64;
         obj.insert("result_count".to_string(), json_u64(count));
+    }
+    true
+}
+
+fn compact_web_extract_value(value: &mut Value) -> bool {
+    let Some(obj) = value.as_object_mut() else {
+        return false;
+    };
+    if obj.get("citation_instruction").is_none() {
+        return false;
+    }
+    let Some(documents) = obj.get_mut("documents").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    for document in documents {
+        let Some(excerpts) = document
+            .get_mut("relevant_excerpts")
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        let mut remaining = MAX_WEB_EXTRACT_EXCERPT_CHARS;
+        for excerpt in excerpts.iter_mut() {
+            if remaining == 0 {
+                *excerpt = Value::String(String::new());
+                continue;
+            }
+            let Some(text) = excerpt.as_str() else {
+                continue;
+            };
+            let trimmed = trim_chars(text, remaining.min(2_000));
+            remaining = remaining.saturating_sub(trimmed.chars().count());
+            *excerpt = Value::String(trimmed);
+        }
+        excerpts.retain(|excerpt| excerpt.as_str().is_some_and(|text| !text.is_empty()));
     }
     true
 }
@@ -1211,8 +1280,10 @@ fn model_usage(prepared: &PreparedChat, tokens: &TokenUsage) -> ModelUsage {
         Some(config) => {
             tokens.input_tokens as f64 * config.input_price.unwrap_or(0.0) / 1_000_000.0
                 + tokens.output_tokens as f64 * config.output_price.unwrap_or(0.0) / 1_000_000.0
-                + tokens.cache_write_tokens as f64 * config.cache_write_price.unwrap_or(0.0) / 1_000_000.0
-                + tokens.cache_read_tokens as f64 * config.cache_read_price.unwrap_or(0.0) / 1_000_000.0
+                + tokens.cache_write_tokens as f64 * config.cache_write_price.unwrap_or(0.0)
+                    / 1_000_000.0
+                + tokens.cache_read_tokens as f64 * config.cache_read_price.unwrap_or(0.0)
+                    / 1_000_000.0
         }
         None => 0.0,
     });
@@ -1238,13 +1309,8 @@ async fn mark_interrupted(
     if !persisted && content.is_empty() && reasoning_content.is_empty() {
         return;
     }
-    let mut message = partial_assistant(
-        prepared,
-        message_id,
-        created_at,
-        content,
-        reasoning_content,
-    );
+    let mut message =
+        partial_assistant(prepared, message_id, created_at, content, reasoning_content);
     message.status = ChatMessageStatus::Failed;
     let _ = state
         .store
@@ -1284,9 +1350,6 @@ async fn emit(events: &Option<mpsc::Sender<AgentRunEvent>>, event: AgentRunEvent
     Ok(())
 }
 
-
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1314,10 +1377,10 @@ mod tests {
     fn sanitize_web_search_stdout_trims_snippets_and_scores() {
         let long = "x".repeat(800);
         let stdout = json!({
-            "provider": "tavily",
-            "source_id": "tavily",
-            "query": "rust",
+            "mode": "balanced",
+            "queries": ["rust"],
             "result_count": 2,
+            "source_runs": [],
             "results": [
                 {"title": "A", "url": "https://a.test", "snippet": long, "score": 0.9},
                 {"title": "B", "url": "https://b.test", "snippet": "short", "score": 0.1}
@@ -1338,10 +1401,12 @@ mod tests {
         assert_eq!(compact["result_count"], 2);
         assert!(compact["results"][0].get("score").is_none());
         assert!(compact["results"][0]["snippet"].as_str().unwrap().len() < 800);
-        assert!(compact["results"][0]["snippet"]
-            .as_str()
-            .unwrap()
-            .contains("truncated"));
+        assert!(
+            compact["results"][0]["snippet"]
+                .as_str()
+                .unwrap()
+                .contains("truncated")
+        );
     }
 
     #[test]
