@@ -127,6 +127,18 @@ fn api_router() -> Router<AppState> {
             get(tools::read_tool_defaults).put(tools::update_tool_defaults),
         )
         .route(
+            "/api/tools/grok-keys/check",
+            post(tools::check_grok_keys),
+        )
+        .route(
+            "/api/tools/grok-keys/import",
+            post(tools::import_grok_keys),
+        )
+        .route(
+            "/api/tools/grok-keys/delete",
+            post(tools::delete_grok_key),
+        )
+        .route(
             "/api/tools/codex-runtime",
             get(tools::read_codex_runtime).post(tools::install_codex_runtime),
         )

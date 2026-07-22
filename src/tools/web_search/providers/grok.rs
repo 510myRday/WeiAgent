@@ -11,10 +11,8 @@ use crate::tools::web_search::types::{sanitize_error_message, ProviderError, Web
 const DEFAULT_MODE: &str = "fast";
 const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
 // Prefer remote/manual 70-byte x-statsig-id; if unavailable, use frontend failure fallback (x0:TypeError...).
-// Public remote signer (optional, only if credential sets statsig_signer explicitly).
+// Public remote signer is optional only if credential sets statsig_signer explicitly.
 // Not auto-probed anymore — it is CF-blocked and burns the request budget.
-#[allow(dead_code)]
-const DEFAULT_STATSIG_SIGNER: &str = "https://grok.wodf.de/sign";
 /// Browser middleware fallback when statsig module throws: btoa("x0:" + error) without quotes around childNodes.
 const X0_FALLBACK_STATSIG_ID: &str = "eDA6VHlwZUVycm9yOiBDYW5ub3QgcmVhZCBwcm9wZXJ0aWVzIG9mIHVuZGVmaW5lZCAocmVhZGluZyBjaGlsZE5vZGVzKQ==";
 const MAX_FRAME_BYTES: usize = 8 << 20;
@@ -77,35 +75,32 @@ pub async fn search(
     // API traffic proxy is applied on wreq client in web_search::mod; also used for statsig signer egress.
     let proxy = super::grok_support::normalize_optional_url(proxy_url);
 
+    // NOTE: Do NOT inject FlareSolverr cf_clearance into wreq chat.
+    // FS runs a real browser fingerprint; wreq emulates Chrome TLS separately.
+    // Mixing them is the main cause of code=7 anti-bot after "clearance ready".
+    let _ = (flaresolverr.as_deref(), flaresolverr_proxy.as_deref());
+    if flaresolverr.is_some() {
+        tracing::info!(
+            "Grok FlareSolverr is configured for browser-side checks; chat uses the same-proxy wreq session"
+        );
+        // Cookies minted by FlareSolverr belong to its browser TLS/UA session.
+        // Replaying them on wreq is a common source of code=7, so start with a
+        // clean wreq session and let the same client warm its own CF cookies.
+        strip_foreign_cloudflare_cookies(&mut cred);
+    }
+
     let mut last_error = String::new();
     for attempt in 0..3 {
         let force_refresh = attempt > 0;
-        // FlareSolverr is optional and slow (often 60–90s). Skip on first attempt so
-        // the hot path is: SSO cookies + warm + built-in x0 statsig. Only try FS after anti-bot.
+
+        // On anti-bot retry, drop only foreign clearance cookies and keep the
+        // __cf_bm/device identity minted by this wreq session.
         if force_refresh {
-            if let Some(flaresolverr) = flaresolverr.as_deref() {
-                match enrich_with_flaresolverr(
-                    control_client,
-                    flaresolverr,
-                    flaresolverr_proxy.as_deref(),
-                    base,
-                    &mut cred,
-                    true,
-                )
-                .await
-                {
-                    Ok(()) => {}
-                    Err(error) => {
-                        tracing::warn!(
-                            %error,
-                            "Grok FlareSolverr clearance failed; continuing without CF clearance"
-                        );
-                    }
-                }
-            }
+            drop_foreign_clearance_cookie(&mut cred);
+            invalidate_statsig_cache(base, &endpoint);
         }
 
-        // Warm homepage cookies (__cf_bm / device ids) on the same TLS+proxy session as chat.
+        // Warm homepage cookies (__cf_bm / device ids) on the SAME TLS+proxy client as chat.
         if let Err(error) = warm_session_cookies(client, base, &mut cred).await {
             tracing::debug!(%error, "Grok session warm failed; continuing with SSO cookies only");
         }
@@ -118,8 +113,8 @@ pub async fn search(
             &endpoint,
             force_refresh,
             proxy.as_deref(),
-            flaresolverr.as_deref(),
-            flaresolverr_proxy.as_deref(),
+            None,
+            None,
         )
         .await
         .ok()
@@ -131,13 +126,8 @@ pub async fn search(
                     ProviderError::Retryable(sanitize_error_message(&error, api_key))
                 })?;
                 if let Some(error) = parsed.error {
-                    if is_anti_bot_message(&error) && attempt < 2 {
-                        invalidate_statsig_cache(base, &endpoint);
-                        if let Some(flaresolverr) = flaresolverr.as_deref() {
-                            super::grok_support::invalidate_clearance(flaresolverr, &format!("{base}/"));
-                        }
-                        last_error = error;
-                        continue;
+                    if is_anti_bot_message(&error) {
+                        tracing::warn!(%error, "Grok chat rejected by anti-bot; skipping same-key retry");
                     }
                     return Err(classify_upstream_error(&error, api_key));
                 }
@@ -146,26 +136,15 @@ pub async fn search(
             Err(error) => {
                 let message = error.message().to_string();
                 let retryable_transport = is_transport_retryable(&message);
-                let retryable_bot = is_anti_bot_message(&message);
-                if (retryable_bot || retryable_transport) && attempt < 2 {
-                    if retryable_bot {
-                        invalidate_statsig_cache(base, &endpoint);
-                        if let Some(flaresolverr) = flaresolverr.as_deref() {
-                            super::grok_support::invalidate_clearance(
-                                flaresolverr,
-                                &format!("{base}/"),
-                            );
-                        }
-                    }
+                if retryable_transport && attempt < 2 {
                     tracing::warn!(
                         attempt,
                         %message,
                         transport = retryable_transport,
-                        anti_bot = retryable_bot,
-                        "Grok chat attempt failed; retrying"
+                        "Grok chat transport failed; retrying"
                     );
                     last_error = message;
-                    tokio::time::sleep(Duration::from_millis(400 * (attempt as u64 + 1))).await;
+                    tokio::time::sleep(Duration::from_millis(350 * (attempt as u64 + 1))).await;
                     continue;
                 }
                 return Err(error);
@@ -175,52 +154,12 @@ pub async fn search(
 
     Err(ProviderError::Retryable(sanitize_error_message(
         &format!(
-            "Grok request rejected after retries (anti-bot or transport). Prefer stable proxy_url, longer timeout_ms (>=60000), SSO cookies, and usable x-statsig-id (70-byte or x0 fallback). FlareSolverr is optional. detail={last_error}"
+            "Grok request rejected (anti-bot or transport). Prefer stable proxy_url, longer timeout_ms (>=60000), SSO cookies, and usable x-statsig-id (70-byte or x0 fallback). FlareSolverr is optional. detail={last_error}"
         ),
         api_key,
     )))
 }
 
-async fn enrich_with_flaresolverr(
-    control_client: &reqwest::Client,
-    flaresolverr_url: &str,
-    flaresolverr_proxy_url: Option<&str>,
-    base: &str,
-    cred: &mut GrokCredential,
-    force_refresh: bool,
-) -> Result<(), String> {
-    let target = format!("{}/", base.trim_end_matches('/'));
-    let bundle = super::grok_support::resolve_clearance(
-        control_client,
-        flaresolverr_url,
-        &target,
-        flaresolverr_proxy_url,
-        force_refresh,
-    )
-    .await?;
-    // Grok2API-style whitelist: never mix anonymous challenge cookies into SSO chat.
-    let mut kept = 0usize;
-    for (name, value) in bundle.cookies {
-        if !is_cloudflare_cookie_name(&name) {
-            continue;
-        }
-        cred.extra_cookies.insert(name, value);
-        kept += 1;
-    }
-    tracing::info!(
-        kept_cloudflare_cookies = kept,
-        "Grok applied FlareSolverr Cloudflare cookie whitelist"
-    );
-    // Bind UA to the browser that minted clearance cookies.
-    if let Some(ua) = bundle
-        .user_agent
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
-        cred.user_agent = Some(ua);
-    }
-    Ok(())
-}
 
 async fn execute_chat(
     client: &wreq::Client,
@@ -325,10 +264,7 @@ fn map_hits(
     query: &str,
     max_results: u32,
 ) -> Result<Vec<WebSearchHit>, ProviderError> {
-    let mut hits = parsed.sources;
-    if hits.is_empty() {
-        hits = parse_structured_hits(&parsed.text, max_results);
-    }
+    let mut hits = parse_structured_hits(&parsed.text, max_results);
     if hits.is_empty() {
         let snippet = truncate(parsed.text.trim(), MAX_SNIPPET_CHARS);
         if !snippet.is_empty() {
@@ -338,6 +274,14 @@ fn map_hits(
                 snippet,
                 score: None,
             });
+        }
+    }
+    for source in parsed.sources {
+        if hits.len() as u32 >= max_results {
+            break;
+        }
+        if !hits.iter().any(|hit| hit.url == source.url) {
+            hits.push(source);
         }
     }
     hits.truncate(max_results as usize);
@@ -354,6 +298,37 @@ fn classify_upstream_error(error: &str, api_key: &str) -> ProviderError {
         &format!("Grok upstream error: {error}"),
         api_key,
     ))
+}
+
+pub fn classify_key_status(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("blocked-user")
+        || lower.contains("user is blocked")
+        || lower.contains("account is blocked")
+        || lower.contains("account banned")
+        || lower.contains("account suspended")
+    {
+        return "officially_blocked";
+    }
+    if lower.contains("quota")
+        || lower.contains("usage limit")
+        || lower.contains("rate limit")
+        || lower.contains("too many requests")
+        || lower.contains("limit exceeded")
+        || lower.contains("http 429")
+    {
+        return "quota_limited";
+    }
+    if lower.contains("http 401") || lower.contains("unauthorized") || lower.contains("invalid token") {
+        return "unauthorized";
+    }
+    if is_anti_bot_message(message) {
+        return "anti_bot";
+    }
+    if is_transport_retryable(message) {
+        return "network_error";
+    }
+    "error"
 }
 
 fn is_anti_bot_message(message: &str) -> bool {
@@ -385,7 +360,7 @@ fn is_transport_retryable(message: &str) -> bool {
 
 fn build_search_prompt(query: &str, max_results: u32) -> String {
     format!(
-        "You are a web search tool. Search the public web for the user query and return ONLY a JSON array (no markdown fences, no commentary) with at most {max_results} objects. Each object must use exactly these keys: title, url, snippet. Prefer high-quality primary sources. Query: {query}"
+        "You are the web research backend for another AI. Search the public web for the query, then synthesize the most useful direct answer. Return ONLY valid JSON (no markdown fences or commentary) in exactly this shape: {{\"answer\":\"...\",\"sources\":[{{\"title\":\"...\",\"url\":\"...\",\"snippet\":\"...\"}}]}}. The answer is required, concise, self-contained, and must contain the actual conclusion or explanation rather than a list of links. The sources array is optional and may be empty; include at most {max_results} high-quality supporting sources when useful. Sources supplement the answer and must never replace it. Prefer primary sources and do not invent facts or URLs. Query: {query}"
     )
 }
 
@@ -581,7 +556,7 @@ fn build_sso_cookie(cred: &GrokCredential) -> String {
         if value.is_empty() {
             continue;
         }
-        parts.push(format!("{}={}", name.to_ascii_lowercase(), value));
+        parts.push(format!("{}={}", name, value));
     }
     parts.join("; ")
 }
@@ -605,6 +580,37 @@ fn is_allowed_extra_cookie(name: &str) -> bool {
     is_cloudflare_cookie_name(name) || is_session_identity_cookie_name(name)
 }
 
+/// Drop Cloudflare cookies that did not come from this wreq TLS session.
+/// Foreign cf_clearance (e.g. FlareSolverr browser) causes code=7 with emulated clients.
+fn strip_foreign_cloudflare_cookies(cred: &mut GrokCredential) {
+    let before = cred.extra_cookies.len();
+    cred.extra_cookies
+        .retain(|name, _| !is_cloudflare_cookie_name(name));
+    // Also drop UA forced by FlareSolverr so DEFAULT_USER_AGENT / Chrome146 stay aligned.
+    cred.user_agent = None;
+    let removed = before.saturating_sub(cred.extra_cookies.len());
+    if removed > 0 {
+        tracing::info!(
+            removed,
+            "Grok stripped foreign Cloudflare cookies before re-warm"
+        );
+    }
+}
+
+/// Keep the __cf_bm/device cookies minted by this wreq client across retries.
+/// Only clearance/challenge cookies are tied to a different browser session.
+fn drop_foreign_clearance_cookie(cred: &mut GrokCredential) {
+    let before = cred.extra_cookies.len();
+    cred.extra_cookies.retain(|name, _| {
+        let lower = name.trim().to_ascii_lowercase();
+        lower != "cf_clearance" && lower != "_cfuvid" && !lower.starts_with("cf_chl_")
+    });
+    let removed = before.saturating_sub(cred.extra_cookies.len());
+    if removed > 0 {
+        tracing::info!(removed, "Grok dropped foreign clearance cookies before retry");
+    }
+}
+
 fn build_request_headers(
     base: &str,
     cred: &GrokCredential,
@@ -616,17 +622,17 @@ fn build_request_headers(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(DEFAULT_USER_AGENT);
     let mut headers = HeaderMap::new();
-    // Match Grok2API web chat headers: stable same-origin fetch only (no forged Client Hints).
+    // Match verified curl_cffi chrome146 live path (grok_probe).
     set_header(&mut headers, "Content-Type", "application/json")?;
     set_header(&mut headers, "Accept", "*/*")?;
-    // Only encodings enabled on the wreq client features (gzip/deflate).
-    set_header(&mut headers, "Accept-Encoding", "gzip, deflate")?;
+    set_header(&mut headers, "Accept-Encoding", "gzip, deflate, br, zstd")?;
     set_header(
         &mut headers,
         "Accept-Language",
         "zh-CN,zh;q=0.9,en;q=0.8",
     )?;
     set_header(&mut headers, "User-Agent", ua)?;
+    apply_chromium_client_hints(&mut headers, ua)?;
     set_header(&mut headers, "Origin", base)?;
     set_header(&mut headers, "Referer", &format!("{base}/"))?;
     set_header(&mut headers, "Cache-Control", "no-cache")?;
@@ -651,28 +657,21 @@ fn build_request_headers(
     Ok(headers)
 }
 
-#[allow(dead_code)]
 fn apply_chromium_client_hints(headers: &mut HeaderMap, user_agent: &str) -> Result<(), String> {
     let lower = user_agent.to_ascii_lowercase();
     let version = capture_version(user_agent, &["Chrome/", "Chromium/", "Edg/"])
-        .unwrap_or_else(|| "131".to_string());
-    let brand = if lower.contains("edg/") {
-        "Microsoft Edge"
-    } else if lower.contains("chromium/") {
-        "Chromium"
-    } else {
-        "Google Chrome"
-    };
+        .unwrap_or_else(|| "146".to_string());
+    // curl_cffi chrome146 order: Chromium, Not-A.Brand, Google Chrome
     set_header(
         headers,
-        "Sec-Ch-Ua",
+        "sec-ch-ua",
         &format!(
-            "\"{brand}\";v=\"{version}\", \"Chromium\";v=\"{version}\", \"Not(A:Brand\";v=\"24\""
+            "\"Chromium\";v=\"{version}\", \"Not-A.Brand\";v=\"24\", \"Google Chrome\";v=\"{version}\""
         ),
     )?;
     set_header(
         headers,
-        "Sec-Ch-Ua-Mobile",
+        "sec-ch-ua-mobile",
         if lower.contains("mobile") {
             "?1"
         } else {
@@ -688,11 +687,9 @@ fn apply_chromium_client_hints(headers: &mut HeaderMap, user_agent: &str) -> Res
     } else if lower.contains("linux") {
         "\"Linux\""
     } else {
-        "\"Windows\""
+        "\"macOS\""
     };
-    set_header(headers, "Sec-Ch-Ua-Platform", platform)?;
-    set_header(headers, "Sec-Ch-Ua-Arch", "x86")?;
-    set_header(headers, "Sec-Ch-Ua-Bitness", "64")?;
+    set_header(headers, "sec-ch-ua-platform", platform)?;
     Ok(())
 }
 
@@ -1671,17 +1668,38 @@ fn parse_structured_hits(text: &str, max_results: u32) -> Vec<WebSearchHit> {
 }
 
 fn value_to_hits(value: &Value, max_results: u32) -> Vec<WebSearchHit> {
+    let mut hits = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Value::Object(map) = value {
+        if let Some(answer) = map
+            .get("answer")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|answer| !answer.is_empty())
+        {
+            if max_results > 0 {
+                hits.push(WebSearchHit {
+                    title: "Grok answer".to_string(),
+                    url: "https://grok.com".to_string(),
+                    snippet: truncate(answer, MAX_SNIPPET_CHARS),
+                    score: None,
+                });
+                seen.insert("https://grok.com".to_string());
+            }
+        }
+    }
+
     let items = match value {
         Value::Array(items) => items.clone(),
         Value::Object(map) => map
-            .get("results")
+            .get("sources")
+            .or_else(|| map.get("results"))
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default(),
         _ => Vec::new(),
     };
-    let mut hits = Vec::new();
-    let mut seen = HashSet::new();
     for item in items {
         if hits.len() as u32 >= max_results {
             break;
@@ -1845,6 +1863,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_grok_answer_with_optional_sources() {
+        let text = r#"{"answer":"Rust is memory safe.","sources":[{"title":"Rust","url":"https://www.rust-lang.org","snippet":"Official site"}]}"#;
+        let hits = parse_structured_hits(text, 5);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].title, "Grok answer");
+        assert_eq!(hits[0].snippet, "Rust is memory safe.");
+        assert_eq!(hits[1].url, "https://www.rust-lang.org");
+    }
+
+    #[test]
+    fn search_prompt_prioritizes_answer_over_links() {
+        let prompt = build_search_prompt("Rust", 3);
+        assert!(prompt.contains("\"answer\""));
+        assert!(prompt.contains("sources array is optional"));
+        assert!(prompt.contains("must never replace it"));
+    }
+
+    #[test]
     fn extracts_native_web_results_from_frames() {
         let frame = br#"{"result":{"response":{"webSearchResults":{"results":[{"title":"Example","url":"https://example.com","snippet":"hello"}]},"token":"done","messageTag":"final"}}}"#;
         let parsed = consume_upstream(frame).unwrap();
@@ -1928,6 +1964,23 @@ mod tests {
         assert!(!is_transport_retryable("Grok HTTP 403: anti-bot"));
     }
 
+    #[test]
+    fn classifies_key_statuses_from_upstream_messages() {
+        assert_eq!(
+            classify_key_status(
+                "Grok HTTP 403: body={\"message\":\"User is blocked [WKE=unauthorized:blocked-user]\"}"
+            ),
+            "officially_blocked"
+        );
+        assert_eq!(classify_key_status("Grok HTTP 429: quota exceeded"), "quota_limited");
+        assert_eq!(classify_key_status("Grok HTTP 401: unauthorized"), "unauthorized");
+        assert_eq!(
+            classify_key_status("Grok HTTP 403: Request rejected by anti-bot rules."),
+            "anti_bot"
+        );
+    }
+
+    #[test]
     fn detects_cloudflare_challenge_html() {
         assert!(looks_like_cloudflare_challenge(
             "<!DOCTYPE html><html><title>Just a moment...</title></html>"

@@ -317,7 +317,24 @@
       "flaresolverrProxyUrlDesc": "给 FlareSolverr 浏览器访问 grok.com 用。填什么就原样传给 FlareSolverr，不会改写。例如 http://127.0.0.1:10086",
       "flaresolverrProxyUrlPlaceholder": "http://127.0.0.1:10086",
       "keysLabel": "API 密钥",
-      "keyCount": "已配置 {count} 个 Key"
+      "keyCount": "已配置 {count} 个 Key",
+      "selectAll": "全选",
+      "clearSelection": "清除选择",
+      "selectKey": "选择第 {index} 个 Key",
+      "checkAll": "检测全部",
+      "checkSelected": "检测选中 ({count})",
+      "checkOne": "检测此 Key",
+      "checkFailed": "Key 检测失败",
+      "keyImportSummary": "已导入 {imported} 个，跳过重复 {duplicates} 个",
+      "keyStatus": {
+        "normal": "正常",
+        "officially_blocked": "官方封禁",
+        "quota_limited": "额度或频控",
+        "unauthorized": "未授权或过期",
+        "anti_bot": "反爬拦截",
+        "network_error": "网络错误",
+        "error": "检测异常"
+      }
     }
   },
   "settings": {

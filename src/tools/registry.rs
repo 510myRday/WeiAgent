@@ -96,14 +96,6 @@ impl ToolRegistry {
         (!definitions.is_empty()).then_some(definitions)
     }
 
-    /// Stable digest used by prompt-cache adapters. Approval grants are
-    /// intentionally absent from tool schemas, while schema-affecting tool
-    /// settings remain part of the serialized definitions.
-    #[allow(dead_code)]
-    pub fn definitions_hash(&self, config: &AgentToolsConfig) -> String {
-        crate::llm::cache::tools_hash(self.definitions(config).as_deref())
-    }
-
     pub async fn execute(
         &self,
         name: &str,

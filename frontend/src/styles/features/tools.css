@@ -731,6 +731,38 @@
   min-height: 20px;
 }
 
+.web-search-keys__checks {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.web-search-keys__select {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-emphasis);
+  cursor: pointer;
+}
+
+.web-search-keys__select:hover,
+.web-search-keys__select:focus-visible {
+  color: var(--color-primary-strong);
+  outline: none;
+}
+
+.web-search-keys__check-btn.button {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
 .web-search-keys__label {
   color: var(--color-text-soft);
   font-size: var(--font-size-label);
@@ -810,6 +842,66 @@
   font-weight: var(--font-weight-medium);
 }
 
+.web-search-key-chip__select {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  accent-color: var(--color-primary);
+}
+
+.web-search-key-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 190px;
+  padding: 3px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-emphasis);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.web-search-key-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.web-search-key-status.is-normal {
+  border-color: var(--color-success-border);
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+
+.web-search-key-status.is-officially_blocked,
+.web-search-key-status.is-unauthorized {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.web-search-key-status.is-quota_limited,
+.web-search-key-status.is-anti_bot {
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+
+.web-search-key-status.is-network_error,
+.web-search-key-status.is-error {
+  border-color: var(--border-subtle);
+  background: var(--surface-subtle);
+  color: var(--color-muted);
+}
+
+.web-search-key-chip__check.icon-button {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--color-primary-strong);
+}
+
 .web-search-key-chip__remove.icon-button {
   width: 26px;
   height: 26px;
@@ -835,10 +927,12 @@
 .web-search-key-add__input.pattern-input {
   width: 100%;
   min-width: 0;
-  height: 40px;
-  padding: 0 12px;
+  min-height: 92px;
+  padding: 10px 12px;
   border-radius: 10px;
   font-size: var(--font-size-ui);
+  line-height: var(--line-height-normal);
+  resize: vertical;
 }
 
 .web-search-key-add__btn.button {

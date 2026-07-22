@@ -3,7 +3,6 @@ use std::sync::{Mutex, OnceLock};
 use std::collections::BTreeMap;
 
 use base64::Engine;
-use reqwest::Proxy;
 use wreq_util::Emulation;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -61,29 +60,6 @@ pub fn normalize_flaresolverr_url(value: Option<&str>) -> Option<String> {
     Some(trimmed)
 }
 
-#[allow(dead_code)]
-pub fn build_proxied_client(
-    timeout: Duration,
-    proxy_url: Option<&str>,
-) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(Duration::from_secs(30))
-        .pool_max_idle_per_host(2)
-        .redirect(reqwest::redirect::Policy::limited(10));
-
-    if let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) {
-        let proxy = Proxy::all(proxy_url)
-            .map_err(|error| format!("invalid proxy URL '{proxy_url}': {error}"))?;
-        builder = builder.proxy(proxy);
-    }
-
-    builder
-        .build()
-        .map_err(|error| format!("failed to build HTTP client: {error}"))
-}
-
-
 /// Browser-fingerprint HTTP client (Chrome TLS/JA3/H2) for Grok API traffic.
 /// FlareSolverr remains only for cf_clearance; this client is for conversations/new.
 pub fn build_emulated_client(
@@ -94,11 +70,13 @@ pub fn build_emulated_client(
     let timeout = timeout.max(Duration::from_secs(90));
     let mut builder = wreq::Client::builder()
         .emulation(Emulation::Chrome146)
-        // Avoid reusing half-dead proxy connections that surface as Connect errors.
+        // Keep the warm-up and chat request on a reusable short-lived connection.
+        // A zero-size idle pool makes the homepage and conversations/new requests
+        // look like unrelated TLS sessions to Cloudflare.
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(45))
-        .pool_max_idle_per_host(0)
-        .pool_idle_timeout(Duration::from_secs(1))
+        .pool_max_idle_per_host(2)
+        .pool_idle_timeout(Duration::from_secs(30))
         .tcp_keepalive(Duration::from_secs(30))
         .redirect(wreq::redirect::Policy::limited(10));
 
@@ -427,14 +405,6 @@ pub async fn flaresolverr_request_post(
         user_agent,
         body,
     })
-}
-
-pub fn invalidate_clearance(flaresolverr_url: &str, target_url: &str) {
-    let flaresolverr_url = flaresolverr_url.trim().trim_end_matches('/');
-    let prefix = format!("{flaresolverr_url}\0{target_url}");
-    if let Ok(mut guard) = clearance_cache().lock() {
-        guard.retain(|key, _| !key.starts_with(&prefix));
-    }
 }
 
 fn format_flaresolverr_http_error(status: reqwest::StatusCode, text: &str) -> String {

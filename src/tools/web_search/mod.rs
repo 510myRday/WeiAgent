@@ -5,7 +5,11 @@ use crate::domain::tools::{MAX_WEB_SEARCH_QUERY_CHARS, MAX_WEB_SEARCH_RESULTS};
 
 use self::key_pool::key_attempt_order;
 use self::providers::{exa, grok, jina, tavily};
-use self::types::{ProviderError, WebSearchOutput, sanitize_error_message};
+use crate::domain::tools::mask_api_key;
+
+use self::types::{
+    ProviderError, WebSearchKeyAttempt, WebSearchOutput, sanitize_error_message,
+};
 
 pub mod key_pool;
 pub mod providers;
@@ -56,6 +60,7 @@ pub async fn execute_web_search(args: WebSearchArgs, config: &WebSearchToolConfi
     };
 
     let mut last_error: Option<String> = None;
+    let mut key_attempts: Vec<WebSearchKeyAttempt> = Vec::new();
 
     for source in sources {
         let keys: Vec<String> = source
@@ -142,12 +147,21 @@ pub async fn execute_web_search(args: WebSearchArgs, config: &WebSearchToolConfi
 
             match result {
                 Ok(hits) => {
+                    key_attempts.push(WebSearchKeyAttempt {
+                        provider: source.provider.as_str().to_string(),
+                        source_id: source.id.clone(),
+                        key_index: index,
+                        key_hint: mask_api_key(api_key),
+                        status: "normal".to_string(),
+                        message: "request succeeded".to_string(),
+                    });
                     let output = WebSearchOutput {
                         provider: source.provider.as_str().to_string(),
                         source_id: source.id.clone(),
                         query: query.to_string(),
                         result_count: hits.len(),
                         results: hits,
+                        key_attempts,
                     };
                     let stdout = match serde_json::to_string_pretty(&output) {
                         Ok(value) => value,
@@ -167,22 +181,71 @@ pub async fn execute_web_search(args: WebSearchArgs, config: &WebSearchToolConfi
                     };
                 }
                 Err(ProviderError::Fatal(message)) => {
+                    let message = sanitize_error_message(&message, api_key);
+                    key_attempts.push(WebSearchKeyAttempt {
+                        provider: source.provider.as_str().to_string(),
+                        source_id: source.id.clone(),
+                        key_index: index,
+                        key_hint: mask_api_key(api_key),
+                        status: key_status(source.provider.clone(), &message),
+                        message: message.clone(),
+                    });
                     return ToolResult::Error {
-                        message: sanitize_error_message(&message, api_key),
+                        message: format_search_failure(&message, &key_attempts),
                     };
                 }
                 Err(ProviderError::Retryable(message)) => {
-                    last_error = Some(sanitize_error_message(&message, api_key));
+                    let message = sanitize_error_message(&message, api_key);
+                    key_attempts.push(WebSearchKeyAttempt {
+                        provider: source.provider.as_str().to_string(),
+                        source_id: source.id.clone(),
+                        key_index: index,
+                        key_hint: mask_api_key(api_key),
+                        status: key_status(source.provider.clone(), &message),
+                        message: message.clone(),
+                    });
+                    last_error = Some(message);
                 }
             }
         }
     }
 
     ToolResult::Error {
-        message: last_error.unwrap_or_else(|| {
-            "web_search failed: all configured sources and API keys were exhausted".to_string()
-        }),
+        message: format_search_failure(
+            &last_error.unwrap_or_else(|| {
+                "web_search failed: all configured sources and API keys were exhausted".to_string()
+            }),
+            &key_attempts,
+        ),
     }
+}
+
+fn key_status(provider: WebSearchProviderKind, message: &str) -> String {
+    if provider == WebSearchProviderKind::Grok {
+        return grok::classify_key_status(message).to_string();
+    }
+    "error".to_string()
+}
+
+fn format_search_failure(message: &str, attempts: &[WebSearchKeyAttempt]) -> String {
+    if attempts.is_empty() {
+        return message.to_string();
+    }
+    let diagnostics = attempts
+        .iter()
+        .map(|attempt| {
+            format!(
+                "{}#{} {} {}: {}",
+                attempt.provider,
+                attempt.key_index + 1,
+                attempt.key_hint,
+                attempt.status,
+                attempt.message
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    format!("{message}; key diagnostics: {diagnostics}")
 }
 
 #[cfg(test)]
@@ -256,6 +319,7 @@ mod tests {
             enabled: true,
             base_url: None,
             api_keys: vec!["a".to_string()],
+            key_statuses: Vec::new(),
             flaresolverr_url: None,
             flaresolverr_proxy_url: None,
             proxy_url: None,

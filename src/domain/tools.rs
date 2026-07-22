@@ -149,6 +149,16 @@ pub enum WebSearchKeySelection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct WebSearchKeyStatusRecord {
+    pub status: String,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub checked_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct WebSearchSourceConfig {
     pub id: String,
     pub provider: WebSearchProviderKind,
@@ -158,6 +168,9 @@ pub struct WebSearchSourceConfig {
     pub base_url: Option<String>,
     #[serde(default)]
     pub api_keys: Vec<String>,
+    /// Status slots aligned with api_keys. Null means this key has not been checked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_statuses: Vec<Option<WebSearchKeyStatusRecord>>,
     /// FlareSolverr base URL, e.g. http://127.0.0.1:8191
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flaresolverr_url: Option<String>,
@@ -196,6 +209,7 @@ fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
             enabled: true,
             base_url: None,
             api_keys: Vec::new(),
+            key_statuses: Vec::new(),
             flaresolverr_url: None,
             flaresolverr_proxy_url: None,
             proxy_url: None,
@@ -206,6 +220,7 @@ fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
             enabled: true,
             base_url: None,
             api_keys: Vec::new(),
+            key_statuses: Vec::new(),
             flaresolverr_url: None,
             flaresolverr_proxy_url: None,
             proxy_url: None,
@@ -216,6 +231,7 @@ fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
             enabled: true,
             base_url: None,
             api_keys: Vec::new(),
+            key_statuses: Vec::new(),
             flaresolverr_url: None,
             flaresolverr_proxy_url: None,
             proxy_url: None,
@@ -226,6 +242,7 @@ fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
             enabled: true,
             base_url: None,
             api_keys: Vec::new(),
+            key_statuses: Vec::new(),
             flaresolverr_url: None,
             flaresolverr_proxy_url: None,
             proxy_url: None,
@@ -671,6 +688,7 @@ mod tests {
                 enabled: true,
                 base_url: None,
                 api_keys: vec!["sk-live-secret".to_string()],
+                key_statuses: Vec::new(),
                 flaresolverr_url: None,
                 flaresolverr_proxy_url: None,
                 proxy_url: None,
@@ -685,6 +703,7 @@ mod tests {
                 enabled: true,
                 base_url: None,
                 api_keys: vec!["__preserve__".to_string()],
+                key_statuses: Vec::new(),
                 flaresolverr_url: None,
                 flaresolverr_proxy_url: None,
                 proxy_url: None,
@@ -701,6 +720,7 @@ mod tests {
                 enabled: true,
                 base_url: None,
                 api_keys: vec![],
+                key_statuses: Vec::new(),
                 flaresolverr_url: None,
                 flaresolverr_proxy_url: None,
                 proxy_url: None,
@@ -717,6 +737,7 @@ mod tests {
                 enabled: true,
                 base_url: None,
                 api_keys: vec!["sk-new".to_string()],
+                key_statuses: Vec::new(),
                 flaresolverr_url: None,
                 flaresolverr_proxy_url: None,
                 proxy_url: None,

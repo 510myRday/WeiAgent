@@ -2,7 +2,8 @@ use axum::{
     Json,
     extract::{Path, Query, State},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::time::Instant;
 use uuid::Uuid;
 
 use crate::{
@@ -10,10 +11,67 @@ use crate::{
     domain::{
         AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision,
         ApprovalRequest, ApprovalResponse, CodexRuntimeStatus, ProcessInfo, RuntimeComponentKind,
+        WebSearchKeyStatusRecord, WebSearchProviderKind, WebSearchSourceConfig,
     },
     error::{AppError, AppResult},
     tools::approval::ApprovalResolution,
 };
+
+use crate::domain::tools::mask_api_key;
+use crate::tools::web_search::providers::{grok, grok_support};
+
+#[derive(Debug, Deserialize)]
+pub struct CheckGrokKeysRequest {
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub key_indices: Vec<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GrokKeyCheckResult {
+    pub key_index: usize,
+    pub key_hint: String,
+    pub status: String,
+    pub detail: String,
+    pub latency_ms: u128,
+    pub checked_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GrokKeyCheckResponse {
+    pub source_id: String,
+    pub results: Vec<GrokKeyCheckResult>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportGrokKeysRequest {
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub api_keys: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportGrokKeysResponse {
+    pub source_id: String,
+    pub imported: usize,
+    pub duplicates: usize,
+    pub source: WebSearchSourceConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteGrokKeyRequest {
+    #[serde(default)]
+    pub source_id: Option<String>,
+    pub key_index: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeleteGrokKeyResponse {
+    pub source_id: String,
+    pub source: WebSearchSourceConfig,
+}
 
 pub async fn read_agent_tools_config(
     State(state): State<AppState>,
@@ -48,6 +106,233 @@ pub async fn update_tool_defaults(
 ) -> AppResult<Json<AgentToolsConfig>> {
     let config = state.store.update_tool_defaults(config).await?;
     Ok(Json(config.redact_secrets()))
+}
+
+pub async fn import_grok_keys(
+    State(state): State<AppState>,
+    Json(request): Json<ImportGrokKeysRequest>,
+) -> AppResult<Json<ImportGrokKeysResponse>> {
+    let mut config = state.store.read_tool_defaults().await?;
+    let source_index = config
+        .web_search
+        .sources
+        .iter()
+        .position(|source| {
+            source.provider == WebSearchProviderKind::Grok
+                && request
+                    .source_id
+                    .as_deref()
+                    .map(|id| id == source.id)
+                    .unwrap_or(true)
+        })
+        .ok_or_else(|| AppError::BadRequest("Grok source not found".to_string()))?;
+
+    let source_id = config.web_search.sources[source_index].id.clone();
+    let existing_keys = config.web_search.sources[source_index].api_keys.clone();
+    let mut seen = std::collections::HashSet::new();
+    let mut imported = 0;
+    let mut duplicates = 0;
+    let additions = request
+        .api_keys
+        .into_iter()
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .filter(|key| {
+            if existing_keys.iter().any(|existing| existing == key) || !seen.insert(key.clone()) {
+                duplicates += 1;
+                false
+            } else {
+                imported += 1;
+                true
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if imported > 0 {
+        let source = &mut config.web_search.sources[source_index];
+        source.api_keys.extend(additions);
+        source
+            .key_statuses
+            .resize_with(source.api_keys.len(), || None);
+    }
+
+    let saved = state.store.update_tool_defaults(config).await?;
+    let source = saved
+        .redact_secrets()
+        .web_search
+        .sources
+        .into_iter()
+        .find(|source| source.id == source_id)
+        .ok_or_else(|| AppError::BadRequest("Grok source not found".to_string()))?;
+
+    Ok(Json(ImportGrokKeysResponse {
+        source_id,
+        imported,
+        duplicates,
+        source,
+    }))
+}
+
+pub async fn delete_grok_key(
+    State(state): State<AppState>,
+    Json(request): Json<DeleteGrokKeyRequest>,
+) -> AppResult<Json<DeleteGrokKeyResponse>> {
+    let mut config = state.store.read_tool_defaults().await?;
+    let source_index = config
+        .web_search
+        .sources
+        .iter()
+        .position(|source| {
+            source.provider == WebSearchProviderKind::Grok
+                && request
+                    .source_id
+                    .as_deref()
+                    .map(|id| id == source.id)
+                    .unwrap_or(true)
+        })
+        .ok_or_else(|| AppError::BadRequest("Grok source not found".to_string()))?;
+    let source = &mut config.web_search.sources[source_index];
+    if request.key_index >= source.api_keys.len() {
+        return Err(AppError::BadRequest("Grok key index is out of range".to_string()));
+    }
+    source.api_keys.remove(request.key_index);
+    if request.key_index < source.key_statuses.len() {
+        source.key_statuses.remove(request.key_index);
+    }
+    source.key_statuses.truncate(source.api_keys.len());
+    let source_id = source.id.clone();
+
+    let saved = state.store.update_tool_defaults(config).await?;
+    let source = saved
+        .redact_secrets()
+        .web_search
+        .sources
+        .into_iter()
+        .find(|source| source.id == source_id)
+        .ok_or_else(|| AppError::BadRequest("Grok source not found".to_string()))?;
+
+    Ok(Json(DeleteGrokKeyResponse { source_id, source }))
+}
+
+pub async fn check_grok_keys(
+    State(state): State<AppState>,
+    Json(request): Json<CheckGrokKeysRequest>,
+) -> AppResult<Json<GrokKeyCheckResponse>> {
+    let mut config = state.store.read_tool_defaults().await?;
+    let source = config
+        .web_search
+        .sources
+        .iter()
+        .find(|source| {
+            source.provider == WebSearchProviderKind::Grok
+                && request
+                    .source_id
+                    .as_deref()
+                    .map(|id| id == source.id)
+                    .unwrap_or(true)
+        })
+        .ok_or_else(|| crate::error::AppError::BadRequest("Grok source not found".to_string()))?;
+    let source_id = source.id.clone();
+    let source_index = config
+        .web_search
+        .sources
+        .iter()
+        .position(|candidate| candidate.id == source_id)
+        .ok_or_else(|| crate::error::AppError::BadRequest("Grok source not found".to_string()))?;
+    let api_keys = source.api_keys.clone();
+    let provider = source.provider.clone();
+    let source_base_url = source.base_url.clone();
+    let source_proxy_url = source.proxy_url.clone();
+    let source_flaresolverr_url = source.flaresolverr_url.clone();
+    let source_flaresolverr_proxy_url = source.flaresolverr_proxy_url.clone();
+
+    let indices: Vec<usize> = if request.key_indices.is_empty() {
+        (0..api_keys.len()).collect()
+    } else {
+        let mut values = request.key_indices;
+        values.sort_unstable();
+        values.dedup();
+        values
+    };
+    let timeout = std::time::Duration::from_millis(config.web_search.timeout_ms());
+    let base_url = source_base_url
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| provider.default_base_url())
+        .to_string();
+    let proxy_url = source_proxy_url.as_deref();
+    let flaresolverr_url = source_flaresolverr_url.as_deref();
+    let flaresolverr_proxy_url = source_flaresolverr_proxy_url.as_deref();
+    let control_client = reqwest::Client::builder()
+        .timeout(timeout.max(std::time::Duration::from_secs(90)))
+        .build()
+        .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
+    let mut results = Vec::new();
+
+    for key_index in indices {
+        let Some(api_key) = api_keys.get(key_index) else {
+            results.push(GrokKeyCheckResult {
+                key_index,
+                key_hint: String::new(),
+                status: "error".to_string(),
+                detail: "key index is out of range".to_string(),
+                latency_ms: 0,
+                checked_at: chrono::Utc::now().to_rfc3339(),
+            });
+            continue;
+        };
+        let started = Instant::now();
+        let key_hint = mask_api_key(api_key);
+        let (status, detail) = match grok_support::build_emulated_client(timeout, proxy_url) {
+            Ok(client) => match grok::search(
+                &client,
+                &control_client,
+                &base_url,
+                api_key,
+                "WeiAgent Grok account status check",
+                1,
+                flaresolverr_url,
+                flaresolverr_proxy_url,
+                proxy_url,
+            )
+            .await
+            {
+                Ok(_) => ("normal".to_string(), "request succeeded".to_string()),
+                Err(error) => {
+                    let detail = error.message().to_string();
+                    (grok::classify_key_status(&detail).to_string(), detail)
+                }
+            },
+            Err(error) => ("network_error".to_string(), error),
+        };
+        results.push(GrokKeyCheckResult {
+            key_index,
+            key_hint,
+            status,
+            detail,
+            latency_ms: started.elapsed().as_millis(),
+            checked_at: chrono::Utc::now().to_rfc3339(),
+        });
+    }
+
+    let mut key_statuses = config.web_search.sources[source_index].key_statuses.clone();
+    key_statuses.resize_with(api_keys.len(), || None);
+    for result in &results {
+        if result.key_index < key_statuses.len() {
+            key_statuses[result.key_index] = Some(WebSearchKeyStatusRecord {
+                status: result.status.clone(),
+                detail: result.detail.clone(),
+                checked_at: result.checked_at.clone(),
+            });
+        }
+    }
+    config.web_search.sources[source_index].key_statuses = key_statuses;
+    state.store.update_tool_defaults(config).await?;
+
+    Ok(Json(GrokKeyCheckResponse {
+        source_id,
+        results,
+    }))
 }
 
 pub async fn read_codex_runtime(

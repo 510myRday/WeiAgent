@@ -38,6 +38,7 @@ pub use tools::{
     AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision, ApprovalRequest,
     ApprovalResponse, PendingApproval, ProcessInfo, ProcessStatus, TerminalApprovalGrant,
     TerminalPermissionMode, TerminalToolConfig, ToolResult, WebSearchKeySelection,
-    WebSearchProviderKind, WebSearchSourceConfig, WebSearchToolConfig, WebSearchToolOverrides, // re-export
+    WebSearchKeyStatusRecord, WebSearchProviderKind, WebSearchSourceConfig, WebSearchToolConfig,
+    WebSearchToolOverrides, // re-export
 };
 

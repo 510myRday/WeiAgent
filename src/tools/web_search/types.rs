@@ -16,10 +16,21 @@ pub struct WebSearchOutput {
     pub query: String,
     pub results: Vec<WebSearchHit>,
     pub result_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_attempts: Vec<WebSearchKeyAttempt>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebSearchKeyAttempt {
+    pub provider: String,
+    pub source_id: String,
+    pub key_index: usize,
+    pub key_hint: String,
+    pub status: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum ProviderError {
     /// Retry with next key / source.
     Retryable(String),
@@ -27,16 +38,11 @@ pub enum ProviderError {
     Fatal(String),
 }
 
-#[allow(dead_code)]
 impl ProviderError {
     pub fn message(&self) -> &str {
         match self {
             Self::Retryable(message) | Self::Fatal(message) => message,
         }
-    }
-
-    pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::Retryable(_))
     }
 }
 
@@ -46,3 +52,4 @@ pub fn sanitize_error_message(message: &str, api_key: &str) -> String {
     }
     message.replace(api_key, "[redacted]")
 }
+

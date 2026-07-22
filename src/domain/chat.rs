@@ -55,24 +55,6 @@ impl TokenUsage {
             .saturating_add(self.cache_read_tokens)
     }
 
-    #[allow(dead_code)]
-    pub fn add_assign(&mut self, other: &Self) {
-        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
-        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
-        self.cache_write_tokens = self
-            .cache_write_tokens
-            .saturating_add(other.cache_write_tokens);
-        self.cache_read_tokens = self
-            .cache_read_tokens
-            .saturating_add(other.cache_read_tokens);
-        self.uncached_input_tokens = self.input_tokens;
-        self.total_prompt_tokens = self.input_tokens
-            .saturating_add(self.cache_read_tokens)
-            .saturating_add(self.cache_write_tokens);
-        let denominator = self.input_tokens.saturating_add(self.cache_read_tokens);
-        self.cache_hit_ratio = if denominator == 0 { 0.0 } else { self.cache_read_tokens as f64 / denominator as f64 };
-    }
-
     pub fn normalized(mut self) -> Self {
         if self.uncached_input_tokens == 0 {
             self.uncached_input_tokens = self.input_tokens;
@@ -210,3 +192,4 @@ pub struct AgentRun {
     pub created_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
 }
+

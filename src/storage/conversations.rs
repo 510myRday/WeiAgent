@@ -421,18 +421,6 @@ impl JsonStore {
         Ok(checkpoint)
     }
 
-    #[allow(dead_code)]
-    pub async fn clear_context_checkpoint(&self, conversation_id: Uuid) -> AppResult<()> {
-        let _guard = self.lock.lock().await;
-        let mut conversations = self.read_conversations_unlocked().await?;
-        let conversation = conversations
-            .iter_mut()
-            .find(|conversation| conversation.id == conversation_id)
-            .ok_or(AppError::NotFound)?;
-        conversation.context_checkpoint = None;
-        conversation.updated_at = Utc::now();
-        self.write_conversations_unlocked(&conversations).await
-    }
 }
 
 fn conversation_usage(messages: &[ChatMessage]) -> ConversationUsage {
@@ -457,5 +445,4 @@ fn conversation_usage(messages: &[ChatMessage]) -> ConversationUsage {
         cost_usd: usage.cost_usd,
     }
 }
-
 

@@ -41,8 +41,9 @@ async function request<T>(
   path: string,
   options?: RequestInit,
   schema?: RuntimeSchema<T>,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<T> {
-  const abortHandle = createAbortSignal(DEFAULT_TIMEOUT_MS, options?.signal ?? undefined);
+  const abortHandle = createAbortSignal(timeoutMs, options?.signal ?? undefined);
   try {
     const response = await fetch(path, {
       ...options,
@@ -244,6 +245,7 @@ export type WebSearchSourceConfig = {
   enabled: boolean;
   base_url?: string | null;
   api_keys: string[];
+  key_statuses?: Array<GrokKeyStatusRecord | null>;
   flaresolverr_url?: string | null;
   flaresolverr_proxy_url?: string | null;
   proxy_url?: string | null;
@@ -255,6 +257,47 @@ export type WebSearchToolConfig = {
   timeout_ms: number;
   key_selection: WebSearchKeySelection;
   sources: WebSearchSourceConfig[];
+};
+
+export type GrokKeyStatusRecord = {
+  status: GrokKeyStatus;
+  detail: string;
+  checked_at: string;
+};
+
+export type GrokKeyStatus =
+  | 'normal'
+  | 'officially_blocked'
+  | 'quota_limited'
+  | 'unauthorized'
+  | 'anti_bot'
+  | 'network_error'
+  | 'error';
+
+export type GrokKeyCheckResult = {
+  key_index: number;
+  key_hint: string;
+  status: GrokKeyStatus;
+  detail: string;
+  latency_ms: number;
+  checked_at: string;
+};
+
+export type GrokKeyCheckResponse = {
+  source_id: string;
+  results: GrokKeyCheckResult[];
+};
+
+export type GrokKeyImportResponse = {
+  source_id: string;
+  imported: number;
+  duplicates: number;
+  source: WebSearchSourceConfig;
+};
+
+export type GrokKeyDeleteResponse = {
+  source_id: string;
+  source: WebSearchSourceConfig;
 };
 
 export type AgentToolsConfig = {
@@ -375,6 +418,47 @@ export function updateToolDefaults(config: AgentToolsConfig): Promise<AgentTools
     method: 'PUT',
     body: JSON.stringify(config),
   });
+}
+
+export function checkGrokKeys(
+  sourceId: string,
+  keyIndices: number[] = [],
+): Promise<GrokKeyCheckResponse> {
+  return request<GrokKeyCheckResponse>(
+    '/api/tools/grok-keys/check',
+    {
+      method: 'POST',
+      body: JSON.stringify({ source_id: sourceId, key_indices: keyIndices }),
+    },
+    undefined,
+    180000,
+  );
+}
+
+export function importGrokKeys(
+  sourceId: string,
+  apiKeys: string[],
+): Promise<GrokKeyImportResponse> {
+  return request<GrokKeyImportResponse>(
+    '/api/tools/grok-keys/import',
+    {
+      method: 'POST',
+      body: JSON.stringify({ source_id: sourceId, api_keys: apiKeys }),
+    },
+  );
+}
+
+export function deleteGrokKey(
+  sourceId: string,
+  keyIndex: number,
+): Promise<GrokKeyDeleteResponse> {
+  return request<GrokKeyDeleteResponse>(
+    '/api/tools/grok-keys/delete',
+    {
+      method: 'POST',
+      body: JSON.stringify({ source_id: sourceId, key_index: keyIndex }),
+    },
+  );
 }
 
 export function readAgentToolsConfig(agentId: string): Promise<AgentToolsSettings> {

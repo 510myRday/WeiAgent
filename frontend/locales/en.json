@@ -423,7 +423,24 @@
       "flaresolverrProxyUrlDesc": "Proxy for FlareSolverr browser when opening grok.com. Passed exactly as filled (no rewriting). Example: http://127.0.0.1:10086",
       "flaresolverrProxyUrlPlaceholder": "http://127.0.0.1:10086",
       "keysLabel": "API keys",
-      "keyCount": "{count} key(s) configured"
+      "keyCount": "{count} key(s) configured",
+      "selectAll": "Select all",
+      "clearSelection": "Clear selection",
+      "selectKey": "Select key {index}",
+      "checkAll": "Check all",
+      "checkSelected": "Check selected ({count})",
+      "checkOne": "Check this key",
+      "checkFailed": "Key check failed",
+      "keyImportSummary": "Imported {imported}, skipped {duplicates} duplicate(s)",
+      "keyStatus": {
+        "normal": "Healthy",
+        "officially_blocked": "Officially blocked",
+        "quota_limited": "Quota or rate limit",
+        "unauthorized": "Unauthorized or expired",
+        "anti_bot": "Anti-bot blocked",
+        "network_error": "Network error",
+        "error": "Check error"
+      }
     }
   },
   "model": {
