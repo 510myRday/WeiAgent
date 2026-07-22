@@ -125,51 +125,94 @@
   color: var(--color-primary-strong, #4338ca);
 }
 
-/* Header title when a model scope is selected */
-.monitor-scope-model-cell {
-  display: flex;
+/* Model scope metadata stays below the model title. */
+.monitor-scope-model-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.monitor-status-scope-item .list-item-leading {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--surface-pane);
+  color: var(--color-muted);
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.monitor-status-scope-item.is-success .list-item-leading {
+  color: var(--color-success);
+}
+
+.monitor-status-scope-item.is-error .list-item-leading {
+  color: var(--color-danger);
+}
+
+.monitor-status-scope-item:hover .list-item-leading,
+.monitor-status-scope-item:focus-visible .list-item-leading {
+  border-color: var(--border-hover);
+  background: var(--surface-hover);
+}
+
+.monitor-status-scope-item.is-success.is-active .list-item-leading {
+  border-color: var(--color-success-border);
+  background: var(--color-success-soft);
+}
+
+.monitor-status-scope-item.is-error.is-active .list-item-leading {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-soft);
+}
+
+.monitor-status-scope-item.is-error.is-active .list-item-body strong {
+  color: var(--color-danger-text);
+}
+
+.monitor-page-title {
+  display: inline-flex;
   align-items: center;
   gap: 10px;
-  width: 100%;
   min-width: 0;
   max-width: 100%;
-  line-height: 1.2;
 }
 
-.monitor-scope-model-cell.is-header {
-  gap: 10px;
-}
-
-.monitor-scope-model-provider {
-  flex: 0 1 auto;
-  align-self: center;
-  color: var(--color-muted, #64748b);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.2;
-  max-width: 42%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.monitor-status-scope-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 3px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-round);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-emphasis);
+  line-height: 1;
+  letter-spacing: 0;
   white-space: nowrap;
+  vertical-align: middle;
 }
 
-.monitor-scope-model-separator {
-  flex: 0 0 auto;
-  width: 1px;
-  height: 1.15em;
-  background: var(--border-strong, #cbd5e1);
+.monitor-status-scope-badge.is-success {
+  border-color: var(--color-success-border);
+  background: var(--color-success-soft);
+  color: var(--color-success);
 }
 
-.monitor-scope-model-id {
-  flex: 1 1 auto;
-  min-width: 0;
-  color: var(--color-text, #0f172a);
-  font-weight: 600;
-  font-size: 1.05em;
-  line-height: 1.15;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.monitor-status-scope-badge.is-error {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-soft);
+  color: var(--color-danger-text);
+}
+
+.monitor-scope-model-meta strong {
+  color: var(--color-text-soft);
+  font-weight: var(--font-weight-emphasis);
 }
 
 /* Tighten vertical chrome vs default config-main (tools/settings feel denser). */
@@ -178,7 +221,7 @@
   flex-direction: column;
   gap: 10px;
   min-height: 0;
-  padding-top: clamp(12px, 1.5vw, 20px);
+  padding-top: clamp(20px, 2.4vw, 36px);
   padding-bottom: clamp(8px, 1vw, 14px);
 }
 

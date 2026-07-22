@@ -60,8 +60,8 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
       <nav className="sidebar-nav">
         <NavButton active={activeNav === 'chat'} onClick={() => onNavChange('chat')} icon={<ChatBubbleMoreIcon />} label={t('nav.chat')} />
         <NavButton active={activeNav === 'agents'} onClick={() => onNavChange('agents')} icon={<Bot size={21} />} label={t('nav.agents')} />
-        <NavButton active={activeNav === 'monitor'} onClick={() => onNavChange('monitor')} icon={<ChartColumn size={21} />} label={t('nav.monitor')} />
         <NavButton active={activeNav === 'tools'} onClick={() => onNavChange('tools')} icon={<Wrench size={21} />} label={t('nav.tools')} />
+        <NavButton active={activeNav === 'monitor'} onClick={() => onNavChange('monitor')} icon={<ChartColumn size={21} />} label={t('nav.monitor')} />
         <NavButton active={activeNav === 'settings'} onClick={() => onNavChange('settings')} icon={<Settings size={21} />} label={t('nav.settings')} />
       </nav>
 

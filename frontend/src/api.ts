@@ -208,6 +208,7 @@ export type ListLlmLogsParams = {
   q?: string;
   since?: string;
   until?: string;
+  status?: 'success' | 'error';
 };
 
 export function listLlmLogs(params: ListLlmLogsParams = {}): Promise<LlmLogListPage> {
@@ -221,6 +222,7 @@ export function listLlmLogs(params: ListLlmLogsParams = {}): Promise<LlmLogListP
   if (params.q) search.set('q', params.q);
   if (params.since) search.set('since', params.since);
   if (params.until) search.set('until', params.until);
+  if (params.status) search.set('status', params.status);
   const query = search.toString();
   return request<LlmLogListPage>(query ? `/api/llm-logs?${query}` : '/api/llm-logs');
 }
@@ -237,6 +239,7 @@ export function deleteLlmLog(logId: string): Promise<void> {
 
 
 export type WebSearchProviderKind = 'tavily' | 'exa' | 'jina' | 'grok';
+export const MAX_WEB_SEARCH_KEYS_PER_SOURCE = 1_000;
 export type WebSearchKeySelection = 'sequential' | 'round_robin' | 'random';
 export type WebSearchSourceRole =
   | 'general_search'
@@ -275,6 +278,12 @@ export type WebSearchToolConfig = {
   timeout_ms: number;
   key_selection: WebSearchKeySelection;
   sources: WebSearchSourceConfig[];
+};
+
+export type EvidenceStorageConfig = {
+  enabled: boolean;
+  retention_days: number;
+  max_total_mb: number;
 };
 
 export type WebSearchKeyStatusRecord = {
@@ -342,6 +351,7 @@ export type AgentToolsConfig = {
     allowed_cwd_roots: string[];
   };
   web_search: WebSearchToolConfig;
+  evidence_storage: EvidenceStorageConfig;
 };
 
 export type AgentToolsOverrides = {
@@ -423,6 +433,11 @@ export function readToolDefaults(): Promise<AgentToolsConfig> {
 function normalizeToolDefaults(config: AgentToolsConfig): AgentToolsConfig {
   return {
     ...config,
+    evidence_storage: {
+      enabled: config.evidence_storage?.enabled ?? true,
+      retention_days: config.evidence_storage?.retention_days ?? 30,
+      max_total_mb: config.evidence_storage?.max_total_mb ?? 200,
+    },
     web_search: {
       enabled: config.web_search?.enabled ?? false,
       max_results: config.web_search?.max_results ?? 5,
@@ -446,15 +461,27 @@ export function updateToolDefaults(config: AgentToolsConfig): Promise<AgentTools
   });
 }
 
+export function generateConversationTitle(
+  conversationId: string,
+  content: string,
+): Promise<Conversation> {
+  return request<Conversation>(`/api/conversations/${conversationId}/title`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  });
+}
+
 export function checkWebSearchKeys(
   sourceId: string,
   keyIndices: number[] = [],
+  signal?: AbortSignal,
 ): Promise<WebSearchKeyCheckResponse> {
   return request<WebSearchKeyCheckResponse>(
     '/api/tools/web-search-keys/check',
     {
       method: 'POST',
       body: JSON.stringify({ source_id: sourceId, key_indices: keyIndices }),
+      signal,
     },
     undefined,
     180000,
@@ -477,12 +504,13 @@ export function importWebSearchKeys(
 export function deleteWebSearchKey(
   sourceId: string,
   keyIndex: number,
+  keyHint?: string,
 ): Promise<WebSearchKeyDeleteResponse> {
   return request<WebSearchKeyDeleteResponse>(
     '/api/tools/web-search-keys/delete',
     {
       method: 'POST',
-      body: JSON.stringify({ source_id: sourceId, key_index: keyIndex }),
+      body: JSON.stringify({ source_id: sourceId, key_index: keyIndex, key_hint: keyHint }),
     },
   );
 }
@@ -507,6 +535,11 @@ function normalizeAgentToolsSettings(settings: AgentToolsSettings): AgentToolsSe
     ...settings,
     defaults: {
       ...settings.defaults,
+      evidence_storage: {
+        enabled: settings.defaults.evidence_storage?.enabled ?? true,
+        retention_days: settings.defaults.evidence_storage?.retention_days ?? 30,
+        max_total_mb: settings.defaults.evidence_storage?.max_total_mb ?? 200,
+      },
       web_search: {
         enabled: settings.defaults.web_search?.enabled ?? false,
         max_results: settings.defaults.web_search?.max_results ?? 5,
@@ -527,6 +560,11 @@ function normalizeAgentToolsSettings(settings: AgentToolsSettings): AgentToolsSe
     },
     effective: {
       ...settings.effective,
+      evidence_storage: {
+        enabled: settings.effective.evidence_storage?.enabled ?? true,
+        retention_days: settings.effective.evidence_storage?.retention_days ?? 30,
+        max_total_mb: settings.effective.evidence_storage?.max_total_mb ?? 200,
+      },
       web_search: {
         enabled: settings.effective.web_search?.enabled ?? false,
         max_results: settings.effective.web_search?.max_results ?? 5,

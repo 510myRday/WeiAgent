@@ -61,6 +61,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repairs_key_status_slots_to_match_saved_keys() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let mut defaults = store.read_tool_defaults().await.unwrap();
+        let source = defaults
+            .web_search
+            .sources
+            .iter_mut()
+            .find(|source| source.id == "grok")
+            .unwrap();
+        source.api_keys = vec!["key-a".to_string(), "key-b".to_string()];
+        source.key_statuses = vec![
+            Some(crate::domain::WebSearchKeyStatusRecord {
+                status: "normal".to_string(),
+                detail: "a".to_string(),
+                checked_at: Utc::now().to_rfc3339(),
+            }),
+            Some(crate::domain::WebSearchKeyStatusRecord {
+                status: "normal".to_string(),
+                detail: "b".to_string(),
+                checked_at: Utc::now().to_rfc3339(),
+            }),
+            Some(crate::domain::WebSearchKeyStatusRecord {
+                status: "error".to_string(),
+                detail: "stale".to_string(),
+                checked_at: Utc::now().to_rfc3339(),
+            }),
+        ];
+        store.update_tool_defaults(defaults).await.unwrap();
+
+        let repaired = store.read_tool_defaults().await.unwrap();
+        let source = repaired
+            .web_search
+            .sources
+            .iter()
+            .find(|source| source.id == "grok")
+            .unwrap();
+        assert_eq!(source.api_keys.len(), 2);
+        assert_eq!(source.key_statuses.len(), 2);
+        assert_eq!(source.key_statuses[1].as_ref().unwrap().detail, "b");
+    }
+
+    #[tokio::test]
     async fn agent_tool_overrides_inherit_global_defaults() {
         let temp_dir = tempfile::tempdir().unwrap();
         let store = JsonStore::new(temp_dir.path()).await.unwrap();
@@ -675,7 +718,13 @@ mod tests {
             .unwrap();
 
         let updated = store
-            .update_conversation(pinned.id, UpdateConversationRequest { is_pinned: true })
+            .update_conversation(
+                pinned.id,
+                UpdateConversationRequest {
+                    is_pinned: true,
+                    title: None,
+                },
+            )
             .await
             .unwrap();
         assert!(updated.is_pinned);

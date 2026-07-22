@@ -15,7 +15,8 @@ pub struct TerminalToolConfig {
     /// Foreground wait timeout. A still-running command is moved to background after this time.
     #[serde(default = "default_timeout_ms")]
     pub default_timeout_ms: u64,
-    /// Host roots that may be mounted/used by the tool. Empty means the WeiAgent data directory.
+    /// Host roots that may be mounted/used by the tool. Empty means the dedicated
+    /// terminal workspace directory under the WeiAgent data root.
     #[serde(default)]
     pub allowed_cwd_roots: Vec<String>,
 }
@@ -53,10 +54,14 @@ pub const MAX_WEB_SEARCH_RESULTS: u32 = 20;
 pub const DEFAULT_WEB_SEARCH_TIMEOUT_MS: u64 = 15_000;
 pub const MAX_WEB_SEARCH_TIMEOUT_MS: u64 = 60_000;
 pub const MAX_WEB_SEARCH_SOURCES: usize = 8;
-pub const MAX_WEB_SEARCH_KEYS_PER_SOURCE: usize = 16;
+pub const MAX_WEB_SEARCH_KEYS_PER_SOURCE: usize = 1_000;
 pub const MAX_WEB_SEARCH_QUERY_CHARS: usize = 500;
 pub const MAX_WEB_SEARCH_QUERIES: usize = 4;
 pub const MAX_WEB_EXTRACT_URLS: usize = 5;
+pub const DEFAULT_EVIDENCE_RETENTION_DAYS: u32 = 30;
+pub const MAX_EVIDENCE_RETENTION_DAYS: u32 = 3_650;
+pub const DEFAULT_EVIDENCE_MAX_TOTAL_MB: u64 = 200;
+pub const MAX_EVIDENCE_TOTAL_MB: u64 = 10_240;
 
 fn default_max_llm_iterations() -> u32 {
     DEFAULT_MAX_LLM_ITERATIONS
@@ -94,6 +99,8 @@ pub struct AgentToolsConfig {
     pub terminal: TerminalToolConfig,
     #[serde(default)]
     pub web_search: WebSearchToolConfig,
+    #[serde(default)]
+    pub evidence_storage: EvidenceStorageConfig,
 }
 
 impl Default for AgentToolsConfig {
@@ -102,6 +109,7 @@ impl Default for AgentToolsConfig {
             max_llm_iterations: default_max_llm_iterations(),
             terminal: TerminalToolConfig::default(),
             web_search: WebSearchToolConfig::default(),
+            evidence_storage: EvidenceStorageConfig::default(),
         }
     }
 }
@@ -109,6 +117,35 @@ impl Default for AgentToolsConfig {
 impl AgentToolsConfig {
     pub fn max_llm_iterations(&self) -> usize {
         self.max_llm_iterations.clamp(1, MAX_LLM_ITERATIONS) as usize
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceStorageConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_evidence_retention_days")]
+    pub retention_days: u32,
+    #[serde(default = "default_evidence_max_total_mb")]
+    pub max_total_mb: u64,
+}
+
+fn default_evidence_retention_days() -> u32 {
+    DEFAULT_EVIDENCE_RETENTION_DAYS
+}
+
+fn default_evidence_max_total_mb() -> u64 {
+    DEFAULT_EVIDENCE_MAX_TOTAL_MB
+}
+
+impl Default for EvidenceStorageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            retention_days: DEFAULT_EVIDENCE_RETENTION_DAYS,
+            max_total_mb: DEFAULT_EVIDENCE_MAX_TOTAL_MB,
+        }
     }
 }
 
@@ -775,6 +812,7 @@ impl AgentToolsOverrides {
                 key_selection: defaults.web_search.key_selection.clone(),
                 sources: defaults.web_search.sources.clone(),
             },
+            evidence_storage: defaults.evidence_storage.clone(),
         }
     }
 
@@ -935,6 +973,25 @@ mod tests {
         assert_eq!(config.web_search.sources[2].id, "jina");
         assert_eq!(config.web_search.sources[3].id, "grok");
         assert!(!config.web_search.sources[0].has_available_key());
+    }
+
+    #[test]
+    fn evidence_storage_defaults_are_enabled_and_backward_compatible() {
+        let config = AgentToolsConfig::default();
+        assert!(config.evidence_storage.enabled);
+        assert_eq!(
+            config.evidence_storage.retention_days,
+            DEFAULT_EVIDENCE_RETENTION_DAYS
+        );
+        assert_eq!(
+            config.evidence_storage.max_total_mb,
+            DEFAULT_EVIDENCE_MAX_TOTAL_MB
+        );
+
+        let mut value = serde_json::to_value(config).unwrap();
+        value.as_object_mut().unwrap().remove("evidence_storage");
+        let parsed: AgentToolsConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.evidence_storage, EvidenceStorageConfig::default());
     }
 
     #[test]

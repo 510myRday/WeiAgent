@@ -152,6 +152,8 @@ pub struct LlmLogListFilter {
     pub since: Option<String>,
     /// Exclusive upper bound as RFC3339 / ISO-8601 datetime string.
     pub until: Option<String>,
+    /// Optional request outcome: `success` or `error`.
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -490,6 +492,7 @@ impl LlmLogger {
                 q: filter.q.clone(),
                 since: filter.since.clone(),
                 until: filter.until.clone(),
+                status: None,
             };
             let (stats_where, stats_bind) = build_filter_clause(&stats_filter);
             let agent_stats_sql = format!(
@@ -796,6 +799,24 @@ fn build_filter_clause(filter: &LlmLogListFilter) -> (String, Vec<String>) {
     {
         clauses.push("created_at < ?".to_string());
         params.push(until.to_string());
+    }
+
+    match filter.status.as_deref().map(str::trim) {
+        Some("success") => {
+            clauses.push(
+                "status_code IS NOT NULL AND status_code >= 200 AND status_code < 300
+                 AND (error IS NULL OR error = '')"
+                    .to_string(),
+            );
+        }
+        Some("error") => {
+            clauses.push(
+                "((status_code IS NOT NULL AND status_code >= 400)
+                  OR (error IS NOT NULL AND error != ''))"
+                    .to_string(),
+            );
+        }
+        _ => {}
     }
 
     if clauses.is_empty() {
@@ -1529,6 +1550,7 @@ mod tests {
                     q: None,
                     since: None,
                     until: None,
+                    status: None,
                 },
             )
             .await
@@ -1548,6 +1570,7 @@ mod tests {
                     q: Some("prov-b".into()),
                     since: None,
                     until: None,
+                    status: None,
                 },
             )
             .await

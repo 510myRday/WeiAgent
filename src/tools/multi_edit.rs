@@ -1061,8 +1061,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_roots_use_data_directory_as_default_workspace() {
-        let data_dir = tempfile::tempdir().unwrap();
+    async fn empty_roots_use_dedicated_directory_as_default_workspace() {
+        let workspace_dir = tempfile::tempdir().unwrap();
         let config = TerminalToolConfig {
             permission_mode: TerminalPermissionMode::FullAccess,
             ..TerminalToolConfig::default()
@@ -1086,12 +1086,12 @@ mod tests {
                 approved: true,
             },
             &config,
-            data_dir.path(),
+            workspace_dir.path(),
         )
         .await;
 
         assert!(matches!(result, ToolResult::Completed { .. }));
-        assert!(data_dir.path().join("default-workspace.txt").exists());
+        assert!(workspace_dir.path().join("default-workspace.txt").exists());
     }
 
     #[tokio::test]

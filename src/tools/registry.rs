@@ -275,7 +275,7 @@ impl AgentTool for ExecuteTerminalTool {
                 tool_call_id: context.call_id.clone(),
             },
             &terminal_config,
-            &context.store.data_dir,
+            &context.store.terminal_workspace_dir,
             &context.terminal_manager,
         )
         .await;
@@ -306,7 +306,7 @@ impl AgentTool for ExecuteTerminalTool {
                         .first()
                         .cloned()
                 })
-                .or_else(|| Some(context.store.data_dir.display().to_string())),
+                .or_else(|| Some(context.store.terminal_workspace_dir.display().to_string())),
             runtime: "codex_full_access".to_string(),
             permission: "full_access".to_string(),
             justification: justification.clone(),
@@ -390,7 +390,7 @@ impl AgentTool for ExecuteTerminalTool {
                 tool_call_id: context.call_id,
             },
             &terminal_config,
-            &context.store.data_dir,
+            &context.store.terminal_workspace_dir,
             &context.terminal_manager,
         )
         .await;
@@ -739,7 +739,7 @@ impl AgentTool for MultiEditFileTool {
                 approved: false,
             },
             &terminal_config,
-            &context.store.data_dir,
+            &context.store.terminal_workspace_dir,
         )
         .await;
 
@@ -769,7 +769,7 @@ impl AgentTool for MultiEditFileTool {
                     .first()
                     .cloned()
             })
-            .or_else(|| Some(context.store.data_dir.display().to_string()));
+            .or_else(|| Some(context.store.terminal_workspace_dir.display().to_string()));
         let decision_rx = context.approval_manager.register(PendingApproval {
             approval_id: approval_id.clone(),
             agent_id: context.agent_id,
@@ -862,7 +862,7 @@ impl AgentTool for MultiEditFileTool {
                 approved: true,
             },
             &terminal_config,
-            &context.store.data_dir,
+            &context.store.terminal_workspace_dir,
         )
         .await;
         result
@@ -1077,7 +1077,12 @@ impl AgentTool for WebExtractTool {
                 };
             }
         };
-        execute_web_extract(args, &context.store.data_dir).await
+        execute_web_extract(
+            args,
+            &context.store.data_dir,
+            &context.tools_config.evidence_storage,
+        )
+        .await
     }
 }
 fn tool_definition(name: &str, description: &str, parameters: Value) -> ToolDefinition {

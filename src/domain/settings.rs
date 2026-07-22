@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub const DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT: u8 = 90;
 pub const MIN_CONTEXT_COMPRESS_THRESHOLD_PERCENT: u8 = 1;
@@ -27,6 +28,12 @@ pub struct AppSettings {
     pub context_compress_threshold_percent: u8,
     #[serde(default = "default_llm_log_enabled")]
     pub llm_log_enabled: bool,
+    /// Optional provider used to generate concise titles for newly started conversations.
+    #[serde(default)]
+    pub conversation_title_provider_id: Option<Uuid>,
+    /// Optional model used with `conversation_title_provider_id`.
+    #[serde(default)]
+    pub conversation_title_model_id: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -42,6 +49,8 @@ impl Default for AppSettings {
             request_retry_attempts: default_request_retry_attempts(),
             context_compress_threshold_percent: default_context_compress_threshold_percent(),
             llm_log_enabled: default_llm_log_enabled(),
+            conversation_title_provider_id: None,
+            conversation_title_model_id: None,
         }
     }
 }

@@ -45,6 +45,8 @@ pub struct CreateConversationRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateConversationRequest {
     pub is_pinned: bool,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

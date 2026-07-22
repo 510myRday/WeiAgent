@@ -5,6 +5,7 @@ use axum::{
     extract::{Path, Query, State},
     response::sse::{Event, Sse},
 };
+use chrono::Utc;
 use futures_util::Stream;
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -18,15 +19,17 @@ use crate::{
         run_manager::SequencedRunEvent,
     },
     domain::{
-        AgentRun, AgentRunStatus, ChatMessage, Conversation, ConversationMessagePage,
-        ConversationUsage, CreateConversationRequest, SendMessageRequest, SendMessageResponse,
-        UpdateConversationRequest,
+        AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, Conversation,
+        ConversationMessagePage, ConversationUsage, CreateConversationRequest, SendMessageRequest,
+        SendMessageResponse, UpdateConversationRequest,
     },
-    error::AppResult,
+    error::{AppError, AppResult},
     llm::client::RequestOptions,
 };
 
 const MAX_AGENT_RUN_DURATION: Duration = Duration::from_secs(60 * 60);
+const CONVERSATION_TITLE_TIMEOUT: Duration = Duration::from_secs(12);
+const CONVERSATION_TITLE_CHAR_LIMIT: usize = 15;
 
 struct ProcessCleanupGuard {
     terminal_manager: std::sync::Arc<crate::tools::terminal::TerminalManager>,
@@ -131,6 +134,114 @@ pub async fn update_conversation(
             .update_conversation(conversation_id, request)
             .await?,
     ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GenerateConversationTitleRequest {
+    pub content: String,
+}
+
+pub async fn generate_conversation_title(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+    Json(request): Json<GenerateConversationTitleRequest>,
+) -> AppResult<Json<Conversation>> {
+    let content = request.content.trim();
+    if content.is_empty() {
+        return Err(AppError::BadRequest(
+            "conversation title input cannot be empty".to_string(),
+        ));
+    }
+
+    let settings = state.store.read_settings().await?;
+    let provider_id = settings.conversation_title_provider_id.ok_or_else(|| {
+        AppError::BadRequest("conversation title model is not configured".to_string())
+    })?;
+    let model_id = settings
+        .conversation_title_model_id
+        .as_deref()
+        .filter(|model| !model.trim().is_empty())
+        .ok_or_else(|| {
+            AppError::BadRequest("conversation title model is not configured".to_string())
+        })?
+        .trim()
+        .to_string();
+    let provider = state.store.get_model_provider(provider_id).await?;
+    if !provider.models.iter().any(|model| model == &model_id) {
+        return Err(AppError::BadRequest(
+            "conversation title model is not configured for the selected provider".to_string(),
+        ));
+    }
+
+    let conversation = state.store.get_conversation(conversation_id).await?;
+    let original_agent = state.store.get_agent(conversation.agent_id).await?;
+    let title_agent = crate::domain::Agent {
+        model_provider_id: provider.id,
+        model_id,
+        ..original_agent.clone()
+    };
+    let title_message = ChatMessage {
+        id: Uuid::new_v4(),
+        agent_id: title_agent.id,
+        conversation_id,
+        role: ChatRole::User,
+        content: content.to_string(),
+        reasoning_content: None,
+        status: ChatMessageStatus::Done,
+        created_at: Utc::now(),
+        tool_calls: None,
+        tool_call_id: None,
+        attachments: Vec::new(),
+        usage: None,
+    };
+    let client = state.llm_registry.client_for(&provider)?;
+    let output = tokio::time::timeout(
+        CONVERSATION_TITLE_TIMEOUT,
+        client.complete(
+            &title_agent,
+            &provider,
+            &[title_message],
+            "Read the user's message and summarize it as one conversation title no longer than 15 characters. Output only the title itself. Do not output quotes, punctuation, labels, explanations, markdown, or any other text.",
+            RequestOptions {
+                timeout: CONVERSATION_TITLE_TIMEOUT,
+                retry_attempts: 1,
+                thinking_level: None,
+                on_retry: None,
+            },
+            None,
+        ),
+    )
+    .await
+    .map_err(|_| AppError::Llm("conversation title request timed out".to_string()))??;
+    let title = normalize_generated_title(&output.content)
+        .ok_or_else(|| AppError::Llm("conversation title response was empty".to_string()))?;
+
+    Ok(Json(
+        state
+            .store
+            .update_conversation_title(conversation_id, title)
+            .await?,
+    ))
+}
+
+fn normalize_generated_title(content: &str) -> Option<String> {
+    let title = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?
+        .trim_matches(|character| matches!(character, '`' | '*' | '"' | '\''))
+        .trim();
+    let title = title
+        .strip_prefix("标题：")
+        .or_else(|| title.strip_prefix("标题:"))
+        .or_else(|| title.strip_prefix("Title:"))
+        .unwrap_or(title)
+        .trim();
+    let title = title
+        .chars()
+        .take(CONVERSATION_TITLE_CHAR_LIMIT)
+        .collect::<String>();
+    (!title.is_empty()).then_some(title)
 }
 
 pub async fn read_conversation_messages(

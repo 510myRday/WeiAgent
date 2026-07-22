@@ -98,6 +98,8 @@ export function ChatPanel({
     setConversationPinned,
   } = useConversations({
     newConversationTitle: t('conversation.newTitle'),
+    imageOnlyConversationTitle: t('conversation.imagePromptTitle'),
+    imageAttachmentTitleNote: t('conversation.imageAttachmentTitleNote'),
     runCancelledMessage: t('chat.runCancelled'),
     runInterruptedMessage: t('chat.runInterrupted'),
     onError: toast.error,
@@ -682,6 +684,7 @@ export function ChatPanel({
           hasOlderMessages={hasOlderMessages}
           isLoadingOlderMessages={isLoadingOlderMessages}
           isSending={isSending}
+          supportsImages={supportsImages}
           runPhase={runPhase}
           retryStatus={retryStatus}
           timelineMessageIndexes={timelineMessageIndexes}

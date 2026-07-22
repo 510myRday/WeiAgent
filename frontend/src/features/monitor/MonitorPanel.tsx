@@ -4,6 +4,8 @@ import {
   ArrowLeft,
   ArrowUpFromLine,
   ChartColumn,
+  CheckCircle2,
+  CircleX,
   Database,
   ChevronDown,
   ChevronLeft,
@@ -85,6 +87,7 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
 type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
 
 type DateRangeKey = 'today' | '7d' | '30d';
+type StatusFilter = 'all' | 'success' | 'error';
 
 const DATE_RANGE_OPTIONS: DateRangeKey[] = ['today', '7d', '30d'];
 
@@ -402,7 +405,9 @@ export function MonitorPanel({
   const [modelStats, setModelStats] = useState<LlmLogModelStat[]>([]);
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<LlmLogSummary>(EMPTY_SUMMARY);
+  const [statusSummary, setStatusSummary] = useState<LlmLogSummary>(EMPTY_SUMMARY);
   const [scope, setScope] = useState<Scope>({ kind: 'overview' });
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [dateRange, setDateRange] = useState<DateRangeKey>('today');
   const [isLoading, setIsLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -437,6 +442,7 @@ export function MonitorPanel({
         modelId: scope.kind === 'model' ? scope.modelId : undefined,
         since,
         until,
+        status: statusFilter === 'all' ? undefined : statusFilter,
       };
       const pageData = await listLlmLogs({
         offset,
@@ -451,6 +457,10 @@ export function MonitorPanel({
       // DB cost_usd is often 0 (API rarely returns usage.cost). Match table pricing:
       // estimate from model unit prices for all successful rows in range.
       const baseSummary = pageData.summary ?? EMPTY_SUMMARY;
+      const unfilteredPage = statusFilter === 'all'
+        ? pageData
+        : await listLlmLogs({ offset: 0, limit: 1, ...filter, status: undefined });
+      setStatusSummary(unfilteredPage.summary ?? baseSummary);
       let costRows = pageData.items;
       if (pageData.total > pageData.items.length) {
         const costPage = await listLlmLogs({
@@ -473,7 +483,7 @@ export function MonitorPanel({
     } finally {
       setIsLoading(false);
     }
-  }, [dateRange, page, pageSize, providers, scope, t, toast]);
+  }, [dateRange, page, pageSize, providers, scope, statusFilter, t, toast]);
 
   useEffect(() => {
     void loadData();
@@ -594,6 +604,13 @@ export function MonitorPanel({
 
   function selectOverview() {
     setScope({ kind: 'overview' });
+    setStatusFilter('all');
+    setPage(1);
+    onOpenMain();
+  }
+
+  function selectStatus(nextStatus: Exclude<StatusFilter, 'all'>) {
+    setStatusFilter(nextStatus);
     setPage(1);
     onOpenMain();
   }
@@ -620,23 +637,43 @@ export function MonitorPanel({
     onOpenMain();
   }
 
-  const mainTitle = scope.kind === 'overview'
+  const baseTitle = scope.kind === 'overview'
     ? t('llmLogs.allRequests')
     : scope.kind === 'agent'
       ? scope.agentName
-      : (
-        <span className="monitor-scope-model-cell is-header">
-          <span className="monitor-scope-model-provider">{scope.providerName}</span>
-          <span className="monitor-scope-model-separator" aria-hidden="true" />
-          <span className="monitor-scope-model-id mono">{scope.modelId}</span>
+      : <span className="mono">{scope.modelId}</span>;
+
+  const statusTitle = statusFilter === 'success'
+    ? t('llmLogs.successRequests')
+    : statusFilter === 'error'
+      ? t('llmLogs.errorRequests')
+      : null;
+
+  const mainTitle = (
+    <span className="monitor-page-title">
+      <span>{baseTitle}</span>
+      {statusTitle ? (
+        <span className={`monitor-status-scope-badge is-${statusFilter}`}>
+          {statusFilter === 'success' ? <CheckCircle2 size={15} /> : <CircleX size={15} />}
+          {statusTitle}
         </span>
-      );
+      ) : null}
+    </span>
+  );
 
   const mainDescription = scope.kind === 'overview'
     ? t('llmLogs.overviewDesc')
     : scope.kind === 'agent'
       ? t('llmLogs.agentRequests')
-      : t('llmLogs.modelRequests');
+      : (
+        <span className="monitor-scope-model-meta">
+          <span>{t('llmLogs.modelRequests')}</span>
+          <span aria-hidden="true">·</span>
+          <span>
+            {t('llmLogs.provider')}：<strong>{scope.providerName}</strong>
+          </span>
+        </span>
+      );
 
   return (
     <>
@@ -658,6 +695,26 @@ export function MonitorPanel({
             })}
             leading={<ChartColumn size={18} />}
             onClick={selectOverview}
+          />
+
+          <div className="monitor-section-label">{t('llmLogs.byStatus')}</div>
+          <ListItem
+            className="monitor-status-scope-item is-success"
+            type="button"
+            active={statusFilter === 'success'}
+            title={t('llmLogs.successRequests')}
+            subtitle={t('llmLogs.requestCount', { count: statusSummary.success_count })}
+            leading={<CheckCircle2 size={18} />}
+            onClick={() => selectStatus('success')}
+          />
+          <ListItem
+            className="monitor-status-scope-item is-error"
+            type="button"
+            active={statusFilter === 'error'}
+            title={t('llmLogs.errorRequests')}
+            subtitle={t('llmLogs.requestCount', { count: statusSummary.error_count })}
+            leading={<CircleX size={18} />}
+            onClick={() => selectStatus('error')}
           />
 
           <div className="monitor-section-label">{t('llmLogs.byAgent')}</div>

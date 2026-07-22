@@ -10,7 +10,9 @@ import {
   Clock3,
   KeyRound,
   LoaderCircle,
+  Pause,
   Plus,
+  Play,
   RefreshCw,
   ScanSearch,
   Settings2,
@@ -32,6 +34,7 @@ import type {
 } from '../../api';
 import {
   readAgentToolsConfig,
+  MAX_WEB_SEARCH_KEYS_PER_SOURCE,
   checkWebSearchKeys,
   deleteWebSearchKey,
   importWebSearchKeys,
@@ -55,6 +58,15 @@ type AutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 
 type SourceSection = 'preferences' | 'keys' | 'connection';
 type ExpandedSourceSections = Record<string, Partial<Record<SourceSection, boolean>>>;
+type KeyCheckProgress = {
+  total: number;
+  completed: number;
+  healthy: number;
+  issues: number;
+  activeKeyIndex: number | null;
+  paused: boolean;
+  pauseRequested: boolean;
+};
 
 type PendingSave =
   | {
@@ -75,6 +87,8 @@ const AUTO_SAVE_DELAY_MS = 600;
 const AUTO_SAVE_RETRY_DELAY_MS = 1200;
 const AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
 const MAX_RESULTS = 20;
+const MAX_EVIDENCE_RETENTION_DAYS = 3650;
+const MAX_EVIDENCE_TOTAL_MB = 10240;
 const PRESERVE_KEYS_MARKER = '__preserve__';
 const SOURCE_ROLE_GROUPS: Array<{
   key: 'discovery' | 'content' | 'intent';
@@ -151,6 +165,11 @@ function withWebSearch(config: AgentToolsConfig): AgentToolsConfig {
   const sources = normalizeWebSearchSources(backendSources.concat(missingDefaults));
   return {
     ...config,
+    evidence_storage: {
+      enabled: config.evidence_storage?.enabled ?? true,
+      retention_days: config.evidence_storage?.retention_days ?? 30,
+      max_total_mb: config.evidence_storage?.max_total_mb ?? 200,
+    },
     web_search: {
       ...defaultWebSearch(),
       ...config.web_search,
@@ -159,9 +178,32 @@ function withWebSearch(config: AgentToolsConfig): AgentToolsConfig {
   };
 }
 
+function serializeDefaultsForAutosave(
+  config: AgentToolsConfig,
+  keysDirty: Record<string, boolean>,
+): { serialized: string; payload: AgentToolsConfig } {
+  const payload: AgentToolsConfig = {
+    ...config,
+    web_search: {
+      ...config.web_search,
+      sources: config.web_search.sources.map((source) => {
+        if (!keysDirty[source.id]) {
+          return { ...source, api_keys: [PRESERVE_KEYS_MARKER] };
+        }
+        return source;
+      }),
+    },
+  };
+  return {
+    serialized: JSON.stringify(payload),
+    payload,
+  };
+}
+
 function mergeToolsConfig(defaults: AgentToolsConfig, overrides: AgentToolsOverrides): AgentToolsConfig {
   return {
     max_llm_iterations: overrides.max_llm_iterations ?? defaults.max_llm_iterations,
+    evidence_storage: defaults.evidence_storage,
     terminal: {
       enabled: overrides.terminal.enabled ?? defaults.terminal.enabled,
       permission_mode: overrides.terminal.permission_mode ?? defaults.terminal.permission_mode,
@@ -255,13 +297,12 @@ function formatCheckedAt(value: string): string {
   return Number.isNaN(timestamp) ? value : new Date(timestamp).toLocaleString();
 }
 
-function defaultExpandedSources(sources: WebSearchSourceConfig[]): Record<string, boolean> {
-  const preferred = sources.find((source) => source.provider === 'grok') ?? sources[0];
-  return preferred ? { [preferred.id]: true } : {};
+function defaultExpandedSources(): Record<string, boolean> {
+  return {};
 }
 
-function defaultExpandedSourceSections(sources: WebSearchSourceConfig[]): ExpandedSourceSections {
-  return Object.fromEntries(sources.map((source) => [source.id, { preferences: true }]));
+function defaultExpandedSourceSections(): ExpandedSourceSections {
+  return {};
 }
 
 function summarizeKeyStatuses(
@@ -305,6 +346,7 @@ export function WebSearchToolSettings({
   const [expandedSourceSections, setExpandedSourceSections] = useState<ExpandedSourceSections>({});
   const [keyStatuses, setKeyStatuses] = useState<Record<string, Record<number, WebSearchKeyCheckResult>>>({});
   const [checkingKeys, setCheckingKeys] = useState<Record<string, boolean>>({});
+  const [checkProgress, setCheckProgress] = useState<Record<string, KeyCheckProgress>>({});
   const [importingKeys, setImportingKeys] = useState<Record<string, boolean>>({});
   const [deletingKeys, setDeletingKeys] = useState<Record<string, boolean>>({});
   const [addKeySourceId, setAddKeySourceId] = useState<string | null>(null);
@@ -320,6 +362,8 @@ export function WebSearchToolSettings({
   const debounceContextRef = useRef('');
   const retryTimerRef = useRef<number | undefined>(undefined);
   const retryCountsRef = useRef(new Map<string, number>());
+  const checkPendingIndicesRef = useRef<Record<string, number[]>>({});
+  const checkPauseRequestedRef = useRef<Record<string, boolean>>({});
 
   const config = useMemo(() => {
     if (scope === 'defaults') return defaults ? withWebSearch(defaults) : null;
@@ -354,10 +398,10 @@ export function WebSearchToolSettings({
         setAddKeySourceId(null);
         setKeysDirty({});
         setSelectedKeyIndices({});
-        setExpandedSources(defaultExpandedSources(normalized.web_search.sources));
-        setExpandedSourceSections(defaultExpandedSourceSections(normalized.web_search.sources));
+        setExpandedSources(defaultExpandedSources());
+        setExpandedSourceSections(defaultExpandedSourceSections());
         setKeyStatuses(hydrateKeyStatuses(normalized.web_search.sources));
-        const serialized = JSON.stringify(normalized);
+        const serialized = serializeDefaultsForAutosave(normalized, {}).serialized;
         latestSerializedRef.current.set(contextKey, serialized);
         persistedSerializedRef.current.set(contextKey, serialized);
         loadedContextRef.current = contextKey;
@@ -378,8 +422,8 @@ export function WebSearchToolSettings({
           setDefaults(normalized.defaults);
           setAddKeySourceId(null);
           setSelectedKeyIndices({});
-          setExpandedSources(defaultExpandedSources(normalized.effective.web_search.sources));
-          setExpandedSourceSections(defaultExpandedSourceSections(normalized.effective.web_search.sources));
+          setExpandedSources(defaultExpandedSources());
+          setExpandedSourceSections(defaultExpandedSourceSections());
           setKeyStatuses(hydrateKeyStatuses(normalized.effective.web_search.sources));
           const serialized = JSON.stringify(normalized.overrides);
           latestSerializedRef.current.set(contextKey, serialized);
@@ -478,19 +522,7 @@ export function WebSearchToolSettings({
 
     let pendingSave: PendingSave;
     if (scope === 'defaults') {
-      const payload: AgentToolsConfig = {
-        ...config,
-        web_search: {
-          ...config.web_search,
-          sources: config.web_search.sources.map((source) => {
-            if (!keysDirty[source.id]) {
-              return { ...source, api_keys: [PRESERVE_KEYS_MARKER] };
-            }
-            return source;
-          }),
-        },
-      };
-      const serialized = JSON.stringify(payload);
+      const { serialized, payload } = serializeDefaultsForAutosave(config, keysDirty);
       latestSerializedRef.current.set(contextKey, serialized);
       pendingSave = {
         contextKey,
@@ -569,6 +601,14 @@ export function WebSearchToolSettings({
     updateOverrides({ ...overrides, web_search: nextWebSearch });
   }
 
+  function updateEvidenceStorage(patch: Partial<AgentToolsConfig['evidence_storage']>) {
+    if (!config || scope !== 'defaults') return;
+    updateGlobalConfig({
+      ...config,
+      evidence_storage: { ...config.evidence_storage, ...patch },
+    });
+  }
+
   function setEnabledInherited(inherited: boolean) {
     if (!overrides || !config) return;
     const next = { ...overrides, web_search: { ...overrides.web_search } };
@@ -625,10 +665,16 @@ export function WebSearchToolSettings({
 
     const source = config.web_search.sources.find((item) => item.id === sourceId);
     if (!source) return;
+    const availableSlots = MAX_WEB_SEARCH_KEYS_PER_SOURCE - source.api_keys.length;
+    if (availableSlots <= 0) {
+      toast.error(t('tools.webSearch.keyLimitReached', { count: MAX_WEB_SEARCH_KEYS_PER_SOURCE }));
+      return;
+    }
+    const valuesToImport = values.slice(0, availableSlots);
 
     setImportingKeys((current) => ({ ...current, [sourceId]: true }));
     try {
-      const response = await importWebSearchKeys(sourceId, values);
+      const response = await importWebSearchKeys(sourceId, valuesToImport);
       const sources = config.web_search.sources.map((item) => (
         item.id === sourceId ? response.source : item
       ));
@@ -651,6 +697,9 @@ export function WebSearchToolSettings({
       );
       if (response.imported > 0) toast.success(message);
       else toast.info(message);
+      if (valuesToImport.length < values.length) {
+        toast.info(t('tools.webSearch.keyLimitReached', { count: MAX_WEB_SEARCH_KEYS_PER_SOURCE }));
+      }
       setAddKeySourceId((current) => current === sourceId ? null : current);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('tools.webSearch.saveFailed'));
@@ -670,10 +719,19 @@ export function WebSearchToolSettings({
     if (!config || scope !== 'defaults') return;
     const source = config.web_search.sources.find((item) => item.id === sourceId);
     if (!source) return;
+    const keyHint = source.api_keys[keyIndex];
+    if (keyHint === undefined) return;
+    const confirmed = await confirm({
+      title: t('tools.webSearch.deleteKeyTitle'),
+      message: t('tools.webSearch.deleteKeyConfirm'),
+      confirmLabel: t('tools.webSearch.removeKey'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
 
     setDeletingKeys((current) => ({ ...current, [sourceId]: true }));
     try {
-      const response = await deleteWebSearchKey(sourceId, keyIndex);
+      const response = await deleteWebSearchKey(sourceId, keyIndex, keyHint);
       const sources = config.web_search.sources.map((item) => (
         item.id === sourceId ? response.source : item
       ));
@@ -711,8 +769,10 @@ export function WebSearchToolSettings({
   async function deleteSelectedKeys(sourceId: string) {
     if (!config || scope !== 'defaults') return;
     const source = config.web_search.sources.find((item) => item.id === sourceId);
-    const selected = selectedKeyIndices[sourceId] ?? [];
-    if (!source || selected.length === 0) return;
+    if (!source) return;
+    const selected = (selectedKeyIndices[sourceId] ?? [])
+      .filter((keyIndex) => keyIndex >= 0 && keyIndex < source.api_keys.length);
+    if (selected.length === 0) return;
 
     const confirmed = await confirm({
       title: t('tools.webSearch.deleteSelectedTitle'),
@@ -726,9 +786,12 @@ export function WebSearchToolSettings({
     let latestSource = source;
     let deletedCount = 0;
     try {
-      const indices = [...selected].sort((left, right) => right - left);
-      for (const keyIndex of indices) {
-        const response = await deleteWebSearchKey(sourceId, keyIndex);
+      const indices = selected
+        .map((keyIndex) => ({ keyIndex, keyHint: source.api_keys[keyIndex] }))
+        .filter((entry): entry is { keyIndex: number; keyHint: string } => entry.keyHint !== undefined)
+        .sort((left, right) => right.keyIndex - left.keyIndex);
+      for (const { keyIndex, keyHint } of indices) {
+        const response = await deleteWebSearchKey(sourceId, keyIndex, keyHint);
         latestSource = response.source;
         deletedCount += 1;
       }
@@ -793,32 +856,123 @@ export function WebSearchToolSettings({
     }));
   }
 
+  function requestPauseSourceKeys(sourceId: string) {
+    if (!checkingKeys[sourceId]) return;
+    checkPauseRequestedRef.current[sourceId] = true;
+    setCheckProgress((current) => ({
+      ...current,
+      [sourceId]: current[sourceId]
+        ? { ...current[sourceId], pauseRequested: true }
+        : current[sourceId],
+    }));
+  }
+
   async function checkSourceKeys(sourceId: string, indices: number[]) {
     if (checkingKeys[sourceId] || indices.length === 0) return;
+    const queue = Array.from(new Set(indices.filter((index) => Number.isInteger(index) && index >= 0)));
+    if (queue.length === 0) return;
+
+    checkPendingIndicesRef.current[sourceId] = queue;
+    checkPauseRequestedRef.current[sourceId] = false;
+    setCheckProgress((current) => ({
+      ...current,
+      [sourceId]: {
+        total: queue.length,
+        completed: 0,
+        healthy: 0,
+        issues: 0,
+        activeKeyIndex: queue[0] ?? null,
+        paused: false,
+        pauseRequested: false,
+      },
+    }));
     setCheckingKeys((current) => ({ ...current, [sourceId]: true }));
+
+    let firstRequestError = '';
     try {
-      const response = await checkWebSearchKeys(sourceId, indices);
-      const next = response.results.reduce<Record<number, WebSearchKeyCheckResult>>((result, item) => {
-        result[item.key_index] = item;
-        return result;
-      }, {});
-      setKeyStatuses((current) => ({ ...current, [sourceId]: { ...(current[sourceId] ?? {}), ...next } }));
-      if (scope === 'defaults') {
-        setDefaults((current) => {
-          if (!current) return current;
-          const sources = current.web_search.sources.map((source) => (
-            source.id === sourceId ? mergeCheckedStatuses(source, response.results) : source
-          ));
-          return withWebSearch({
-            ...current,
-            web_search: { ...current.web_search, sources },
+      while (checkPendingIndicesRef.current[sourceId]?.length) {
+        if (checkPauseRequestedRef.current[sourceId]) break;
+        const pending = checkPendingIndicesRef.current[sourceId];
+        const keyIndex = pending[0];
+        try {
+          const response = await checkWebSearchKeys(sourceId, [keyIndex]);
+          const result = response.results[0];
+          if (result) {
+            setKeyStatuses((current) => ({
+              ...current,
+              [sourceId]: { ...(current[sourceId] ?? {}), [result.key_index]: result },
+            }));
+            if (scope === 'defaults') {
+              setDefaults((current) => {
+                if (!current) return current;
+                const sources = current.web_search.sources.map((source) => (
+                  source.id === sourceId ? mergeCheckedStatuses(source, [result]) : source
+                ));
+                return withWebSearch({
+                  ...current,
+                  web_search: { ...current.web_search, sources },
+                });
+              });
+            }
+            setCheckProgress((current) => {
+              const progress = current[sourceId];
+              if (!progress) return current;
+              return {
+                ...current,
+                [sourceId]: {
+                  ...progress,
+                  completed: progress.completed + 1,
+                  healthy: progress.healthy + (result.status === 'normal' ? 1 : 0),
+                  issues: progress.issues + (result.status === 'normal' ? 0 : 1),
+                },
+              };
+            });
+          }
+        } catch (error) {
+          if (!firstRequestError) {
+            firstRequestError = error instanceof Error ? error.message : t('tools.webSearch.checkFailed');
+          }
+          setCheckProgress((current) => {
+            const progress = current[sourceId];
+            if (!progress) return current;
+            return {
+              ...current,
+              [sourceId]: {
+                ...progress,
+                completed: progress.completed + 1,
+                issues: progress.issues + 1,
+              },
+            };
           });
-        });
+        } finally {
+          checkPendingIndicesRef.current[sourceId] = (checkPendingIndicesRef.current[sourceId] ?? [])
+            .slice(1);
+          const remaining = checkPendingIndicesRef.current[sourceId] ?? [];
+          setCheckProgress((current) => {
+            const progress = current[sourceId];
+            if (!progress) return current;
+            return {
+              ...current,
+              [sourceId]: {
+                ...progress,
+                activeKeyIndex: checkPauseRequestedRef.current[sourceId] ? null : (remaining[0] ?? null),
+              },
+            };
+          });
+        }
       }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('tools.webSearch.checkFailed'));
     } finally {
+      const remaining = checkPendingIndicesRef.current[sourceId]?.length ?? 0;
+      const paused = checkPauseRequestedRef.current[sourceId] && remaining > 0;
+      setCheckProgress((current) => ({
+        ...current,
+        [sourceId]: current[sourceId]
+          ? { ...current[sourceId], activeKeyIndex: null, paused, pauseRequested: false }
+          : current[sourceId],
+      }));
       setCheckingKeys((current) => ({ ...current, [sourceId]: false }));
+      checkPauseRequestedRef.current[sourceId] = false;
+      if (firstRequestError) toast.error(firstRequestError);
     }
   }
 
@@ -842,6 +996,7 @@ export function WebSearchToolSettings({
 
   const isAgentScope = scope === 'agent';
   const webSearch = config.web_search;
+  const evidenceStorage = config.evidence_storage;
   const addKeySource = addKeySourceId
     ? webSearch.sources.find((source) => source.id === addKeySourceId) ?? null
     : null;
@@ -969,6 +1124,73 @@ export function WebSearchToolSettings({
                     <option value="random">{t('tools.webSearch.keySelectionRandom')}</option>
                   </select>
                 </div>
+
+                <div className="web-search-evidence-divider">
+                  <div className="settings-section-title">
+                    <h3>{t('tools.webSearch.evidenceStorageTitle')}</h3>
+                    <p>{t('tools.webSearch.evidenceStorageDesc')}</p>
+                  </div>
+                </div>
+
+                <div className="setting-row">
+                  <div className="setting-info">
+                    <label>{t('tools.webSearch.evidenceStorageEnabled')}</label>
+                    <p className="setting-desc">{t('tools.webSearch.evidenceStorageEnabledDesc')}</p>
+                  </div>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      aria-label={t('tools.webSearch.evidenceStorageEnabled')}
+                      checked={evidenceStorage.enabled}
+                      onChange={(e) => updateEvidenceStorage({ enabled: e.target.checked })}
+                    />
+                    <span className="toggle-slider" />
+                  </label>
+                </div>
+
+                <div className="setting-row">
+                  <div className="setting-info">
+                    <label>{t('tools.webSearch.evidenceRetentionDays')}</label>
+                    <p className="setting-desc">{t('tools.webSearch.evidenceRetentionDaysDesc')}</p>
+                  </div>
+                  <div className="timeout-input">
+                    <input
+                      type="number"
+                      min={1}
+                      max={MAX_EVIDENCE_RETENTION_DAYS}
+                      value={evidenceStorage.retention_days}
+                      onChange={(e) => {
+                        const value = Number(e.target.value);
+                        if (!Number.isFinite(value)) return;
+                        updateEvidenceStorage({
+                          retention_days: Math.min(MAX_EVIDENCE_RETENTION_DAYS, Math.max(1, Math.round(value))),
+                        });
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="setting-row">
+                  <div className="setting-info">
+                    <label>{t('tools.webSearch.evidenceMaxTotalMb')}</label>
+                    <p className="setting-desc">{t('tools.webSearch.evidenceMaxTotalMbDesc')}</p>
+                  </div>
+                  <div className="timeout-input">
+                    <input
+                      type="number"
+                      min={1}
+                      max={MAX_EVIDENCE_TOTAL_MB}
+                      value={evidenceStorage.max_total_mb}
+                      onChange={(e) => {
+                        const value = Number(e.target.value);
+                        if (!Number.isFinite(value)) return;
+                        updateEvidenceStorage({
+                          max_total_mb: Math.min(MAX_EVIDENCE_TOTAL_MB, Math.max(1, Math.round(value))),
+                        });
+                      }}
+                    />
+                  </div>
+                </div>
               </>
             ) : null}
           </div>
@@ -987,7 +1209,8 @@ export function WebSearchToolSettings({
               <div className="web-search-source-list">
                 {webSearch.sources.map((source, index) => {
                   const keyCount = source.api_keys.length;
-                  const selected = selectedKeyIndices[source.id] ?? [];
+                  const selected = (selectedKeyIndices[source.id] ?? [])
+                    .filter((keyIndex) => keyIndex >= 0 && keyIndex < keyCount);
                   const sourceStatuses = keyStatuses[source.id] ?? {};
                   const isChecking = Boolean(checkingKeys[source.id]);
                   const isDeleting = Boolean(deletingKeys[source.id]);
@@ -997,6 +1220,13 @@ export function WebSearchToolSettings({
                   const isConnectionExpanded = Boolean(expandedSourceSections[source.id]?.connection);
                   const allSelected = keyCount > 0 && selected.length === keyCount;
                   const statusSummary = summarizeKeyStatuses(keyCount, sourceStatuses);
+                  const currentCheckProgress = checkProgress[source.id];
+                  const hasPausedChecks = Boolean(
+                    currentCheckProgress?.paused && (checkPendingIndicesRef.current[source.id]?.length ?? 0) > 0,
+                  );
+                  const checkIndices = selected.length > 0
+                    ? selected
+                    : source.api_keys.map((_, keyIndex) => keyIndex);
                   const emptyLabel = t(source.provider === 'grok' ? 'tools.webSearch.noSso' : 'tools.webSearch.noKeys');
                   const sourceBodyId = `web-search-source-body-${source.id}`;
                   const preferencesBodyId = `web-search-preferences-body-${source.id}`;
@@ -1178,19 +1408,58 @@ export function WebSearchToolSettings({
                                   </label>
                                 ) : null}
                                 {isKeysExpanded && keyCount > 0 ? (
-                                  <Button
-                                    type="button"
-                                    variant="secondary"
-                                    className="web-search-keys__check-btn"
-                                    icon={isChecking ? <LoaderCircle size={14} className="is-spinning" /> : <ScanSearch size={15} />}
-                                    title={t('tools.webSearch.keyCheckHint')}
-                                    onClick={() => checkSourceKeys(source.id, selected.length > 0 ? selected : source.api_keys.map((_, keyIndex) => keyIndex))}
-                                    disabled={isChecking || isDeleting}
-                                  >
-                                    {selected.length > 0
-                                      ? t('tools.webSearch.checkSelected', { count: selected.length })
-                                      : t('tools.webSearch.checkAll')}
-                                  </Button>
+                                  <>
+                                    <Button
+                                      type="button"
+                                      variant="secondary"
+                                      className="web-search-keys__check-btn"
+                                      icon={isChecking
+                                        ? (currentCheckProgress?.pauseRequested
+                                          ? <LoaderCircle size={14} className="is-spinning" />
+                                          : <Pause size={14} />)
+                                        : hasPausedChecks ? <Play size={14} /> : <ScanSearch size={15} />}
+                                      title={t('tools.webSearch.keyCheckHint')}
+                                      onClick={() => {
+                                        if (isChecking) {
+                                          requestPauseSourceKeys(source.id);
+                                        } else if (hasPausedChecks) {
+                                          void checkSourceKeys(source.id, checkPendingIndicesRef.current[source.id] ?? []);
+                                        } else {
+                                          void checkSourceKeys(source.id, checkIndices);
+                                        }
+                                      }}
+                                      disabled={isDeleting || Boolean(currentCheckProgress?.pauseRequested)}
+                                    >
+                                      {isChecking
+                                        ? (currentCheckProgress?.pauseRequested
+                                          ? t('tools.webSearch.checkPausing')
+                                          : t('tools.webSearch.pauseCheck'))
+                                        : hasPausedChecks
+                                          ? t('tools.webSearch.resumeCheck')
+                                          : selected.length > 0
+                                            ? t('tools.webSearch.checkSelected', { count: selected.length })
+                                            : t('tools.webSearch.checkAll')}
+                                    </Button>
+                                    {currentCheckProgress ? (
+                                      <span className={`web-search-key-progress ${currentCheckProgress.paused ? 'is-paused' : ''}`} role="status">
+                                        {currentCheckProgress.paused
+                                          ? t('tools.webSearch.checkProgressPaused', {
+                                            completed: currentCheckProgress.completed,
+                                            total: currentCheckProgress.total,
+                                            healthy: currentCheckProgress.healthy,
+                                            issues: currentCheckProgress.issues,
+                                            remaining: currentCheckProgress.total - currentCheckProgress.completed,
+                                          })
+                                          : t('tools.webSearch.checkProgress', {
+                                            completed: currentCheckProgress.completed,
+                                            total: currentCheckProgress.total,
+                                            healthy: currentCheckProgress.healthy,
+                                            issues: currentCheckProgress.issues,
+                                            remaining: currentCheckProgress.total - currentCheckProgress.completed,
+                                          })}
+                                      </span>
+                                    ) : null}
+                                  </>
                                 ) : null}
                                 {isKeysExpanded && selected.length > 0 ? (
                                   <Button
@@ -1297,7 +1566,9 @@ export function WebSearchToolSettings({
                                               onClick={() => checkSourceKeys(source.id, [keyIndex])}
                                               disabled={isChecking || isDeleting}
                                             >
-                                              {isChecking ? <LoaderCircle size={14} className="is-spinning" /> : <ScanSearch size={15} />}
+                                              {isChecking && currentCheckProgress?.activeKeyIndex === keyIndex
+                                                ? <LoaderCircle size={14} className="is-spinning" />
+                                                : <ScanSearch size={15} />}
                                             </IconButton>
                                             <IconButton
                                               type="button"

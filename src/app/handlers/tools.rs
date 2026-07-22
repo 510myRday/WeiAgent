@@ -67,6 +67,10 @@ pub struct DeleteWebSearchKeyRequest {
     #[serde(default)]
     pub source_id: Option<String>,
     pub key_index: usize,
+    /// Masked key returned to the client. It lets the server resolve the
+    /// intended key when a stale UI index no longer points at the same slot.
+    #[serde(default)]
+    pub key_hint: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,6 +111,16 @@ pub async fn update_tool_defaults(
     Json(config): Json<AgentToolsConfig>,
 ) -> AppResult<Json<AgentToolsConfig>> {
     let config = state.store.update_tool_defaults(config).await?;
+    if config.evidence_storage.enabled {
+        if let Err(error) = crate::tools::web_search::evidence::cleanup_evidence_store(
+            &state.store.data_dir,
+            &config.evidence_storage,
+        )
+        .await
+        {
+            tracing::warn!(error = %error, "failed to clean evidence store after settings update");
+        }
+    }
     Ok(Json(config.redact_secrets()))
 }
 
@@ -203,23 +217,54 @@ pub async fn delete_web_search_key(
         })
         .ok_or_else(|| AppError::BadRequest("web search source not found".to_string()))?;
     let source = &mut config.web_search.sources[source_index];
-    if request.key_index >= source.api_keys.len() {
+    let key_index = request
+        .key_hint
+        .as_deref()
+        .map(str::trim)
+        .filter(|hint| !hint.is_empty())
+        .map(|hint| {
+            if let Some(key) = source.api_keys.get(request.key_index)
+                && mask_api_key(key) == hint
+            {
+                return Ok(request.key_index);
+            }
+
+            let matches = source
+                .api_keys
+                .iter()
+                .enumerate()
+                .filter(|(_, key)| mask_api_key(key) == hint)
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [index] => Ok(*index),
+                [] => Err(AppError::Conflict(
+                    "selected web search key is stale".to_string(),
+                )),
+                _ => Err(AppError::Conflict(
+                    "selected web search key is ambiguous; reload the key list".to_string(),
+                )),
+            }
+        })
+        .transpose()?
+        .unwrap_or(request.key_index);
+    if key_index >= source.api_keys.len() {
         return Err(AppError::BadRequest(
             "web search key index is out of range".to_string(),
         ));
     }
-    let removed_key = source.api_keys[request.key_index].clone();
+    let removed_key = source.api_keys[key_index].clone();
     let was_officially_blocked = source
         .key_statuses
-        .get(request.key_index)
+        .get(key_index)
         .and_then(Option::as_ref)
         .is_some_and(|record| record.status == "officially_blocked");
     if was_officially_blocked {
         source.remember_blocked_api_key(&removed_key);
     }
-    source.api_keys.remove(request.key_index);
-    if request.key_index < source.key_statuses.len() {
-        source.key_statuses.remove(request.key_index);
+    source.api_keys.remove(key_index);
+    if key_index < source.key_statuses.len() {
+        source.key_statuses.remove(key_index);
     }
     source.key_statuses.truncate(source.api_keys.len());
     let source_id = source.id.clone();

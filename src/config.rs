@@ -1,6 +1,6 @@
 use std::{
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use tokio::fs;
@@ -15,14 +15,23 @@ use crate::{
 pub struct AppConfig {
     pub settings: AppSettings,
     pub data_dir: PathBuf,
+    pub terminal_workspace_dir: PathBuf,
 }
+
+pub const TERMINAL_WORKSPACE_DIR_NAME: &str = "workspace";
 
 impl AppConfig {
     pub async fn load(is_dev: bool) -> AppResult<Self> {
         let data_dir = resolve_data_dir(is_dev)?;
+        let terminal_workspace_dir = terminal_workspace_dir(&data_dir);
         fs::create_dir_all(&data_dir).await?;
+        fs::create_dir_all(&terminal_workspace_dir).await?;
         let settings = load_or_init_settings(&data_dir.join("settings.json")).await?;
-        Ok(Self { settings, data_dir })
+        Ok(Self {
+            settings,
+            data_dir,
+            terminal_workspace_dir,
+        })
     }
 
     pub fn socket_addr(&self) -> Result<SocketAddr, std::net::AddrParseError> {
@@ -198,6 +207,13 @@ pub fn validate_settings(settings: &AppSettings) -> AppResult<()> {
     Ok(())
 }
 
+/// Resolve the terminal/file-tool default workspace under the application data root.
+/// Keeping it in a dedicated child directory prevents ordinary tool output from
+/// being mixed with settings, agent state, conversations, runtimes, and databases.
+pub fn terminal_workspace_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(TERMINAL_WORKSPACE_DIR_NAME)
+}
+
 pub fn log_level_filter(value: &str) -> tracing_subscriber::filter::LevelFilter {
     match value.trim().to_ascii_lowercase().as_str() {
         "trace" => tracing_subscriber::filter::LevelFilter::TRACE,
@@ -350,6 +366,14 @@ mod tests {
         assert_eq!(
             resolved.file_name().and_then(|name| name.to_str()),
             Some(".WeiAgent")
+        );
+    }
+
+    #[test]
+    fn terminal_workspace_is_a_dedicated_data_child() {
+        assert_eq!(
+            terminal_workspace_dir(Path::new("data")),
+            PathBuf::from("data").join(TERMINAL_WORKSPACE_DIR_NAME)
         );
     }
 }

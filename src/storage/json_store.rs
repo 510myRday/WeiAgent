@@ -15,6 +15,7 @@ use crate::{
 
 pub struct JsonStore {
     pub data_dir: PathBuf,
+    pub terminal_workspace_dir: PathBuf,
     pub(super) settings_file: PathBuf,
     pub(super) tool_defaults_file: PathBuf,
     pub(super) agents_file: PathBuf,
@@ -27,6 +28,7 @@ pub struct JsonStore {
 impl JsonStore {
     pub async fn new(root: impl AsRef<Path>) -> AppResult<Self> {
         let root = root.as_ref().to_path_buf();
+        let terminal_workspace_dir = crate::config::terminal_workspace_dir(&root);
         let settings_file = root.join("settings.json");
         let tool_defaults_file = root.join("tool_defaults.json");
         let agents_file = root.join("agents.json");
@@ -34,6 +36,7 @@ impl JsonStore {
         let conversations_file = root.join("conversations.json");
         let conversations_dir = root.join("conversations");
         fs::create_dir_all(&root).await?;
+        fs::create_dir_all(&terminal_workspace_dir).await?;
         fs::create_dir_all(&agents_dir).await?;
         fs::create_dir_all(&conversations_dir).await?;
         ensure_json_array(&agents_file).await?;
@@ -48,6 +51,7 @@ impl JsonStore {
 
         let store = Self {
             data_dir: root,
+            terminal_workspace_dir,
             settings_file,
             tool_defaults_file,
             agents_file,
@@ -135,5 +139,22 @@ impl JsonStore {
 
     pub(super) fn agent_workspace_dir(&self, agent_id: Uuid) -> PathBuf {
         self.agents_dir.join(agent_id.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn creates_dedicated_terminal_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(root.path()).await.unwrap();
+
+        assert_eq!(
+            store.terminal_workspace_dir,
+            root.path().join(crate::config::TERMINAL_WORKSPACE_DIR_NAME)
+        );
+        assert!(store.terminal_workspace_dir.is_dir());
     }
 }

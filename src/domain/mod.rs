@@ -40,6 +40,7 @@ pub use tools::{
     ApprovalDecision,
     ApprovalRequest,
     ApprovalResponse,
+    EvidenceStorageConfig,
     PendingApproval,
     ProcessInfo,
     ProcessStatus,

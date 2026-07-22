@@ -234,6 +234,8 @@ function serializeRuntimeSettings(settings: AppSettings): string {
     request_retry_attempts: settings.request_retry_attempts,
     context_compress_threshold_percent: settings.context_compress_threshold_percent,
     llm_log_enabled: settings.llm_log_enabled,
+    conversation_title_provider_id: settings.conversation_title_provider_id,
+    conversation_title_model_id: settings.conversation_title_model_id,
     // Keep avatar/language in the payload for saves, but treat them as owned elsewhere
     // so external Sidebar updates do not thrash auto-save status.
     avatar_icon: settings.avatar_icon,
@@ -963,34 +965,34 @@ export function SettingsPanel({
 
           {activeSection === 'runtime' ? (
             <div className="form-card entity-form narrow-form">
-              <div className="form-grid two-column">
-                <FormField
-                  label={t('settings.host')}
-                  htmlFor="settings-host"
-                  hint={t('settings.restartHint')}
+              <div className="settings-field-pair">
+                <label className="settings-field-pair__label settings-field-pair__label--left" htmlFor="settings-host">
+                  {t('settings.host')}<span className="required-marker" aria-hidden="true">*</span>
+                </label>
+                <label className="settings-field-pair__label settings-field-pair__label--right" htmlFor="settings-port">
+                  {t('settings.port')}<span className="required-marker" aria-hidden="true">*</span>
+                </label>
+                <p className="settings-field-pair__hint">{t('settings.restartHint')}</p>
+                <select
+                  className="settings-field-pair__control settings-field-pair__control--left"
+                  id="settings-host"
+                  value={settingsForm.host}
+                  onChange={(e) => patchRuntimeSettings({ host: e.target.value })}
                   required
                 >
-                  <select
-                    id="settings-host"
-                    value={settingsForm.host}
-                    onChange={(e) => patchRuntimeSettings({ host: e.target.value })}
-                    required
-                  >
-                    <option value="127.0.0.1">127.0.0.1</option>
-                    <option value="::1">::1</option>
-                  </select>
-                </FormField>
-                <FormField label={t('settings.port')} htmlFor="settings-port" required>
-                  <input
-                    id="settings-port"
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={settingsForm.port}
-                    onChange={(e) => patchRuntimeSettings({ port: Number(e.target.value) })}
-                    required
-                  />
-                </FormField>
+                  <option value="127.0.0.1">127.0.0.1</option>
+                  <option value="::1">::1</option>
+                </select>
+                <input
+                  className="settings-field-pair__control settings-field-pair__control--right"
+                  id="settings-port"
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={settingsForm.port}
+                  onChange={(e) => patchRuntimeSettings({ port: Number(e.target.value) })}
+                  required
+                />
                 <FormField label={t('settings.logLevel')} htmlFor="settings-log" required>
                   <select
                     id="settings-log"
@@ -1005,34 +1007,34 @@ export function SettingsPanel({
             </div>
           ) : activeSection === 'agent' ? (
             <div className="form-card entity-form narrow-form model-agent-settings-card">
-              <div className="form-grid two-column">
-                <FormField
-                  label={t('settings.requestTimeout')}
-                  htmlFor="settings-timeout"
-                  hint={t('settings.agentRetryHint')}
+              <div className="settings-field-pair">
+                <label className="settings-field-pair__label settings-field-pair__label--left" htmlFor="settings-timeout">
+                  {t('settings.requestTimeout')}<span className="required-marker" aria-hidden="true">*</span>
+                </label>
+                <label className="settings-field-pair__label settings-field-pair__label--right" htmlFor="settings-retries">
+                  {t('settings.requestRetries')}<span className="required-marker" aria-hidden="true">*</span>
+                </label>
+                <p className="settings-field-pair__hint">{t('settings.agentRetryHint')}</p>
+                <input
+                  className="settings-field-pair__control settings-field-pair__control--left"
+                  id="settings-timeout"
+                  type="number"
+                  min={1}
+                  max={600}
+                  value={settingsForm.request_timeout_seconds}
+                  onChange={(e) => patchRuntimeSettings({ request_timeout_seconds: Number(e.target.value) })}
                   required
-                >
-                  <input
-                    id="settings-timeout"
-                    type="number"
-                    min={1}
-                    max={600}
-                    value={settingsForm.request_timeout_seconds}
-                    onChange={(e) => patchRuntimeSettings({ request_timeout_seconds: Number(e.target.value) })}
-                    required
-                  />
-                </FormField>
-                <FormField label={t('settings.requestRetries')} htmlFor="settings-retries" required>
-                  <input
-                    id="settings-retries"
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={settingsForm.request_retry_attempts}
-                    onChange={(e) => patchRuntimeSettings({ request_retry_attempts: Number(e.target.value) })}
-                    required
-                  />
-                </FormField>
+                />
+                <input
+                  className="settings-field-pair__control settings-field-pair__control--right"
+                  id="settings-retries"
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={settingsForm.request_retry_attempts}
+                  onChange={(e) => patchRuntimeSettings({ request_retry_attempts: Number(e.target.value) })}
+                  required
+                />
               </div>
               <div className="setting-row settings-context-policy">
                 <div className="setting-info">
@@ -1064,6 +1066,49 @@ export function SettingsPanel({
                   />
                   <span className="unit">{t('settings.contextCompressThresholdUnit')}</span>
                 </label>
+              </div>
+              <div className="settings-field-pair conversation-title-settings-grid">
+                <label className="settings-field-pair__label settings-field-pair__label--left" htmlFor="settings-conversation-title-provider">
+                  {t('settings.conversationTitleProvider')}
+                </label>
+                <label className="settings-field-pair__label settings-field-pair__label--right" htmlFor="settings-conversation-title-model">
+                  {t('settings.conversationTitleModel')}
+                </label>
+                <p className="settings-field-pair__hint">{t('settings.conversationTitleHint')}</p>
+                <select
+                  className="settings-field-pair__control settings-field-pair__control--left"
+                  id="settings-conversation-title-provider"
+                  value={settingsForm.conversation_title_provider_id ?? ''}
+                  onChange={(event) => {
+                    const providerId = event.target.value || null;
+                    const provider = providers.find((item) => item.id === providerId);
+                    patchRuntimeSettings({
+                      conversation_title_provider_id: providerId,
+                      conversation_title_model_id: provider?.models.includes(settingsForm.conversation_title_model_id ?? '')
+                        ? settingsForm.conversation_title_model_id
+                        : provider?.models[0] ?? null,
+                    });
+                  }}
+                >
+                  <option value="">{t('settings.conversationTitleDisabled')}</option>
+                  {providers.map((provider) => (
+                    <option key={provider.id} value={provider.id}>{provider.name}</option>
+                  ))}
+                </select>
+                <select
+                  className="settings-field-pair__control settings-field-pair__control--right"
+                  id="settings-conversation-title-model"
+                  value={settingsForm.conversation_title_model_id ?? ''}
+                  onChange={(event) => patchRuntimeSettings({
+                    conversation_title_model_id: event.target.value || null,
+                  })}
+                  disabled={!settingsForm.conversation_title_provider_id}
+                >
+                  <option value="">{t('settings.conversationTitleModelPlaceholder')}</option>
+                  {(providers.find((provider) => provider.id === settingsForm.conversation_title_provider_id)?.models ?? []).map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
               </div>
             </div>
           ) : (

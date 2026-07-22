@@ -158,6 +158,36 @@ impl JsonStore {
             .find(|conversation| conversation.id == id)
             .ok_or(AppError::NotFound)?;
         conversation.is_pinned = request.is_pinned;
+        if let Some(title) = request.title {
+            let title = title.trim();
+            if !title.is_empty() {
+                conversation.title = title.to_string();
+            }
+        }
+        let updated = conversation.clone();
+        self.write_conversations_unlocked(&conversations).await?;
+        Ok(updated)
+    }
+
+    pub async fn update_conversation_title(
+        &self,
+        id: Uuid,
+        title: String,
+    ) -> AppResult<Conversation> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Err(AppError::BadRequest(
+                "conversation title cannot be empty".to_string(),
+            ));
+        }
+        let _guard = self.lock.lock().await;
+        let mut conversations = self.read_conversations_unlocked().await?;
+        let conversation = conversations
+            .iter_mut()
+            .find(|conversation| conversation.id == id)
+            .ok_or(AppError::NotFound)?;
+        conversation.title = title;
+        conversation.updated_at = Utc::now();
         let updated = conversation.clone();
         self.write_conversations_unlocked(&conversations).await?;
         Ok(updated)

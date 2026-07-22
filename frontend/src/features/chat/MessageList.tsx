@@ -8,6 +8,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
 } from 'react';
@@ -17,6 +19,7 @@ import {
   ChevronDown,
   LoaderCircle,
   MessageSquare,
+  Paperclip,
   Pencil,
   RotateCcw,
   Send,
@@ -49,6 +52,7 @@ interface MessageListProps {
   hasOlderMessages: boolean;
   isLoadingOlderMessages: boolean;
   isSending: boolean;
+  supportsImages: boolean;
   runPhase: AgentRunPhase;
   retryStatus: { attempt: number; maxAttempts: number; reason: string } | null;
   timelineMessageIndexes: readonly number[];
@@ -90,6 +94,14 @@ const WAITING_ESTIMATE = 90;
 const INITIAL_POSITION_MAX_FRAMES = 12;
 const INITIAL_POSITION_STABLE_FRAMES = 2;
 const BOTTOM_POSITION_TOLERANCE = 1;
+const MAX_EDIT_IMAGE_COUNT = 8;
+const MAX_EDIT_IMAGE_BYTES = 10 * 1024 * 1024;
+const EDIT_IMAGE_TYPES = new Set<ImageAttachment['media_type']>([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+]);
 
 export const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList({
   conversationId,
@@ -100,6 +112,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   hasOlderMessages,
   isLoadingOlderMessages,
   isSending,
+  supportsImages,
   runPhase,
   retryStatus,
   timelineMessageIndexes,
@@ -388,6 +401,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                     activeAgent={activeAgent}
                     settings={settings}
                     isSending={isSending}
+                    supportsImages={supportsImages}
                     onRestart={onRestart}
                     onApproveToolCall={onApproveToolCall}
                     formatTimelineTime={formatTimelineTime}
@@ -419,6 +433,7 @@ const MessageListItem = memo(function MessageListItem({
   activeAgent,
   settings,
   isSending,
+  supportsImages,
   onRestart,
   onApproveToolCall,
   formatTimelineTime,
@@ -428,6 +443,7 @@ const MessageListItem = memo(function MessageListItem({
   activeAgent?: Agent;
   settings: AppSettings;
   isSending: boolean;
+  supportsImages: boolean;
   onRestart: MessageListProps['onRestart'];
   onApproveToolCall: MessageListProps['onApproveToolCall'];
   formatTimelineTime: (value: string) => string;
@@ -443,6 +459,7 @@ const MessageListItem = memo(function MessageListItem({
       settings={settings}
       failedLabel={t('chat.failed')}
       actionsDisabled={isSending}
+      supportsImages={supportsImages}
       onRestart={onRestart}
       onApproveToolCall={onApproveToolCall}
     />
@@ -531,6 +548,7 @@ const MessageRow = memo(function MessageRow({
   settings,
   failedLabel,
   actionsDisabled,
+  supportsImages,
   onRestart,
   onApproveToolCall,
 }: {
@@ -542,14 +560,20 @@ const MessageRow = memo(function MessageRow({
   settings: AppSettings;
   failedLabel: string;
   actionsDisabled: boolean;
+  supportsImages: boolean;
   onRestart: MessageListProps['onRestart'];
   onApproveToolCall: MessageListProps['onApproveToolCall'];
 }) {
   const { t } = useI18n();
+  const { toast } = useFeedback();
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.content);
+  const [editAttachments, setEditAttachments] = useState<ImageAttachment[]>(message.attachments ?? []);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const editInputRef = useRef<HTMLTextAreaElement>(null);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
+  const dragDepthRef = useRef(0);
   const canRestart = isUser && Boolean(message.id) && message.status !== 'streaming';
 
   useLayoutEffect(() => {
@@ -564,20 +588,105 @@ const MessageRow = memo(function MessageRow({
 
   function beginEditing() {
     setEditDraft(message.content);
+    setEditAttachments(message.attachments ?? []);
     setIsEditing(true);
   }
 
   function cancelEditing() {
     setEditDraft(message.content);
+    setEditAttachments(message.attachments ?? []);
+    setIsDraggingFiles(false);
+    dragDepthRef.current = 0;
     setIsEditing(false);
   }
 
   function submitEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const content = editDraft.trim();
-    if ((!content && !message.attachments?.length) || actionsDisabled || !message.id) return;
+    if ((!content && editAttachments.length === 0) || actionsDisabled || !message.id) return;
     setIsEditing(false);
-    onRestart(message.id, content, message.attachments);
+    onRestart(message.id, content, editAttachments);
+  }
+
+  async function addEditFiles(files: File[]) {
+    if (files.length === 0) return;
+    if (!supportsImages) {
+      toast.warning(t('chat.imageUnsupportedModel'));
+      return;
+    }
+    const remaining = MAX_EDIT_IMAGE_COUNT - editAttachments.length;
+    if (remaining <= 0) {
+      toast.warning(t('chat.imageCountLimit', { count: MAX_EDIT_IMAGE_COUNT }));
+      return;
+    }
+    const accepted: ImageAttachment[] = [];
+    for (const file of files.slice(0, remaining)) {
+      const mediaType = normalizedEditImageType(file);
+      if (!mediaType) {
+        toast.warning(t('chat.imageTypeUnsupported'));
+        continue;
+      }
+      if (file.size > MAX_EDIT_IMAGE_BYTES) {
+        toast.warning(t('chat.imageTooLarge', { size: 10 }));
+        continue;
+      }
+      accepted.push({
+        id: createEditAttachmentId(),
+        name: file.name || t('chat.pastedImage'),
+        media_type: mediaType,
+        source_type: 'base64',
+        data: await editFileToBase64(file),
+      });
+    }
+    if (files.length > remaining) {
+      toast.warning(t('chat.imageCountLimit', { count: MAX_EDIT_IMAGE_COUNT }));
+    }
+    if (accepted.length > 0) {
+      setEditAttachments((current) => [...current, ...accepted]);
+    }
+  }
+
+  function handleEditPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const imageFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (imageFiles.length === 0) return;
+    event.preventDefault();
+    void addEditFiles(imageFiles);
+  }
+
+  function handleEditDragEnter(event: DragEvent<HTMLDivElement>) {
+    if (actionsDisabled || !isEditFileDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current += 1;
+    setIsDraggingFiles(true);
+  }
+
+  function handleEditDragOver(event: DragEvent<HTMLDivElement>) {
+    if (actionsDisabled || !isEditFileDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+  }
+
+  function handleEditDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (!isEditFileDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDraggingFiles(false);
+  }
+
+  function handleEditDrop(event: DragEvent<HTMLDivElement>) {
+    if (!isEditFileDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = 0;
+    setIsDraggingFiles(false);
+    if (actionsDisabled) return;
+    void addEditFiles(Array.from(event.dataTransfer.files));
   }
 
   function handleEditKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -614,18 +723,66 @@ const MessageRow = memo(function MessageRow({
           {isEditing ? (
             <form className="message-edit-form" onSubmit={submitEdit}>
               <div className="message-bubble message-edit-bubble">
-                <textarea
-                  ref={editInputRef}
-                  className="message-edit-textarea"
-                  value={editDraft}
-                  onChange={(event) => setEditDraft(event.target.value)}
-                  onKeyDown={handleEditKeyDown}
-                  aria-label={t('chat.editMessage')}
-                  disabled={actionsDisabled}
-                  rows={3}
-                />
+                <div
+                  className={`message-edit-drop-zone${isDraggingFiles ? ' is-dragging-files' : ''}`}
+                  onDragEnter={handleEditDragEnter}
+                  onDragOver={handleEditDragOver}
+                  onDragLeave={handleEditDragLeave}
+                  onDrop={handleEditDrop}
+                >
+                  {editAttachments.length > 0 ? (
+                    <div className="message-edit-image-strip">
+                      {editAttachments.map((attachment) => (
+                        <div className="message-edit-image-preview" key={attachment.id}>
+                          <img src={attachmentImageUrl(attachment)} alt={attachment.name} />
+                          <button
+                            type="button"
+                            onClick={() => setEditAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                            aria-label={t('chat.removeImage')}
+                            title={t('chat.removeImage')}
+                          >
+                            <X size={13} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  <textarea
+                    ref={editInputRef}
+                    className="message-edit-textarea"
+                    value={editDraft}
+                    onChange={(event) => setEditDraft(event.target.value)}
+                    onKeyDown={handleEditKeyDown}
+                    onPaste={handleEditPaste}
+                    aria-label={t('chat.editMessage')}
+                    disabled={actionsDisabled}
+                    rows={3}
+                  />
+                </div>
               </div>
               <div className="message-actions message-edit-actions">
+                <input
+                  ref={editFileInputRef}
+                  className="composer-file-input"
+                  type="file"
+                  accept=".png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif"
+                  multiple
+                  onChange={(event) => {
+                    void addEditFiles(Array.from(event.target.files ?? []));
+                    event.target.value = '';
+                  }}
+                />
+                <button
+                  className="message-action-button message-edit-add-image"
+                  type="button"
+                  onClick={() => editFileInputRef.current?.click()}
+                  disabled={actionsDisabled || !supportsImages || editAttachments.length >= MAX_EDIT_IMAGE_COUNT}
+                  aria-label={t('chat.addImage')}
+                  title={t('chat.addImage')}
+                >
+                  <Paperclip size={15} />
+                  <span>{t('chat.addImage')}</span>
+                </button>
                 <button
                   className="message-action-button"
                   type="button"
@@ -803,6 +960,40 @@ function attachmentImageUrl(attachment: ImageAttachment): string {
   return attachment.source_type === 'base64'
     ? `data:${attachment.media_type};base64,${attachment.data}`
     : attachment.url;
+}
+
+function normalizedEditImageType(file: File): ImageAttachment['media_type'] | null {
+  if (EDIT_IMAGE_TYPES.has(file.type as ImageAttachment['media_type'])) {
+    return file.type as ImageAttachment['media_type'];
+  }
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  if (extension === 'png') return 'image/png';
+  if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
+  if (extension === 'webp') return 'image/webp';
+  if (extension === 'gif') return 'image/gif';
+  return null;
+}
+
+function isEditFileDrag(dataTransfer: DataTransfer): boolean {
+  return Array.from(dataTransfer.types).includes('Files');
+}
+
+function editFileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read image'));
+    reader.onload = () => {
+      const result = String(reader.result ?? '');
+      resolve(result.slice(result.indexOf(',') + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function createEditAttachmentId(): string {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function TypingIndicator({ label }: { label: string }) {

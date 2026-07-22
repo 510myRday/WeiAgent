@@ -10,6 +10,8 @@ export type AppSettings = {
   /** Global auto-compact threshold shared by every model and agent. */
   context_compress_threshold_percent: number;
   llm_log_enabled: boolean;
+  conversation_title_provider_id: string | null;
+  conversation_title_model_id: string | null;
 };
 
 export type ModelProvider = {
@@ -227,6 +229,7 @@ export type CreateConversationPayload = {
 
 export type UpdateConversationPayload = {
   is_pinned: boolean;
+  title?: string;
 };
 
 export type ToolCallStatus = 'running' | 'pending_approval' | 'completed' | 'blocked' | 'rejected' | 'error';

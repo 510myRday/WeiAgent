@@ -50,7 +50,10 @@ impl JsonStore {
         tools_config: &crate::domain::AgentToolsConfig,
     ) -> AppResult<String> {
         let workspace = self.read_agent_workspace(agent.id).await?;
-        let environment = crate::tools::prompt::build_environment_prefix(&self.data_dir);
+        let environment = crate::tools::prompt::build_environment_prefix(
+            &self.data_dir,
+            &self.terminal_workspace_dir,
+        );
         // Runtime identity: which agent is handling this turn.
         let agent_identity = format!(
             "## Agent\n\
@@ -355,7 +358,20 @@ impl JsonStore {
             ));
         }
         config.terminal.approval_grants.clear();
+        let mut repaired_key_status_slots = false;
+        for source in &mut config.web_search.sources {
+            let key_count = source.api_keys.len();
+            if source.key_statuses.len() != key_count {
+                source.key_statuses.resize_with(key_count, || None);
+                repaired_key_status_slots = true;
+            }
+        }
         validate_tools_config(&config)?;
+        if repaired_key_status_slots {
+            let content = serde_json::to_string_pretty(&config)
+                .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
+            crate::fsutil::write_atomic(&self.tool_defaults_file, content).await?;
+        }
         Ok(config)
     }
 
@@ -558,6 +574,23 @@ fn validate_tools_config(config: &crate::domain::AgentToolsConfig) -> AppResult<
         return Err(crate::error::AppError::BadRequest(format!(
             "web_search timeout_ms must be between 1 and {}",
             crate::domain::tools::MAX_WEB_SEARCH_TIMEOUT_MS
+        )));
+    }
+    if config.evidence_storage.retention_days == 0
+        || config.evidence_storage.retention_days
+            > crate::domain::tools::MAX_EVIDENCE_RETENTION_DAYS
+    {
+        return Err(crate::error::AppError::BadRequest(format!(
+            "evidence_storage retention_days must be between 1 and {}",
+            crate::domain::tools::MAX_EVIDENCE_RETENTION_DAYS
+        )));
+    }
+    if config.evidence_storage.max_total_mb == 0
+        || config.evidence_storage.max_total_mb > crate::domain::tools::MAX_EVIDENCE_TOTAL_MB
+    {
+        return Err(crate::error::AppError::BadRequest(format!(
+            "evidence_storage max_total_mb must be between 1 and {}",
+            crate::domain::tools::MAX_EVIDENCE_TOTAL_MB
         )));
     }
     if config.web_search.sources.len() > crate::domain::tools::MAX_WEB_SEARCH_SOURCES {

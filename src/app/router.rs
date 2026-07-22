@@ -86,6 +86,10 @@ fn api_router() -> Router<AppState> {
             put(conversations::update_conversation).delete(conversations::delete_conversation),
         )
         .route(
+            "/api/conversations/{conversation_id}/title",
+            post(conversations::generate_conversation_title),
+        )
+        .route(
             "/api/conversations/{conversation_id}/messages",
             get(conversations::read_conversation_messages)
                 .post(conversations::send_message_complete),

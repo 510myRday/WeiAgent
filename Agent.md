@@ -226,7 +226,7 @@ WeiAgent/
 
 运行时 system prompt 由以下几部分按固定顺序拼接后发送给模型：
 
-1. `## Environment`：运行时环境前缀（应用名/版本、OS/架构、Shell、Default workspace）。**不含**时分秒等易变字段，以便跨轮次复用模型侧 prompt cache。
+1. `## Environment`：运行时环境前缀（应用名/版本、OS/架构、Shell、Data directory、Default workspace）。`Data directory` 是 WeiAgent 的总数据目录；`Default workspace` 是终端和文件工具的默认工作目录。**不含**时分秒等易变字段，以便跨轮次复用模型侧 prompt cache。
 2. `## Agent`：一句身份背景 + `Name`/`ID`，标明当前处理本轮对话的智能体。
 3. `## Runtime`：本地时区权威日历日（`Date: YYYY-MM-DD`）+ 明确信任说明。有意只放**日期**不放时刻：模型必须把该行当作当前对话的“今天”，不得沿用训练数据/知识截止日里更早的年份假设；同时同一天内 system 前缀保持稳定。跨自然日会换前缀，属于预期行为。
 4. `## Personality` / `## Memory` / `## Instructions`：分别来自工作空间的 `personality.md`、`memory.md`、`instructions.md`。
@@ -383,7 +383,7 @@ User Message
 - `execute_terminal` 参数：`command`、`cwd`、`timeout_ms`、`background`、`tty`、`sandbox_permissions`、`justification`
 - `multi_edit_file`：单文件/多文件精确替换，以及 create/delete/move；不出现在 Tools UI，仅随 `terminal.enabled` 注册到模型 schema。参数含 `operations`、`cwd`、`sandbox_permissions`、`justification`。`request_approval` 下工作区内写文件需审批（支持 24h always-allow）；工作区外路径必须 `sandbox_permissions=require_escalated` 并附 `justification` 后走审批，不得用 `execute_terminal` 绕过编辑工具。`full_access` 下可直接写工作区内外路径
 - `terminal_session` 操作：`poll`、`write`、`submit`、`interrupt`、`eof`、`terminate`、`resize`，通过 `output_cursor` 增量读取输出
-- `cwd` 省略、空字符串或 `.` 都使用配置的默认工作区；`allowed_cwd_roots` 为空时默认工作区是 WeiAgent 数据目录（开发模式为 `data`，生产模式默认为 `%USERPROFILE%\.WeiAgent`）；非空 `cwd` 必须是已存在目录，不允许失败后静默切换到猜测路径
+- `cwd` 省略、空字符串或 `.` 都使用配置的默认工作区；`allowed_cwd_roots` 为空时默认工作区是 WeiAgent 数据目录下独立的 `workspace` 文件夹（开发模式为 `data/workspace`，生产模式默认为 `%USERPROFILE%\.WeiAgent\workspace`），启动时若不存在会自动创建；非空 `cwd` 必须是已存在目录，不允许失败后静默切换到猜测路径
 - 实际执行器、终端工具定义、系统环境提示和命令示例共用同一个 Shell 探测结果，避免 PowerShell、CMD 与 POSIX 语法混用
 - 支持 Codex PTY、stdin 续写、Ctrl+C/EOF、终止和尺寸调整；后台或超时转后台后返回 `process_id`
 - Windows 的 Codex unelevated 沙箱是上游例外：只允许短时、非交互、前台命令；后台、stdin 续写、PTY 和超时转后台必须请求完整权限

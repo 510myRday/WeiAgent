@@ -30,6 +30,17 @@ async fn main() -> AppResult<()> {
 
     let addr = config.socket_addr()?;
     let store = Arc::new(JsonStore::new(&config.data_dir).await?);
+    let tool_defaults = store.read_tool_defaults().await?;
+    if tool_defaults.evidence_storage.enabled {
+        if let Err(error) = tools::web_search::evidence::cleanup_evidence_store(
+            &config.data_dir,
+            &tool_defaults.evidence_storage,
+        )
+        .await
+        {
+            tracing::warn!(error = %error, "failed to clean evidence store during startup");
+        }
+    }
     let llm_logger = Arc::new(LlmLogger::new(
         &config.data_dir,
         config.settings.llm_log_enabled,
@@ -76,6 +87,7 @@ async fn main() -> AppResult<()> {
     };
 
     tracing::info!(data_dir = %config.data_dir.display(), "WeiAgent data directory");
+    tracing::info!(terminal_workspace_dir = %config.terminal_workspace_dir.display(), "WeiAgent terminal workspace directory");
     tracing::info!("WeiAgent listening on http://{addr}");
     if is_dev {
         tracing::info!("WeiAgent dev frontend listening on http://127.0.0.1:5173");

@@ -1117,6 +1117,7 @@ function InheritanceControl({ inherited, onChange, t }: {
 function mergeToolsConfig(defaults: AgentToolsConfig, overrides: AgentToolsOverrides): AgentToolsConfig {
   return {
     max_llm_iterations: overrides.max_llm_iterations ?? defaults.max_llm_iterations,
+    evidence_storage: defaults.evidence_storage,
     terminal: {
       enabled: overrides.terminal.enabled ?? defaults.terminal.enabled,
       permission_mode: overrides.terminal.permission_mode ?? defaults.terminal.permission_mode,

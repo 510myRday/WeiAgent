@@ -14,6 +14,8 @@ const defaultSettings: AppSettings = {
   request_retry_attempts: 5,
   context_compress_threshold_percent: 90,
   llm_log_enabled: false,
+  conversation_title_provider_id: null,
+  conversation_title_model_id: null,
 };
 
 function normalizeSettings(settings: AppSettings): AppSettings {

@@ -1,6 +1,6 @@
 use std::net::IpAddr;
-use std::path::Path;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 use futures_util::{StreamExt, future::join_all};
 use scraper::{Html, Selector};
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::domain::ToolResult;
-use crate::domain::tools::MAX_WEB_EXTRACT_URLS;
+use crate::domain::tools::{EvidenceStorageConfig, MAX_WEB_EXTRACT_URLS};
 
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_MAX_CHARS_PER_URL: usize = 8_000;
@@ -63,7 +63,11 @@ struct StoredEvidence<'a> {
     content: &'a str,
 }
 
-pub async fn execute_web_extract(args: WebExtractArgs, data_dir: &Path) -> ToolResult {
+pub async fn execute_web_extract(
+    args: WebExtractArgs,
+    data_dir: &Path,
+    evidence_storage: &EvidenceStorageConfig,
+) -> ToolResult {
     let started = Instant::now();
     let urls = normalize_urls(args.urls);
     if urls.is_empty() {
@@ -103,15 +107,27 @@ pub async fn execute_web_extract(args: WebExtractArgs, data_dir: &Path) -> ToolR
         }
     };
     let query = args.query.unwrap_or_default();
-    let tasks = urls
-        .into_iter()
-        .map(|url| extract_one(client.clone(), url, query.clone(), max_chars, data_dir));
+    let tasks = urls.into_iter().map(|url| {
+        extract_one(
+            client.clone(),
+            url,
+            query.clone(),
+            max_chars,
+            data_dir,
+            evidence_storage.enabled,
+        )
+    });
     let mut documents = Vec::new();
     let mut failures = Vec::new();
     for result in join_all(tasks).await {
         match result {
             Ok(document) => documents.push(document),
             Err(failure) => failures.push(failure),
+        }
+    }
+    if evidence_storage.enabled {
+        if let Err(error) = cleanup_evidence_store(data_dir, evidence_storage).await {
+            tracing::warn!(error = %error, "failed to clean evidence store");
         }
     }
     let output = WebExtractOutput {
@@ -140,6 +156,7 @@ async fn extract_one(
     query: String,
     max_chars: usize,
     data_dir: &Path,
+    store_enabled: bool,
 ) -> Result<WebExtractDocument, WebExtractFailure> {
     let parsed = reqwest::Url::parse(&requested_url).map_err(|error| WebExtractFailure {
         requested_url: requested_url.clone(),
@@ -213,23 +230,27 @@ async fn extract_one(
     let store_path = data_dir
         .join("evidence")
         .join(format!("{document_id}.json"));
-    let stored = match serde_json::to_string_pretty(&StoredEvidence {
-        document_id: &document_id,
-        requested_url: &requested_url,
-        final_url: &final_url,
-        title: &extracted.title,
-        content_type: &content_type,
-        published_at: &extracted.published_at,
-        extracted_at: chrono::Utc::now().to_rfc3339(),
-        content: &content,
-    }) {
-        Ok(json) => {
-            if let Some(parent) = store_path.parent() {
-                let _ = tokio::fs::create_dir_all(parent).await;
+    let stored = if store_enabled {
+        match serde_json::to_string_pretty(&StoredEvidence {
+            document_id: &document_id,
+            requested_url: &requested_url,
+            final_url: &final_url,
+            title: &extracted.title,
+            content_type: &content_type,
+            published_at: &extracted.published_at,
+            extracted_at: chrono::Utc::now().to_rfc3339(),
+            content: &content,
+        }) {
+            Ok(json) => {
+                if let Some(parent) = store_path.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+                crate::fsutil::write_atomic(&store_path, json).await.is_ok()
             }
-            crate::fsutil::write_atomic(&store_path, json).await.is_ok()
+            Err(_) => false,
         }
-        Err(_) => false,
+    } else {
+        false
     };
     Ok(WebExtractDocument {
         document_id,
@@ -242,6 +263,96 @@ async fn extract_one(
         extracted_chars: content.chars().count(),
         stored,
     })
+}
+
+#[derive(Debug)]
+struct EvidenceFile {
+    path: PathBuf,
+    size: u64,
+    modified: SystemTime,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct EvidenceCleanupStats {
+    pub removed_files: usize,
+    pub removed_bytes: u64,
+    pub remaining_bytes: u64,
+}
+
+pub async fn cleanup_evidence_store(
+    data_dir: &Path,
+    config: &EvidenceStorageConfig,
+) -> std::io::Result<EvidenceCleanupStats> {
+    if !config.enabled {
+        return Ok(EvidenceCleanupStats::default());
+    }
+
+    let evidence_dir = data_dir.join("evidence");
+    let mut directory = match tokio::fs::read_dir(&evidence_dir).await {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(EvidenceCleanupStats::default());
+        }
+        Err(error) => return Err(error),
+    };
+    let now = SystemTime::now();
+    let retention = Duration::from_secs(u64::from(config.retention_days).saturating_mul(86_400));
+    let cutoff = now.checked_sub(retention).unwrap_or(SystemTime::UNIX_EPOCH);
+    let mut files = Vec::new();
+    let mut stats = EvidenceCleanupStats::default();
+
+    while let Some(entry) = directory.next_entry().await? {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let metadata = match entry.metadata().await {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let size = metadata.len();
+        if modified < cutoff {
+            if remove_evidence_file(&path).await? {
+                stats.removed_files += 1;
+                stats.removed_bytes = stats.removed_bytes.saturating_add(size);
+            }
+            continue;
+        }
+        files.push(EvidenceFile {
+            path,
+            size,
+            modified,
+        });
+    }
+
+    files.sort_by_key(|file| file.modified);
+    let mut total_bytes = files
+        .iter()
+        .fold(0_u64, |total, file| total.saturating_add(file.size));
+    let max_bytes = config.max_total_mb.saturating_mul(1024 * 1024);
+    for file in files {
+        if total_bytes <= max_bytes {
+            break;
+        }
+        if remove_evidence_file(&file.path).await? {
+            total_bytes = total_bytes.saturating_sub(file.size);
+            stats.removed_files += 1;
+            stats.removed_bytes = stats.removed_bytes.saturating_add(file.size);
+        }
+    }
+    stats.remaining_bytes = total_bytes;
+    Ok(stats)
+}
+
+async fn remove_evidence_file(path: &Path) -> std::io::Result<bool> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 struct ExtractedContent {
@@ -417,5 +528,54 @@ mod tests {
         assert_eq!(extracted.title, "A");
         assert_eq!(extracted.published_at.as_deref(), Some("2026-01-01"));
         assert!(extracted.content.contains("Hello world"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_expired_files_and_enforces_capacity() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let evidence_dir = data_dir.path().join("evidence");
+        tokio::fs::create_dir_all(&evidence_dir).await.unwrap();
+
+        let expired_path = evidence_dir.join("expired.json");
+        tokio::fs::write(&expired_path, vec![b'x'; 32])
+            .await
+            .unwrap();
+        let expired_file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&expired_path)
+            .unwrap();
+        expired_file
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(SystemTime::UNIX_EPOCH)
+                    .set_accessed(SystemTime::UNIX_EPOCH),
+            )
+            .unwrap();
+
+        for index in 0..3 {
+            tokio::fs::write(
+                evidence_dir.join(format!("current-{index}.json")),
+                vec![b'x'; 700 * 1024],
+            )
+            .await
+            .unwrap();
+        }
+        tokio::fs::write(evidence_dir.join("keep.txt"), b"unrelated")
+            .await
+            .unwrap();
+
+        let config = EvidenceStorageConfig {
+            enabled: true,
+            retention_days: 30,
+            max_total_mb: 1,
+        };
+        let stats = cleanup_evidence_store(data_dir.path(), &config)
+            .await
+            .unwrap();
+
+        assert!(!expired_path.exists());
+        assert!(evidence_dir.join("keep.txt").exists());
+        assert!(stats.removed_files >= 3);
+        assert!(stats.remaining_bytes <= 1024 * 1024);
     }
 }

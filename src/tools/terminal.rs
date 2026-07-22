@@ -1930,7 +1930,9 @@ mod tests {
         let config = TerminalToolConfig::default();
         let workspace = match resolve_workspace(None, &config, data_dir.path(), false) {
             Ok(workspace) => workspace,
-            Err(_) => panic!("expected the data directory to resolve as the default workspace"),
+            Err(_) => {
+                panic!("expected the dedicated directory to resolve as the default workspace")
+            }
         };
         let expected = std::fs::canonicalize(data_dir.path()).unwrap();
 

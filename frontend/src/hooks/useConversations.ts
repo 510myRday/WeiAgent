@@ -19,6 +19,7 @@ import {
   listConversations,
   listActiveAgentRuns,
   createConversation,
+  generateConversationTitle,
   createMessageRun,
   cancelMessageRun,
   deleteConversation,
@@ -411,6 +412,8 @@ function sortConversationList(conversations: Conversation[]): Conversation[] {
 
 type UseConversationsOptions = {
   newConversationTitle: string;
+  imageOnlyConversationTitle: string;
+  imageAttachmentTitleNote: string;
   runCancelledMessage: string;
   runInterruptedMessage: string;
   onError?: (msg: string) => void;
@@ -418,6 +421,8 @@ type UseConversationsOptions = {
 
 export function useConversations({
   newConversationTitle,
+  imageOnlyConversationTitle,
+  imageAttachmentTitleNote,
   runCancelledMessage,
   runInterruptedMessage,
   onError,
@@ -1003,6 +1008,9 @@ export function useConversations({
     ) => {
       const requestId = ++sendRequestIdRef.current;
       const controller = new AbortController();
+      const firstUserMessage = messages.find(isUserMessage);
+      const isFirstUserMessage = !firstUserMessage
+        || (restartFromMessageId !== undefined && firstUserMessage.id === restartFromMessageId);
       const optimisticUserClientId = genClientId();
       const optimisticAssistantClientId = genClientId();
       sendAbortControllerRef.current?.abort();
@@ -1048,7 +1056,9 @@ export function useConversations({
         let conversationId = activeConversationId;
         if (!conversationId) {
           const created = await createConversation(agentId, {
-            title: content.slice(0, 40) || attachments[0]?.name || newConversationTitle,
+            title: content.trim().slice(0, 40) || (attachments.length > 0
+              ? imageOnlyConversationTitle
+              : newConversationTitle),
           });
           setConversations((current) => [created, ...current]);
           suppressNextLoadConversationIdRef.current = created.id;
@@ -1071,6 +1081,20 @@ export function useConversations({
           restartFromMessageId,
           controller.signal,
         );
+        if (isFirstUserMessage && content.trim()) {
+          const titleInput = attachments.length > 0
+            ? `${content.trim()}\n\n${imageAttachmentTitleNote}`
+            : content.trim();
+          void generateConversationTitle(conversationId, titleInput)
+            .then((updated) => {
+              setConversations((current) => current.map((conversation) => (
+                conversation.id === updated.id ? updated : conversation
+              )));
+            })
+            .catch(() => {
+              // Title generation is best effort; the initial-message fallback is already set.
+            });
+        }
         if (requestId !== sendRequestIdRef.current) return;
         if (restartFromMessageId) {
           try {
@@ -1099,7 +1123,15 @@ export function useConversations({
         }
       }
     },
-    [activeConversationId, followRun, newConversationTitle, runInterruptedMessage],
+    [
+      activeConversationId,
+      followRun,
+      imageAttachmentTitleNote,
+      imageOnlyConversationTitle,
+      messages,
+      newConversationTitle,
+      runInterruptedMessage,
+    ],
   );
 
   const createNewConversation = useCallback(
