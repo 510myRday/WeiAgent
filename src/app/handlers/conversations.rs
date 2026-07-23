@@ -681,6 +681,25 @@ fn agent_event_to_sse(event: AgentRunEvent) -> Event {
                 "permission_mode": permission_mode,
             }),
         ),
+        AgentRunEvent::ToolCallStarted {
+            call_id,
+            name,
+            permission_mode,
+        } => json_event(
+            "tool_call_started",
+            &serde_json::json!({
+                "call_id": call_id,
+                "name": name,
+                "permission_mode": permission_mode,
+            }),
+        ),
+        AgentRunEvent::ToolCallArgsDelta { call_id, arguments } => json_event(
+            "tool_call_args_delta",
+            &serde_json::json!({
+                "call_id": call_id,
+                "arguments": arguments,
+            }),
+        ),
         AgentRunEvent::ToolResult { call_id, result } => json_event(
             "tool_result",
             &serde_json::json!({ "call_id": call_id, "result": result }),

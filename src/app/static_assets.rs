@@ -5,7 +5,7 @@ use rust_embed::Embed;
 #[folder = "frontend/dist"]
 struct FrontendAssets;
 
-pub async fn serve_frontend(uri: axum::http::Uri) -> Response {
+pub async fn serve_frontend(uri: axum::http::Uri, api_token: &str) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
 
@@ -23,7 +23,9 @@ pub async fn serve_frontend(uri: axum::http::Uri) -> Response {
                 .status(StatusCode::OK)
                 .header("content-type", mime.as_ref())
                 .header("cache-control", cache_control)
-                .body(axum::body::Body::from(file.data))
+                .body(axum::body::Body::from(frontend_body(
+                    path, file.data, api_token,
+                )))
                 .unwrap()
         }
         None => match FrontendAssets::get("index.html") {
@@ -31,7 +33,11 @@ pub async fn serve_frontend(uri: axum::http::Uri) -> Response {
                 .status(StatusCode::OK)
                 .header("content-type", "text/html")
                 .header("cache-control", "no-cache")
-                .body(axum::body::Body::from(file.data))
+                .body(axum::body::Body::from(frontend_body(
+                    "index.html",
+                    file.data,
+                    api_token,
+                )))
                 .unwrap(),
             None => Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -39,4 +45,16 @@ pub async fn serve_frontend(uri: axum::http::Uri) -> Response {
                 .unwrap(),
         },
     }
+}
+
+fn frontend_body(path: &str, data: std::borrow::Cow<'static, [u8]>, api_token: &str) -> Vec<u8> {
+    if path != "index.html" {
+        return data.into_owned();
+    }
+    let html = String::from_utf8_lossy(&data);
+    html.replace(
+        "</head>",
+        &format!("<meta name=\"weiagent-api-token\" content=\"{api_token}\" /></head>"),
+    )
+    .into_bytes()
 }

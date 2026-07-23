@@ -9,7 +9,7 @@ mod tools;
 
 use std::{io::ErrorKind, process::Stdio, sync::Arc};
 
-use app::{AppState, build_router, build_router_dev};
+use app::{ApiSecurity, AppState, build_router, build_router_dev};
 use config::{AppConfig, log_level_filter};
 use error::{AppError, AppResult};
 use llm::registry::DefaultLlmRegistry;
@@ -29,7 +29,9 @@ async fn main() -> AppResult<()> {
         .init();
 
     let addr = config.socket_addr()?;
+    let api_security = Arc::new(ApiSecurity::new(addr, is_dev));
     let store = Arc::new(JsonStore::new(&config.data_dir).await?);
+    let database = store.database();
     let tool_defaults = store.read_tool_defaults().await?;
     if tool_defaults.evidence_storage.enabled
         && let Err(error) = tools::web_search::evidence::cleanup_evidence_store(
@@ -40,8 +42,8 @@ async fn main() -> AppResult<()> {
     {
         tracing::warn!(error = %error, "failed to clean evidence store during startup");
     }
-    let llm_logger = Arc::new(LlmLogger::new(
-        &config.data_dir,
+    let llm_logger = Arc::new(LlmLogger::with_database(
+        database.clone(),
         config.settings.llm_log_enabled,
     )?);
     let llm_registry = Arc::new(DefaultLlmRegistry::new(llm_logger.clone()));
@@ -58,9 +60,10 @@ async fn main() -> AppResult<()> {
     tokio::spawn(terminal_manager.clone().cleanup_loop());
     let tool_registry = Arc::new(tools::registry::ToolRegistry::with_builtin_tools());
     let state = AppState {
+        api_security: api_security.clone(),
         store,
         llm_registry,
-        llm_logger,
+        llm_logger: llm_logger.clone(),
         terminal_manager,
         approval_manager,
         codex_runtime,
@@ -80,7 +83,7 @@ async fn main() -> AppResult<()> {
         }
     })?;
     let _vite_child = if is_dev {
-        Some(start_vite_dev_server().await?)
+        Some(start_vite_dev_server(api_security.token()).await?)
     } else {
         None
     };
@@ -91,16 +94,47 @@ async fn main() -> AppResult<()> {
     if is_dev {
         tracing::info!("WeiAgent dev frontend listening on http://127.0.0.1:5173");
     }
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    llm_logger.shutdown().await?;
+    tracing::info!(
+        failed_writes = llm_logger.failed_write_count(),
+        "LLM logger stopped"
+    );
+    database.shutdown().await?;
 
     Ok(())
 }
 
-async fn start_vite_dev_server() -> AppResult<Child> {
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut signal) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            signal.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
+}
+
+async fn start_vite_dev_server(api_token: &str) -> AppResult<Child> {
     tracing::info!("starting Vite dev server...");
     Ok(Command::new(npm_command())
         .args(["run", "dev"])
         .current_dir("frontend")
+        .env("VITE_WEIAGENT_API_TOKEN", api_token)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)

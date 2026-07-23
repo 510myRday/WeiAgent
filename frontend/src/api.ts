@@ -11,7 +11,6 @@ import type {
   CreateConversationPayload,
   FetchProviderModelsPayload,
   LlmLogDetail,
-  LlmLogEntry,
   LlmLogListPage,
   ModelProvider,
   ModelProviderPayload,
@@ -34,6 +33,7 @@ import {
   parseJsonStreamEvent,
 } from './apiSchemas';
 import { createAbortSignal } from './utils/abort';
+import { apiAuthorizationHeaders } from './apiAuth';
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const CONVERSATION_TITLE_REQUEST_TIMEOUT_MS = 65000;
@@ -55,6 +55,7 @@ async function request<T>(
       signal: abortHandle.signal,
       headers: {
         'content-type': 'application/json',
+        ...apiAuthorizationHeaders(),
         ...options?.headers,
       },
     });
@@ -270,8 +271,6 @@ export type WebSearchSourceConfig = {
   priority: number;
   independence_group: string;
   roles: WebSearchSourceRole[];
-  base_url?: string | null;
-  extract_base_url?: string | null;
   api_keys: string[];
   key_statuses?: Array<WebSearchKeyStatusRecord | null>;
   extract_key_statuses?: Array<WebSearchKeyStatusRecord | null>;
@@ -471,7 +470,6 @@ function normalizeToolDefaults(config: AgentToolsConfig): AgentToolsConfig {
       sources: (config.web_search?.sources ?? []).map((source) => ({
         ...source,
         extract_enabled: source.extract_enabled ?? true,
-        extract_base_url: source.extract_base_url ?? null,
         api_keys: source.api_keys ?? [],
         extract_key_statuses: source.extract_key_statuses ?? [],
         flaresolverr_url: source.flaresolverr_url ?? null,
@@ -624,7 +622,6 @@ function normalizeAgentToolsSettings(settings: AgentToolsSettings): AgentToolsSe
         sources: (settings.defaults.web_search?.sources ?? []).map((source) => ({
           ...source,
           extract_enabled: source.extract_enabled ?? true,
-          extract_base_url: source.extract_base_url ?? null,
           extract_key_statuses: source.extract_key_statuses ?? [],
         })),
       },
@@ -659,7 +656,6 @@ function normalizeAgentToolsSettings(settings: AgentToolsSettings): AgentToolsSe
         sources: (settings.effective.web_search?.sources ?? []).map((source) => ({
           ...source,
           extract_enabled: source.extract_enabled ?? true,
-          extract_base_url: source.extract_base_url ?? null,
           extract_key_statuses: source.extract_key_statuses ?? [],
         })),
       },
@@ -691,7 +687,7 @@ export async function installRuntimeComponent(
   try {
     const response = await fetch(`/api/tools/runtime/${component}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...apiAuthorizationHeaders() },
       signal: abortHandle.signal,
     });
     if (!response.ok) {
@@ -798,7 +794,10 @@ export async function streamRunEvents(
   onEvent: (event: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`/api/runs/${runId}/events?after=${after}`, { signal });
+  const response = await fetch(`/api/runs/${runId}/events?after=${after}`, {
+    signal,
+    headers: apiAuthorizationHeaders(),
+  });
   if (!response.ok || !response.body) {
     throw new Error(await readError(response));
   }
@@ -892,6 +891,8 @@ function dispatchStreamEvent(
     || event === 'assistant'
     || event === 'phase'
     || event === 'retry'
+    || event === 'tool_call_started'
+    || event === 'tool_call_args_delta'
     || event === 'tool_call'
     || event === 'tool_result'
     || event === 'approval_required'

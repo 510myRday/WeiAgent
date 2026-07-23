@@ -148,6 +148,7 @@ pub fn spawn_log(
 ) {
     if let Some(logger) = logger {
         let logger = logger.clone();
+        logger.begin_pending_write();
         let agent_name = agent_name.to_string();
         let agent_id = agent_id.map(str::to_string);
         let conversation_id = conversation_id.map(str::to_string);
@@ -157,7 +158,7 @@ pub fn spawn_log(
         let raw_response = raw_response.map(ToString::to_string);
         let error = error.map(ToString::to_string);
         tokio::spawn(async move {
-            let _ = logger
+            let result = logger
                 .write_log(
                     &agent_name,
                     agent_id.as_deref(),
@@ -172,6 +173,7 @@ pub fn spawn_log(
                     include_payload,
                 )
                 .await;
+            logger.finish_pending_write(&result);
         });
     }
 }

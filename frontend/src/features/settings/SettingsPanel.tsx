@@ -1204,7 +1204,7 @@ export function SettingsPanel({
           </div>
         )}
         main={(
-          <div className="main-pane config-main">
+          <div className={`main-pane config-main${activeSection === 'proxies' ? ' ip-proxy-main' : ''}`}>
           <PaneHeader
             className="config-page-header"
             leading={<Button className="main-back-button" variant="ghost" type="button" onClick={onBackToList} icon={<ArrowLeft size={17} />}>{t('common.back')}</Button>}

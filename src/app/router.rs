@@ -2,6 +2,7 @@ use axum::{
     Router,
     extract::DefaultBodyLimit,
     http::{HeaderName, HeaderValue},
+    middleware,
     routing::{get, post, put},
 };
 use tower::limit::ConcurrencyLimitLayer;
@@ -10,19 +11,25 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use crate::app::{
     AppState,
     handlers::{agents, assets, conversations, ip_proxies, llm_logs, providers, settings, tools},
+    security::enforce_api_security,
     static_assets::serve_frontend,
 };
 
 pub fn build_router(state: AppState) -> Router {
-    api_router()
-        .fallback(|uri: axum::http::Uri| async move { serve_frontend(uri).await })
+    let security = state.api_security.clone();
+    let frontend_security = security.clone();
+    api_router(security)
+        .fallback(move |uri: axum::http::Uri| {
+            let security = frontend_security.clone();
+            async move { serve_frontend(uri, security.token()).await }
+        })
         .layer(DefaultBodyLimit::max(48 * 1024 * 1024))
         .layer(ConcurrencyLimitLayer::new(64))
         .with_state(state)
 }
 
 pub fn build_router_dev(state: AppState) -> Router {
-    api_router()
+    api_router(state.api_security.clone())
         .layer(DefaultBodyLimit::max(48 * 1024 * 1024))
         .layer(ConcurrencyLimitLayer::new(64))
         .with_state(state)
@@ -35,7 +42,7 @@ fn no_store() -> SetResponseHeaderLayer<HeaderValue> {
     )
 }
 
-fn api_router() -> Router<AppState> {
+fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppState> {
     Router::new()
         .route(
             "/api/settings",
@@ -201,4 +208,8 @@ fn api_router() -> Router<AppState> {
             get(llm_logs::get_llm_log).delete(llm_logs::delete_llm_log),
         )
         .layer(no_store())
+        .layer(middleware::from_fn_with_state(
+            security,
+            enforce_api_security,
+        ))
 }

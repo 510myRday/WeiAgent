@@ -7,7 +7,8 @@ use uuid::Uuid;
 use crate::{
     domain::{
         CreateIpProxyRequest, ImportIpProxiesRequest, ImportIpProxiesResponse, IpProxy,
-        IpProxyProtocol, IpProxyStatus, IpProxyTestUpdate, UpdateIpProxyRequest,
+        IpProxyProtocol, IpProxyQuality, IpProxyQualityTestUpdate, IpProxyStatus,
+        IpProxyTestUpdate, UpdateIpProxyRequest,
     },
     error::{AppError, AppResult},
     storage::{db, json_store::JsonStore, validation::validate_non_empty},
@@ -16,7 +17,7 @@ use crate::{
 impl JsonStore {
     pub async fn list_ip_proxies(&self) -> AppResult<Vec<IpProxy>> {
         let _guard = self.lock.lock().await;
-        db::read_ip_proxies(&self.data_dir)
+        self.read_ip_proxies_unlocked().await
     }
 
     pub async fn create_ip_proxy(&self, request: CreateIpProxyRequest) -> AppResult<IpProxy> {
@@ -24,7 +25,7 @@ impl JsonStore {
         let (url, protocol) = normalize_proxy_url(&request.url)?;
 
         let _guard = self.lock.lock().await;
-        let mut proxies = db::read_ip_proxies(&self.data_dir)?;
+        let proxies = self.read_ip_proxies_unlocked().await?;
         ensure_unique_url(&proxies, &url, None)?;
         ensure_unique_name(&proxies, &name, None)?;
 
@@ -35,6 +36,7 @@ impl JsonStore {
             url,
             protocol,
             enabled: request.enabled,
+            is_pinned: false,
             status: IpProxyStatus::Unchecked,
             latency_ms: None,
             last_checked_at: None,
@@ -44,11 +46,11 @@ impl JsonStore {
             country_code: None,
             region: None,
             city: None,
+            api_quality: IpProxyQuality::default(),
             created_at: now,
             updated_at: now,
         };
-        proxies.push(proxy.clone());
-        db::write_ip_proxies(&self.data_dir, &proxies)?;
+        self.upsert_ip_proxy_unlocked(proxy.clone()).await?;
         Ok(proxy)
     }
 
@@ -57,7 +59,7 @@ impl JsonStore {
         request: ImportIpProxiesRequest,
     ) -> AppResult<ImportIpProxiesResponse> {
         let _guard = self.lock.lock().await;
-        let mut proxies = db::read_ip_proxies(&self.data_dir)?;
+        let proxies = self.read_ip_proxies_unlocked().await?;
         let mut known_urls = proxies
             .iter()
             .map(|proxy| proxy.url.clone())
@@ -99,6 +101,7 @@ impl JsonStore {
                 url,
                 protocol,
                 enabled: request.enabled,
+                is_pinned: false,
                 status: IpProxyStatus::Unchecked,
                 latency_ms: None,
                 last_checked_at: None,
@@ -108,15 +111,18 @@ impl JsonStore {
                 country_code: None,
                 region: None,
                 city: None,
+                api_quality: IpProxyQuality::default(),
                 created_at: now,
                 updated_at: now,
             };
-            proxies.push(proxy.clone());
             imported.push(proxy);
         }
 
         if !imported.is_empty() {
-            db::write_ip_proxies(&self.data_dir, &proxies)?;
+            let saved = imported.clone();
+            self.database
+                .call(move |connection| db::upsert_ip_proxies_conn(connection, &saved))
+                .await?;
         }
         Ok(ImportIpProxiesResponse {
             imported_count: imported.len(),
@@ -132,7 +138,7 @@ impl JsonStore {
         request: UpdateIpProxyRequest,
     ) -> AppResult<IpProxy> {
         let _guard = self.lock.lock().await;
-        let mut proxies = db::read_ip_proxies(&self.data_dir)?;
+        let mut proxies = self.read_ip_proxies_unlocked().await?;
         let index = proxies
             .iter()
             .position(|proxy| proxy.id == id)
@@ -158,27 +164,32 @@ impl JsonStore {
                 proxies[index].country_code = None;
                 proxies[index].region = None;
                 proxies[index].city = None;
+                proxies[index].api_quality = IpProxyQuality::default();
             }
         }
         if let Some(enabled) = request.enabled {
             proxies[index].enabled = enabled;
         }
+        if let Some(is_pinned) = request.is_pinned {
+            proxies[index].is_pinned = is_pinned;
+        }
         proxies[index].updated_at = Utc::now();
 
         let updated = proxies[index].clone();
-        db::write_ip_proxies(&self.data_dir, &proxies)?;
+        self.upsert_ip_proxy_unlocked(updated.clone()).await?;
         Ok(updated)
     }
 
     pub async fn delete_ip_proxy(&self, id: Uuid) -> AppResult<()> {
         let _guard = self.lock.lock().await;
-        let mut proxies = db::read_ip_proxies(&self.data_dir)?;
-        let original_len = proxies.len();
-        proxies.retain(|proxy| proxy.id != id);
-        if proxies.len() == original_len {
+        let deleted = self
+            .database
+            .call(move |connection| db::delete_ip_proxy_conn(connection, id))
+            .await?;
+        if !deleted {
             return Err(AppError::NotFound);
         }
-        db::write_ip_proxies(&self.data_dir, &proxies)
+        Ok(())
     }
 
     pub async fn ip_proxies_for_test(&self, ids: &[Uuid]) -> AppResult<Vec<IpProxy>> {
@@ -203,7 +214,7 @@ impl JsonStore {
         updates: &[IpProxyTestUpdate],
     ) -> AppResult<Vec<IpProxy>> {
         let _guard = self.lock.lock().await;
-        let mut proxies = db::read_ip_proxies(&self.data_dir)?;
+        let mut proxies = self.read_ip_proxies_unlocked().await?;
         let updates_by_id = updates
             .iter()
             .map(|update| (update.id, update))
@@ -230,8 +241,54 @@ impl JsonStore {
         if updated.len() != updates.len() {
             return Err(AppError::NotFound);
         }
-        db::write_ip_proxies(&self.data_dir, &proxies)?;
+        let saved = updated.clone();
+        self.database
+            .call(move |connection| db::upsert_ip_proxies_conn(connection, &saved))
+            .await?;
         Ok(updated)
+    }
+
+    pub async fn apply_ip_proxy_quality_updates(
+        &self,
+        updates: &[IpProxyQualityTestUpdate],
+    ) -> AppResult<Vec<IpProxy>> {
+        let _guard = self.lock.lock().await;
+        let mut proxies = self.read_ip_proxies_unlocked().await?;
+        let updates_by_id = updates
+            .iter()
+            .map(|update| (update.id, update))
+            .collect::<HashMap<_, _>>();
+        let mut updated = Vec::with_capacity(updates.len());
+
+        for proxy in &mut proxies {
+            let Some(update) = updates_by_id.get(&proxy.id) else {
+                continue;
+            };
+            proxy.api_quality = update.api_quality.clone();
+            proxy.updated_at = Utc::now();
+            updated.push(proxy.clone());
+        }
+
+        if updated.len() != updates.len() {
+            return Err(AppError::NotFound);
+        }
+        let saved = updated.clone();
+        self.database
+            .call(move |connection| db::upsert_ip_proxies_conn(connection, &saved))
+            .await?;
+        Ok(updated)
+    }
+
+    async fn read_ip_proxies_unlocked(&self) -> AppResult<Vec<IpProxy>> {
+        self.database
+            .call(|connection| db::read_ip_proxies_conn(connection))
+            .await
+    }
+
+    async fn upsert_ip_proxy_unlocked(&self, proxy: IpProxy) -> AppResult<()> {
+        self.database
+            .call(move |connection| db::upsert_ip_proxy_conn(connection, &proxy))
+            .await
     }
 }
 
@@ -257,10 +314,11 @@ fn normalize_proxy_url(value: &str) -> AppResult<(String, IpProxyProtocol)> {
     let protocol = match parsed.scheme() {
         "http" => IpProxyProtocol::Http,
         "https" => IpProxyProtocol::Https,
+        "socks4" | "socks4a" => IpProxyProtocol::Socks4,
         "socks5" | "socks5h" => IpProxyProtocol::Socks5,
         _ => {
             return Err(AppError::BadRequest(
-                "proxy URL must use http, https, socks5, or socks5h".to_string(),
+                "proxy URL must use http, https, socks4, socks4a, socks5, or socks5h".to_string(),
             ));
         }
     };
@@ -341,7 +399,8 @@ fn unique_proxy_name(base_name: String, known_names: &mut HashSet<String>) -> St
 mod tests {
     use super::*;
     use crate::domain::{
-        CreateIpProxyRequest, ImportIpProxiesRequest, ip_proxies::ImportIpProxyEntry,
+        CreateIpProxyRequest, ImportIpProxiesRequest, IpProxyQualityProbe, IpProxyQualityStatus,
+        IpProxyQualityTestUpdate, ip_proxies::ImportIpProxyEntry,
     };
 
     #[test]
@@ -357,6 +416,21 @@ mod tests {
                 IpProxyProtocol::Socks5
             )
         );
+        assert_eq!(
+            normalize_proxy_url("socks4://proxy.test:1080").unwrap(),
+            (
+                "socks4://proxy.test:1080".to_string(),
+                IpProxyProtocol::Socks4
+            )
+        );
+        assert_eq!(
+            normalize_proxy_url("socks4a://proxy.test:1080").unwrap(),
+            (
+                "socks4a://proxy.test:1080".to_string(),
+                IpProxyProtocol::Socks4
+            )
+        );
+        assert!(reqwest::Proxy::all("socks4://proxy.test:1080").is_ok());
         assert!(normalize_proxy_url("ftp://proxy.test:21").is_err());
         assert!(normalize_proxy_url("http://proxy.test/path").is_err());
     }
@@ -431,5 +505,40 @@ mod tests {
             .await;
         assert!(matches!(conflicting_batch, Err(AppError::Conflict(_))));
         assert_eq!(store.list_ip_proxies().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn quality_results_persist_with_the_proxy() {
+        let root = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(root.path()).await.unwrap();
+        let proxy = store
+            .create_ip_proxy(CreateIpProxyRequest {
+                name: "Quality test".to_string(),
+                url: "127.0.0.1:7890".to_string(),
+                enabled: true,
+            })
+            .await
+            .unwrap();
+        let mut quality = proxy.api_quality.clone();
+        quality.google = IpProxyQualityProbe {
+            status: IpProxyQualityStatus::Available,
+            latency_ms: Some(180),
+            error: None,
+        };
+
+        store
+            .apply_ip_proxy_quality_updates(&[IpProxyQualityTestUpdate {
+                id: proxy.id,
+                api_quality: quality,
+            }])
+            .await
+            .unwrap();
+
+        let saved = store.list_ip_proxies().await.unwrap();
+        assert_eq!(saved[0].api_quality.google.latency_ms, Some(180));
+        assert_eq!(
+            saved[0].api_quality.google.status,
+            IpProxyQualityStatus::Available
+        );
     }
 }

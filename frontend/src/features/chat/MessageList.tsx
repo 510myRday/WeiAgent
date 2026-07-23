@@ -94,6 +94,7 @@ const WAITING_ESTIMATE = 90;
 const INITIAL_POSITION_MAX_FRAMES = 12;
 const INITIAL_POSITION_STABLE_FRAMES = 2;
 const BOTTOM_POSITION_TOLERANCE = 1;
+const WAITING_SCROLL_PADDING = 48;
 const MAX_EDIT_IMAGE_COUNT = 8;
 const MAX_EDIT_IMAGE_BYTES = 10 * 1024 * 1024;
 const EDIT_IMAGE_TYPES = new Set<ImageAttachment['media_type']>([
@@ -127,6 +128,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialPositionFrameRef = useRef<number | undefined>(undefined);
   const scrollFrameRef = useRef<number | undefined>(undefined);
+  const pendingBottomFrameRef = useRef<number | undefined>(undefined);
   const pendingAnchorKeyRef = useRef('');
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
   const [positionedConversationId, setPositionedConversationId] = useState('');
@@ -161,6 +163,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     getItemKey: (index) => rows[index]?.key ?? index,
     anchorTo: 'end',
     followOnAppend: 'auto',
+    paddingEnd: isSending ? WAITING_SCROLL_PADDING : 0,
     scrollEndThreshold: 120,
     overscan: 6,
   });
@@ -199,6 +202,15 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   const scrollToBottom = useCallback((force = false, behavior: ScrollBehavior = 'auto') => {
     if (!force && !isMessagesNearBottom()) return;
     virtualizer.scrollToEnd({ behavior });
+    const element = scrollRef.current;
+    if (element) {
+      const maxScrollTop = Math.max(element.scrollHeight - element.clientHeight, 0);
+      if (behavior === 'auto') {
+        element.scrollTop = maxScrollTop;
+      } else {
+        element.scrollTo({ top: maxScrollTop, behavior });
+      }
+    }
     setIsAwayFromBottom(false);
   }, [isMessagesNearBottom, virtualizer]);
 
@@ -269,8 +281,25 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   }, [conversationId, isInitialPositioning, virtualizer]);
 
   useLayoutEffect(() => {
-    if (isSending) scrollToBottom(true);
-  }, [isSending, scrollToBottom]);
+    if (messages.length === 0 || (!isSending && !isMessagesNearBottom())) return;
+
+    // Re-align after virtual rows and streamed content have their real height.
+    scrollToBottom(true);
+
+    pendingBottomFrameRef.current = window.requestAnimationFrame(() => {
+      pendingBottomFrameRef.current = window.requestAnimationFrame(() => {
+        pendingBottomFrameRef.current = undefined;
+        scrollToBottom(true);
+      });
+    });
+
+    return () => {
+      if (pendingBottomFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(pendingBottomFrameRef.current);
+        pendingBottomFrameRef.current = undefined;
+      }
+    };
+  }, [isMessagesNearBottom, isSending, messages, scrollToBottom]);
 
   useEffect(() => {
     scheduleScrollButtonUpdate();

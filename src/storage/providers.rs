@@ -36,7 +36,6 @@ impl JsonStore {
         validate_extra_body(&request.extra_body)?;
 
         let _guard = self.lock.lock().await;
-        let mut providers = self.read_providers_unlocked().await?;
         let now = Utc::now();
         let provider = ModelProvider {
             id: Uuid::new_v4(),
@@ -52,8 +51,7 @@ impl JsonStore {
             created_at: now,
             updated_at: now,
         };
-        providers.push(provider.clone());
-        self.write_providers_unlocked(&providers).await?;
+        self.upsert_provider_unlocked(provider.clone()).await?;
         Ok(ModelProviderResponse::from(&provider))
     }
 
@@ -64,7 +62,6 @@ impl JsonStore {
     ) -> AppResult<ModelProviderResponse> {
         let _guard = self.lock.lock().await;
         let mut providers = self.read_providers_unlocked().await?;
-        let original_providers = providers.clone();
         let mut agents = self.read_agents_unlocked().await?;
         let original_agents = agents.clone();
         let mut agents_changed = false;
@@ -122,11 +119,10 @@ impl JsonStore {
         if agents_changed {
             self.write_agents_unlocked(&agents).await?;
         }
-        if let Err(error) = self.write_providers_unlocked(&providers).await {
+        if let Err(error) = self.upsert_provider_unlocked(updated.clone()).await {
             if agents_changed {
                 let _ = self.write_agents_unlocked(&original_agents).await;
             }
-            let _ = self.write_providers_unlocked(&original_providers).await;
             return Err(error);
         }
         Ok(ModelProviderResponse::from(&updated))
@@ -142,13 +138,10 @@ impl JsonStore {
             )));
         }
 
-        let mut providers = self.read_providers_unlocked().await?;
-        let before = providers.len();
-        providers.retain(|provider| provider.id != id);
-        if providers.len() == before {
+        if !self.delete_provider_unlocked(id).await? {
             return Err(AppError::NotFound);
         }
-        self.write_providers_unlocked(&providers).await
+        Ok(())
     }
 
     pub async fn get_model_provider(&self, id: Uuid) -> AppResult<ModelProvider> {

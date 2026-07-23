@@ -86,13 +86,25 @@ export function ToolDisclosure({
   const isActive = tool.status === 'running' || tool.status === 'pending_approval';
   const [isOpen, setIsOpen] = useState(isActive);
   const [userToggled, setUserToggled] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [approvalDecision, setApprovalDecision] = useState<'approve' | 'reject' | 'always_approve' | null>(null);
 
   useEffect(() => {
     setUserToggled(false);
     setIsOpen(isActive);
+    setElapsedSeconds(0);
     setApprovalDecision(null);
-  }, [tool.call_id]);
+  }, [isActive, tool.call_id]);
+
+  useEffect(() => {
+    if (!isActive || !tool.started_at_ms) return undefined;
+    const update = () => {
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - tool.started_at_ms!) / 1000)));
+    };
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [isActive, tool.started_at_ms]);
 
   useEffect(() => {
     setApprovalDecision(null);
@@ -103,7 +115,9 @@ export function ToolDisclosure({
     setIsOpen(isActive);
   }, [isActive, userToggled]);
 
-  const label = statusLabel(tool, t);
+  const label = tool.phase === 'generating_arguments' && tool.status === 'running'
+    ? t('toolCard.generatingArguments')
+    : statusLabel(tool, t);
   const tone = statusTone(tool);
   const toneClass = tone === 'default' ? '' : ` is-${tone}`;
 
@@ -125,6 +139,9 @@ export function ToolDisclosure({
             <StatusIcon tool={tool} />
             <span className="message-tool__title">{label}</span>
             <code className="message-tool__name">{tool.name}</code>
+            {isActive && elapsedSeconds > 0 ? (
+              <span className="message-tool__elapsed">{t('toolCard.elapsed', { seconds: elapsedSeconds })}</span>
+            ) : null}
             {tool.status === 'running' ? <span className="message-tool__pulse" aria-hidden="true" /> : null}
           </span>
           <ChevronDown className="message-tool__chevron" size={15} aria-hidden="true" />
@@ -183,6 +200,8 @@ export function ToolDisclosure({
             arguments={tool.arguments}
             status={tool.status}
             result={tool.result}
+            argumentsText={tool.arguments_text}
+            phase={tool.phase}
             hideHeader
             onApprove={onApprove}
           />

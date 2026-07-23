@@ -1,6 +1,9 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, mpsc},
+    thread,
+    time::Duration,
 };
 
 use chrono::Utc;
@@ -13,6 +16,125 @@ use crate::{
 };
 
 pub const DB_FILE_NAME: &str = "weiagent.db";
+const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const BASE_SCHEMA_VERSION: i64 = 1;
+
+type DatabaseJob = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
+
+enum DatabaseCommand {
+    Run(DatabaseJob),
+    Shutdown,
+}
+
+struct DatabaseInner {
+    path: PathBuf,
+    sender: mpsc::Sender<DatabaseCommand>,
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+impl Drop for DatabaseInner {
+    fn drop(&mut self) {
+        let _ = self.sender.send(DatabaseCommand::Shutdown);
+        if let Ok(worker) = self.worker.get_mut()
+            && let Some(worker) = worker.take()
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Database {
+    inner: Arc<DatabaseInner>,
+}
+
+impl Database {
+    pub fn open(data_dir: &Path) -> AppResult<Self> {
+        let path = db_path(data_dir);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let (sender, receiver) = mpsc::channel::<DatabaseCommand>();
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        let worker_path = path.clone();
+        let worker = thread::Builder::new()
+            .name("weiagent-database".to_string())
+            .spawn(move || {
+                let mut connection = match open_initialized_connection(&worker_path) {
+                    Ok(connection) => {
+                        let _ = ready_sender.send(Ok(()));
+                        connection
+                    }
+                    Err(error) => {
+                        let _ = ready_sender.send(Err(error));
+                        return;
+                    }
+                };
+
+                while let Ok(command) = receiver.recv() {
+                    match command {
+                        DatabaseCommand::Run(job) => job(&mut connection),
+                        DatabaseCommand::Shutdown => break,
+                    }
+                }
+            })
+            .map_err(AppError::Storage)?;
+
+        ready_receiver.recv().map_err(|_| {
+            AppError::Database("database worker stopped during initialization".to_string())
+        })??;
+
+        Ok(Self {
+            inner: Arc::new(DatabaseInner {
+                path,
+                sender,
+                worker: Mutex::new(Some(worker)),
+            }),
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.inner.path
+    }
+
+    pub async fn call<T, F>(&self, operation: F) -> AppResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> AppResult<T> + Send + 'static,
+    {
+        let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
+        self.inner
+            .sender
+            .send(DatabaseCommand::Run(Box::new(move |connection| {
+                let _ = result_sender.send(operation(connection));
+            })))
+            .map_err(|_| AppError::Database("database worker is not running".to_string()))?;
+        result_receiver.await.map_err(|_| {
+            AppError::Database("database worker dropped a pending operation".to_string())
+        })?
+    }
+
+    pub async fn shutdown(&self) -> AppResult<()> {
+        self.inner
+            .sender
+            .send(DatabaseCommand::Shutdown)
+            .map_err(|_| AppError::Database("database worker is not running".to_string()))?;
+        let worker = self
+            .inner
+            .worker
+            .lock()
+            .map_err(|_| AppError::Database("database worker lock is poisoned".to_string()))?
+            .take();
+        if let Some(worker) = worker {
+            tokio::task::spawn_blocking(move || worker.join())
+                .await
+                .map_err(|error| AppError::Database(error.to_string()))?
+                .map_err(|_| AppError::Database("database worker panicked".to_string()))?;
+        }
+        Ok(())
+    }
+}
 
 pub const SCHEMA_SQL: &str = "
 PRAGMA foreign_keys = ON;
@@ -73,6 +195,7 @@ CREATE TABLE IF NOT EXISTS ip_proxies (
     url TEXT NOT NULL UNIQUE,
     protocol TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
+    is_pinned INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'unchecked',
     latency_ms INTEGER,
     last_checked_at TEXT,
@@ -82,6 +205,7 @@ CREATE TABLE IF NOT EXISTS ip_proxies (
     country_code TEXT,
     region TEXT,
     city TEXT,
+    quality_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -94,82 +218,126 @@ pub fn db_path(data_dir: &Path) -> PathBuf {
     data_dir.join(DB_FILE_NAME)
 }
 
-pub fn open_connection(db_path: &Path) -> AppResult<Connection> {
+fn configure_connection(conn: &Connection) -> AppResult<()> {
+    conn.busy_timeout(DATABASE_BUSY_TIMEOUT)?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "foreign_keys", true)?;
+    Ok(())
+}
+
+fn open_initialized_connection(db_path: &Path) -> AppResult<Connection> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let conn = Connection::open(db_path)?;
-    let _ = conn.pragma_update(None, "journal_mode", "WAL");
-    conn.pragma_update(None, "foreign_keys", true)?;
-    conn.execute_batch(SCHEMA_SQL)?;
-    // Older installations have the provider table already; add cache columns
-    // without disturbing their existing rows.
-    let _ = conn.execute(
-        "ALTER TABLE model_providers ADD COLUMN prompt_cache_json TEXT NOT NULL DEFAULT '{}'",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE model_providers ADD COLUMN cache_capabilities_json TEXT NOT NULL DEFAULT 'null'",
-        [],
-    );
-    for column in [
-        "ip_address TEXT",
-        "country TEXT",
-        "country_code TEXT",
-        "region TEXT",
-        "city TEXT",
-    ] {
-        let _ = conn.execute(&format!("ALTER TABLE ip_proxies ADD COLUMN {column}"), []);
+    let mut conn = Connection::open(db_path)?;
+    configure_connection(&conn)?;
+    migrate_base_schema(&mut conn)?;
+    Ok(conn)
+}
+
+fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS app_schema_migrations (
+            version INTEGER PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );",
+    )?;
+    let applied = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM app_schema_migrations WHERE version = ?1
+        )",
+        [BASE_SCHEMA_VERSION],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if applied {
+        ensure_column(
+            conn,
+            "ip_proxies",
+            "is_pinned",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            conn,
+            "ip_proxies",
+            "quality_json",
+            "TEXT NOT NULL DEFAULT '{}'",
+        )?;
+        return Ok(());
     }
-    repair_ip_proxy_names(&conn)?;
-    conn.execute(
+
+    let tx = conn.transaction()?;
+    tx.execute_batch(SCHEMA_SQL)?;
+    ensure_column(
+        &tx,
+        "model_providers",
+        "prompt_cache_json",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )?;
+    ensure_column(
+        &tx,
+        "model_providers",
+        "cache_capabilities_json",
+        "TEXT NOT NULL DEFAULT 'null'",
+    )?;
+    for (name, definition) in [
+        ("ip_address", "TEXT"),
+        ("country", "TEXT"),
+        ("country_code", "TEXT"),
+        ("region", "TEXT"),
+        ("city", "TEXT"),
+        ("is_pinned", "INTEGER NOT NULL DEFAULT 0"),
+        ("quality_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ] {
+        ensure_column(&tx, "ip_proxies", name, definition)?;
+    }
+    repair_ip_proxy_names(&tx)?;
+    tx.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_proxies_name_unique
          ON ip_proxies(name COLLATE NOCASE)",
         [],
     )?;
-    Ok(conn)
+    tx.execute(
+        "INSERT INTO app_schema_migrations (version, name, applied_at)
+         VALUES (?1, ?2, ?3)",
+        params![
+            BASE_SCHEMA_VERSION,
+            "base_schema_v1",
+            Utc::now().to_rfc3339()
+        ],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
+fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> AppResult<()> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<HashSet<_>, _>>()?;
+    if !columns.contains(column) {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub fn open_connection(db_path: &Path) -> AppResult<Connection> {
+    open_initialized_connection(db_path)
+}
+
+#[cfg(test)]
 pub fn open_data_dir(data_dir: &Path) -> AppResult<Connection> {
     open_connection(&db_path(data_dir))
 }
 
-pub fn ensure_schema(data_dir: &Path) -> AppResult<()> {
-    let _conn = open_data_dir(data_dir)?;
-    Ok(())
-}
-
-pub fn read_providers(data_dir: &Path) -> AppResult<Vec<ModelProvider>> {
-    let conn = open_data_dir(data_dir)?;
-    read_providers_conn(&conn)
-}
-
-pub fn write_providers(data_dir: &Path, providers: &[ModelProvider]) -> AppResult<()> {
-    let mut conn = open_data_dir(data_dir)?;
-    let tx = conn.transaction()?;
-    tx.execute("DELETE FROM model_providers", [])?;
-    for provider in providers {
-        insert_provider_conn(&tx, provider)?;
-    }
-    tx.commit()?;
-    Ok(())
-}
-
-pub fn read_ip_proxies(data_dir: &Path) -> AppResult<Vec<IpProxy>> {
-    let conn = open_data_dir(data_dir)?;
-    read_ip_proxies_conn(&conn)
-}
-
-pub fn write_ip_proxies(data_dir: &Path, proxies: &[IpProxy]) -> AppResult<()> {
-    let mut conn = open_data_dir(data_dir)?;
-    let tx = conn.transaction()?;
-    tx.execute("DELETE FROM ip_proxies", [])?;
-    for proxy in proxies {
-        insert_ip_proxy_conn(&tx, proxy)?;
-    }
-    tx.commit()?;
-    Ok(())
-}
+/*
+ * Connection-level query helpers below are intentionally synchronous. They are
+ * only invoked by Database::call on the dedicated database worker thread.
+ */
 
 pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
     let mut stmt = conn.prepare(
@@ -202,7 +370,7 @@ pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
     Ok(providers)
 }
 
-fn insert_provider_conn(conn: &Connection, provider: &ModelProvider) -> AppResult<()> {
+pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) -> AppResult<()> {
     let provider_type = serde_json::to_value(&provider.provider_type)?
         .as_str()
         .unwrap_or("openai_compatible")
@@ -216,7 +384,18 @@ fn insert_provider_conn(conn: &Connection, provider: &ModelProvider) -> AppResul
         "INSERT INTO model_providers (
             id, provider_type, name, base_url, api_key, models_json,
             model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(id) DO UPDATE SET
+            provider_type = excluded.provider_type,
+            name = excluded.name,
+            base_url = excluded.base_url,
+            api_key = excluded.api_key,
+            models_json = excluded.models_json,
+            model_configs_json = excluded.model_configs_json,
+            extra_body_json = excluded.extra_body_json,
+            prompt_cache_json = excluded.prompt_cache_json,
+            cache_capabilities_json = excluded.cache_capabilities_json,
+            updated_at = excluded.updated_at",
         params![
             provider.id.to_string(),
             provider_type,
@@ -233,6 +412,13 @@ fn insert_provider_conn(conn: &Connection, provider: &ModelProvider) -> AppResul
         ],
     )?;
     Ok(())
+}
+
+pub(super) fn delete_provider_conn(conn: &Connection, id: Uuid) -> AppResult<bool> {
+    Ok(conn.execute(
+        "DELETE FROM model_providers WHERE id = ?1",
+        [id.to_string()],
+    )? > 0)
 }
 
 struct ProviderRow {
@@ -283,9 +469,9 @@ fn row_to_provider(row: ProviderRow) -> AppResult<ModelProvider> {
 
 pub fn read_ip_proxies_conn(conn: &Connection) -> AppResult<Vec<IpProxy>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, url, protocol, enabled, status, latency_ms,
+        "SELECT id, name, url, protocol, enabled, is_pinned, status, latency_ms,
                 last_checked_at, last_error, ip_address, country, country_code,
-                region, city, created_at, updated_at
+                region, city, quality_json, created_at, updated_at
          FROM ip_proxies
          ORDER BY created_at ASC, id ASC",
     )?;
@@ -296,17 +482,19 @@ pub fn read_ip_proxies_conn(conn: &Connection) -> AppResult<Vec<IpProxy>> {
             url: row.get(2)?,
             protocol: row.get(3)?,
             enabled: row.get(4)?,
-            status: row.get(5)?,
-            latency_ms: row.get(6)?,
-            last_checked_at: row.get(7)?,
-            last_error: row.get(8)?,
-            ip_address: row.get(9)?,
-            country: row.get(10)?,
-            country_code: row.get(11)?,
-            region: row.get(12)?,
-            city: row.get(13)?,
-            created_at: row.get(14)?,
-            updated_at: row.get(15)?,
+            is_pinned: row.get(5)?,
+            status: row.get(6)?,
+            latency_ms: row.get(7)?,
+            last_checked_at: row.get(8)?,
+            last_error: row.get(9)?,
+            ip_address: row.get(10)?,
+            country: row.get(11)?,
+            country_code: row.get(12)?,
+            region: row.get(13)?,
+            city: row.get(14)?,
+            quality_json: row.get(15)?,
+            created_at: row.get(16)?,
+            updated_at: row.get(17)?,
         })
     })?;
 
@@ -317,7 +505,7 @@ pub fn read_ip_proxies_conn(conn: &Connection) -> AppResult<Vec<IpProxy>> {
     Ok(proxies)
 }
 
-fn insert_ip_proxy_conn(conn: &Connection, proxy: &IpProxy) -> AppResult<()> {
+pub(super) fn upsert_ip_proxy_conn(conn: &Connection, proxy: &IpProxy) -> AppResult<()> {
     let protocol = enum_value(&proxy.protocol, "http")?;
     let status = enum_value(&proxy.status, "unchecked")?;
     let latency_ms = proxy
@@ -325,18 +513,37 @@ fn insert_ip_proxy_conn(conn: &Connection, proxy: &IpProxy) -> AppResult<()> {
         .map(i64::try_from)
         .transpose()
         .map_err(|error| AppError::Database(error.to_string()))?;
+    let quality_json = serde_json::to_string(&proxy.api_quality)?;
     conn.execute(
         "INSERT INTO ip_proxies (
-            id, name, url, protocol, enabled, status, latency_ms,
+            id, name, url, protocol, enabled, is_pinned, status, latency_ms,
             last_checked_at, last_error, ip_address, country, country_code,
-            region, city, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            region, city, quality_json, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+         ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            url = excluded.url,
+            protocol = excluded.protocol,
+            enabled = excluded.enabled,
+            is_pinned = excluded.is_pinned,
+            status = excluded.status,
+            latency_ms = excluded.latency_ms,
+            last_checked_at = excluded.last_checked_at,
+            last_error = excluded.last_error,
+            ip_address = excluded.ip_address,
+            country = excluded.country,
+            country_code = excluded.country_code,
+            region = excluded.region,
+            city = excluded.city,
+            quality_json = excluded.quality_json,
+            updated_at = excluded.updated_at",
         params![
             proxy.id.to_string(),
             proxy.name,
             proxy.url,
             protocol,
             i64::from(proxy.enabled),
+            i64::from(proxy.is_pinned),
             status,
             latency_ms,
             proxy.last_checked_at.map(|value| value.to_rfc3339()),
@@ -346,10 +553,24 @@ fn insert_ip_proxy_conn(conn: &Connection, proxy: &IpProxy) -> AppResult<()> {
             proxy.country_code,
             proxy.region,
             proxy.city,
+            quality_json,
             proxy.created_at.to_rfc3339(),
             proxy.updated_at.to_rfc3339(),
         ],
     )?;
+    Ok(())
+}
+
+pub(super) fn delete_ip_proxy_conn(conn: &Connection, id: Uuid) -> AppResult<bool> {
+    Ok(conn.execute("DELETE FROM ip_proxies WHERE id = ?1", [id.to_string()])? > 0)
+}
+
+pub(super) fn upsert_ip_proxies_conn(conn: &mut Connection, proxies: &[IpProxy]) -> AppResult<()> {
+    let tx = conn.transaction()?;
+    for proxy in proxies {
+        upsert_ip_proxy_conn(&tx, proxy)?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -359,6 +580,7 @@ struct IpProxyRow {
     url: String,
     protocol: String,
     enabled: i64,
+    is_pinned: i64,
     status: String,
     latency_ms: Option<i64>,
     last_checked_at: Option<String>,
@@ -368,6 +590,7 @@ struct IpProxyRow {
     country_code: Option<String>,
     region: Option<String>,
     city: Option<String>,
+    quality_json: String,
     created_at: String,
     updated_at: String,
 }
@@ -387,6 +610,7 @@ fn row_to_ip_proxy(row: IpProxyRow) -> AppResult<IpProxy> {
         url: row.url,
         protocol,
         enabled: row.enabled != 0,
+        is_pinned: row.is_pinned != 0,
         status,
         latency_ms,
         last_checked_at: parse_optional_datetime(row.last_checked_at)?,
@@ -396,6 +620,7 @@ fn row_to_ip_proxy(row: IpProxyRow) -> AppResult<IpProxy> {
         country_code: row.country_code,
         region: row.region,
         city: row.city,
+        api_quality: serde_json::from_str(&row.quality_json).unwrap_or_default(),
         created_at: parse_datetime(&row.created_at)?,
         updated_at: parse_datetime(&row.updated_at)?,
     })

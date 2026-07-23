@@ -8,6 +8,9 @@ import {
 } from 'react';
 import {
   Activity,
+  ArrowDown,
+  ArrowDownUp,
+  ArrowUp,
   CheckCircle2,
   CircleAlert,
   CircleDashed,
@@ -15,6 +18,7 @@ import {
   Globe2,
   LoaderCircle,
   Pencil,
+  Pin,
   Plus,
   RefreshCw,
   ServerCog,
@@ -38,6 +42,8 @@ import type {
   IpProxyImportEntry,
   IpProxyPayload,
   IpProxyProtocol,
+  IpProxyQuality,
+  IpProxyQualityProbe,
   IpProxyStatus,
 } from '../../types';
 import {
@@ -55,12 +61,36 @@ import { userErrorMessage } from '../../utils/userError';
 type ProxyDialog = 'create' | 'edit' | 'import' | null;
 type ProtocolFilter = 'all' | IpProxyProtocol;
 type StatusFilter = 'all' | IpProxyStatus;
+export type ProxySortKey = 'latency' | 'quality' | 'enabled';
+type SortDirection = 'asc' | 'desc';
 export type ImportProxyRow = {
   key: string;
   address: string;
   name: string;
   customName: boolean;
 };
+
+function SortHeader({
+  label,
+  sortKey,
+  sortState,
+  onSort,
+}: {
+  label: string;
+  sortKey: ProxySortKey;
+  sortState: { key: ProxySortKey; direction: SortDirection };
+  onSort: (key: ProxySortKey) => void;
+}) {
+  const active = sortState.key === sortKey;
+  return (
+    <th aria-sort={active ? (sortState.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button type="button" className={`ip-proxy-sort-button${active ? ' is-active' : ''}`} onClick={() => onSort(sortKey)}>
+        <span>{label}</span>
+        {active ? (sortState.direction === 'asc' ? <ArrowUp size={13} /> : <ArrowDown size={13} />) : <ArrowDownUp size={13} />}
+      </button>
+    </th>
+  );
+}
 
 const EMPTY_PROXY_FORM: IpProxyPayload = {
   name: '',
@@ -83,6 +113,11 @@ export function IpProxySettings({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
+  const [pinningIds, setPinningIds] = useState<Set<string>>(new Set());
+  const [sortState, setSortState] = useState<{ key: ProxySortKey; direction: SortDirection }>({
+    key: 'latency',
+    direction: 'asc',
+  });
   const [dialog, setDialog] = useState<ProxyDialog>(null);
   const [editingId, setEditingId] = useState('');
   const [proxyForm, setProxyForm] = useState<IpProxyPayload>(EMPTY_PROXY_FORM);
@@ -119,7 +154,7 @@ export function IpProxySettings({
 
   const filteredProxies = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
-    return proxies.filter((proxy) => (
+    const filtered = proxies.filter((proxy) => (
       (!query
         || [
           proxy.name,
@@ -132,7 +167,8 @@ export function IpProxySettings({
       && (protocolFilter === 'all' || proxy.protocol === protocolFilter)
       && (statusFilter === 'all' || proxy.status === statusFilter)
     ));
-  }, [protocolFilter, proxies, search, statusFilter]);
+    return sortIpProxies(filtered, sortState.key, sortState.direction);
+  }, [protocolFilter, proxies, search, sortState, statusFilter]);
 
   const enabledCount = proxies.filter((proxy) => proxy.enabled).length;
   const availableProxies = proxies.filter((proxy) => proxy.status === 'available');
@@ -295,6 +331,27 @@ export function IpProxySettings({
     }
   }
 
+  async function handlePinToggle(proxy: IpProxy) {
+    const isPinned = !proxy.is_pinned;
+    setPinningIds((current) => new Set(current).add(proxy.id));
+    setProxies((current) => current.map((item) => (
+      item.id === proxy.id ? { ...item, is_pinned: isPinned } : item
+    )));
+    try {
+      mergeUpdatedProxies([await updateIpProxy(proxy.id, { is_pinned: isPinned })]);
+      toast.success(t(isPinned ? 'ipProxy.pinned' : 'ipProxy.unpinned'));
+    } catch (cause) {
+      mergeUpdatedProxies([proxy]);
+      toast.error(userErrorMessage(cause, { summary: t('ipProxy.pinFailed') }));
+    } finally {
+      setPinningIds((current) => {
+        const next = new Set(current);
+        next.delete(proxy.id);
+        return next;
+      });
+    }
+  }
+
   async function handleDelete(proxy: IpProxy) {
     const confirmed = await confirm({
       title: t('ipProxy.deleteTitle'),
@@ -398,6 +455,12 @@ export function IpProxySettings({
     });
   }
 
+  function handleSort(key: ProxySortKey) {
+    setSortState((current) => current.key === key
+      ? { key, direction: current.direction === 'asc' ? 'desc' : 'asc' }
+      : { key, direction: 'asc' });
+  }
+
   return (
     <div className="ip-proxy-page">
       <section className="ip-proxy-overview" aria-label={t('ipProxy.overview')}>
@@ -424,6 +487,7 @@ export function IpProxySettings({
               <option value="all">{t('ipProxy.allProtocols')}</option>
               <option value="http">HTTP</option>
               <option value="https">HTTPS</option>
+              <option value="socks4">SOCKS4</option>
               <option value="socks5">SOCKS5</option>
             </select>
             <select
@@ -528,6 +592,16 @@ export function IpProxySettings({
             />
           ) : (
             <table className="ip-proxy-table">
+              <colgroup>
+                <col className="ip-proxy-col-select" />
+                <col className="ip-proxy-col-name" />
+                <col className="ip-proxy-col-location" />
+                <col className="ip-proxy-col-status" />
+                <col className="ip-proxy-col-latency" />
+                <col className="ip-proxy-col-quality" />
+                <col className="ip-proxy-col-enabled" />
+                <col className="ip-proxy-col-actions" />
+              </colgroup>
               <thead>
                 <tr>
                   <th className="ip-proxy-select-cell">
@@ -540,12 +614,11 @@ export function IpProxySettings({
                     />
                   </th>
                   <th>{t('ipProxy.proxy')}</th>
-                  <th>{t('ipProxy.protocol')}</th>
                   <th>{t('ipProxy.location')}</th>
                   <th>{t('ipProxy.statusLabel')}</th>
-                  <th>{t('ipProxy.latency')}</th>
-                  <th>{t('ipProxy.lastChecked')}</th>
-                  <th>{t('ipProxy.enabled')}</th>
+                  <SortHeader label={t('ipProxy.latency')} sortKey="latency" sortState={sortState} onSort={handleSort} />
+                  <SortHeader label={t('ipProxy.apiQuality')} sortKey="quality" sortState={sortState} onSort={handleSort} />
+                  <SortHeader label={t('ipProxy.enabled')} sortKey="enabled" sortState={sortState} onSort={handleSort} />
                   <th>{t('ipProxy.actions')}</th>
                 </tr>
               </thead>
@@ -553,7 +626,13 @@ export function IpProxySettings({
                 {filteredProxies.map((proxy) => {
                   const isTesting = testingIds.has(proxy.id);
                   return (
-                    <tr key={proxy.id} className={selectedIds.has(proxy.id) ? 'is-selected' : ''}>
+                    <tr
+                      key={proxy.id}
+                      className={[
+                        selectedIds.has(proxy.id) ? 'is-selected' : '',
+                        proxy.is_pinned ? 'is-pinned' : '',
+                      ].filter(Boolean).join(' ')}
+                    >
                       <td className="ip-proxy-select-cell">
                         <input
                           type="checkbox"
@@ -564,22 +643,27 @@ export function IpProxySettings({
                       </td>
                       <td>
                         <div className="ip-proxy-identity">
-                          <strong>{proxy.name}</strong>
+                          <div className="ip-proxy-name-line">
+                            <strong title={proxy.name}>{proxy.name}</strong>
+                            <span className={`ip-proxy-protocol is-${proxy.protocol}`}>{protocolLabel(proxy.protocol)}</span>
+                          </div>
                           <code title={proxy.url}>{maskProxyUrl(proxy.url)}</code>
                         </div>
                       </td>
-                      <td><span className={`ip-proxy-protocol is-${proxy.protocol}`}>{protocolLabel(proxy.protocol)}</span></td>
                       <td>
                         <ProxyLocation proxy={proxy} emptyLabel={t('ipProxy.locationPending')} />
                       </td>
-                      <td><ProxyStatusBadge proxy={proxy} isTesting={isTesting} label={t(`ipProxy.status.${proxy.status}`)} testingLabel={t('ipProxy.testing')} /></td>
-                      <td><LatencyValue latency={proxy.latency_ms} status={proxy.status} /></td>
                       <td>
-                        <span className="ip-proxy-checked-at">
-                          {proxy.last_checked_at ? formatCheckedAt(proxy.last_checked_at, locale) : t('ipProxy.neverChecked')}
-                        </span>
+                        <div className="ip-proxy-status-cell">
+                          <ProxyStatusBadge proxy={proxy} isTesting={isTesting} label={t(`ipProxy.status.${proxy.status}`)} testingLabel={t('ipProxy.testingStatus')} />
+                          <span className="ip-proxy-checked-at">
+                            {proxy.last_checked_at ? formatCheckedAt(proxy.last_checked_at, locale) : t('ipProxy.neverChecked')}
+                          </span>
+                        </div>
                       </td>
-                      <td>
+                      <td><LatencyValue latency={proxy.latency_ms} status={proxy.status} /></td>
+                      <td><ApiQualityGrid quality={proxy.api_quality} isTesting={isTesting} /></td>
+                      <td className="ip-proxy-enabled-cell">
                         <label className="toggle-switch ip-proxy-enabled-toggle" title={proxy.enabled ? t('ipProxy.enabled') : t('ipProxy.disabled')}>
                           <input
                             type="checkbox"
@@ -605,7 +689,18 @@ export function IpProxySettings({
                           <IconButton type="button" variant="ghost" label={t('ipProxy.edit')} disabled={isTesting || isDeleting} onClick={() => openEditDialog(proxy)}>
                             <Pencil size={15} />
                           </IconButton>
-                          <IconButton type="button" variant="danger" label={t('ipProxy.delete')} disabled={isTesting || isDeleting} onClick={() => void handleDelete(proxy)}>
+                          <IconButton
+                            type="button"
+                            variant="ghost"
+                            active={proxy.is_pinned}
+                            aria-pressed={proxy.is_pinned}
+                            label={t(proxy.is_pinned ? 'ipProxy.unpin' : 'ipProxy.pin')}
+                            disabled={isTesting || isDeleting || pinningIds.has(proxy.id)}
+                            onClick={() => void handlePinToggle(proxy)}
+                          >
+                            <Pin size={15} fill={proxy.is_pinned ? 'currentColor' : 'none'} />
+                          </IconButton>
+                          <IconButton type="button" variant="danger" label={t('ipProxy.delete')} disabled={isTesting || isDeleting || pinningIds.has(proxy.id)} onClick={() => void handleDelete(proxy)}>
                             <Trash2 size={15} />
                           </IconButton>
                         </div>
@@ -618,6 +713,8 @@ export function IpProxySettings({
           )}
         </div>
       </section>
+
+      <ApiQualityLegend />
 
       <Dialog
         open={dialog === 'create' || dialog === 'edit'}
@@ -750,7 +847,7 @@ export function IpProxySettings({
                 value={importText}
                 onChange={(event) => handleImportTextChange(event.target.value)}
                 onScroll={() => syncImportScroll('addresses')}
-                placeholder={'http://127.0.0.1:7890\nsocks5://proxy.example.com:1080'}
+                placeholder={'http://127.0.0.1:7890\nsocks4://proxy.example.com:1080'}
                 rows={9}
                 spellCheck={false}
                 aria-invalid={importAddressIssueKeys.size > 0}
@@ -893,6 +990,68 @@ function LatencyValue({ latency, status }: { latency: number | null; status: IpP
   return <span className={`ip-proxy-latency is-${tone}`}>{latency} ms</span>;
 }
 
+type QualityApiKey = keyof IpProxyQuality;
+
+const QUALITY_API_ITEMS: Array<{ key: QualityApiKey; short: string; label: string }> = [
+  { key: 'google', short: 'G', label: 'Google' },
+  { key: 'openai', short: 'O', label: 'OpenAI' },
+  { key: 'anthropic', short: 'A', label: 'Anthropic' },
+  { key: 'grok', short: 'X', label: 'Grok' },
+];
+
+function ApiQualityGrid({
+  quality,
+  isTesting,
+}: {
+  quality: IpProxyQuality;
+  isTesting: boolean;
+}) {
+  return (
+    <div className="ip-proxy-quality-grid" aria-label="API quality">
+      {QUALITY_API_ITEMS.map((item) => {
+        const probe: IpProxyQualityProbe = quality?.[item.key] ?? {
+          status: 'unchecked',
+          latency_ms: null,
+          error: null,
+        };
+        const state = isTesting ? 'testing' : probe.status;
+        const value = isTesting ? '...' : probe.status === 'available' && probe.latency_ms != null
+          ? `${probe.latency_ms} ms`
+          : probe.status === 'error' ? 'ERROR' : '--';
+        return (
+          <span
+            key={item.key}
+            className={`ip-proxy-quality-cell is-${item.key} is-${state}`}
+            title={probe.error ?? item.label}
+          >
+            <strong>{item.short}</strong>
+            <span>{value}</span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function ApiQualityLegend() {
+  const { t } = useI18n();
+  return (
+    <div className="ip-proxy-quality-legend" aria-label={t('ipProxy.apiQuality')}>
+      <span className="ip-proxy-quality-legend-label">{t('ipProxy.qualityLegendLabel')}</span>
+      {QUALITY_API_ITEMS.map((item) => (
+        <span key={item.key} className={`ip-proxy-quality-legend-item is-${item.key}`}>
+          <i aria-hidden="true" />
+          {item.label}
+        </span>
+      ))}
+      <span className="ip-proxy-quality-legend-item is-error">
+        <i aria-hidden="true" />
+        ERROR
+      </span>
+    </div>
+  );
+}
+
 export function parseProxyAddresses(value: string): string[] {
   return value
     .split(/\r?\n/)
@@ -1009,7 +1168,7 @@ function normalizeProxyAddress(address: string): string | null {
     : `http://${withNormalizedSocks}`;
   try {
     const url = new URL(candidate);
-    if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(url.protocol)) return null;
+    if (!['http:', 'https:', 'socks4:', 'socks4a:', 'socks5:', 'socks5h:'].includes(url.protocol)) return null;
     if (!url.hostname || url.search || url.hash || !['', '/'].includes(url.pathname)) return null;
     return url.toString().replace(/\/$/, '');
   } catch {
@@ -1034,6 +1193,50 @@ function uniqueProxyName(baseName: string, usedNames: Set<string>): string {
 
 function protocolLabel(protocol: IpProxyProtocol) {
   return protocol === 'socks5' ? 'SOCKS5' : protocol.toUpperCase();
+}
+
+export function sortIpProxies(proxies: IpProxy[], key: ProxySortKey, direction: SortDirection) {
+  const multiplier = direction === 'asc' ? 1 : -1;
+  return [...proxies].sort((left, right) => {
+    const pinOrder = Number(right.is_pinned) - Number(left.is_pinned);
+    if (pinOrder !== 0) return pinOrder;
+
+    const result = compareProxyValues(left, right, key);
+    if (result !== 0) {
+      const leftEmpty = key === 'quality' ? qualityAverage(left) == null : left.latency_ms == null;
+      const rightEmpty = key === 'quality' ? qualityAverage(right) == null : right.latency_ms == null;
+      const keepEmptyValueLast = (key === 'latency' || key === 'quality') && (leftEmpty || rightEmpty);
+      return keepEmptyValueLast ? result : result * multiplier;
+    }
+    return left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id);
+  });
+}
+
+function compareProxyValues(left: IpProxy, right: IpProxy, key: ProxySortKey) {
+  if (key === 'latency') {
+    if (left.latency_ms == null && right.latency_ms == null) return 0;
+    if (left.latency_ms == null) return 1;
+    if (right.latency_ms == null) return -1;
+    return left.latency_ms - right.latency_ms;
+  }
+  if (key === 'quality') {
+    const leftAverage = qualityAverage(left);
+    const rightAverage = qualityAverage(right);
+    if (leftAverage == null && rightAverage == null) return 0;
+    if (leftAverage == null) return 1;
+    if (rightAverage == null) return -1;
+    return leftAverage - rightAverage;
+  }
+  if (key === 'enabled') return Number(left.enabled) - Number(right.enabled);
+  return 0;
+}
+
+function qualityAverage(proxy: IpProxy): number | null {
+  const latencies = Object.values(proxy.api_quality ?? {})
+    .map((probe) => probe.latency_ms)
+    .filter((latency): latency is number => latency != null);
+  if (latencies.length === 0) return null;
+  return latencies.reduce((total, latency) => total + latency, 0) / latencies.length;
 }
 
 function maskProxyUrl(value: string) {

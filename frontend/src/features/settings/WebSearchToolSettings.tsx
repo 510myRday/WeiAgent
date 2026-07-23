@@ -8,12 +8,16 @@ import {
   CircleAlert,
   CircleX,
   Clock3,
+  ExternalLink,
   KeyRound,
   LoaderCircle,
+  Network,
   Pause,
+  Pin,
   Plus,
   Play,
   RefreshCw,
+  Search,
   ScanSearch,
   Settings2,
   Trash2,
@@ -38,11 +42,13 @@ import {
   checkWebSearchKeys,
   deleteWebSearchKey,
   importWebSearchKeys,
+  listIpProxies,
   readToolDefaults,
   updateAgentToolsConfig,
   updateToolDefaults,
 } from '../../api';
-import type { Agent } from '../../types';
+import type { Agent, IpProxy, IpProxyProtocol } from '../../types';
+import { sortIpProxies } from './IpProxySettings';
 import { useI18n } from '../../i18n';
 import { useBeforeUnloadGuard } from '../../hooks';
 import { AutoSaveIndicator, Button, Dialog, IconButton, useFeedback } from '../../components/ui';
@@ -52,6 +58,7 @@ interface WebSearchToolSettingsProps {
   agentId?: string;
   agents?: Agent[];
   onBack?: () => void;
+  onOpenIpProxies?: () => void;
 }
 
 type AutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
@@ -82,6 +89,9 @@ type PendingSave =
     agentId: string;
     overrides: AgentToolsOverrides;
   };
+
+type ProxyPickerField = 'flaresolverr_proxy_url' | 'proxy_url';
+type ProxyLatencySort = 'latency_asc' | 'latency_desc';
 
 const AUTO_SAVE_DELAY_MS = 600;
 const AUTO_SAVE_RETRY_DELAY_MS = 1200;
@@ -120,13 +130,14 @@ function defaultWebSearch(): WebSearchToolConfig {
       allow_grok_fallback: true,
     },
     sources: [
-      { id: 'tavily', provider: 'tavily', display_name: 'Tavily', enabled: false, deep_enabled: true, extract_enabled: true, priority: 10, independence_group: 'tavily', roles: ['general_search', 'current_news', 'fact_checking', 'market_research', 'product_research'], api_keys: [], extract_base_url: null, flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'exa', provider: 'exa', display_name: 'Exa', enabled: false, deep_enabled: true, extract_enabled: true, priority: 20, independence_group: 'exa', roles: ['semantic_research', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'product_research'], api_keys: [], extract_base_url: null, flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'jina', provider: 'jina', display_name: 'Jina Search', enabled: true, deep_enabled: true, extract_enabled: true, priority: 30, independence_group: 'jina', roles: ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'], api_keys: [], extract_base_url: null, flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'grok', provider: 'grok', display_name: 'Grok Research', enabled: false, deep_enabled: true, extract_enabled: true, priority: 40, independence_group: 'grok', roles: ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'], api_keys: [], extract_base_url: null, flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'firecrawl', provider: 'firecrawl', display_name: 'Firecrawl', enabled: false, deep_enabled: true, extract_enabled: true, priority: 50, independence_group: 'firecrawl', roles: ['general_search', 'current_news', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'market_research', 'product_research', 'multilingual_search'], api_keys: [], extract_base_url: null, flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'tavily', provider: 'tavily', display_name: 'Tavily', enabled: false, deep_enabled: true, extract_enabled: true, priority: 10, independence_group: 'tavily', roles: ['general_search', 'current_news', 'fact_checking', 'market_research', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'exa', provider: 'exa', display_name: 'Exa', enabled: false, deep_enabled: true, extract_enabled: true, priority: 20, independence_group: 'exa', roles: ['semantic_research', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'jina', provider: 'jina', display_name: 'Jina Search', enabled: true, deep_enabled: true, extract_enabled: true, priority: 30, independence_group: 'jina', roles: ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'grok', provider: 'grok', display_name: 'Grok Research', enabled: false, deep_enabled: true, extract_enabled: true, priority: 40, independence_group: 'grok', roles: ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'firecrawl', provider: 'firecrawl', display_name: 'Firecrawl', enabled: false, deep_enabled: true, extract_enabled: true, priority: 50, independence_group: 'firecrawl', roles: ['general_search', 'current_news', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'market_research', 'product_research', 'multilingual_search'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
     ],
   };
+
 }
 
 function normalizeWebSearchSources(sources: WebSearchSourceConfig[]): WebSearchSourceConfig[] {
@@ -142,7 +153,6 @@ function normalizeWebSearchSources(sources: WebSearchSourceConfig[]): WebSearchS
       api_keys: source.api_keys ?? [],
       key_statuses: source.key_statuses ?? [],
       extract_key_statuses: source.extract_key_statuses ?? [],
-      extract_base_url: source.extract_base_url ?? null,
       flaresolverr_url: source.flaresolverr_url ?? null,
       flaresolverr_proxy_url: source.flaresolverr_proxy_url ?? null,
       proxy_url: source.proxy_url ?? null,
@@ -361,6 +371,7 @@ export function WebSearchToolSettings({
   scope,
   agentId,
   onBack,
+  onOpenIpProxies,
 }: WebSearchToolSettingsProps) {
   const { t } = useI18n();
   const { confirm, toast } = useFeedback();
@@ -382,6 +393,13 @@ export function WebSearchToolSettings({
   const [importingKeys, setImportingKeys] = useState<Record<string, boolean>>({});
   const [deletingKeys, setDeletingKeys] = useState<Record<string, boolean>>({});
   const [addKeySourceId, setAddKeySourceId] = useState<string | null>(null);
+  const [ipProxies, setIpProxies] = useState<IpProxy[]>([]);
+  const [isLoadingIpProxies, setIsLoadingIpProxies] = useState(true);
+  const [hasLoadedIpProxies, setHasLoadedIpProxies] = useState(false);
+  const [proxyPicker, setProxyPicker] = useState<{ sourceIndex: number; field: ProxyPickerField } | null>(null);
+  const [proxySearch, setProxySearch] = useState('');
+  const [proxyProtocolFilter, setProxyProtocolFilter] = useState<'all' | IpProxyProtocol>('all');
+  const [proxyLatencySort, setProxyLatencySort] = useState<ProxyLatencySort>('latency_asc');
 
   const isMountedRef = useRef(true);
   const activeContextRef = useRef(contextKey);
@@ -404,6 +422,34 @@ export function WebSearchToolSettings({
   }, [agentSettings, defaults, scope]);
 
   const overrides = agentSettings?.overrides ?? null;
+  const proxyPickerSource = proxyPicker && config
+    ? config.web_search.sources[proxyPicker.sourceIndex]
+    : null;
+  const proxyPickerValue = proxyPickerSource && proxyPicker
+    ? proxyPickerSource[proxyPicker.field]
+    : null;
+  const selectedProxy = ipProxies.find((proxy) => (
+    proxy.url === proxyPickerValue
+    && proxy.enabled
+    && proxy.status === 'available'
+  )) ?? null;
+  const filteredIpProxies = useMemo(() => {
+    const query = proxySearch.trim().toLocaleLowerCase();
+    const eligibleProxies = ipProxies.filter((proxy) => (
+      proxy.enabled
+      && proxy.status === 'available'
+      && (
+        (!query || [proxy.name, proxy.url, proxy.ip_address, proxy.country, proxy.region, proxy.city]
+          .some((value) => value?.toLocaleLowerCase().includes(query)))
+        && (proxyProtocolFilter === 'all' || proxy.protocol === proxyProtocolFilter)
+      )
+    ));
+    return sortIpProxies(
+      eligibleProxies,
+      'latency',
+      proxyLatencySort === 'latency_asc' ? 'asc' : 'desc',
+    );
+  }, [ipProxies, proxyLatencySort, proxyProtocolFilter, proxySearch]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -415,6 +461,46 @@ export function WebSearchToolSettings({
   useEffect(() => {
     activeContextRef.current = contextKey;
   }, [contextKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoadingIpProxies(true);
+    listIpProxies()
+      .then((next) => {
+        if (!cancelled) {
+          setIpProxies(next);
+          setHasLoadedIpProxies(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) toast.warning(t('tools.webSearch.ipProxyLoadFailed'));
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingIpProxies(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t, toast]);
+
+  useEffect(() => {
+    if (scope !== 'defaults' || !hasLoadedIpProxies || !config) return;
+    config.web_search.sources.forEach((source, index) => {
+      const validProxyUrls = new Set(ipProxies.map((proxy) => proxy.url));
+      const patch: Partial<WebSearchSourceConfig> = {};
+      if (source.proxy_url && !validProxyUrls.has(source.proxy_url)) {
+        patch.proxy_url = null;
+      }
+      if (source.provider === 'grok' && source.flaresolverr_proxy_url && !validProxyUrls.has(source.flaresolverr_proxy_url)) {
+        patch.flaresolverr_proxy_url = null;
+      }
+      if (source.provider !== 'grok' && (source.flaresolverr_url || source.flaresolverr_proxy_url)) {
+        patch.flaresolverr_url = null;
+        patch.flaresolverr_proxy_url = null;
+      }
+      if (Object.keys(patch).length > 0) updateSource(index, patch);
+    });
+  }, [config, hasLoadedIpProxies, ipProxies, scope]);
 
   useEffect(() => {
     let cancelled = false;
@@ -670,6 +756,23 @@ export function WebSearchToolSettings({
     if (!config || scope !== 'defaults') return;
     const sources = config.web_search.sources.map((source, i) => (i === index ? { ...source, ...patch } : source));
     updateWebSearch({ sources });
+  }
+
+  function openProxyPicker(sourceIndex: number, field: ProxyPickerField) {
+    setProxyPicker({ sourceIndex, field });
+    setProxySearch('');
+    setProxyProtocolFilter('all');
+    setProxyLatencySort('latency_asc');
+  }
+
+  function closeProxyPicker() {
+    setProxyPicker(null);
+  }
+
+  function selectProxy(url: string | null) {
+    if (!proxyPicker) return;
+    updateSource(proxyPicker.sourceIndex, { [proxyPicker.field]: url });
+    closeProxyPicker();
   }
 
   function moveSource(index: number, direction: -1 | 1) {
@@ -1044,6 +1147,45 @@ export function WebSearchToolSettings({
   const isAddingKeys = addKeySource ? Boolean(importingKeys[addKeySource.id]) : false;
   const enabledInherited = isAgentScope && overrides?.web_search?.enabled === undefined;
   const maxResultsInherited = isAgentScope && overrides?.web_search?.max_results === undefined;
+
+  function renderProxySelector(sourceIndex: number, field: ProxyPickerField, labelKey: string, descriptionKey: string) {
+    const source = webSearch.sources[sourceIndex];
+    const value = source[field];
+    const currentProxy = ipProxies.find((proxy) => proxy.url === value) ?? null;
+    const label = t(labelKey);
+    return (
+      <div className="web-search-extra-field">
+        <div className="web-search-extra-field__label">
+          <span>{label}</span>
+          <p className="setting-desc">{t(descriptionKey)}</p>
+        </div>
+        <button
+          type="button"
+          className={`web-search-proxy-picker${currentProxy ? '' : ' is-empty'}`}
+          onClick={() => openProxyPicker(sourceIndex, field)}
+          disabled={isAgentScope}
+          aria-label={label}
+        >
+          <span className="web-search-proxy-picker__copy">
+            {currentProxy ? (
+              <>
+                <strong>{currentProxy.name}</strong>
+                <code>{displayProxyUrl(currentProxy.url)}</code>
+              </>
+            ) : value ? (
+              <>
+                <strong className="is-warning"><CircleAlert size={14} />{t('tools.webSearch.proxyNotInList')}</strong>
+                <code>{displayProxyUrl(value)}</code>
+              </>
+            ) : (
+              <span>{t('tools.webSearch.selectIpProxy')}</span>
+            )}
+          </span>
+          <ChevronDown size={17} aria-hidden="true" />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className={`terminal-tool-settings-v2 ${isAgentScope ? 'is-agent-scope' : 'is-default-scope'}`}>
@@ -1721,22 +1863,7 @@ export function WebSearchToolSettings({
                                   className="web-search-subsection__content web-search-grok-extras__content"
                                   id={connectionBodyId}
                                 >
-                                  <div className="web-search-extra-field">
-                                    <div className="web-search-extra-field__label">
-                                      <label htmlFor={`extract-base-url-${source.id}`}>{t('tools.webSearch.extractBaseUrl')}</label>
-                                      <p className="setting-desc">{t('tools.webSearch.extractBaseUrlDesc')}</p>
-                                    </div>
-                                    <input
-                                      id={`extract-base-url-${source.id}`}
-                                      type="text"
-                                      className="pattern-input web-search-extra-input"
-                                      value={source.extract_base_url ?? ''}
-                                      placeholder={t(`tools.webSearch.extractBaseUrlPlaceholder.${source.provider}`)}
-                                      onChange={(event) => updateSource(index, {
-                                        extract_base_url: event.target.value.trim() ? event.target.value.trim() : null,
-                                      })}
-                                    />
-                                  </div>
+                                  {renderProxySelector(index, 'proxy_url', 'tools.webSearch.proxyUrl', 'tools.webSearch.proxyUrlDesc')}
                                   {source.provider === 'grok' ? (
                                     <>
                                   <div className="web-search-extra-field">
@@ -1755,38 +1882,7 @@ export function WebSearchToolSettings({
                                       })}
                                     />
                                   </div>
-                                  <div className="web-search-extra-field">
-                                    <div className="web-search-extra-field__label">
-                                      <label htmlFor={`grok-fs-proxy-${source.id}`}>{t('tools.webSearch.flaresolverrProxyUrl')}</label>
-                                      <p className="setting-desc">{t('tools.webSearch.flaresolverrProxyUrlDesc')}</p>
-                                    </div>
-                                    <input
-                                      id={`grok-fs-proxy-${source.id}`}
-                                      type="text"
-                                      className="pattern-input web-search-extra-input"
-                                      value={source.flaresolverr_proxy_url ?? ''}
-                                      placeholder={t('tools.webSearch.flaresolverrProxyUrlPlaceholder')}
-                                      onChange={(e) => updateSource(index, {
-                                        flaresolverr_proxy_url: e.target.value.trim() ? e.target.value.trim() : null,
-                                      })}
-                                    />
-                                  </div>
-                                  <div className="web-search-extra-field">
-                                    <div className="web-search-extra-field__label">
-                                      <label htmlFor={`grok-proxy-${source.id}`}>{t('tools.webSearch.proxyUrl')}</label>
-                                      <p className="setting-desc">{t('tools.webSearch.proxyUrlDesc')}</p>
-                                    </div>
-                                    <input
-                                      id={`grok-proxy-${source.id}`}
-                                      type="text"
-                                      className="pattern-input web-search-extra-input"
-                                      value={source.proxy_url ?? ''}
-                                      placeholder={t('tools.webSearch.proxyUrlPlaceholder')}
-                                      onChange={(e) => updateSource(index, {
-                                        proxy_url: e.target.value.trim() ? e.target.value.trim() : null,
-                                      })}
-                                    />
-                                  </div>
+                                  {renderProxySelector(index, 'flaresolverr_proxy_url', 'tools.webSearch.flaresolverrProxyUrl', 'tools.webSearch.flaresolverrProxyUrlDesc')}
                                     </>
                                   ) : null}
                                 </div>
@@ -1808,6 +1904,119 @@ export function WebSearchToolSettings({
           </section>
         )}
       </div>
+
+      {proxyPicker ? (
+        <Dialog
+          open
+          title={t('tools.webSearch.chooseIpProxyTitle')}
+          description={t('tools.webSearch.chooseIpProxyDescription')}
+          icon={<Network size={19} />}
+          closeLabel={t('common.close')}
+          onClose={closeProxyPicker}
+          size="lg"
+          className="web-search-proxy-picker-dialog"
+          bodyClassName="web-search-proxy-picker-dialog__body"
+          headerActions={onOpenIpProxies ? (
+            <Button type="button" variant="secondary" icon={<ExternalLink size={15} />} onClick={() => {
+              closeProxyPicker();
+              onOpenIpProxies();
+            }}>
+              {t('tools.webSearch.openIpProxySettings')}
+            </Button>
+          ) : null}
+        >
+          <div className="web-search-proxy-picker-dialog__toolbar">
+            <label className="web-search-proxy-picker-dialog__search">
+              <Search size={16} aria-hidden="true" />
+              <input
+                type="search"
+                value={proxySearch}
+                onChange={(event) => setProxySearch(event.target.value)}
+                placeholder={t('tools.webSearch.proxyPickerSearch')}
+                aria-label={t('tools.webSearch.proxyPickerSearch')}
+              />
+            </label>
+            <select
+              value={proxyProtocolFilter}
+              onChange={(event) => setProxyProtocolFilter(event.target.value as 'all' | IpProxyProtocol)}
+              aria-label={t('tools.webSearch.proxyPickerProtocolFilter')}
+            >
+              <option value="all">{t('ipProxy.allProtocols')}</option>
+              <option value="http">HTTP</option>
+              <option value="https">HTTPS</option>
+              <option value="socks4">SOCKS4</option>
+              <option value="socks5">SOCKS5</option>
+            </select>
+            <select
+              value={proxyLatencySort}
+              onChange={(event) => setProxyLatencySort(event.target.value as ProxyLatencySort)}
+              aria-label={t('tools.webSearch.proxyPickerLatencySort')}
+            >
+              <option value="latency_asc">{t('tools.webSearch.proxyPickerLatencyAsc')}</option>
+              <option value="latency_desc">{t('tools.webSearch.proxyPickerLatencyDesc')}</option>
+            </select>
+          </div>
+          <div className="web-search-proxy-picker-dialog__summary">
+            <span>{t('tools.webSearch.proxyPickerCount', { count: filteredIpProxies.length })}</span>
+            {selectedProxy ? <span>{t('tools.webSearch.proxyPickerSelected', { name: selectedProxy.name })}</span> : null}
+          </div>
+          {isLoadingIpProxies ? (
+            <div className="web-search-proxy-picker-dialog__empty" role="status">
+              <LoaderCircle size={20} className="is-spinning" />
+              <span>{t('tools.webSearch.proxyPickerLoading')}</span>
+            </div>
+          ) : (
+            <div className="web-search-proxy-options" role="listbox" aria-label={t('tools.webSearch.chooseIpProxyTitle')}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={!proxyPickerValue}
+                className={`web-search-proxy-option is-clear${!proxyPickerValue ? ' is-selected' : ''}`}
+                onClick={() => selectProxy(null)}
+              >
+                <CircleX size={18} />
+                <span className="web-search-proxy-option__main is-clear">
+                  <strong>{t('tools.webSearch.proxyPickerClear')}</strong>
+                  <small>{t('tools.webSearch.proxyPickerClearHint')}</small>
+                </span>
+              </button>
+              {filteredIpProxies.map((proxy) => (
+                <button
+                  key={proxy.id}
+                  type="button"
+                  role="option"
+                  aria-selected={proxy.url === proxyPickerValue}
+                  className={`web-search-proxy-option${proxy.url === proxyPickerValue ? ' is-selected' : ''}`}
+                  onClick={() => selectProxy(proxy.url)}
+                >
+                  <span className="web-search-proxy-option__pin">
+                    {proxy.is_pinned ? <Pin size={17} fill="currentColor" aria-hidden="true" /> : null}
+                  </span>
+                  <span className="web-search-proxy-option__main">
+                    <strong className={proxy.is_pinned ? 'is-pinned' : ''}>
+                      <span>{proxy.name}</span>
+                    </strong>
+                    <code title={proxy.url}>{displayProxyUrl(proxy.url)}</code>
+                    <small>{formatProxyLocation(proxy)}</small>
+                  </span>
+                  <span className="web-search-proxy-option__meta">
+                    <span className="web-search-proxy-option__badge is-protocol">
+                      {proxyProtocolLabel(proxy.protocol)}
+                    </span>
+                    <span>{proxy.latency_ms == null ? '--' : `${proxy.latency_ms} ms`}</span>
+                  </span>
+                </button>
+              ))}
+              {filteredIpProxies.length === 0 ? (
+                <div className="web-search-proxy-picker-dialog__empty">
+                  <CircleAlert size={20} />
+                  <span>{t('tools.webSearch.proxyPickerEmpty')}</span>
+                </div>
+              ) : null}
+            </div>
+          )}
+        </Dialog>
+      ) : null}
 
       {addKeySource ? (
         <Dialog
@@ -1881,4 +2090,23 @@ function InheritanceControl({ inherited, onChange, t }: {
       <span>{t('tools.webSearch.inheritDefault')}</span>
     </label>
   );
+}
+
+function displayProxyUrl(value: string) {
+  try {
+    const url = new URL(value);
+    if (url.password) url.password = '****';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return value;
+  }
+}
+
+function formatProxyLocation(proxy: IpProxy) {
+  const location = [proxy.country, proxy.region, proxy.city].filter(Boolean).join(' · ');
+  return location || proxy.ip_address || '--';
+}
+
+function proxyProtocolLabel(protocol: IpProxyProtocol) {
+  return protocol === 'socks5' ? 'SOCKS5' : protocol.toUpperCase();
 }

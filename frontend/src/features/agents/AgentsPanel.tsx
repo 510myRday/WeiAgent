@@ -36,6 +36,7 @@ interface AgentsPanelProps {
   onOpenProviderSettings: () => void;
   onOpenMain: () => void;
   onBackToList: () => void;
+  onOpenIpProxies?: () => void;
 }
 
 const defaultAgentForm: CreateAgentPayload = {
@@ -88,6 +89,7 @@ export function AgentsPanel({
   onOpenProviderSettings,
   onOpenMain,
   onBackToList,
+  onOpenIpProxies,
 }: AgentsPanelProps) {
   const { t } = useI18n();
   const { confirm, toast } = useFeedback();
@@ -690,7 +692,7 @@ export function AgentsPanel({
                 role="tabpanel"
                 aria-labelledby="agent-config-tab-tools"
               >
-                <TerminalToolSettings scope="agent" agentId={activeAgent.id} />
+                <TerminalToolSettings scope="agent" agentId={activeAgent.id} onOpenIpProxies={onOpenIpProxies} />
               </section>
             ) : null}
 

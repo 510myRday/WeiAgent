@@ -1,7 +1,7 @@
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Instant,
@@ -13,11 +13,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::error::{AppError, AppResult};
+use crate::{
+    error::{AppError, AppResult},
+    storage::Database,
+};
 
-const MAX_LOG_FIELD_BYTES: usize = 1024 * 1024;
-const MAX_RETAINED_LOGS: usize = 300_000;
+const MAX_LOG_FIELD_BYTES: usize = 256 * 1024;
+const MAX_LOG_ERROR_BYTES: usize = 64 * 1024;
+const MAX_RETAINED_LOGS: usize = 20_000;
 const MAX_RETAINED_DAYS: usize = 30;
+const MAX_DATABASE_BYTES: u64 = 500 * 1024 * 1024;
 const MAX_LIST_LIMIT: usize = 500;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct LlmLogMetrics {
@@ -191,33 +196,35 @@ fn now_parts() -> (String, i64) {
     (now.to_rfc3339(), now.timestamp_millis())
 }
 
-fn open_connection(db_path: &Path) -> AppResult<Connection> {
-    crate::storage::db::open_connection(db_path)
-}
-
 pub struct LlmLogger {
-    #[allow(dead_code)]
-    db_path: PathBuf,
-    conn: Mutex<Connection>,
+    database: Arc<Database>,
     pub enabled: Arc<AtomicBool>,
     writes_since_cleanup: AtomicUsize,
+    pending_writes: AtomicUsize,
+    failed_writes: AtomicUsize,
+    pending_notify: tokio::sync::Notify,
 }
 
 impl LlmLogger {
+    #[cfg(test)]
     pub fn new(data_dir: &Path, enabled: bool) -> AppResult<Self> {
-        let db_path = crate::storage::db::db_path(data_dir);
-        let conn = open_connection(&db_path)?;
+        Self::with_database(Arc::new(Database::open(data_dir)?), enabled)
+    }
+
+    pub fn with_database(database: Arc<Database>, enabled: bool) -> AppResult<Self> {
         Ok(Self {
-            db_path,
-            conn: Mutex::new(conn),
+            database,
             enabled: Arc::new(AtomicBool::new(enabled)),
             writes_since_cleanup: AtomicUsize::new(0),
+            pending_writes: AtomicUsize::new(0),
+            failed_writes: AtomicUsize::new(0),
+            pending_notify: tokio::sync::Notify::new(),
         })
     }
 
     #[cfg(test)]
     pub fn db_path(&self) -> &Path {
-        &self.db_path
+        self.database.path()
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -228,20 +235,44 @@ impl LlmLogger {
         self.enabled.store(value, Ordering::Relaxed);
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_conn_for_test<T>(
-        &self,
-        f: impl FnOnce(&Connection) -> AppResult<T>,
-    ) -> AppResult<T> {
-        self.with_conn(f)
+    pub fn begin_pending_write(&self) {
+        self.pending_writes.fetch_add(1, Ordering::AcqRel);
     }
 
-    fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> AppResult<T>) -> AppResult<T> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| AppError::Database("llm logger database lock poisoned".to_string()))?;
-        f(&conn)
+    pub fn finish_pending_write(&self, result: &AppResult<String>) {
+        if let Err(error) = result {
+            self.failed_writes.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(%error, "failed to persist LLM log");
+        }
+        if self.pending_writes.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.pending_notify.notify_one();
+        }
+    }
+
+    pub fn failed_write_count(&self) -> usize {
+        self.failed_writes.load(Ordering::Relaxed)
+    }
+
+    pub async fn shutdown(&self) -> AppResult<()> {
+        while self.pending_writes.load(Ordering::Acquire) > 0 {
+            self.pending_notify.notified().await;
+        }
+        self.database
+            .call(|conn| {
+                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+                cleanup_logs_conn(conn)?;
+                Ok(())
+            })
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn with_conn_for_test<T, F>(&self, f: F) -> AppResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> AppResult<T> + Send + 'static,
+    {
+        self.database.call(move |conn| f(conn)).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -268,117 +299,35 @@ impl LlmLogger {
         let raw_response = raw_response.map(str::to_string);
         let error = error.map(str::to_string);
 
-        let id = tokio::task::block_in_place(|| {
-            self.write_log_blocking(
-                &agent_name,
-                agent_id.as_deref(),
-                conversation_id.as_deref(),
-                &model_id,
-                &provider_name,
-                &raw_request,
-                raw_response.as_deref(),
-                raw_status,
-                error.as_deref(),
-                metrics,
-                include_payload,
-            )
-        })?;
+        let id = self
+            .database
+            .call(move |conn| {
+                write_log_conn(
+                    conn,
+                    &agent_name,
+                    agent_id.as_deref(),
+                    conversation_id.as_deref(),
+                    &model_id,
+                    &provider_name,
+                    &raw_request,
+                    raw_response.as_deref(),
+                    raw_status,
+                    error.as_deref(),
+                    metrics,
+                    include_payload,
+                )
+            })
+            .await?;
 
-        if self
-            .writes_since_cleanup
-            .fetch_add(1, Ordering::Relaxed)
-            .is_multiple_of(32)
+        let scheduled_cleanup =
+            (self.writes_since_cleanup.fetch_add(1, Ordering::Relaxed) + 1).is_multiple_of(32);
+        let over_size_limit =
+            database_files_bytes_for_path(self.database.path()) > MAX_DATABASE_BYTES;
+        if (scheduled_cleanup || over_size_limit)
+            && let Err(error) = self.database.call(cleanup_logs_conn).await
         {
-            let _ = tokio::task::block_in_place(|| self.cleanup_logs_blocking());
+            tracing::warn!(%error, "failed to clean LLM logs");
         }
-        Ok(id)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn write_log_blocking(
-        &self,
-        agent_name: &str,
-        agent_id: Option<&str>,
-        conversation_id: Option<&str>,
-        model_id: &str,
-        provider_name: &str,
-        raw_request: &str,
-        raw_response: Option<&str>,
-        raw_status: Option<u16>,
-        error: Option<&str>,
-        mut metrics: LlmLogMetrics,
-        include_payload: bool,
-    ) -> AppResult<String> {
-        let finalized_response = raw_response.map(finalize_response_for_log);
-        metrics.merge_missing(&extract_metrics_from_raw(
-            finalized_response.as_deref().or(raw_response),
-        ));
-
-        let (stored_request, stored_response) = if include_payload {
-            (
-                truncate_log_field(raw_request),
-                finalized_response.map(|value| truncate_log_field(&value)),
-            )
-        } else {
-            (String::new(), None)
-        };
-        let has_payload = include_payload
-            && (!stored_request.trim().is_empty()
-                || stored_response
-                    .as_ref()
-                    .is_some_and(|value| !value.trim().is_empty()));
-
-        let id = Uuid::new_v4().to_string();
-        let (created_at, created_at_ms) = now_parts();
-
-        self.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
-            tx.execute(
-                "INSERT INTO llm_requests (
-                    id, created_at, created_at_ms, agent_id, agent_name, conversation_id,
-                    provider_name, model_id, status_code, first_token_ms, duration_ms,
-                    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                    cost_usd, error, has_payload
-                ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6,
-                    ?7, ?8, ?9, ?10, ?11,
-                    ?12, ?13, ?14, ?15,
-                    ?16, ?17, ?18
-                )",
-                params![
-                    id,
-                    created_at,
-                    created_at_ms,
-                    agent_id,
-                    agent_name,
-                    conversation_id,
-                    provider_name,
-                    model_id,
-                    raw_status.map(i64::from),
-                    metrics.first_token_ms.map(|v| v as i64),
-                    metrics.duration_ms.map(|v| v as i64),
-                    metrics.input_tokens.map(|v| v as i64),
-                    metrics.output_tokens.map(|v| v as i64),
-                    metrics.cache_read_tokens.map(|v| v as i64),
-                    metrics.cache_write_tokens.map(|v| v as i64),
-                    metrics.cost_usd,
-                    error,
-                    has_payload as i64,
-                ],
-            )?;
-
-            if has_payload {
-                tx.execute(
-                    "INSERT INTO llm_payloads (request_id, raw_request, raw_response)
-                     VALUES (?1, ?2, ?3)",
-                    params![id, stored_request, stored_response],
-                )?;
-            }
-
-            tx.commit()?;
-            Ok(())
-        })?;
-
         Ok(id)
     }
 
@@ -396,28 +345,32 @@ impl LlmLogger {
         limit: usize,
         filter: LlmLogListFilter,
     ) -> AppResult<LlmLogListPage> {
-        let _ = tokio::task::block_in_place(|| self.cleanup_logs_blocking());
-        tokio::task::block_in_place(|| self.list_logs_page_blocking(offset, limit, filter))
+        self.database
+            .call(move |conn| {
+                cleanup_logs_conn(conn)?;
+                list_logs_page_conn(conn, offset, limit, filter)
+            })
+            .await
     }
+}
 
-    fn list_logs_page_blocking(
-        &self,
-        offset: usize,
-        limit: usize,
-        filter: LlmLogListFilter,
-    ) -> AppResult<LlmLogListPage> {
-        let limit = limit.clamp(1, MAX_LIST_LIMIT);
-        let (where_sql, bind) = build_filter_clause(&filter);
+fn list_logs_page_conn(
+    conn: &Connection,
+    offset: usize,
+    limit: usize,
+    filter: LlmLogListFilter,
+) -> AppResult<LlmLogListPage> {
+    let limit = limit.clamp(1, MAX_LIST_LIMIT);
+    let (where_sql, bind) = build_filter_clause(&filter);
 
-        self.with_conn(|conn| {
-            let total: i64 = {
-                let sql = format!("SELECT COUNT(*) FROM llm_requests {where_sql}");
-                let mut stmt = conn.prepare(&sql)?;
-                stmt.query_row(rusqlite::params_from_iter(bind.iter()), |row| row.get(0))?
-            };
+    let total: i64 = {
+        let sql = format!("SELECT COUNT(*) FROM llm_requests {where_sql}");
+        let mut stmt = conn.prepare(&sql)?;
+        stmt.query_row(rusqlite::params_from_iter(bind.iter()), |row| row.get(0))?
+    };
 
-            let summary = {
-                let sql = format!(
+    let summary = {
+        let sql = format!(
                     "SELECT
                         COUNT(*) as request_count,
                         SUM(CASE
@@ -445,26 +398,26 @@ impl LlmLogger {
                      FROM llm_requests
                      {where_sql}"
                 );
-                let mut stmt = conn.prepare(&sql)?;
-                stmt.query_row(rusqlite::params_from_iter(bind.iter()), |row| {
-                    let request_count: i64 = row.get(0)?;
-                    let success_count: i64 = row.get::<_, Option<i64>>(1)?.unwrap_or(0);
-                    let error_count: i64 = row.get::<_, Option<i64>>(2)?.unwrap_or(0);
-                    Ok(LlmLogSummary {
-                        request_count: request_count.max(0) as usize,
-                        success_count: success_count.max(0) as usize,
-                        error_count: error_count.max(0) as usize,
-                        input_tokens: row.get(3)?,
-                        output_tokens: row.get(4)?,
-                        cache_read_tokens: row.get(5)?,
-                        cache_write_tokens: row.get(6)?,
-                        cost_usd: row.get(7)?,
-                    })
-                })?
-            };
+        let mut stmt = conn.prepare(&sql)?;
+        stmt.query_row(rusqlite::params_from_iter(bind.iter()), |row| {
+            let request_count: i64 = row.get(0)?;
+            let success_count: i64 = row.get::<_, Option<i64>>(1)?.unwrap_or(0);
+            let error_count: i64 = row.get::<_, Option<i64>>(2)?.unwrap_or(0);
+            Ok(LlmLogSummary {
+                request_count: request_count.max(0) as usize,
+                success_count: success_count.max(0) as usize,
+                error_count: error_count.max(0) as usize,
+                input_tokens: row.get(3)?,
+                output_tokens: row.get(4)?,
+                cache_read_tokens: row.get(5)?,
+                cache_write_tokens: row.get(6)?,
+                cost_usd: row.get(7)?,
+            })
+        })?
+    };
 
-            let list_sql = format!(
-                "SELECT id, agent_name, agent_id, conversation_id, model_id, provider_name,
+    let list_sql = format!(
+        "SELECT id, agent_name, agent_id, conversation_id, model_id, provider_name,
                         created_at, status_code, first_token_ms, duration_ms,
                         input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
                         cost_usd, error, has_payload
@@ -472,31 +425,31 @@ impl LlmLogger {
                  {where_sql}
                  ORDER BY created_at_ms DESC, id DESC
                  LIMIT ? OFFSET ?"
-            );
-            let mut list_bind = bind.clone();
-            list_bind.push(limit.to_string());
-            list_bind.push(offset.to_string());
+    );
+    let mut list_bind = bind.clone();
+    list_bind.push(limit.to_string());
+    list_bind.push(offset.to_string());
 
-            let mut stmt = conn.prepare(&list_sql)?;
-            let items = stmt
-                .query_map(rusqlite::params_from_iter(list_bind.iter()), |row| {
-                    row_to_entry(row)
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
+    let mut stmt = conn.prepare(&list_sql)?;
+    let items = stmt
+        .query_map(rusqlite::params_from_iter(list_bind.iter()), |row| {
+            row_to_entry(row)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
-            let stats_filter = LlmLogListFilter {
-                agent_id: None,
-                agent_name: None,
-                provider_name: None,
-                model_id: None,
-                q: filter.q.clone(),
-                since: filter.since.clone(),
-                until: filter.until.clone(),
-                status: None,
-            };
-            let (stats_where, stats_bind) = build_filter_clause(&stats_filter);
-            let agent_stats_sql = format!(
-                "SELECT
+    let stats_filter = LlmLogListFilter {
+        agent_id: None,
+        agent_name: None,
+        provider_name: None,
+        model_id: None,
+        q: filter.q.clone(),
+        since: filter.since.clone(),
+        until: filter.until.clone(),
+        status: None,
+    };
+    let (stats_where, stats_bind) = build_filter_clause(&stats_filter);
+    let agent_stats_sql = format!(
+        "SELECT
                     agent_id,
                     agent_name,
                     COUNT(*) as request_count,
@@ -510,30 +463,30 @@ impl LlmLogger {
                         ELSE 'name:' || agent_name
                     END
                  ORDER BY latest_ms DESC"
-            );
-            let mut agent_stats_stmt = conn.prepare(&agent_stats_sql)?;
-            let agent_stats = agent_stats_stmt
-                .query_map(rusqlite::params_from_iter(stats_bind.iter()), |row| {
-                    let agent_id: Option<String> = row.get(0)?;
-                    let agent_name: String = row.get(1)?;
-                    let request_count: i64 = row.get(2)?;
-                    let latest_at: String = row.get(4)?;
-                    let agent_key = match agent_id.as_deref().filter(|v| !v.is_empty()) {
-                        Some(id) => format!("id:{id}"),
-                        None => format!("name:{agent_name}"),
-                    };
-                    Ok(LlmLogAgentStat {
-                        agent_key,
-                        agent_id,
-                        agent_name,
-                        request_count: request_count as usize,
-                        latest_at,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
+    );
+    let mut agent_stats_stmt = conn.prepare(&agent_stats_sql)?;
+    let agent_stats = agent_stats_stmt
+        .query_map(rusqlite::params_from_iter(stats_bind.iter()), |row| {
+            let agent_id: Option<String> = row.get(0)?;
+            let agent_name: String = row.get(1)?;
+            let request_count: i64 = row.get(2)?;
+            let latest_at: String = row.get(4)?;
+            let agent_key = match agent_id.as_deref().filter(|v| !v.is_empty()) {
+                Some(id) => format!("id:{id}"),
+                None => format!("name:{agent_name}"),
+            };
+            Ok(LlmLogAgentStat {
+                agent_key,
+                agent_id,
+                agent_name,
+                request_count: request_count as usize,
+                latest_at,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
-            let model_stats_sql = format!(
-                "SELECT
+    let model_stats_sql = format!(
+        "SELECT
                     provider_name,
                     model_id,
                     COUNT(*) as request_count,
@@ -543,47 +496,61 @@ impl LlmLogger {
                  {stats_where}
                  GROUP BY provider_name, model_id
                  ORDER BY latest_ms DESC"
-            );
-            let mut model_stats_stmt = conn.prepare(&model_stats_sql)?;
-            let model_stats = model_stats_stmt
-                .query_map(rusqlite::params_from_iter(stats_bind.iter()), |row| {
-                    let provider_name: String = row.get(0)?;
-                    let model_id: String = row.get(1)?;
-                    let request_count: i64 = row.get(2)?;
-                    let latest_at: String = row.get(4)?;
-                    let model_key = format!("{provider_name}::{model_id}");
-                    Ok(LlmLogModelStat {
-                        model_key,
-                        provider_name,
-                        model_id,
-                        request_count: request_count as usize,
-                        latest_at,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-
-            Ok(LlmLogListPage {
-                items,
-                total: total as usize,
-                offset,
-                limit,
-                agent_stats,
-                model_stats,
-                summary,
+    );
+    let mut model_stats_stmt = conn.prepare(&model_stats_sql)?;
+    let model_stats = model_stats_stmt
+        .query_map(rusqlite::params_from_iter(stats_bind.iter()), |row| {
+            let provider_name: String = row.get(0)?;
+            let model_id: String = row.get(1)?;
+            let request_count: i64 = row.get(2)?;
+            let latest_at: String = row.get(4)?;
+            let model_key = format!("{provider_name}::{model_id}");
+            Ok(LlmLogModelStat {
+                model_key,
+                provider_name,
+                model_id,
+                request_count: request_count as usize,
+                latest_at,
             })
-        })
-    }
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
+    Ok(LlmLogListPage {
+        items,
+        total: total as usize,
+        offset,
+        limit,
+        agent_stats,
+        model_stats,
+        summary,
+    })
+}
+
+impl LlmLogger {
     pub async fn get_log(&self, log_id: &str) -> AppResult<LlmLogDetail> {
         let log_id = log_id.to_string();
-        tokio::task::block_in_place(|| self.get_log_blocking(&log_id))
+        self.database
+            .call(move |conn| get_log_conn(conn, &log_id))
+            .await
     }
 
-    fn get_log_blocking(&self, log_id: &str) -> AppResult<LlmLogDetail> {
-        let _ = validate_log_id(log_id)?;
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT r.id, r.agent_name, r.agent_id, r.conversation_id, r.model_id, r.provider_name,
+    pub async fn delete_log(&self, log_id: &str) -> AppResult<()> {
+        let log_id = log_id.to_string();
+        self.database
+            .call(move |conn| delete_log_conn(conn, &log_id))
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn cleanup_logs_for_test(&self) -> AppResult<()> {
+        self.database.call(cleanup_logs_conn).await
+    }
+}
+
+fn get_log_conn(conn: &Connection, log_id: &str) -> AppResult<LlmLogDetail> {
+    let _ = validate_log_id(log_id)?;
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.agent_name, r.agent_id, r.conversation_id, r.model_id, r.provider_name,
                         r.created_at, r.status_code, r.first_token_ms, r.duration_ms,
                         r.input_tokens, r.output_tokens, r.cache_write_tokens, r.cache_read_tokens,
                         r.cost_usd, r.error, r.has_payload,
@@ -591,92 +558,214 @@ impl LlmLogger {
                  FROM llm_requests r
                  LEFT JOIN llm_payloads p ON p.request_id = r.id
                  WHERE r.id = ?1",
-            )?;
-            let detail = stmt
-                .query_row(params![log_id], |row| {
-                    let mut entry = row_to_entry(row)?;
-                    let raw_request: Option<String> = row.get(17)?;
-                    let raw_response: Option<String> = row.get(18)?;
-                    let raw_request = raw_request.unwrap_or_default();
-                    let has_saved = !raw_request.trim().is_empty()
-                        || raw_response
-                            .as_ref()
-                            .is_some_and(|value| !value.trim().is_empty());
-                    entry.has_payload = has_saved;
-                    Ok(LlmLogDetail {
-                        summary: entry,
-                        raw_request,
-                        raw_response,
-                    })
-                })
-                .optional()?
-                .ok_or(AppError::NotFound)?;
-            Ok(detail)
+    )?;
+    let detail = stmt
+        .query_row(params![log_id], |row| {
+            let mut entry = row_to_entry(row)?;
+            let raw_request: Option<String> = row.get(17)?;
+            let raw_response: Option<String> = row.get(18)?;
+            let raw_request = raw_request.unwrap_or_default();
+            let has_saved = !raw_request.trim().is_empty()
+                || raw_response
+                    .as_ref()
+                    .is_some_and(|value| !value.trim().is_empty());
+            entry.has_payload = has_saved;
+            Ok(LlmLogDetail {
+                summary: entry,
+                raw_request,
+                raw_response,
+            })
         })
+        .optional()?
+        .ok_or(AppError::NotFound)?;
+    Ok(detail)
+}
+
+fn delete_log_conn(conn: &Connection, log_id: &str) -> AppResult<()> {
+    let _ = validate_log_id(log_id)?;
+    conn.execute("DELETE FROM llm_requests WHERE id = ?1", params![log_id])?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_log_conn(
+    conn: &mut Connection,
+    agent_name: &str,
+    agent_id: Option<&str>,
+    conversation_id: Option<&str>,
+    model_id: &str,
+    provider_name: &str,
+    raw_request: &str,
+    raw_response: Option<&str>,
+    raw_status: Option<u16>,
+    error: Option<&str>,
+    mut metrics: LlmLogMetrics,
+    include_payload: bool,
+) -> AppResult<String> {
+    let finalized_response = raw_response.map(finalize_response_for_log);
+    metrics.merge_missing(&extract_metrics_from_raw(
+        finalized_response.as_deref().or(raw_response),
+    ));
+
+    let (stored_request, stored_response) = if include_payload {
+        (
+            truncate_log_field(raw_request),
+            finalized_response.map(|value| truncate_log_field(&value)),
+        )
+    } else {
+        (String::new(), None)
+    };
+    let mut has_payload = include_payload
+        && (!stored_request.trim().is_empty()
+            || stored_response
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty()));
+    let stored_error = error.map(|value| truncate_log_field_to(value, MAX_LOG_ERROR_BYTES));
+    let estimated_bytes = stored_request
+        .len()
+        .saturating_add(stored_response.as_deref().map(str::len).unwrap_or(0))
+        .saturating_add(stored_error.as_deref().map(str::len).unwrap_or(0))
+        .saturating_add(8 * 1024) as u64;
+    if database_used_bytes(conn)?.saturating_add(estimated_bytes) > MAX_DATABASE_BYTES {
+        cleanup_logs_conn(conn)?;
+    }
+    let used_bytes = database_used_bytes(conn)?;
+    if used_bytes.saturating_add(estimated_bytes) > MAX_DATABASE_BYTES {
+        has_payload = false;
+    }
+    if used_bytes.saturating_add(8 * 1024) > MAX_DATABASE_BYTES {
+        return Err(AppError::Database(
+            "LLM log database reached the 500 MB capacity limit".to_string(),
+        ));
+    }
+    let id = Uuid::new_v4().to_string();
+    let (created_at, created_at_ms) = now_parts();
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT INTO llm_requests (
+            id, created_at, created_at_ms, agent_id, agent_name, conversation_id,
+            provider_name, model_id, status_code, first_token_ms, duration_ms,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            cost_usd, error, has_payload
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6,
+            ?7, ?8, ?9, ?10, ?11,
+            ?12, ?13, ?14, ?15,
+            ?16, ?17, ?18
+        )",
+        params![
+            id,
+            created_at,
+            created_at_ms,
+            agent_id,
+            agent_name,
+            conversation_id,
+            provider_name,
+            model_id,
+            raw_status.map(i64::from),
+            metrics.first_token_ms.map(|v| v as i64),
+            metrics.duration_ms.map(|v| v as i64),
+            metrics.input_tokens.map(|v| v as i64),
+            metrics.output_tokens.map(|v| v as i64),
+            metrics.cache_read_tokens.map(|v| v as i64),
+            metrics.cache_write_tokens.map(|v| v as i64),
+            metrics.cost_usd,
+            stored_error,
+            has_payload as i64,
+        ],
+    )?;
+    if has_payload {
+        tx.execute(
+            "INSERT INTO llm_payloads (request_id, raw_request, raw_response)
+             VALUES (?1, ?2, ?3)",
+            params![id, stored_request, stored_response],
+        )?;
+    }
+    tx.commit()?;
+    Ok(id)
+}
+
+fn cleanup_logs_conn(conn: &mut Connection) -> AppResult<()> {
+    let cutoff_ms = Utc::now()
+        .timestamp_millis()
+        .saturating_sub((MAX_RETAINED_DAYS as i64) * 24 * 60 * 60 * 1000);
+    let mut changed = conn.execute(
+        "DELETE FROM llm_requests WHERE created_at_ms < ?1",
+        params![cutoff_ms],
+    )? > 0;
+
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM llm_requests", [], |row| row.get(0))?;
+    if count > MAX_RETAINED_LOGS as i64 {
+        let excess = count - MAX_RETAINED_LOGS as i64;
+        changed |= conn.execute(
+            "DELETE FROM llm_requests WHERE id IN (
+                SELECT id FROM llm_requests
+                ORDER BY created_at_ms ASC, id ASC
+                LIMIT ?1
+            )",
+            params![excess],
+        )? > 0;
     }
 
-    pub async fn delete_log(&self, log_id: &str) -> AppResult<()> {
-        let log_id = log_id.to_string();
-        tokio::task::block_in_place(|| self.delete_log_blocking(&log_id))
+    let target_bytes = MAX_DATABASE_BYTES * 9 / 10;
+    while database_used_bytes(conn)? > target_bytes {
+        let removed = conn.execute(
+            "DELETE FROM llm_requests WHERE id IN (
+                SELECT id FROM llm_requests
+                ORDER BY created_at_ms ASC, id ASC
+                LIMIT 1000
+            )",
+            [],
+        )?;
+        if removed == 0 {
+            break;
+        }
+        changed = true;
     }
 
-    fn delete_log_blocking(&self, log_id: &str) -> AppResult<()> {
-        let _ = validate_log_id(log_id)?;
-        self.with_conn(|conn| {
-            conn.execute("DELETE FROM llm_requests WHERE id = ?1", params![log_id])?;
-            Ok(())
+    conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")?;
+    let (page_count, free_count) = database_page_counts(conn)?;
+    let fragmented = page_count > 0 && free_count.saturating_mul(4) >= page_count;
+    if changed && (database_files_bytes(conn)? > MAX_DATABASE_BYTES || fragmented) {
+        conn.execute_batch("VACUUM;")?;
+    }
+    Ok(())
+}
+
+fn database_used_bytes(conn: &Connection) -> AppResult<u64> {
+    let (page_count, free_count) = database_page_counts(conn)?;
+    let page_size: u64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+    Ok(page_count
+        .saturating_sub(free_count)
+        .saturating_mul(page_size))
+}
+
+fn database_page_counts(conn: &Connection) -> AppResult<(u64, u64)> {
+    let page_count = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+    let free_count = conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
+    Ok((page_count, free_count))
+}
+
+fn database_files_bytes(conn: &Connection) -> AppResult<u64> {
+    let path: String = conn.query_row(
+        "SELECT file FROM pragma_database_list WHERE name = 'main'",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(database_files_bytes_for_path(Path::new(&path)))
+}
+
+fn database_files_bytes_for_path(path: &Path) -> u64 {
+    ["", "-wal", "-shm"]
+        .into_iter()
+        .map(|suffix| {
+            let mut file = path.as_os_str().to_os_string();
+            file.push(suffix);
+            std::fs::metadata(std::path::PathBuf::from(file))
+                .map(|metadata| metadata.len())
+                .unwrap_or(0)
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cleanup_logs_for_test(&self) -> AppResult<()> {
-        self.cleanup_logs_blocking()
-    }
-
-    fn cleanup_logs_blocking(&self) -> AppResult<()> {
-        self.with_conn(|conn| {
-            // Keep at most MAX_RETAINED_DAYS distinct UTC calendar days of data.
-            // Idle gaps do not age out history: only when more than 30 unique days
-            // exist do we drop the oldest day(s).
-            let day_count: i64 = conn.query_row(
-                "SELECT COUNT(DISTINCT strftime('%Y-%m-%d', created_at_ms / 1000, 'unixepoch'))
-                 FROM llm_requests",
-                [],
-                |row| row.get(0),
-            )?;
-            if day_count > MAX_RETAINED_DAYS as i64 {
-                let excess_days = day_count - MAX_RETAINED_DAYS as i64;
-                conn.execute(
-                    "DELETE FROM llm_requests
-                     WHERE strftime('%Y-%m-%d', created_at_ms / 1000, 'unixepoch') IN (
-                        SELECT day FROM (
-                            SELECT strftime('%Y-%m-%d', created_at_ms / 1000, 'unixepoch') AS day
-                            FROM llm_requests
-                            GROUP BY day
-                            ORDER BY day ASC
-                            LIMIT ?1
-                        )
-                     )",
-                    params![excess_days],
-                )?;
-            }
-
-            let count: i64 =
-                conn.query_row("SELECT COUNT(*) FROM llm_requests", [], |row| row.get(0))?;
-            if count > MAX_RETAINED_LOGS as i64 {
-                let excess = count - MAX_RETAINED_LOGS as i64;
-                conn.execute(
-                    "DELETE FROM llm_requests WHERE id IN (
-                        SELECT id FROM llm_requests
-                        ORDER BY created_at_ms ASC, id ASC
-                        LIMIT ?1
-                    )",
-                    params![excess],
-                )?;
-            }
-            Ok(())
-        })
-    }
+        .fold(0_u64, u64::saturating_add)
 }
 
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<LlmLogEntry> {
@@ -827,11 +916,15 @@ fn build_filter_clause(filter: &LlmLogListFilter) -> (String, Vec<String>) {
 }
 
 fn truncate_log_field(value: &str) -> String {
-    if value.len() <= MAX_LOG_FIELD_BYTES {
+    truncate_log_field_to(value, MAX_LOG_FIELD_BYTES)
+}
+
+fn truncate_log_field_to(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
         return value.to_string();
     }
     let marker = "[middle truncated]";
-    let available = MAX_LOG_FIELD_BYTES.saturating_sub(marker.len() + 2);
+    let available = max_bytes.saturating_sub(marker.len() + 2);
     let head_bytes = available / 2;
     let tail_bytes = available.saturating_sub(head_bytes);
     let head = prefix_at_most(value, head_bytes);
@@ -1459,13 +1552,14 @@ mod tests {
         assert!(!detail.summary.has_payload);
 
         let payload_count: i64 = logger
-            .with_conn_for_test(|conn| {
+            .with_conn_for_test(move |conn| {
                 Ok(conn.query_row(
                     "SELECT COUNT(*) FROM llm_payloads WHERE request_id = ?1",
                     params![id],
                     |row| row.get(0),
                 )?)
             })
+            .await
             .unwrap();
         assert_eq!(payload_count, 0);
     }
@@ -1624,18 +1718,19 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn cleanup_keeps_only_max_distinct_days() {
+    async fn cleanup_removes_logs_older_than_retention_window() {
         let (_dir, logger) = temp_logger(false);
-        // Seed 32 distinct UTC days; cleanup should keep the newest 30.
-        let start = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:00:00+00:00")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        for offset in 0..32 {
-            let ts = start + chrono::Duration::days(offset);
+        let now = chrono::Utc::now();
+        let timestamps = [
+            now - chrono::Duration::days(MAX_RETAINED_DAYS as i64 + 1),
+            now - chrono::Duration::days(MAX_RETAINED_DAYS as i64 - 1),
+            now,
+        ];
+        for (offset, ts) in timestamps.into_iter().enumerate() {
             let created_at = ts.to_rfc3339();
             let created_at_ms = ts.timestamp_millis();
             logger
-                .with_conn_for_test(|conn| {
+                .with_conn_for_test(move |conn| {
                     conn.execute(
                         "INSERT INTO llm_requests (
                             id, created_at, created_at_ms, agent_id, agent_name, conversation_id,
@@ -1652,10 +1747,11 @@ mod tests {
                     )?;
                     Ok(())
                 })
+                .await
                 .unwrap();
         }
 
-        logger.cleanup_logs_for_test().unwrap();
+        logger.cleanup_logs_for_test().await.unwrap();
 
         let (total, days): (i64, i64) = logger
             .with_conn_for_test(|conn| {
@@ -1669,9 +1765,10 @@ mod tests {
                 )?;
                 Ok((total, days))
             })
+            .await
             .unwrap();
-        assert_eq!(days, MAX_RETAINED_DAYS as i64);
-        assert_eq!(total, MAX_RETAINED_DAYS as i64);
+        assert_eq!(days, 2);
+        assert_eq!(total, 2);
 
         let oldest: String = logger
             .with_conn_for_test(|conn| {
@@ -1682,8 +1779,13 @@ mod tests {
                     |row| row.get(0),
                 )?)
             })
+            .await
             .unwrap();
-        // 32 days from Jan 1 keeps Jan 3 .. Feb 1
-        assert_eq!(oldest, "2026-01-03");
+        assert_eq!(
+            oldest,
+            (now - chrono::Duration::days(MAX_RETAINED_DAYS as i64 - 1))
+                .format("%Y-%m-%d")
+                .to_string()
+        );
     }
 }

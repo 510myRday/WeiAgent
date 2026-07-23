@@ -19,6 +19,7 @@ pub struct AppConfig {
 }
 
 pub const TERMINAL_WORKSPACE_DIR_NAME: &str = "workspace";
+pub const ATTACHMENTS_DIR_NAME: &str = "attachments";
 
 impl AppConfig {
     pub async fn load(is_dev: bool) -> AppResult<Self> {
@@ -212,6 +213,10 @@ pub fn validate_settings(settings: &AppSettings) -> AppResult<()> {
 /// being mixed with settings, agent state, conversations, runtimes, and databases.
 pub fn terminal_workspace_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(TERMINAL_WORKSPACE_DIR_NAME)
+}
+
+pub fn attachments_dir(data_dir: &Path) -> PathBuf {
+    terminal_workspace_dir(data_dir).join(ATTACHMENTS_DIR_NAME)
 }
 
 pub fn log_level_filter(value: &str) -> tracing_subscriber::filter::LevelFilter {

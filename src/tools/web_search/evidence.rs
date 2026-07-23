@@ -760,13 +760,43 @@ async fn execute_provider_extract(
     api_key: &str,
     request: &ProviderExtractRequest,
 ) -> Result<ProviderExtractOutput, ProviderError> {
-    let base_url = source.extract_base_url();
+    let base_url = source.provider.default_extract_base_url();
+    let proxied_client = if source.provider != WebSearchProviderKind::Grok {
+        if let Some(proxy_url) = source
+            .proxy_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            let proxy = reqwest::Proxy::all(proxy_url)
+                .map_err(|error| ProviderError::Retryable(format!("invalid proxy: {error}")))?;
+            Some(
+                reqwest::Client::builder()
+                    .timeout(Duration::from_millis(request.timeout_ms))
+                    .proxy(proxy)
+                    .build()
+                    .map_err(|error| {
+                        ProviderError::Retryable(format!("failed to build proxy client: {error}"))
+                    })?,
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let provider_client = proxied_client.as_ref().unwrap_or(client);
     match source.provider {
-        WebSearchProviderKind::Tavily => tavily::extract(client, base_url, api_key, request).await,
-        WebSearchProviderKind::Exa => exa::extract(client, base_url, api_key, request).await,
-        WebSearchProviderKind::Jina => jina::extract(client, base_url, api_key, request).await,
+        WebSearchProviderKind::Tavily => {
+            tavily::extract(provider_client, base_url, api_key, request).await
+        }
+        WebSearchProviderKind::Exa => {
+            exa::extract(provider_client, base_url, api_key, request).await
+        }
+        WebSearchProviderKind::Jina => {
+            jina::extract(provider_client, base_url, api_key, request).await
+        }
         WebSearchProviderKind::Firecrawl => {
-            firecrawl::extract(client, base_url, api_key, request).await
+            firecrawl::extract(provider_client, base_url, api_key, request).await
         }
         WebSearchProviderKind::Grok => {
             let timeout = Duration::from_millis(request.timeout_ms).max(Duration::from_secs(90));

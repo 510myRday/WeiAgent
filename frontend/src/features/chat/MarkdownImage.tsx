@@ -1,15 +1,48 @@
-import { useState, type ImgHTMLAttributes } from 'react';
+import { useEffect, useState, type ImgHTMLAttributes } from 'react';
 import { ImageOff } from 'lucide-react';
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown';
 
 import { useI18n } from '../../i18n';
+import { apiAuthorizationHeaders } from '../../apiAuth';
 
 type MarkdownImageProps = ImgHTMLAttributes<HTMLImageElement>;
 
 export function MarkdownImage({ alt = '', src = '', title }: MarkdownImageProps) {
   const { t } = useI18n();
   const [failed, setFailed] = useState(false);
+  const [localUrl, setLocalUrl] = useState<string | null>(null);
   const resolved = resolveMarkdownImageSource(src);
+
+  useEffect(() => {
+    setFailed(false);
+    setLocalUrl(null);
+    if (!resolved?.isLocal) return;
+
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    void fetch(resolved.url, {
+      headers: apiAuthorizationHeaders(),
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error(response.statusText);
+        return response.blob();
+      })
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        setLocalUrl(objectUrl);
+      })
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) {
+          setFailed(true);
+        }
+      });
+
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [resolved?.isLocal, resolved?.url]);
 
   if (!resolved || failed) {
     return (
@@ -20,16 +53,20 @@ export function MarkdownImage({ alt = '', src = '', title }: MarkdownImageProps)
     );
   }
 
+  if (resolved.isLocal && !localUrl) return null;
+
+  const displayUrl = resolved.isLocal ? localUrl! : resolved.url;
+
   return (
     <a
       className="markdown-image-link"
-      href={resolved.url}
+      href={displayUrl}
       target="_blank"
       rel="noopener noreferrer"
       title={title || t('chat.openImage')}
     >
       <img
-        src={resolved.url}
+        src={displayUrl}
         alt={alt}
         title={title}
         loading="lazy"

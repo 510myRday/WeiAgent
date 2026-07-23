@@ -313,6 +313,8 @@ fn run_event_size(event: &AgentRunEvent) -> usize {
             arguments,
             ..
         } => call_id.len() + name.len() + arguments.to_string().len(),
+        AgentRunEvent::ToolCallStarted { call_id, name, .. } => call_id.len() + name.len(),
+        AgentRunEvent::ToolCallArgsDelta { call_id, arguments } => call_id.len() + arguments.len(),
         AgentRunEvent::ToolResult { call_id, result } => {
             call_id.len() + serde_json::to_string(result).map_or(0, |value| value.len())
         }

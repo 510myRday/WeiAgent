@@ -23,8 +23,15 @@ Open the most relevant original pages with web_extract, prefer primary sources, 
 
 impl JsonStore {
     pub async fn read_agent_workspace(&self, id: Uuid) -> AppResult<AgentWorkspace> {
-        self.get_agent(id).await?;
         let _guard = self.lock.lock().await;
+        if !self
+            .read_agents_unlocked()
+            .await?
+            .iter()
+            .any(|agent| agent.id == id)
+        {
+            return Err(crate::error::AppError::NotFound);
+        }
         self.read_agent_workspace_unlocked(id).await
     }
 
@@ -33,8 +40,15 @@ impl JsonStore {
         id: Uuid,
         request: UpdateAgentWorkspaceRequest,
     ) -> AppResult<AgentWorkspace> {
-        self.get_agent(id).await?;
         let _guard = self.lock.lock().await;
+        if !self
+            .read_agents_unlocked()
+            .await?
+            .iter()
+            .any(|agent| agent.id == id)
+        {
+            return Err(crate::error::AppError::NotFound);
+        }
         let workspace = AgentWorkspace {
             personality: request.personality,
             memory: request.memory,
@@ -53,6 +67,7 @@ impl JsonStore {
         let environment = crate::tools::prompt::build_environment_prefix(
             &self.data_dir,
             &self.terminal_workspace_dir,
+            &self.attachments_dir,
         );
         // Runtime identity: which agent is handling this turn.
         let agent_identity = format!(

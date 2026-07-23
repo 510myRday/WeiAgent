@@ -10,6 +10,7 @@ mod tool_settings;
 mod validation;
 mod workspaces;
 
+pub use db::Database;
 pub use json_store::JsonStore;
 pub use llm_logs::LlmLogger;
 
@@ -100,6 +101,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(default_rows, 1);
+        let migration_versions = conn
+            .prepare("SELECT version FROM app_schema_migrations ORDER BY version")
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(migration_versions, vec![1, 2]);
         assert_eq!(
             tool_table_names(&conn),
             vec![

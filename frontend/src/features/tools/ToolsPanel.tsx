@@ -12,6 +12,7 @@ interface ToolsPanelProps {
   agents: Agent[];
   onOpenMain: () => void;
   onBackToList: () => void;
+  onOpenIpProxies: () => void;
 }
 
 type ToolKey = 'terminal' | 'web_search';
@@ -39,7 +40,7 @@ const toolDefs: {
   },
 ];
 
-export function ToolsPanel({ agents, onOpenMain, onBackToList }: ToolsPanelProps) {
+export function ToolsPanel({ agents, onOpenMain, onBackToList, onOpenIpProxies }: ToolsPanelProps) {
   const { t } = useI18n();
   const [activeTool, setActiveTool] = useState<ToolKey>('terminal');
   const activeDef = toolDefs.find((d) => d.key === activeTool);
@@ -84,8 +85,8 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList }: ToolsPanelProps
             title={activeDef?.getLabel(t) ?? t('tools.title')}
             description={activeDef?.getDesc(t) ?? t('tools.description')}
           />
-          {activeTool === 'terminal' ? <TerminalToolSettings scope="defaults" agents={agents} /> : null}
-          {activeTool === 'web_search' ? <WebSearchToolSettings scope="defaults" agents={agents} /> : null}
+          {activeTool === 'terminal' ? <TerminalToolSettings scope="defaults" agents={agents} onOpenIpProxies={onOpenIpProxies} /> : null}
+          {activeTool === 'web_search' ? <WebSearchToolSettings scope="defaults" agents={agents} onOpenIpProxies={onOpenIpProxies} /> : null}
         </div>
       )}
     />

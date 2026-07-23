@@ -41,3 +41,11 @@ describe('MarkdownContent links', () => {
     );
   });
 });
+
+describe('MarkdownContent line breaks', () => {
+  test('keeps a single newline in the rendered paragraph', () => {
+    const { container } = render(<MarkdownContent content={'哈哈哈哈\n谢谢'} />);
+
+    expect(container.querySelector('p')?.textContent).toBe('哈哈哈哈\n谢谢');
+  });
+});

@@ -64,6 +64,15 @@ pub enum AgentRunEvent {
         arguments: Value,
         permission_mode: TerminalPermissionMode,
     },
+    ToolCallStarted {
+        call_id: String,
+        name: String,
+        permission_mode: TerminalPermissionMode,
+    },
+    ToolCallArgsDelta {
+        call_id: String,
+        arguments: String,
+    },
     ToolResult {
         call_id: String,
         result: ToolResult,
@@ -1027,6 +1036,23 @@ async fn stream_llm_iteration(
                 if !name.is_empty() {
                     builder.name = name;
                 }
+                if !builder.started_emitted && !builder.id.is_empty() && !builder.name.is_empty() {
+                    builder.started_emitted = true;
+                    emit(
+                        runtime.events,
+                        AgentRunEvent::ToolCallStarted {
+                            call_id: builder.id.clone(),
+                            name: builder.name.clone(),
+                            permission_mode: runtime
+                                .prepared
+                                .tools_config
+                                .terminal
+                                .permission_mode
+                                .clone(),
+                        },
+                    )
+                    .await?;
+                }
             }
             StreamEvent::ToolCallArgsDelta { index, arguments } => {
                 let builder = calls.entry(index).or_default();
@@ -1046,6 +1072,16 @@ async fn stream_llm_iteration(
                     .await);
                 }
                 builder.arguments.push_str(&arguments);
+                if !builder.id.is_empty() {
+                    emit(
+                        runtime.events,
+                        AgentRunEvent::ToolCallArgsDelta {
+                            call_id: builder.id.clone(),
+                            arguments,
+                        },
+                    )
+                    .await?;
+                }
             }
             StreamEvent::Usage(value) => {
                 usage = value;
@@ -1139,6 +1175,7 @@ struct ToolCallBuilder {
     id: String,
     name: String,
     arguments: String,
+    started_emitted: bool,
 }
 
 async fn execute_tool_with_events(

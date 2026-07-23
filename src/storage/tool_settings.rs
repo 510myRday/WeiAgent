@@ -16,10 +16,11 @@ use crate::{
         WebSearchSourceRole, WebSearchToolConfig, WebSearchToolOverrides,
     },
     error::{AppError, AppResult},
-    storage::{db, json_store::JsonStore},
+    storage::json_store::JsonStore,
 };
 
 const LEGACY_TOOL_DEFAULTS_FILE: &str = "tool_defaults.json";
+const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 2;
 const LEGACY_AGENT_TOOLS_FILE: &str = "tools.json";
 
 const TOOL_SETTINGS_SCHEMA_SQL: &str = r#"
@@ -154,10 +155,13 @@ CREATE TABLE IF NOT EXISTS tool_web_search_api_keys (
 impl JsonStore {
     pub(super) async fn initialize_tool_settings(&self) -> AppResult<()> {
         let agents = self.read_agents_unlocked().await?;
-        let mut conn = db::open_data_dir(&self.data_dir)?;
-        ensure_tool_settings_schema(&mut conn)?;
-        let default_exists = compact_default_exists(&conn)?;
-        drop(conn);
+        let default_exists = self
+            .database
+            .call(|conn| {
+                ensure_tool_settings_schema(conn)?;
+                compact_default_exists(conn)
+            })
+            .await?;
 
         if !default_exists {
             let defaults = self.read_legacy_tool_defaults().await?;
@@ -168,17 +172,21 @@ impl JsonStore {
                 }
             }
 
-            let mut conn = db::open_data_dir(&self.data_dir)?;
-            let tx = conn.transaction()?;
-            write_default_settings_conn(&tx, &defaults)?;
-            for (agent_id, overrides) in &migrated_overrides {
-                write_agent_overrides_conn(&tx, *agent_id, overrides)?;
-            }
-            tx.commit()?;
+            self.database
+                .call(move |conn| {
+                    let tx = conn.transaction()?;
+                    write_default_settings_conn(&tx, &defaults)?;
+                    for (agent_id, overrides) in &migrated_overrides {
+                        write_agent_overrides_conn(&tx, *agent_id, overrides)?;
+                    }
+                    tx.commit()?;
+                    Ok(())
+                })
+                .await?;
         }
 
         self.remove_legacy_tool_files().await;
-        self.prune_orphan_agent_tool_settings(&agents)?;
+        self.prune_orphan_agent_tool_settings(&agents).await?;
         Ok(())
     }
 
@@ -206,7 +214,7 @@ impl JsonStore {
         config.web_search.disable_unavailable_sources();
         normalize_key_status_slots(&mut config);
         validate_tools_config(&config)?;
-        self.write_tool_defaults_unlocked(&config)?;
+        self.write_tool_defaults_unlocked(&config).await?;
         Ok(config)
     }
 
@@ -262,14 +270,14 @@ impl JsonStore {
         if updated > 0 {
             config.web_search.disable_unavailable_sources();
             validate_tools_config(&config)?;
-            self.write_tool_defaults_unlocked(&config)?;
+            self.write_tool_defaults_unlocked(&config).await?;
         }
         Ok(updated)
     }
 
     pub async fn read_agent_tools_settings(&self, id: Uuid) -> AppResult<AgentToolsSettings> {
-        self.get_agent(id).await?;
         let _guard = self.lock.lock().await;
+        self.ensure_agent_exists_unlocked(id).await?;
         let defaults = self.read_tool_defaults_unlocked().await?;
         let overrides = self
             .read_agent_tools_overrides_unlocked(id, &defaults)
@@ -291,12 +299,13 @@ impl JsonStore {
         id: Uuid,
         mut overrides: AgentToolsOverrides,
     ) -> AppResult<AgentToolsSettings> {
-        self.get_agent(id).await?;
         let _guard = self.lock.lock().await;
+        self.ensure_agent_exists_unlocked(id).await?;
         let defaults = self.read_tool_defaults_unlocked().await?;
         overrides.remove_expired_approval_grants(Utc::now());
         validate_tools_overrides(&overrides, &defaults)?;
-        self.write_agent_tools_overrides_unlocked(id, &overrides)?;
+        self.write_agent_tools_overrides_unlocked(id, &overrides)
+            .await?;
         let effective = overrides.apply_to(&defaults);
         Ok(AgentToolsSettings {
             defaults,
@@ -311,11 +320,12 @@ impl JsonStore {
         id: Uuid,
         config: AgentToolsConfig,
     ) -> AppResult<AgentToolsConfig> {
-        self.get_agent(id).await?;
         validate_tools_config(&config)?;
         let _guard = self.lock.lock().await;
+        self.ensure_agent_exists_unlocked(id).await?;
         let overrides = AgentToolsOverrides::full_override(&config);
-        self.write_agent_tools_overrides_unlocked(id, &overrides)?;
+        self.write_agent_tools_overrides_unlocked(id, &overrides)
+            .await?;
         Ok(config)
     }
 
@@ -325,8 +335,8 @@ impl JsonStore {
         command: &str,
         cwd: Option<&str>,
     ) -> AppResult<AgentToolsConfig> {
-        self.get_agent(id).await?;
         let _guard = self.lock.lock().await;
+        self.ensure_agent_exists_unlocked(id).await?;
         let defaults = self.read_tool_defaults_unlocked().await?;
         let mut overrides = self
             .read_agent_tools_overrides_unlocked(id, &defaults)
@@ -351,33 +361,41 @@ impl JsonStore {
             overrides.terminal.approval_grants.push(grant);
         }
         validate_tools_overrides(&overrides, &defaults)?;
-        self.write_agent_tools_overrides_unlocked(id, &overrides)?;
+        self.write_agent_tools_overrides_unlocked(id, &overrides)
+            .await?;
         Ok(overrides.apply_to(&defaults))
     }
 
-    pub(super) fn delete_agent_tool_settings_unlocked(&self, id: Uuid) -> AppResult<()> {
-        let conn = db::open_data_dir(&self.data_dir)?;
-        conn.execute(
-            "DELETE FROM tool_settings WHERE scope_type = 'agent' AND scope_id = ?1",
-            [id.to_string()],
-        )?;
-        Ok(())
+    pub(super) async fn delete_agent_tool_settings_unlocked(&self, id: Uuid) -> AppResult<()> {
+        self.database
+            .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM tool_settings WHERE scope_type = 'agent' AND scope_id = ?1",
+                    [id.to_string()],
+                )?;
+                Ok(())
+            })
+            .await
     }
 
     async fn read_tool_defaults_unlocked(&self) -> AppResult<AgentToolsConfig> {
-        let conn = db::open_data_dir(&self.data_dir)?;
-        let mut config = read_default_settings_conn(&conn)?.ok_or_else(|| {
-            AppError::Database("default tool settings row is missing".to_string())
-        })?;
-        let mut repaired = config.web_search.ensure_builtin_sources(None);
-        repaired |= config.web_search.disable_unavailable_sources();
-        repaired |= normalize_key_status_slots(&mut config);
-        validate_tools_config(&config)?;
-        if repaired {
-            drop(conn);
-            self.write_tool_defaults_unlocked(&config)?;
-        }
-        Ok(config)
+        self.database
+            .call(|conn| {
+                let mut config = read_default_settings_conn(conn)?.ok_or_else(|| {
+                    AppError::Database("default tool settings row is missing".to_string())
+                })?;
+                let mut repaired = config.web_search.ensure_builtin_sources(None);
+                repaired |= config.web_search.disable_unavailable_sources();
+                repaired |= normalize_key_status_slots(&mut config);
+                validate_tools_config(&config)?;
+                if repaired {
+                    let tx = conn.transaction()?;
+                    write_default_settings_conn(&tx, &config)?;
+                    tx.commit()?;
+                }
+                Ok(config)
+            })
+            .await
     }
 
     async fn read_agent_tools_overrides_unlocked(
@@ -385,34 +403,60 @@ impl JsonStore {
         id: Uuid,
         defaults: &AgentToolsConfig,
     ) -> AppResult<AgentToolsOverrides> {
-        let conn = db::open_data_dir(&self.data_dir)?;
-        let mut overrides = read_agent_overrides_conn(&conn, id)?.unwrap_or_default();
-        drop(conn);
-        if overrides.remove_expired_approval_grants(Utc::now()) {
-            self.write_agent_tools_overrides_unlocked(id, &overrides)?;
-        }
-        validate_tools_overrides(&overrides, defaults)?;
-        Ok(overrides)
+        let defaults = defaults.clone();
+        self.database
+            .call(move |conn| {
+                let mut overrides = read_agent_overrides_conn(conn, id)?.unwrap_or_default();
+                if overrides.remove_expired_approval_grants(Utc::now()) {
+                    let tx = conn.transaction()?;
+                    write_agent_overrides_conn(&tx, id, &overrides)?;
+                    tx.commit()?;
+                }
+                validate_tools_overrides(&overrides, &defaults)?;
+                Ok(overrides)
+            })
+            .await
     }
 
-    fn write_tool_defaults_unlocked(&self, config: &AgentToolsConfig) -> AppResult<()> {
-        let mut conn = db::open_data_dir(&self.data_dir)?;
-        let tx = conn.transaction()?;
-        write_default_settings_conn(&tx, config)?;
-        tx.commit()?;
-        Ok(())
+    async fn write_tool_defaults_unlocked(&self, config: &AgentToolsConfig) -> AppResult<()> {
+        let config = config.clone();
+        self.database
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                write_default_settings_conn(&tx, &config)?;
+                tx.commit()?;
+                Ok(())
+            })
+            .await
     }
 
-    fn write_agent_tools_overrides_unlocked(
+    async fn write_agent_tools_overrides_unlocked(
         &self,
         id: Uuid,
         overrides: &AgentToolsOverrides,
     ) -> AppResult<()> {
-        let mut conn = db::open_data_dir(&self.data_dir)?;
-        let tx = conn.transaction()?;
-        write_agent_overrides_conn(&tx, id, overrides)?;
-        tx.commit()?;
-        Ok(())
+        let overrides = overrides.clone();
+        self.database
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                write_agent_overrides_conn(&tx, id, &overrides)?;
+                tx.commit()?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn ensure_agent_exists_unlocked(&self, id: Uuid) -> AppResult<()> {
+        if self
+            .read_agents_unlocked()
+            .await?
+            .iter()
+            .any(|agent| agent.id == id)
+        {
+            Ok(())
+        } else {
+            Err(AppError::NotFound)
+        }
     }
 
     async fn read_legacy_tool_defaults(&self) -> AppResult<AgentToolsConfig> {
@@ -486,33 +530,39 @@ impl JsonStore {
         }
     }
 
-    fn prune_orphan_agent_tool_settings(&self, agents: &[crate::domain::Agent]) -> AppResult<()> {
+    async fn prune_orphan_agent_tool_settings(
+        &self,
+        agents: &[crate::domain::Agent],
+    ) -> AppResult<()> {
         let valid_ids = agents
             .iter()
             .map(|agent| agent.id.to_string())
             .collect::<HashSet<_>>();
-        let mut conn = db::open_data_dir(&self.data_dir)?;
-        let tx = conn.transaction()?;
-        let mut stmt = tx.prepare(
-            "SELECT scope_id FROM tool_settings WHERE scope_type = 'agent' ORDER BY scope_id",
-        )?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        let mut orphan_ids = Vec::new();
-        for row in rows {
-            let id = row?;
-            if !valid_ids.contains(&id) {
-                orphan_ids.push(id);
-            }
-        }
-        drop(stmt);
-        for id in orphan_ids {
-            tx.execute(
-                "DELETE FROM tool_settings WHERE scope_type = 'agent' AND scope_id = ?1",
-                [id],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
+        self.database
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                let mut stmt = tx.prepare(
+                    "SELECT scope_id FROM tool_settings WHERE scope_type = 'agent' ORDER BY scope_id",
+                )?;
+                let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+                let mut orphan_ids = Vec::new();
+                for row in rows {
+                    let id = row?;
+                    if !valid_ids.contains(&id) {
+                        orphan_ids.push(id);
+                    }
+                }
+                drop(stmt);
+                for id in orphan_ids {
+                    tx.execute(
+                        "DELETE FROM tool_settings WHERE scope_type = 'agent' AND scope_id = ?1",
+                        [id],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .await
     }
 }
 
@@ -548,23 +598,103 @@ fn normalize_key_status_slots(config: &mut AgentToolsConfig) -> bool {
 }
 
 fn ensure_tool_settings_schema(conn: &mut Connection) -> AppResult<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS app_schema_migrations (
+            version INTEGER PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );",
+    )?;
+    let applied = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM app_schema_migrations WHERE version = ?1
+        )",
+        [TOOL_SETTINGS_SCHEMA_VERSION],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if applied {
+        validate_compact_tool_schema(conn)?;
+        return Ok(());
+    }
+
     if !table_exists(conn, "tool_settings")? {
         conn.execute_batch(TOOL_SETTINGS_SCHEMA_SQL)?;
-        return Ok(());
+    } else {
+        let columns = table_columns(conn, "tool_settings")?;
+        if columns.contains("terminal_allowed_cwd_roots_json") {
+            ensure_content_extraction_columns(conn)?;
+            conn.execute_batch(TOOL_SETTINGS_SCHEMA_SQL)?;
+        } else if columns.contains("id")
+            && columns.contains("terminal_allowed_cwd_roots_overridden")
+        {
+            migrate_normalized_tool_schema(conn)?;
+        } else {
+            return Err(AppError::Database(
+                "unsupported tool_settings table layout".to_string(),
+            ));
+        }
     }
-    let columns = table_columns(conn, "tool_settings")?;
-    if columns.contains("terminal_allowed_cwd_roots_json") {
-        ensure_content_extraction_columns(conn)?;
-        conn.execute_batch(TOOL_SETTINGS_SCHEMA_SQL)?;
-        return Ok(());
+    validate_compact_tool_schema(conn)?;
+    conn.execute(
+        "INSERT INTO app_schema_migrations (version, name, applied_at)
+         VALUES (?1, ?2, ?3)",
+        params![
+            TOOL_SETTINGS_SCHEMA_VERSION,
+            "tool_settings_compact_v2",
+            Utc::now().to_rfc3339()
+        ],
+    )?;
+    Ok(())
+}
+
+fn validate_compact_tool_schema(conn: &Connection) -> AppResult<()> {
+    for table in [
+        "tool_settings",
+        "tool_web_search_sources",
+        "tool_web_search_api_keys",
+    ] {
+        if !table_exists(conn, table)? {
+            return Err(AppError::Database(format!(
+                "migration {TOOL_SETTINGS_SCHEMA_VERSION} is recorded but table {table} is missing"
+            )));
+        }
     }
-    if columns.contains("id") && columns.contains("terminal_allowed_cwd_roots_overridden") {
-        migrate_normalized_tool_schema(conn)?;
-        return Ok(());
+    let settings_columns = table_columns(conn, "tool_settings")?;
+    for column in [
+        "scope_type",
+        "scope_id",
+        "terminal_allowed_cwd_roots_json",
+        "web_extract_remote_enabled",
+        "web_extract_max_remote_attempts",
+        "web_extract_allow_grok_fallback",
+    ] {
+        if !settings_columns.contains(column) {
+            return Err(AppError::Database(format!(
+                "migration {TOOL_SETTINGS_SCHEMA_VERSION} is recorded but tool_settings.{column} is missing"
+            )));
+        }
     }
-    Err(AppError::Database(
-        "unsupported tool_settings table layout".to_string(),
-    ))
+    let source_columns = table_columns(conn, "tool_web_search_sources")?;
+    for column in ["extract_enabled", "extract_base_url"] {
+        if !source_columns.contains(column) {
+            return Err(AppError::Database(format!(
+                "migration {TOOL_SETTINGS_SCHEMA_VERSION} is recorded but tool_web_search_sources.{column} is missing"
+            )));
+        }
+    }
+    let key_columns = table_columns(conn, "tool_web_search_api_keys")?;
+    for column in [
+        "extract_key_status",
+        "extract_status_detail",
+        "extract_checked_at",
+    ] {
+        if !key_columns.contains(column) {
+            return Err(AppError::Database(format!(
+                "migration {TOOL_SETTINGS_SCHEMA_VERSION} is recorded but tool_web_search_api_keys.{column} is missing"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn ensure_content_extraction_columns(conn: &Connection) -> AppResult<()> {
@@ -795,8 +925,8 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
                 source.independence_group,
                 roles_json,
                 blocked_json,
-                source.base_url,
-                source.extract_base_url,
+                None::<String>,
+                None::<String>,
                 source.flaresolverr_url,
                 source.flaresolverr_proxy_url,
                 source.proxy_url,
@@ -1151,8 +1281,6 @@ struct CompactSourceRow {
     independence_group: String,
     roles_json: String,
     blocked_api_key_hashes_json: String,
-    base_url: Option<String>,
-    extract_base_url: Option<String>,
     flaresolverr_url: Option<String>,
     flaresolverr_proxy_url: Option<String>,
     proxy_url: Option<String>,
@@ -1177,8 +1305,6 @@ fn read_compact_web_search_sources(conn: &Connection) -> AppResult<Vec<WebSearch
             independence_group: row.get(7)?,
             roles_json: row.get(8)?,
             blocked_api_key_hashes_json: row.get(9)?,
-            base_url: row.get(10)?,
-            extract_base_url: row.get(11)?,
             flaresolverr_url: row.get(12)?,
             flaresolverr_proxy_url: row.get(13)?,
             proxy_url: row.get(14)?,
@@ -1204,8 +1330,6 @@ fn read_compact_web_search_sources(conn: &Connection) -> AppResult<Vec<WebSearch
             priority: i64_to_u16(row.priority, "web search source priority")?,
             independence_group: row.independence_group,
             roles: serde_json::from_str(&row.roles_json)?,
-            base_url: row.base_url,
-            extract_base_url: row.extract_base_url,
             api_keys,
             blocked_api_key_hashes: serde_json::from_str(&row.blocked_api_key_hashes_json)?,
             key_statuses,
@@ -1482,7 +1606,6 @@ struct NormalizedSourceRow {
     deep_enabled: i64,
     priority: i64,
     independence_group: String,
-    base_url: Option<String>,
     flaresolverr_url: Option<String>,
     flaresolverr_proxy_url: Option<String>,
     proxy_url: Option<String>,
@@ -1508,7 +1631,6 @@ fn read_normalized_web_search_sources(
             deep_enabled: row.get(5)?,
             priority: row.get(6)?,
             independence_group: row.get(7)?,
-            base_url: row.get(8)?,
             flaresolverr_url: row.get(9)?,
             flaresolverr_proxy_url: row.get(10)?,
             proxy_url: row.get(11)?,
@@ -1533,8 +1655,6 @@ fn read_normalized_web_search_sources(
             priority: i64_to_u16(row.priority, "web search source priority")?,
             independence_group: row.independence_group,
             roles: read_normalized_web_search_roles(conn, row.source_row_id)?,
-            base_url: row.base_url,
-            extract_base_url: None,
             api_keys,
             blocked_api_key_hashes: read_normalized_blocked_hashes(conn, row.source_row_id)?,
             key_statuses,
@@ -1897,8 +2017,6 @@ fn validate_tools_config(config: &AgentToolsConfig) -> AppResult<()> {
                 "web_search source '{id}' roles must be unique"
             )));
         }
-        validate_optional_http_url(id, "base_url", source.base_url.as_deref())?;
-        validate_optional_http_url(id, "extract_base_url", source.extract_base_url.as_deref())?;
         validate_optional_http_url(id, "flaresolverr_url", source.flaresolverr_url.as_deref())?;
         validate_optional_proxy_url(id, "proxy_url", source.proxy_url.as_deref())?;
         validate_optional_proxy_url(
@@ -1928,12 +2046,14 @@ fn validate_optional_proxy_url(source_id: &str, field: &str, value: Option<&str>
         if !value.is_empty()
             && !(value.starts_with("http://")
                 || value.starts_with("https://")
+                || value.starts_with("socks4://")
+                || value.starts_with("socks4a://")
                 || value.starts_with("socks5://")
                 || value.starts_with("socks5h://")
                 || value.starts_with("socks://"))
         {
             return Err(AppError::BadRequest(format!(
-                "web_search source '{source_id}' {field} must start with http://, https://, socks5:// or socks5h://"
+                "web_search source '{source_id}' {field} must start with http://, https://, socks4://, socks4a://, socks5:// or socks5h://"
             )));
         }
     }

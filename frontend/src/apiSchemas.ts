@@ -137,6 +137,17 @@ const toolCallEventDataSchema = looseObject({
   permission_mode: permissionModeSchema,
 });
 
+const toolCallStartedEventDataSchema = looseObject({
+  call_id: string(),
+  name: string(),
+  permission_mode: permissionModeSchema,
+});
+
+const toolCallArgsDeltaEventDataSchema = looseObject({
+  call_id: string(),
+  arguments: string(),
+});
+
 const toolResultEventDataSchema = looseObject({
   call_id: string(),
   result: looseObject({
@@ -195,7 +206,7 @@ export function parseAgentRun(value: unknown): AgentRun {
 }
 
 export function parseJsonStreamEvent(
-  event: 'user' | 'assistant' | 'phase' | 'retry' | 'tool_call' | 'tool_result' | 'approval_required',
+  event: 'user' | 'assistant' | 'phase' | 'retry' | 'tool_call_started' | 'tool_call_args_delta' | 'tool_call' | 'tool_result' | 'approval_required',
   data: string,
   sequence?: number,
 ): StreamEvent {
@@ -214,6 +225,10 @@ export function parseJsonStreamEvent(
     }
     case 'retry':
       return { event, data: parse(retryEventDataSchema, parsed), sequence };
+    case 'tool_call_started':
+      return { event, data: parse(toolCallStartedEventDataSchema, parsed), sequence };
+    case 'tool_call_args_delta':
+      return { event, data: parse(toolCallArgsDeltaEventDataSchema, parsed), sequence };
     case 'tool_call':
       return { event, data: parse(toolCallEventDataSchema, parsed), sequence };
     case 'tool_result':

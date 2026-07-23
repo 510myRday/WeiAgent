@@ -929,6 +929,19 @@
   min-height: 0;
 }
 
+.settings-panel .ip-proxy-main {
+  overflow: hidden;
+  padding-bottom: 10px;
+}
+
+.ip-proxy-main > .ip-proxy-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  row-gap: 10px;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
 .model-agent-settings-card {
   gap: 16px;
 }
@@ -1115,8 +1128,11 @@
 }
 
 .ip-proxy-management.form-card {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
   min-width: 0;
+  min-height: 0;
   padding: 0;
   overflow: hidden;
 }
@@ -1188,18 +1204,20 @@
 }
 
 .ip-proxy-table-wrap {
-  min-height: 340px;
-  overflow: auto;
+  min-height: 0;
+  flex: 1 1 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .ip-proxy-table-wrap .empty-state {
-  min-height: 340px;
+  min-height: 240px;
   padding: 30px;
 }
 
 .ip-proxy-empty {
   display: flex;
-  min-height: 340px;
+  min-height: 240px;
   align-items: center;
   justify-content: center;
   gap: 9px;
@@ -1209,15 +1227,17 @@
 
 .ip-proxy-table {
   width: 100%;
-  min-width: 1080px;
+  min-width: 0;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: var(--font-size-ui);
 }
 
 .ip-proxy-table th,
 .ip-proxy-table td {
-  height: 62px;
-  padding: 10px 12px;
+  overflow: hidden;
+  height: 50px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--border-subtle);
   text-align: left;
   vertical-align: middle;
@@ -1227,11 +1247,13 @@
   position: sticky;
   z-index: 2;
   top: 0;
-  height: 42px;
-  background: var(--surface-subtle);
-  color: var(--color-muted);
+  height: 34px;
+  padding-block: 2px;
+  background: color-mix(in srgb, var(--color-text) 8%, var(--surface-subtle));
+  color: var(--color-text-soft);
   font-size: var(--font-size-label);
   font-weight: var(--font-weight-emphasis);
+  line-height: var(--line-height-tight);
   white-space: nowrap;
 }
 
@@ -1245,6 +1267,10 @@
   transition: background-color var(--duration-fast) var(--ease-standard);
 }
 
+.ip-proxy-table tbody tr.is-pinned {
+  background: color-mix(in srgb, var(--color-primary) 5%, var(--surface-pane));
+}
+
 .ip-proxy-table tbody tr:hover {
   background: var(--surface-hover);
 }
@@ -1255,10 +1281,19 @@
 
 .ip-proxy-table th.ip-proxy-select-cell,
 .ip-proxy-table td.ip-proxy-select-cell {
-  width: 46px;
+  width: auto;
   padding-inline: 15px 6px;
   text-align: center;
 }
+
+.ip-proxy-table .ip-proxy-col-select { width: 4%; }
+.ip-proxy-table .ip-proxy-col-name { width: 25%; }
+.ip-proxy-table .ip-proxy-col-location { width: 16%; }
+.ip-proxy-table .ip-proxy-col-status { width: 11%; }
+.ip-proxy-table .ip-proxy-col-latency { width: 8%; }
+.ip-proxy-table .ip-proxy-col-quality { width: 12%; }
+.ip-proxy-table .ip-proxy-col-enabled { width: 9%; }
+.ip-proxy-table .ip-proxy-col-actions { width: 15%; }
 
 .ip-proxy-select-cell input {
   width: 17px;
@@ -1269,9 +1304,9 @@
 
 .ip-proxy-identity {
   display: grid;
-  width: min(320px, 27vw);
-  min-width: 220px;
-  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  gap: 4px;
 }
 
 .ip-proxy-identity strong,
@@ -1282,9 +1317,54 @@
 }
 
 .ip-proxy-identity strong {
+  min-width: 0;
   color: var(--color-text);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-emphasis);
+}
+
+.ip-proxy-name-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+}
+
+.ip-proxy-name-line strong {
+  flex: 0 1 auto;
+  max-width: calc(100% - 60px);
+}
+
+.ip-proxy-name-line .ip-proxy-protocol {
+  flex: 0 0 auto;
+  min-height: 20px;
+  padding: 2px 6px;
+  font-size: var(--font-size-micro);
+}
+
+.ip-proxy-sort-button {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ip-proxy-table th:nth-child(n + 3) .ip-proxy-sort-button {
+  justify-content: center;
+}
+
+.ip-proxy-sort-button:hover,
+.ip-proxy-sort-button:focus-visible,
+.ip-proxy-sort-button.is-active {
+  color: var(--color-primary-strong);
 }
 
 .ip-proxy-identity code {
@@ -1322,6 +1402,7 @@
   color: var(--color-info);
 }
 
+.ip-proxy-protocol.is-socks4,
 .ip-proxy-protocol.is-socks5 {
   border-color: var(--color-warning-border);
   background: var(--color-warning-soft);
@@ -1346,9 +1427,12 @@
 }
 
 .ip-proxy-status.is-testing {
+  min-height: 20px;
   border-color: var(--color-info-border);
   background: var(--color-info-soft);
   color: var(--color-info);
+  gap: 4px;
+  padding: 2px 6px;
 }
 
 .ip-proxy-latency {
@@ -1376,14 +1460,121 @@
   color: var(--color-muted);
 }
 
+.ip-proxy-quality-grid {
+  display: grid;
+  width: 100%;
+  max-width: 144px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 10px;
+  margin-inline: auto;
+}
+
+.ip-proxy-quality-cell {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  min-height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-micro);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--line-height-none);
+  white-space: nowrap;
+}
+
+.ip-proxy-quality-cell strong {
+  display: none;
+}
+
+.ip-proxy-quality-cell.is-google {
+  color: var(--color-info);
+}
+
+.ip-proxy-quality-cell.is-openai {
+  color: var(--color-success);
+}
+
+.ip-proxy-quality-cell.is-anthropic {
+  color: var(--color-warning);
+}
+
+.ip-proxy-quality-cell.is-grok {
+  color: rgb(0 0 0);
+}
+
+.ip-proxy-quality-cell.is-error {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.ip-proxy-quality-cell.is-testing {
+  border-color: var(--color-info-border);
+  background: var(--color-info-soft);
+  color: var(--color-info);
+}
+
+.ip-proxy-quality-cell.is-unchecked {
+  color: var(--color-muted);
+}
+
+.ip-proxy-quality-legend {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0;
+  padding: 0 16px 2px;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: 18px;
+}
+
+.ip-proxy-quality-legend-label {
+  color: var(--color-text-soft);
+  font-weight: var(--font-weight-emphasis);
+}
+
+.ip-proxy-quality-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ip-proxy-quality-legend-item i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ip-proxy-quality-legend-item.is-google { color: var(--color-info); }
+.ip-proxy-quality-legend-item.is-openai { color: var(--color-success); }
+.ip-proxy-quality-legend-item.is-anthropic { color: var(--color-warning); }
+.ip-proxy-quality-legend-item.is-grok { color: rgb(0 0 0); }
+.ip-proxy-quality-legend-item.is-error { color: var(--color-danger); }
+
+.ip-proxy-status-cell {
+  display: inline-grid;
+  justify-items: center;
+  gap: 5px;
+}
+
 .ip-proxy-checked-at {
   font-size: var(--font-size-caption);
+  line-height: var(--line-height-none);
   white-space: nowrap;
 }
 
 .ip-proxy-location {
   display: inline-grid;
-  max-width: 190px;
+  width: 100%;
+  max-width: 100%;
   justify-items: center;
   gap: 4px;
   color: var(--color-text-soft);
@@ -1410,8 +1601,15 @@
 }
 
 .ip-proxy-enabled-toggle {
+  display: inline-block;
+  vertical-align: middle;
   width: 42px;
   height: 24px;
+}
+
+.ip-proxy-enabled-cell {
+  text-align: center;
+  vertical-align: middle;
 }
 
 .ip-proxy-enabled-toggle .toggle-slider::before {

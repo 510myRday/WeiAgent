@@ -381,7 +381,6 @@ pub async fn check_web_search_keys(
     let source_id = source.id.clone();
     let api_keys = source.api_keys.clone();
     let provider = source.provider.clone();
-    let source_base_url = source.base_url.clone();
     let source_proxy_url = source.proxy_url.clone();
     let source_flaresolverr_url = source.flaresolverr_url.clone();
     let source_flaresolverr_proxy_url = source.flaresolverr_proxy_url.clone();
@@ -395,16 +394,20 @@ pub async fn check_web_search_keys(
         values
     };
     let timeout = std::time::Duration::from_millis(config.web_search.timeout_ms());
-    let base_url = source_base_url
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| provider.default_base_url())
-        .to_string();
+    let base_url = provider.default_base_url().to_string();
     let proxy_url = source_proxy_url.as_deref();
     let flaresolverr_url = source_flaresolverr_url.as_deref();
     let flaresolverr_proxy_url = source_flaresolverr_proxy_url.as_deref();
-    let control_client = reqwest::Client::builder()
-        .timeout(timeout.max(std::time::Duration::from_secs(90)))
+    let mut control_client_builder =
+        reqwest::Client::builder().timeout(timeout.max(std::time::Duration::from_secs(90)));
+    if provider != WebSearchProviderKind::Grok {
+        if let Some(proxy_url) = proxy_url.filter(|value| !value.trim().is_empty()) {
+            let proxy = reqwest::Proxy::all(proxy_url)
+                .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
+            control_client_builder = control_client_builder.proxy(proxy);
+        }
+    }
+    let control_client = control_client_builder
         .build()
         .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
     let grok_client = if provider == WebSearchProviderKind::Grok {

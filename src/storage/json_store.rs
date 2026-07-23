@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use tokio::{fs, sync::Mutex};
 use uuid::Uuid;
@@ -16,11 +19,13 @@ use crate::{
 pub struct JsonStore {
     pub data_dir: PathBuf,
     pub terminal_workspace_dir: PathBuf,
+    pub attachments_dir: PathBuf,
     pub(super) settings_file: PathBuf,
     pub(super) agents_file: PathBuf,
     pub(super) agents_dir: PathBuf,
     pub(super) conversations_file: PathBuf,
     pub(super) conversations_dir: PathBuf,
+    pub(super) database: Arc<db::Database>,
     pub(super) lock: Mutex<()>,
 }
 
@@ -28,6 +33,7 @@ impl JsonStore {
     pub async fn new(root: impl AsRef<Path>) -> AppResult<Self> {
         let root = root.as_ref().to_path_buf();
         let terminal_workspace_dir = crate::config::terminal_workspace_dir(&root);
+        let attachments_dir = crate::config::attachments_dir(&root);
         let settings_file = root.join("settings.json");
         let agents_file = root.join("agents.json");
         let agents_dir = root.join("agents");
@@ -35,21 +41,24 @@ impl JsonStore {
         let conversations_dir = root.join("conversations");
         fs::create_dir_all(&root).await?;
         fs::create_dir_all(&terminal_workspace_dir).await?;
+        fs::create_dir_all(&attachments_dir).await?;
         fs::create_dir_all(&agents_dir).await?;
         fs::create_dir_all(&conversations_dir).await?;
         ensure_json_array(&agents_file).await?;
         ensure_json_array(&conversations_file).await?;
         load_or_init_settings(&settings_file).await?;
-        db::ensure_schema(&root)?;
+        let database = Arc::new(db::Database::open(&root)?);
 
         let store = Self {
             data_dir: root,
             terminal_workspace_dir,
+            attachments_dir,
             settings_file,
             agents_file,
             agents_dir,
             conversations_file,
             conversations_dir,
+            database,
             lock: Mutex::new(()),
         };
         store.initialize_tool_settings().await?;
@@ -75,14 +84,25 @@ impl JsonStore {
     }
 
     pub(super) async fn read_providers_unlocked(&self) -> AppResult<Vec<ModelProvider>> {
-        db::read_providers(&self.data_dir)
+        self.database
+            .call(|connection| db::read_providers_conn(connection))
+            .await
     }
 
-    pub(super) async fn write_providers_unlocked(
-        &self,
-        providers: &[ModelProvider],
-    ) -> AppResult<()> {
-        db::write_providers(&self.data_dir, providers)
+    pub(super) async fn upsert_provider_unlocked(&self, provider: ModelProvider) -> AppResult<()> {
+        self.database
+            .call(move |connection| db::upsert_provider_conn(connection, &provider))
+            .await
+    }
+
+    pub(super) async fn delete_provider_unlocked(&self, id: Uuid) -> AppResult<bool> {
+        self.database
+            .call(move |connection| db::delete_provider_conn(connection, id))
+            .await
+    }
+
+    pub fn database(&self) -> Arc<db::Database> {
+        self.database.clone()
     }
 
     pub(super) async fn read_agents(&self) -> AppResult<Vec<Agent>> {

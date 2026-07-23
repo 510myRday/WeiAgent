@@ -131,6 +131,7 @@ function upsertToolOnAssistant(
           ...existing.tool,
           ...tool,
           arguments: { ...existing.tool.arguments, ...tool.arguments },
+          arguments_text: tool.arguments_text ?? existing.tool.arguments_text,
           result: tool.result ?? existing.tool.result,
         },
       };
@@ -148,6 +149,35 @@ function upsertToolOnAssistant(
   return { ...message, role: 'assistant', blocks };
 }
 
+function upsertToolOnMessages(
+  items: UiMessageItem[],
+  tool: ToolCallState,
+  agentId: string,
+  conversationId: string,
+): UiMessageItem[] {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (isUserMessage(item)) break;
+    if (isAssistantMessage(item)) {
+      return items.map((entry, entryIndex) => (
+        entryIndex === index ? upsertToolOnAssistant(entry, tool) : entry
+      ));
+    }
+  }
+  const seed: UiMessage = {
+    id: '',
+    agent_id: agentId,
+    conversation_id: conversationId,
+    role: 'assistant',
+    content: '',
+    status: 'streaming',
+    created_at: new Date().toISOString(),
+    clientId: genClientId(),
+    blocks: [{ type: 'tool', tool }],
+  };
+  return [...items, seed];
+}
+
 function patchToolOnMessages(
   items: UiMessageItem[],
   callId: string,
@@ -159,15 +189,16 @@ function patchToolOnMessages(
     const blocks = item.blocks.map((block) => {
       if (block.type !== 'tool' || block.tool.call_id !== callId) return block;
       changed = true;
-      const nextTool = typeof patch === 'function'
+          const nextTool = typeof patch === 'function'
         ? patch(block.tool)
         : {
           ...block.tool,
           ...patch,
-          arguments: patch.arguments
-            ? { ...block.tool.arguments, ...patch.arguments }
-            : block.tool.arguments,
-          result: patch.result ?? block.tool.result,
+            arguments: patch.arguments
+              ? { ...block.tool.arguments, ...patch.arguments }
+              : block.tool.arguments,
+            arguments_text: patch.arguments_text ?? block.tool.arguments_text,
+            result: patch.result ?? block.tool.result,
         };
       return { type: 'tool' as const, tool: nextTool };
     });
@@ -838,6 +869,40 @@ export function useConversations({
         });
         return;
       }
+      if (evt.event === 'tool_call_started') {
+        setRunPhase('executing_tool');
+        const d = evt.data;
+        const tool: ToolCallState = {
+          call_id: d.call_id,
+          name: d.name,
+          arguments: {},
+          arguments_text: '',
+          phase: 'generating_arguments',
+          started_at_ms: Date.now(),
+          permission_mode: d.permission_mode,
+          status: 'running',
+        };
+        setMessages((current) => upsertToolOnMessages(
+          current,
+          tool,
+          activeStreamRef.current.agentId,
+          activeStreamRef.current.conversationId,
+        ));
+        return;
+      }
+      if (evt.event === 'tool_call_args_delta') {
+        const d = evt.data;
+        setMessages((current) => patchToolOnMessages(current, d.call_id, (tool) => {
+          const argumentsText = (tool.arguments_text ?? '') + d.arguments;
+          return {
+            ...tool,
+            phase: 'generating_arguments',
+            arguments_text: argumentsText,
+            arguments: parseJsonObject(argumentsText),
+          };
+        }));
+        return;
+      }
       if (evt.event === 'tool_call') {
         setRunPhase('executing_tool');
         const d = evt.data;
@@ -845,33 +910,17 @@ export function useConversations({
           call_id: d.call_id,
           name: d.name,
           arguments: d.arguments,
+          arguments_text: JSON.stringify(d.arguments),
+          phase: 'executing',
           permission_mode: d.permission_mode,
           status: 'running',
         };
-        setMessages((current) => {
-          // Attach tools to the active assistant bubble for this run.
-          for (let index = current.length - 1; index >= 0; index -= 1) {
-            const item = current[index];
-            if (isUserMessage(item)) break;
-            if (isAssistantMessage(item)) {
-              return current.map((entry, entryIndex) => (
-                entryIndex === index ? upsertToolOnAssistant(entry, tool) : entry
-              ));
-            }
-          }
-          const seed: UiMessage = {
-            id: '',
-            agent_id: activeStreamRef.current.agentId,
-            conversation_id: activeStreamRef.current.conversationId,
-            role: 'assistant',
-            content: '',
-            status: 'streaming',
-            created_at: new Date().toISOString(),
-            clientId: genClientId(),
-            blocks: [{ type: 'tool', tool }],
-          };
-          return [...current, seed];
-        });
+        setMessages((current) => upsertToolOnMessages(
+          current,
+          tool,
+          activeStreamRef.current.agentId,
+          activeStreamRef.current.conversationId,
+        ));
         return;
       }
       if (evt.event === 'tool_result') {

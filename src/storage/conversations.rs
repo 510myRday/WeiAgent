@@ -213,7 +213,15 @@ impl JsonStore {
         &self,
         conversation_id: Uuid,
     ) -> AppResult<Vec<ChatMessage>> {
-        self.get_conversation(conversation_id).await?;
+        let _guard = self.lock.lock().await;
+        if !self
+            .read_conversations_unlocked()
+            .await?
+            .iter()
+            .any(|conversation| conversation.id == conversation_id)
+        {
+            return Err(AppError::NotFound);
+        }
         self.read_conversation_messages_unchecked(conversation_id)
             .await
     }
@@ -224,7 +232,15 @@ impl JsonStore {
         before: Option<Uuid>,
         limit: usize,
     ) -> AppResult<ConversationMessagePage> {
-        self.get_conversation(conversation_id).await?;
+        let _guard = self.lock.lock().await;
+        if !self
+            .read_conversations_unlocked()
+            .await?
+            .iter()
+            .any(|conversation| conversation.id == conversation_id)
+        {
+            return Err(AppError::NotFound);
+        }
         let messages = self
             .read_conversation_messages_unchecked(conversation_id)
             .await?;
@@ -253,7 +269,15 @@ impl JsonStore {
         &self,
         conversation_id: Uuid,
     ) -> AppResult<ConversationUsage> {
-        self.get_conversation(conversation_id).await?;
+        let _guard = self.lock.lock().await;
+        if !self
+            .read_conversations_unlocked()
+            .await?
+            .iter()
+            .any(|conversation| conversation.id == conversation_id)
+        {
+            return Err(AppError::NotFound);
+        }
         let messages = self
             .read_conversation_messages_unchecked(conversation_id)
             .await?;

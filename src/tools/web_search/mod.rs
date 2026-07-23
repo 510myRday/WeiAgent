@@ -755,7 +755,31 @@ async fn execute_source_query(
         }
     };
     let timeout = Duration::from_millis(config.timeout_ms());
-    let control_client = match reqwest::Client::builder().timeout(timeout).build() {
+    let mut control_client_builder = reqwest::Client::builder().timeout(timeout);
+    if source.provider != WebSearchProviderKind::Grok {
+        if let Some(proxy_url) = source
+            .proxy_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            match reqwest::Proxy::all(proxy_url) {
+                Ok(proxy) => {
+                    control_client_builder = control_client_builder.proxy(proxy);
+                }
+                Err(error) => {
+                    return source_failure(
+                        source,
+                        query,
+                        started,
+                        "failed",
+                        format!("failed to configure proxy: {error}"),
+                        Vec::new(),
+                    );
+                }
+            }
+        }
+    }
+    let control_client = match control_client_builder.build() {
         Ok(client) => client,
         Err(error) => {
             return source_failure(
@@ -768,13 +792,7 @@ async fn execute_source_query(
             );
         }
     };
-    let base_url = source
-        .base_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| source.provider.default_base_url())
-        .to_string();
+    let base_url = source.provider.default_base_url();
     let result = match source.provider {
         WebSearchProviderKind::Tavily => {
             tavily::search(&control_client, &base_url, &api_key, &request).await

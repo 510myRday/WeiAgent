@@ -26,6 +26,8 @@ interface ToolCallCardProps {
   callId: string;
   name: string;
   arguments: ToolArguments;
+  argumentsText?: string;
+  phase?: 'generating_arguments' | 'executing';
   status: ToolCallStatus;
   result?: ToolResultData;
   /** Hide the status/title header when nested under a disclosure summary. */
@@ -88,7 +90,10 @@ export function formatToolOutput(content: string): string {
 function prettyJsonValue(value: string): string | null {
   try {
     let parsed: unknown = JSON.parse(value);
-    if (typeof parsed === 'string' && /^[\[{]/.test(parsed.trim())) {
+    if (
+      typeof parsed === 'string'
+      && (parsed.trim().startsWith('{') || parsed.trim().startsWith('['))
+    ) {
       parsed = JSON.parse(parsed);
     }
     if (parsed === null || typeof parsed !== 'object') return null;
@@ -205,12 +210,19 @@ function TerminalContent({
 function ToolPayload({
   name,
   args,
+  argumentsText,
+  phase,
   t,
 }: {
   name: string;
   args: ToolArguments;
+  argumentsText?: string;
+  phase?: 'generating_arguments' | 'executing';
   t: (path: string, vars?: Record<string, string | number>) => string;
 }) {
+  if (phase === 'generating_arguments' && hasText(argumentsText)) {
+    return <TerminalContent content={argumentsText!} tone="args" t={t} />;
+  }
   if (typeof args.command === 'string' && args.command.trim()) {
     return <TerminalContent content={args.command} tone="command" t={t} />;
   }
@@ -259,6 +271,8 @@ export function ToolCallCard({
   agentId,
   name,
   arguments: args,
+  argumentsText,
+  phase,
   status,
   result,
   hideHeader = false,
@@ -327,7 +341,7 @@ export function ToolCallCard({
             <HeaderMeta name={name} />
           </div>
         )}
-        <ToolPayload name={name} args={args} t={t} />
+        <ToolPayload name={name} args={args} argumentsText={argumentsText} phase={phase} t={t} />
         <dl className="tool-card__approval-context">
           <div><dt>{t('toolCard.cwd')}</dt><dd>{String(args.cwd || t('toolCard.defaultCwd'))}</dd></div>
           <div><dt>{t('toolCard.runtime')}</dt><dd>{String(args.runtime || t('toolCard.runtimeUnknown'))}</dd></div>
@@ -403,7 +417,7 @@ export function ToolCallCard({
             </HeaderMeta>
           </div>
         )}
-        <ToolPayload name={name} args={args} t={t} />
+        <ToolPayload name={name} args={args} argumentsText={argumentsText} phase={phase} t={t} />
         {process ? (
           running && !hasText(process.stdout) && !hasText(process.stderr) ? null : (
             <TerminalOutputs
@@ -432,7 +446,7 @@ export function ToolCallCard({
             <HeaderMeta name={name} />
           </div>
         )}
-        <ToolPayload name={name} args={args} t={t} />
+        <ToolPayload name={name} args={args} argumentsText={argumentsText} phase={phase} t={t} />
       </div>
     );
   }
@@ -453,7 +467,7 @@ export function ToolCallCard({
             <HeaderMeta name={name} />
           </div>
         )}
-        <ToolPayload name={name} args={args} t={t} />
+        <ToolPayload name={name} args={args} argumentsText={argumentsText} phase={phase} t={t} />
         <TerminalOutputs
           stdout={result.stdout}
           stderr={result.stderr}
@@ -476,7 +490,7 @@ export function ToolCallCard({
             <HeaderMeta name={name} />
           </div>
         )}
-        <ToolPayload name={name} args={args} t={t} />
+        <ToolPayload name={name} args={args} argumentsText={argumentsText} phase={phase} t={t} />
         {result?.reason ? <p className="tool-card__reason">{result.reason}</p> : null}
       </div>
     );
@@ -492,7 +506,7 @@ export function ToolCallCard({
             <HeaderMeta name={name} />
           </div>
         )}
-        <ToolPayload name={name} args={args} t={t} />
+        <ToolPayload name={name} args={args} argumentsText={argumentsText} phase={phase} t={t} />
         {result?.message ? <p className="tool-card__reason">{result.message}</p> : null}
       </div>
     );

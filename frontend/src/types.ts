@@ -209,8 +209,22 @@ export type CreateAgentPayload = {
   avatar_color: string;
 };
 
-export type IpProxyProtocol = 'http' | 'https' | 'socks5';
+export type IpProxyProtocol = 'http' | 'https' | 'socks4' | 'socks5';
 export type IpProxyStatus = 'unchecked' | 'available' | 'unavailable';
+export type IpProxyQualityStatus = 'unchecked' | 'available' | 'error';
+
+export type IpProxyQualityProbe = {
+  status: IpProxyQualityStatus;
+  latency_ms: number | null;
+  error: string | null;
+};
+
+export type IpProxyQuality = {
+  google: IpProxyQualityProbe;
+  openai: IpProxyQualityProbe;
+  anthropic: IpProxyQualityProbe;
+  grok: IpProxyQualityProbe;
+};
 
 export type IpProxy = {
   id: string;
@@ -218,6 +232,7 @@ export type IpProxy = {
   url: string;
   protocol: IpProxyProtocol;
   enabled: boolean;
+  is_pinned: boolean;
   status: IpProxyStatus;
   latency_ms: number | null;
   last_checked_at: string | null;
@@ -227,6 +242,7 @@ export type IpProxy = {
   country_code: string | null;
   region: string | null;
   city: string | null;
+  api_quality: IpProxyQuality;
   created_at: string;
   updated_at: string;
 };
@@ -235,6 +251,7 @@ export type IpProxyPayload = {
   name: string;
   url: string;
   enabled: boolean;
+  is_pinned?: boolean;
 };
 
 export type IpProxyImportEntry = {
@@ -307,6 +324,10 @@ export type ToolCallState = {
   call_id: string;
   name: string;
   arguments: ToolArguments;
+  /** Raw JSON while the model is still assembling the tool call. */
+  arguments_text?: string;
+  phase?: 'generating_arguments' | 'executing';
+  started_at_ms?: number;
   permission_mode?: 'request_approval' | 'full_access';
   status: ToolCallStatus;
   result?: ToolResultData;
@@ -346,6 +367,23 @@ export type StreamEvent =
         attempt: number;
         max_attempts: number;
         reason: string;
+      };
+    }
+  | {
+      event: 'tool_call_started';
+      sequence?: number;
+      data: {
+        call_id: string;
+        name: string;
+        permission_mode: 'request_approval' | 'full_access';
+      };
+    }
+  | {
+      event: 'tool_call_args_delta';
+      sequence?: number;
+      data: {
+        call_id: string;
+        arguments: string;
       };
     }
   | {

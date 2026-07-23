@@ -115,6 +115,12 @@ export function App() {
     setMobileView('main');
   }
 
+  function openIpProxySettings() {
+    setSettingsSection('proxies');
+    setActiveNav('settings');
+    setMobileView('main');
+  }
+
   function openAgentCreation() {
     setActiveAgentId('');
     setActiveNav('agents');
@@ -205,6 +211,7 @@ export function App() {
             onAgentProfileSave={editAgentProfile}
             onAgentRemove={removeAgent}
             onOpenProviderSettings={openProviderSettings}
+            onOpenIpProxies={openIpProxySettings}
             onOpenMain={openMainPane}
             onBackToList={openListPane}
           />
@@ -212,6 +219,7 @@ export function App() {
         {activeNav === 'tools' && (
           <ToolsPanel
             agents={agents}
+            onOpenIpProxies={openIpProxySettings}
             onOpenMain={openMainPane}
             onBackToList={openListPane}
           />

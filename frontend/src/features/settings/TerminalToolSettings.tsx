@@ -25,6 +25,7 @@ interface TerminalToolSettingsProps {
   scope: 'defaults' | 'agent';
   agentId?: string;
   agents?: Agent[];
+  onOpenIpProxies?: () => void;
 }
 
 type OverrideField = 'permission_mode' | 'default_timeout_ms' | 'allowed_cwd_roots';
@@ -56,6 +57,7 @@ export function TerminalToolSettings({
   scope,
   agentId,
   agents = [],
+  onOpenIpProxies,
 }: TerminalToolSettingsProps) {
   const { t } = useI18n();
   const { confirm, toast } = useFeedback();
@@ -727,6 +729,7 @@ export function TerminalToolSettings({
         scope="agent"
         agentId={agentId}
         onBack={() => setAgentToolView('list')}
+        onOpenIpProxies={onOpenIpProxies}
       />
     );
   }

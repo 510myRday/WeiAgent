@@ -53,6 +53,32 @@ test('stream schema rejects malformed tool calls', () => {
   }))).toThrow();
 });
 
+test('stream schema accepts incremental tool call events', () => {
+  expect(parseJsonStreamEvent('tool_call_started', JSON.stringify({
+    call_id: 'call-1',
+    name: 'execute_terminal',
+    permission_mode: 'full_access',
+  }))).toMatchObject({
+    event: 'tool_call_started',
+    data: {
+      call_id: 'call-1',
+      name: 'execute_terminal',
+      permission_mode: 'full_access',
+    },
+  });
+
+  expect(parseJsonStreamEvent('tool_call_args_delta', JSON.stringify({
+    call_id: 'call-1',
+    arguments: '{"command":"echo',
+  }))).toMatchObject({
+    event: 'tool_call_args_delta',
+    data: {
+      call_id: 'call-1',
+      arguments: '{"command":"echo',
+    },
+  });
+});
+
 test('stream schema accepts valid phase events', () => {
   expect(parseJsonStreamEvent('phase', JSON.stringify({
     phase: 'waiting_for_model',

@@ -8,16 +8,25 @@ pub fn today_date() -> String {
 /// Stable runtime facts for the system prompt prefix.
 /// Intentionally excludes timestamps and other per-message values so prompt
 /// caching remains effective across turns in the same configuration.
-pub fn build_environment_prefix(data_dir: &Path, terminal_workspace_dir: &Path) -> String {
-    build_environment_section(data_dir, terminal_workspace_dir)
+pub fn build_environment_prefix(
+    data_dir: &Path,
+    terminal_workspace_dir: &Path,
+    attachments_dir: &Path,
+) -> String {
+    build_environment_section(data_dir, terminal_workspace_dir, attachments_dir)
 }
 
-fn build_environment_section(data_dir: &Path, terminal_workspace_dir: &Path) -> String {
+fn build_environment_section(
+    data_dir: &Path,
+    terminal_workspace_dir: &Path,
+    attachments_dir: &Path,
+) -> String {
     let os = host_os_label();
     let arch = std::env::consts::ARCH;
     let shell = crate::tools::shell::selected_host_shell().environment_label();
     let data_dir = resolve_path_for_prompt(data_dir);
     let default_workspace = resolve_path_for_prompt(terminal_workspace_dir);
+    let attachments_dir = resolve_path_for_prompt(attachments_dir);
     let app_version = env!("CARGO_PKG_VERSION");
 
     format!(
@@ -26,7 +35,8 @@ fn build_environment_section(data_dir: &Path, terminal_workspace_dir: &Path) -> 
 - OS: {os} ({arch})\n\
 - Shell: {shell}\n\
 - Data directory: {data_dir} (WeiAgent application data root)\n\
-- Default workspace: {default_workspace} (default cwd for terminal and file tools)"
+- Default workspace: {default_workspace} (default cwd for terminal and file tools)
+- Image attachments: {attachments_dir} (save generated PNG/JPEG/WebP/GIF files here before embedding them)"
     )
 }
 
@@ -82,8 +92,9 @@ mod tests {
     fn environment_prefix_omits_timestamps_and_is_stable_for_same_config() {
         let data_dir = Path::new("data");
         let workspace_dir = data_dir.join("workspace");
-        let first = build_environment_prefix(data_dir, &workspace_dir);
-        let second = build_environment_prefix(data_dir, &workspace_dir);
+        let attachments_dir = workspace_dir.join("attachments");
+        let first = build_environment_prefix(data_dir, &workspace_dir, &attachments_dir);
+        let second = build_environment_prefix(data_dir, &workspace_dir, &attachments_dir);
         assert_eq!(first, second);
         assert!(first.contains("## Environment"));
         assert!(first.contains("WeiAgent"));
@@ -103,9 +114,11 @@ mod tests {
     fn environment_prefix_distinguishes_data_and_terminal_workspace_paths() {
         let data_dir = Path::new("data");
         let workspace_dir = data_dir.join("workspace");
-        let prefix = build_environment_prefix(data_dir, &workspace_dir);
+        let attachments_dir = workspace_dir.join("attachments");
+        let prefix = build_environment_prefix(data_dir, &workspace_dir, &attachments_dir);
         let expected_data = resolve_path_for_prompt(data_dir);
         let expected_workspace = resolve_path_for_prompt(&workspace_dir);
+        let expected_attachments = resolve_path_for_prompt(&attachments_dir);
         assert!(
             prefix.contains(&format!("Data directory: {expected_data}")),
             "prefix missing data directory line: {prefix}"
@@ -115,6 +128,7 @@ mod tests {
             "prefix missing default workspace line: {prefix}"
         );
         assert!(prefix.contains("Shell:"));
+        assert!(prefix.contains(&format!("Image attachments: {expected_attachments}")));
         assert!(!prefix.contains("Allowed workspace roots:"));
     }
 }

@@ -502,10 +502,6 @@ pub struct WebSearchSourceConfig {
     pub independence_group: String,
     #[serde(default)]
     pub roles: Vec<WebSearchSourceRole>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extract_base_url: Option<String>,
     #[serde(default)]
     pub api_keys: Vec<String>,
     /// SHA-256 fingerprints of keys confirmed as officially blocked.
@@ -523,7 +519,7 @@ pub struct WebSearchSourceConfig {
     /// Proxy used by FlareSolverr browser when opening grok.com (LAN-reachable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flaresolverr_proxy_url: Option<String>,
-    /// Upstream proxy for Grok/CF traffic. Supports http:// and socks5://
+    /// Upstream proxy for Grok/CF traffic. Supports http://, socks4://, and socks5://
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_url: Option<String>,
 }
@@ -605,8 +601,6 @@ fn default_web_search_source(
         deep_enabled: true,
         extract_enabled: true,
         priority,
-        base_url: None,
-        extract_base_url: None,
         api_keys: Vec::new(),
         blocked_api_key_hashes: Vec::new(),
         key_statuses: Vec::new(),
@@ -825,14 +819,6 @@ impl WebSearchSourceConfig {
 
     pub fn can_extract(&self) -> bool {
         self.provider.supports_anonymous_extract() || self.has_available_key()
-    }
-
-    pub fn extract_base_url(&self) -> &str {
-        self.extract_base_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| self.provider.default_extract_base_url())
     }
 }
 
@@ -1244,8 +1230,6 @@ mod tests {
                 priority: 10,
                 independence_group: "tavily".to_string(),
                 roles: WebSearchProviderKind::Tavily.default_roles(),
-                base_url: None,
-                extract_base_url: None,
                 api_keys: vec!["sk-live-secret".to_string()],
                 blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
@@ -1269,8 +1253,6 @@ mod tests {
                 priority: 10,
                 independence_group: "tavily".to_string(),
                 roles: WebSearchProviderKind::Tavily.default_roles(),
-                base_url: None,
-                extract_base_url: None,
                 api_keys: vec!["__preserve__".to_string()],
                 blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
@@ -1298,8 +1280,6 @@ mod tests {
                 priority: 10,
                 independence_group: "tavily".to_string(),
                 roles: WebSearchProviderKind::Tavily.default_roles(),
-                base_url: None,
-                extract_base_url: None,
                 api_keys: vec![],
                 blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
@@ -1324,8 +1304,6 @@ mod tests {
                 priority: 10,
                 independence_group: "tavily".to_string(),
                 roles: WebSearchProviderKind::Tavily.default_roles(),
-                base_url: None,
-                extract_base_url: None,
                 api_keys: vec!["sk-new".to_string(), "sk-blocked".to_string()],
                 blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
