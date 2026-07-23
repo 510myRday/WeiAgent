@@ -238,7 +238,7 @@ export function deleteLlmLog(logId: string): Promise<void> {
 }
 
 
-export type WebSearchProviderKind = 'tavily' | 'exa' | 'jina' | 'grok';
+export type WebSearchProviderKind = 'tavily' | 'exa' | 'jina' | 'grok' | 'firecrawl';
 export const MAX_WEB_SEARCH_KEYS_PER_SOURCE = 1_000;
 export type WebSearchKeySelection = 'sequential' | 'round_robin' | 'random';
 export type WebSearchSourceRole =

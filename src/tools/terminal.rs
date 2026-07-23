@@ -1349,6 +1349,7 @@ struct ResolvedWorkspace {
     cwd: PathBuf,
 }
 
+#[derive(Debug)]
 enum WorkspaceResolutionError {
     Invalid(String),
     Blocked(String),
@@ -1360,19 +1361,23 @@ fn resolve_workspace(
     default_workspace: &Path,
     allow_outside_workspace: bool,
 ) -> Result<ResolvedWorkspace, WorkspaceResolutionError> {
-    let roots = if config.allowed_cwd_roots.is_empty() {
-        vec![default_workspace.to_path_buf()]
-    } else {
-        config.allowed_cwd_roots.iter().map(PathBuf::from).collect()
-    };
-    let roots = roots
-        .into_iter()
-        .filter_map(|root| std::fs::canonicalize(root).ok())
-        .collect::<Vec<_>>();
-    if roots.is_empty() {
-        return Err(WorkspaceResolutionError::Invalid(
-            "No valid terminal workspace root is configured".to_string(),
-        ));
+    let default_root = std::fs::canonicalize(default_workspace).map_err(|error| {
+        WorkspaceResolutionError::Invalid(format!(
+            "Default terminal workspace '{}' does not exist or cannot be accessed: {error}",
+            default_workspace.display()
+        ))
+    })?;
+    let mut roots = vec![default_root.clone()];
+    for root in &config.allowed_cwd_roots {
+        let Ok(root) = std::fs::canonicalize(root) else {
+            continue;
+        };
+        if !roots
+            .iter()
+            .any(|existing| crate::fsutil::paths_equal(existing, &root))
+        {
+            roots.push(root);
+        }
     }
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -1391,14 +1396,14 @@ fn resolve_workspace(
 
     let requested = match cwd.map(PathBuf::from) {
         Some(path) if path.is_absolute() => path,
-        Some(path) => roots[0].join(path),
-        None => roots[0].clone(),
+        Some(path) => default_root.join(path),
+        None => default_root.clone(),
     };
     let canonical_cwd = std::fs::canonicalize(&requested).map_err(|error| {
         WorkspaceResolutionError::Invalid(format!(
             "Working directory '{}' does not exist or cannot be accessed: {error}. Retry without cwd to use the default workspace '{}'.",
             requested.display(),
-            roots[0].display()
+            default_root.display()
         ))
     })?;
     let matching_root = roots
@@ -1412,7 +1417,7 @@ fn resolve_workspace(
         )));
     }
     Ok(ResolvedWorkspace {
-        root: matching_root.unwrap_or_else(|| roots[0].clone()),
+        root: matching_root.unwrap_or(default_root),
         cwd: canonical_cwd,
     })
 }
@@ -1938,6 +1943,37 @@ mod tests {
 
         assert_eq!(workspace.root, expected);
         assert_eq!(workspace.cwd, expected);
+    }
+
+    #[test]
+    fn configured_roots_are_additive_and_do_not_replace_the_default_workspace() {
+        let default_workspace = tempfile::tempdir().unwrap();
+        let configured_root = tempfile::tempdir().unwrap();
+        let config = TerminalToolConfig {
+            allowed_cwd_roots: vec![configured_root.path().display().to_string()],
+            ..TerminalToolConfig::default()
+        };
+        let expected_default = std::fs::canonicalize(default_workspace.path()).unwrap();
+        let expected_configured = std::fs::canonicalize(configured_root.path()).unwrap();
+
+        let implicit = resolve_workspace(None, &config, default_workspace.path(), false).unwrap();
+        assert_eq!(implicit.root, expected_default);
+        assert_eq!(implicit.cwd, expected_default);
+
+        let relative =
+            resolve_workspace(Some("."), &config, default_workspace.path(), false).unwrap();
+        assert_eq!(relative.root, expected_default);
+        assert_eq!(relative.cwd, expected_default);
+
+        let explicit = resolve_workspace(
+            Some(configured_root.path().to_string_lossy().as_ref()),
+            &config,
+            default_workspace.path(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(explicit.root, expected_configured);
+        assert_eq!(explicit.cwd, expected_configured);
     }
 
     #[test]

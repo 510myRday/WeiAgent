@@ -287,17 +287,23 @@ fn resolve_edit_workspace(
     default_workspace: &Path,
     allow_outside: bool,
 ) -> Result<ResolvedEditWorkspace, String> {
-    let roots = if config.allowed_cwd_roots.is_empty() {
-        vec![default_workspace.to_path_buf()]
-    } else {
-        config.allowed_cwd_roots.iter().map(PathBuf::from).collect()
-    };
-    let roots = roots
-        .into_iter()
-        .filter_map(|root| std::fs::canonicalize(root).ok())
-        .collect::<Vec<_>>();
-    if roots.is_empty() {
-        return Err("No valid workspace root is configured".to_string());
+    let default_root = std::fs::canonicalize(default_workspace).map_err(|error| {
+        format!(
+            "Default terminal workspace '{}' does not exist or cannot be accessed: {error}",
+            default_workspace.display()
+        )
+    })?;
+    let mut roots = vec![default_root.clone()];
+    for root in &config.allowed_cwd_roots {
+        let Ok(root) = std::fs::canonicalize(root) else {
+            continue;
+        };
+        if !roots
+            .iter()
+            .any(|existing| fsutil::paths_equal(existing, &root))
+        {
+            roots.push(root);
+        }
     }
 
     let home = std::env::var_os("USERPROFILE")
@@ -321,10 +327,10 @@ fn resolve_edit_workspace(
             if path.is_absolute() {
                 path
             } else {
-                roots[0].join(path)
+                default_root.join(path)
             }
         }
-        None => roots[0].clone(),
+        None => default_root.clone(),
     };
     let canonical_cwd = std::fs::canonicalize(&requested).map_err(|error| {
         format!(
@@ -343,7 +349,7 @@ fn resolve_edit_workspace(
         ));
     }
     Ok(ResolvedEditWorkspace {
-        root: matching_root.unwrap_or_else(|| roots[0].clone()),
+        root: matching_root.unwrap_or(default_root),
         cwd: canonical_cwd,
         roots,
     })
@@ -1092,6 +1098,78 @@ mod tests {
 
         assert!(matches!(result, ToolResult::Completed { .. }));
         assert!(workspace_dir.path().join("default-workspace.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn configured_roots_do_not_replace_the_dedicated_default_workspace() {
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let configured_root = tempfile::tempdir().unwrap();
+        let config = TerminalToolConfig {
+            permission_mode: TerminalPermissionMode::RequestApproval,
+            allowed_cwd_roots: vec![configured_root.path().display().to_string()],
+            ..TerminalToolConfig::default()
+        };
+
+        let result = execute_multi_edit(
+            &MultiEditRequest {
+                args: MultiEditFileArgs {
+                    path: None,
+                    edits: Vec::new(),
+                    files: Vec::new(),
+                    operations: vec![MultiEditFileOperation::Create {
+                        path: "still-default-workspace.txt".to_string(),
+                        content: "data directory".to_string(),
+                        overwrite: false,
+                    }],
+                    cwd: None,
+                    sandbox_permissions: SandboxPermissions::UseDefault,
+                    justification: None,
+                },
+                approved: true,
+            },
+            &config,
+            workspace_dir.path(),
+        )
+        .await;
+
+        assert!(matches!(result, ToolResult::Completed { .. }));
+        assert!(
+            workspace_dir
+                .path()
+                .join("still-default-workspace.txt")
+                .exists()
+        );
+        assert!(
+            !configured_root
+                .path()
+                .join("still-default-workspace.txt")
+                .exists()
+        );
+
+        let configured_result = execute_multi_edit(
+            &MultiEditRequest {
+                args: MultiEditFileArgs {
+                    path: None,
+                    edits: Vec::new(),
+                    files: Vec::new(),
+                    operations: vec![MultiEditFileOperation::Create {
+                        path: "configured-root.txt".to_string(),
+                        content: "configured directory".to_string(),
+                        overwrite: false,
+                    }],
+                    cwd: Some(configured_root.path().display().to_string()),
+                    sandbox_permissions: SandboxPermissions::UseDefault,
+                    justification: None,
+                },
+                approved: true,
+            },
+            &config,
+            workspace_dir.path(),
+        )
+        .await;
+
+        assert!(matches!(configured_result, ToolResult::Completed { .. }));
+        assert!(configured_root.path().join("configured-root.txt").exists());
     }
 
     #[tokio::test]

@@ -514,14 +514,10 @@ export function ChatPanel({
         handleNewConversation();
         return;
       }
-      if (!commandKey && !event.altKey && event.key === 'Escape' && isSending) {
-        event.preventDefault();
-        cancelActiveSend();
-      }
     };
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
-  }, [activeAgent?.id, activeConversation?.id, activeConversation?.message_count, cancelActiveSend, isSending]);
+  }, [activeAgent?.id, activeConversation?.id, activeConversation?.message_count, isSending]);
 
   const formatTime = useCallback((value: string) => {
     return dateFormatters.time.format(new Date(value));

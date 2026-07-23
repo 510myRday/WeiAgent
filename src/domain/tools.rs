@@ -15,8 +15,8 @@ pub struct TerminalToolConfig {
     /// Foreground wait timeout. A still-running command is moved to background after this time.
     #[serde(default = "default_timeout_ms")]
     pub default_timeout_ms: u64,
-    /// Host roots that may be mounted/used by the tool. Empty means the dedicated
-    /// terminal workspace directory under the WeiAgent data root.
+    /// Additional host roots that may be mounted/used by the tool. The dedicated
+    /// terminal workspace under the WeiAgent data root is always the default root.
     #[serde(default)]
     pub allowed_cwd_roots: Vec<String>,
 }
@@ -156,6 +156,7 @@ pub enum WebSearchProviderKind {
     Exa,
     Jina,
     Grok,
+    Firecrawl,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -208,6 +209,7 @@ impl WebSearchProviderKind {
             Self::Exa => "exa",
             Self::Jina => "jina",
             Self::Grok => "grok",
+            Self::Firecrawl => "firecrawl",
         }
     }
 
@@ -217,6 +219,7 @@ impl WebSearchProviderKind {
             Self::Exa => "https://api.exa.ai",
             Self::Jina => "https://s.jina.ai",
             Self::Grok => "https://grok.com",
+            Self::Firecrawl => "https://api.firecrawl.dev/v2",
         }
     }
 
@@ -226,6 +229,7 @@ impl WebSearchProviderKind {
             Self::Exa => "Exa",
             Self::Jina => "Jina Search",
             Self::Grok => "Grok Research",
+            Self::Firecrawl => "Firecrawl",
         }
     }
 
@@ -234,12 +238,14 @@ impl WebSearchProviderKind {
             Self::Tavily => "search_index",
             Self::Exa | Self::Jina => "semantic_search",
             Self::Grok => "ai_research",
+            Self::Firecrawl => "search_and_extract",
         }
     }
 
     pub fn evidence_kind(&self) -> &'static str {
         match self {
             Self::Grok => "ai_synthesis_and_candidates",
+            Self::Firecrawl => "web_evidence_with_extracted_content",
             _ => "web_evidence_candidates",
         }
     }
@@ -277,6 +283,17 @@ impl WebSearchProviderKind {
                 WebSearchSourceRole::MarketResearch,
                 WebSearchSourceRole::ProductResearch,
             ],
+            Self::Firecrawl => vec![
+                WebSearchSourceRole::GeneralSearch,
+                WebSearchSourceRole::CurrentNews,
+                WebSearchSourceRole::OfficialDocs,
+                WebSearchSourceRole::TechnicalResearch,
+                WebSearchSourceRole::AcademicResearch,
+                WebSearchSourceRole::FactChecking,
+                WebSearchSourceRole::MarketResearch,
+                WebSearchSourceRole::ProductResearch,
+                WebSearchSourceRole::MultilingualSearch,
+            ],
         }
     }
 
@@ -310,13 +327,20 @@ impl WebSearchProviderKind {
                 ai_synthesis: true,
                 social_results: true,
             },
+            Self::Firecrawl => WebSearchSourceCapabilities {
+                domain_filter: true,
+                recency_filter: true,
+                native_citations: true,
+                ai_synthesis: false,
+                social_results: false,
+            },
         }
     }
 
     pub fn latency_tier(&self) -> WebSearchLatencyTier {
         match self {
             Self::Tavily | Self::Exa => WebSearchLatencyTier::Fast,
-            Self::Jina => WebSearchLatencyTier::Medium,
+            Self::Jina | Self::Firecrawl => WebSearchLatencyTier::Medium,
             Self::Grok => WebSearchLatencyTier::Slow,
         }
     }
@@ -324,7 +348,7 @@ impl WebSearchProviderKind {
     pub fn cost_tier(&self) -> WebSearchCostTier {
         match self {
             Self::Jina => WebSearchCostTier::Low,
-            Self::Tavily | Self::Exa => WebSearchCostTier::Medium,
+            Self::Tavily | Self::Exa | Self::Firecrawl => WebSearchCostTier::Medium,
             Self::Grok => WebSearchCostTier::High,
         }
     }
@@ -347,6 +371,11 @@ impl WebSearchProviderKind {
                 "query expansion",
                 "X/social discovery",
             ],
+            Self::Firecrawl => &[
+                "search with page extraction",
+                "news, GitHub, research, and PDF discovery",
+                "JavaScript-ready page content",
+            ],
         }
     }
 
@@ -359,6 +388,11 @@ impl WebSearchProviderKind {
                 "generated synthesis is unverified",
                 "model-provided URLs require extraction before citation",
                 "higher latency and cost",
+            ],
+            Self::Firecrawl => &[
+                "deep-mode page scraping increases latency and credit usage",
+                "upstream search coverage may overlap other general indexes",
+                "image results are outside the unified text-result schema",
             ],
         }
     }
@@ -458,6 +492,7 @@ fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
         default_web_search_source("exa", WebSearchProviderKind::Exa, 20),
         default_web_search_source("jina", WebSearchProviderKind::Jina, 30),
         default_web_search_source("grok", WebSearchProviderKind::Grok, 40),
+        default_web_search_source("firecrawl", WebSearchProviderKind::Firecrawl, 50),
     ]
 }
 
@@ -505,6 +540,31 @@ impl WebSearchToolConfig {
 
     pub fn timeout_ms(&self) -> u64 {
         self.timeout_ms.clamp(1, MAX_WEB_SEARCH_TIMEOUT_MS)
+    }
+
+    pub(crate) fn ensure_builtin_sources(&mut self, previous: Option<&Self>) -> bool {
+        let mut changed = false;
+        for default_source in default_web_search_sources() {
+            if self
+                .sources
+                .iter()
+                .any(|source| source.id == default_source.id)
+            {
+                continue;
+            }
+            let source = previous
+                .and_then(|config| {
+                    config
+                        .sources
+                        .iter()
+                        .find(|source| source.id == default_source.id)
+                })
+                .cloned()
+                .unwrap_or(default_source);
+            self.sources.push(source);
+            changed = true;
+        }
+        changed
     }
 
     /// Replace secrets with masked values for API responses.
@@ -967,11 +1027,12 @@ mod tests {
             config.web_search.max_results,
             DEFAULT_WEB_SEARCH_MAX_RESULTS
         );
-        assert_eq!(config.web_search.sources.len(), 4);
+        assert_eq!(config.web_search.sources.len(), 5);
         assert_eq!(config.web_search.sources[0].id, "tavily");
         assert_eq!(config.web_search.sources[1].id, "exa");
         assert_eq!(config.web_search.sources[2].id, "jina");
         assert_eq!(config.web_search.sources[3].id, "grok");
+        assert_eq!(config.web_search.sources[4].id, "firecrawl");
         assert!(!config.web_search.sources[0].has_available_key());
     }
 
@@ -1144,8 +1205,31 @@ mod tests {
         }))
         .unwrap();
         assert!(!config.web_search.enabled);
-        assert_eq!(config.web_search.sources.len(), 4);
+        assert_eq!(config.web_search.sources.len(), 5);
         assert_eq!(config.web_search.sources[3].id, "grok");
+        assert_eq!(config.web_search.sources[4].id, "firecrawl");
+    }
+
+    #[test]
+    fn missing_builtin_search_source_is_restored_from_previous_config() {
+        let mut previous = WebSearchToolConfig::default();
+        let firecrawl = previous
+            .sources
+            .iter_mut()
+            .find(|source| source.id == "firecrawl")
+            .unwrap();
+        firecrawl.api_keys = vec!["fc-secret".to_string()];
+
+        let mut incoming = previous.clone();
+        incoming.sources.retain(|source| source.id != "firecrawl");
+        assert!(incoming.ensure_builtin_sources(Some(&previous)));
+
+        let restored = incoming
+            .sources
+            .iter()
+            .find(|source| source.id == "firecrawl")
+            .unwrap();
+        assert_eq!(restored.api_keys, vec!["fc-secret".to_string()]);
     }
 
     #[test]

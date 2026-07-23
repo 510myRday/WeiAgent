@@ -579,6 +579,7 @@ async fn refresh_live_terminal_config(
 const MAX_TOOL_RESULT_STDOUT_CHARS: usize = 24_000;
 const MAX_TOOL_RESULT_STDERR_CHARS: usize = 4_000;
 const MAX_WEB_SEARCH_SNIPPET_CHARS: usize = 600;
+const MAX_WEB_SEARCH_CONTENT_EXCERPT_CHARS: usize = 2_000;
 const MAX_WEB_SEARCH_RESULTS_FOR_LLM: usize = 15;
 const MAX_WEB_EXTRACT_EXCERPT_CHARS: usize = 8_000;
 
@@ -676,6 +677,10 @@ fn compact_web_search_value(value: &mut Value) -> bool {
                 if let Some(snippet) = hit_obj.get("snippet").and_then(Value::as_str) {
                     let trimmed = trim_chars(snippet, MAX_WEB_SEARCH_SNIPPET_CHARS);
                     hit_obj.insert("snippet".to_string(), Value::String(trimmed));
+                }
+                if let Some(content) = hit_obj.get("content_excerpt").and_then(Value::as_str) {
+                    let trimmed = trim_chars(content, MAX_WEB_SEARCH_CONTENT_EXCERPT_CHARS);
+                    hit_obj.insert("content_excerpt".to_string(), Value::String(trimmed));
                 }
             }
         }
@@ -1376,13 +1381,14 @@ mod tests {
     #[test]
     fn sanitize_web_search_stdout_trims_snippets_and_scores() {
         let long = "x".repeat(800);
+        let long_content = "y".repeat(2_400);
         let stdout = json!({
             "mode": "balanced",
             "queries": ["rust"],
             "result_count": 2,
             "source_runs": [],
             "results": [
-                {"title": "A", "url": "https://a.test", "snippet": long, "score": 0.9},
+                {"title": "A", "url": "https://a.test", "snippet": long, "content_excerpt": long_content, "score": 0.9},
                 {"title": "B", "url": "https://b.test", "snippet": "short", "score": 0.1}
             ]
         })
@@ -1403,6 +1409,12 @@ mod tests {
         assert!(compact["results"][0]["snippet"].as_str().unwrap().len() < 800);
         assert!(
             compact["results"][0]["snippet"]
+                .as_str()
+                .unwrap()
+                .contains("truncated")
+        );
+        assert!(
+            compact["results"][0]["content_excerpt"]
                 .as_str()
                 .unwrap()
                 .contains("truncated")

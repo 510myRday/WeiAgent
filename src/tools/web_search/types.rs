@@ -31,6 +31,8 @@ pub struct WebSearchHit {
     pub title: String,
     pub url: String,
     pub snippet: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_excerpt: Option<String>,
     #[serde(default)]
     pub kind: SearchHitKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,6 +61,7 @@ pub struct ProviderSearchOutput {
 pub struct ProviderSearchRequest {
     pub query: String,
     pub max_results: u32,
+    pub mode: SearchMode,
     pub allowed_domains: Vec<String>,
     pub blocked_domains: Vec<String>,
     pub recency_days: Option<u32>,
@@ -70,6 +73,8 @@ pub struct AggregatedSearchResult {
     pub title: String,
     pub url: String,
     pub snippet: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_excerpt: Option<String>,
     pub evidence_kind: SearchHitKind,
     pub source_ids: Vec<String>,
     pub provider_kinds: Vec<String>,

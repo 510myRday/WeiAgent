@@ -104,6 +104,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restores_missing_builtin_web_search_sources_and_preserves_existing_keys() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let mut defaults = store.read_tool_defaults().await.unwrap();
+        let firecrawl = defaults
+            .web_search
+            .sources
+            .iter_mut()
+            .find(|source| source.id == "firecrawl")
+            .unwrap();
+        firecrawl.api_keys = vec!["fc-secret".to_string()];
+        store.update_tool_defaults(defaults).await.unwrap();
+
+        let mut client_update = store.read_tool_defaults().await.unwrap().redact_secrets();
+        client_update
+            .web_search
+            .sources
+            .retain(|source| source.id != "firecrawl");
+        let updated = store.update_tool_defaults(client_update).await.unwrap();
+        let firecrawl = updated
+            .web_search
+            .sources
+            .iter()
+            .find(|source| source.id == "firecrawl")
+            .unwrap();
+        assert_eq!(firecrawl.api_keys, vec!["fc-secret".to_string()]);
+
+        let persisted = store.read_tool_defaults().await.unwrap();
+        assert!(
+            persisted
+                .web_search
+                .sources
+                .iter()
+                .any(|source| source.id == "firecrawl")
+        );
+    }
+
+    #[tokio::test]
     async fn agent_tool_overrides_inherit_global_defaults() {
         let temp_dir = tempfile::tempdir().unwrap();
         let store = JsonStore::new(temp_dir.path()).await.unwrap();

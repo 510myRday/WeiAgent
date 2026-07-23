@@ -1,0 +1,513 @@
+use std::collections::HashSet;
+
+use chrono::Datelike;
+use reqwest::StatusCode;
+use serde_json::{Map, Value, json};
+
+use crate::tools::web_search::types::{
+    ProviderError, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind, SearchMode,
+    WebSearchHit, sanitize_error_message,
+};
+
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_DEEP_RESULTS: u32 = 5;
+const MAX_SNIPPET_CHARS: usize = 1_200;
+const MAX_CONTENT_EXCERPT_CHARS: usize = 4_000;
+
+pub async fn search(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    request: &ProviderSearchRequest,
+) -> Result<ProviderSearchOutput, ProviderError> {
+    let endpoint = build_endpoint(base_url)?;
+    let body = build_request_body(request);
+    let response = client
+        .post(endpoint)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| {
+            ProviderError::Retryable(sanitize_error_message(
+                &format!("Firecrawl request failed: {error}"),
+                api_key,
+            ))
+        })?;
+
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|error| {
+        ProviderError::Retryable(sanitize_error_message(
+            &format!("Firecrawl response body error: {error}"),
+            api_key,
+        ))
+    })?;
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(ProviderError::Retryable(format!(
+            "Firecrawl response exceeds {MAX_RESPONSE_BYTES} bytes"
+        )));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+
+    if status == StatusCode::UNAUTHORIZED
+        || status == StatusCode::PAYMENT_REQUIRED
+        || status == StatusCode::FORBIDDEN
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+    {
+        return Err(ProviderError::Retryable(sanitize_error_message(
+            &format!("Firecrawl HTTP {status}: {}", truncate(&text, 320)),
+            api_key,
+        )));
+    }
+    if !status.is_success() {
+        return Err(ProviderError::Retryable(sanitize_error_message(
+            &format!("Firecrawl HTTP {status}: {}", truncate(&text, 320)),
+            api_key,
+        )));
+    }
+
+    let parsed: Value = serde_json::from_str(&text).map_err(|error| {
+        ProviderError::Retryable(format!(
+            "Firecrawl returned invalid JSON: {error}; body={}",
+            truncate(&text, 200)
+        ))
+    })?;
+    if parsed.get("success").and_then(Value::as_bool) == Some(false) {
+        let detail = response_error(&parsed).unwrap_or_else(|| "search failed".to_string());
+        return Err(ProviderError::Retryable(format!(
+            "Firecrawl search failed: {}",
+            truncate(&detail, 320)
+        )));
+    }
+
+    Ok(ProviderSearchOutput {
+        results: parse_results(&parsed, request.max_results as usize),
+        ai_syntheses: Vec::new(),
+    })
+}
+
+fn build_endpoint(base_url: &str) -> Result<reqwest::Url, ProviderError> {
+    let mut endpoint = reqwest::Url::parse(base_url.trim_end_matches('/'))
+        .map_err(|error| ProviderError::Fatal(format!("Firecrawl base URL is invalid: {error}")))?;
+    let path = endpoint.path().trim_end_matches('/');
+    let path = if path.ends_with("/search") {
+        path.to_string()
+    } else if path.ends_with("/v1") || path.ends_with("/v2") {
+        format!("{path}/search")
+    } else if path.is_empty() {
+        "/v2/search".to_string()
+    } else {
+        format!("{path}/v2/search")
+    };
+    endpoint.set_path(&path);
+    endpoint.set_query(None);
+    endpoint.set_fragment(None);
+    Ok(endpoint)
+}
+
+fn build_request_body(request: &ProviderSearchRequest) -> Value {
+    let deep = request.mode == SearchMode::Deep;
+    let limit = if deep {
+        request.max_results.min(MAX_DEEP_RESULTS)
+    } else {
+        request.max_results
+    };
+    let mut sources = vec!["web"];
+    if !deep && should_include_news(request) {
+        sources.push("news");
+    }
+    let mut body = json!({
+        "query": request.query,
+        "limit": limit,
+        "sources": sources,
+        "highlights": true,
+    });
+    let Some(object) = body.as_object_mut() else {
+        return body;
+    };
+    if !request.allowed_domains.is_empty() {
+        object.insert("includeDomains".to_string(), json!(request.allowed_domains));
+    } else if !request.blocked_domains.is_empty() {
+        object.insert("excludeDomains".to_string(), json!(request.blocked_domains));
+    }
+    if let Some(days) = request.recency_days {
+        object.insert("tbs".to_string(), Value::String(recency_filter(days)));
+    }
+    if deep {
+        object.insert(
+            "scrapeOptions".to_string(),
+            json!({
+                "formats": ["markdown"],
+                "onlyMainContent": true,
+            }),
+        );
+    }
+    body
+}
+
+fn should_include_news(request: &ProviderSearchRequest) -> bool {
+    if request.recency_days.is_some() {
+        return true;
+    }
+    let query = request.query.to_lowercase();
+    [
+        "latest", "current", "today", "news", "breaking", "最新", "当前", "今天", "新闻", "近期",
+        "刚刚",
+    ]
+    .iter()
+    .any(|marker| query.contains(marker))
+}
+
+fn recency_filter(days: u32) -> String {
+    let end = chrono::Utc::now().date_naive();
+    let start = end
+        .checked_sub_signed(chrono::Duration::days(i64::from(days.max(1))))
+        .unwrap_or(end);
+    format!(
+        "sbd:1,cdr:1,cd_min:{}/{}/{},cd_max:{}/{}/{}",
+        start.month(),
+        start.day(),
+        start.year(),
+        end.month(),
+        end.day(),
+        end.year()
+    )
+}
+
+fn parse_results(value: &Value, max_results: usize) -> Vec<WebSearchHit> {
+    if max_results == 0 {
+        return Vec::new();
+    }
+    let data = value.get("data").unwrap_or(value);
+    let mut candidates = Vec::new();
+    match data {
+        Value::Array(items) => candidates.extend(items.iter()),
+        Value::Object(object) => {
+            let web = object
+                .get("web")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let news = object
+                .get("news")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            if !web.is_empty() || !news.is_empty() {
+                for index in 0..web.len().max(news.len()) {
+                    if let Some(item) = web.get(index) {
+                        candidates.push(item);
+                    }
+                    if let Some(item) = news.get(index) {
+                        candidates.push(item);
+                    }
+                }
+            } else if let Some(items) = object.get("results").and_then(Value::as_array) {
+                candidates.extend(items.iter());
+            }
+        }
+        _ => {}
+    }
+    if candidates.is_empty()
+        && let Some(items) = value.get("results").and_then(Value::as_array)
+    {
+        candidates.extend(items.iter());
+    }
+
+    let mut seen = HashSet::new();
+    candidates
+        .into_iter()
+        .filter_map(parse_hit)
+        .filter(|hit| seen.insert(hit.url.clone()))
+        .take(max_results)
+        .collect()
+}
+
+fn parse_hit(value: &Value) -> Option<WebSearchHit> {
+    let object = value.as_object()?;
+    let metadata = object.get("metadata").and_then(Value::as_object);
+    let url = string_field(object, &["url", "link"])
+        .or_else(|| metadata.and_then(|value| string_field(value, &["sourceURL", "url"])))?
+        .to_string();
+    let title = string_field(object, &["title", "name"])
+        .or_else(|| metadata.and_then(|value| string_field(value, &["title"])))
+        .map(normalize_text)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| url.clone());
+    let snippet = highlight_text(object)
+        .or_else(|| {
+            string_field(object, &["description", "snippet", "content"]).map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            metadata.and_then(|value| {
+                string_field(value, &["description", "snippet"]).map(ToOwned::to_owned)
+            })
+        })
+        .or_else(|| string_field(object, &["markdown"]).map(ToOwned::to_owned))
+        .map(|value| truncate(&normalize_text(&value), MAX_SNIPPET_CHARS))
+        .unwrap_or_default();
+    let published_at = string_field(
+        object,
+        &["date", "publishedDate", "published_at", "publishedAt"],
+    )
+    .or_else(|| {
+        metadata.and_then(|value| {
+            string_field(
+                value,
+                &["date", "publishedDate", "published_at", "publishedAt"],
+            )
+        })
+    })
+    .map(ToOwned::to_owned);
+    let content_excerpt = string_field(object, &["markdown"])
+        .map(normalize_text)
+        .filter(|value| !value.is_empty())
+        .map(|value| truncate(&value, MAX_CONTENT_EXCERPT_CHARS));
+    Some(WebSearchHit {
+        title,
+        url,
+        snippet,
+        content_excerpt,
+        kind: SearchHitKind::WebPage,
+        published_at,
+        score: object.get("score").and_then(Value::as_f64),
+    })
+}
+
+fn highlight_text(object: &Map<String, Value>) -> Option<String> {
+    let value = object
+        .get("highlights")
+        .or_else(|| object.get("highlight"))?;
+    match value {
+        Value::String(value) => (!value.trim().is_empty()).then(|| value.clone()),
+        Value::Array(values) => {
+            let parts = values
+                .iter()
+                .filter_map(|value| match value {
+                    Value::String(value) => Some(value.trim()),
+                    Value::Object(object) => string_field(object, &["text", "content", "snippet"]),
+                    _ => None,
+                })
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+            (!parts.is_empty()).then(|| parts.join(" ... "))
+        }
+        _ => None,
+    }
+}
+
+fn string_field<'a>(object: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| {
+        object
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn response_error(value: &Value) -> Option<String> {
+    for key in ["error", "message", "warning"] {
+        let Some(value) = value.get(key) else {
+            continue;
+        };
+        match value {
+            Value::String(value) if !value.trim().is_empty() => return Some(value.clone()),
+            Value::Object(object) => {
+                if let Some(message) = string_field(object, &["message", "error", "detail"]) {
+                    return Some(message.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+pub fn classify_key_status(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("http 401")
+        || lower.contains("invalid api key")
+        || lower.contains("missing api key")
+        || lower.contains("unauthorized")
+    {
+        return "invalid_key";
+    }
+    if lower.contains("http 402")
+        || lower.contains("insufficient credits")
+        || lower.contains("credits exhausted")
+        || lower.contains("payment required")
+        || lower.contains("quota exceeded")
+    {
+        return "quota_exhausted";
+    }
+    if lower.contains("http 429")
+        || lower.contains("rate limit")
+        || lower.contains("too many requests")
+    {
+        return "rate_limited";
+    }
+    if lower.contains("http 403") || lower.contains("forbidden") {
+        return "permission_denied";
+    }
+    if lower.contains("http 400")
+        || lower.contains("invalid request")
+        || lower.contains("base url is invalid")
+    {
+        return "configuration_error";
+    }
+    if lower.contains("http 5")
+        || lower.contains("service unavailable")
+        || lower.contains("internal server error")
+        || lower.contains("bad gateway")
+    {
+        return "service_error";
+    }
+    if lower.contains("request failed")
+        || lower.contains("response body error")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("connect")
+        || lower.contains("dns")
+    {
+        return "network_error";
+    }
+    "error"
+}
+
+fn normalize_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate(value: &str, max: usize) -> String {
+    let mut chars = value.chars();
+    let head = chars.by_ref().take(max).collect::<String>();
+    if chars.next().is_some() {
+        format!("{head}...")
+    } else {
+        head
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(mode: SearchMode) -> ProviderSearchRequest {
+        ProviderSearchRequest {
+            query: "latest Rust release".to_string(),
+            max_results: 4,
+            mode,
+            allowed_domains: Vec::new(),
+            blocked_domains: Vec::new(),
+            recency_days: None,
+        }
+    }
+
+    #[test]
+    fn builds_v2_search_endpoint() {
+        assert_eq!(
+            build_endpoint("https://api.firecrawl.dev/v2")
+                .unwrap()
+                .as_str(),
+            "https://api.firecrawl.dev/v2/search"
+        );
+        assert_eq!(
+            build_endpoint("https://example.com").unwrap().as_str(),
+            "https://example.com/v2/search"
+        );
+        assert_eq!(
+            build_endpoint("https://example.com/custom/v1/search")
+                .unwrap()
+                .as_str(),
+            "https://example.com/custom/v1/search"
+        );
+    }
+
+    #[test]
+    fn current_search_requests_web_and_news() {
+        let body = build_request_body(&request(SearchMode::Balanced));
+        assert_eq!(body["sources"], json!(["web", "news"]));
+        assert!(body.get("scrapeOptions").is_none());
+    }
+
+    #[test]
+    fn deep_search_scrapes_a_bounded_web_result_set() {
+        let mut request = request(SearchMode::Deep);
+        request.max_results = 20;
+        request.allowed_domains = vec!["rust-lang.org".to_string()];
+        request.blocked_domains = vec!["example.com".to_string()];
+        request.recency_days = Some(7);
+        let body = build_request_body(&request);
+        assert_eq!(body["limit"], 5);
+        assert_eq!(body["sources"], json!(["web"]));
+        assert_eq!(body["includeDomains"], json!(["rust-lang.org"]));
+        assert!(body.get("excludeDomains").is_none());
+        assert_eq!(body["scrapeOptions"]["formats"], json!(["markdown"]));
+        assert!(body["tbs"].as_str().unwrap().contains("cdr:1"));
+    }
+
+    #[test]
+    fn maps_grouped_web_and_news_results() {
+        let parsed = json!({
+            "success": true,
+            "data": {
+                "web": [
+                    {"title":"Rust","url":"https://rust-lang.org","highlights":["Memory safety","No GC"]},
+                    {"title":"Book","url":"https://doc.rust-lang.org/book","description":"The Rust book"}
+                ],
+                "news": [
+                    {"title":"Rust news","url":"https://example.com/news","snippet":"New release","date":"2 hours ago"}
+                ]
+            }
+        });
+        let results = parse_results(&parsed, 3);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].url, "https://rust-lang.org");
+        assert_eq!(results[0].snippet, "Memory safety ... No GC");
+        assert_eq!(results[1].url, "https://example.com/news");
+        assert_eq!(results[1].published_at.as_deref(), Some("2 hours ago"));
+        assert_eq!(results[2].url, "https://doc.rust-lang.org/book");
+    }
+
+    #[test]
+    fn maps_flat_scraped_results_and_uses_markdown() {
+        let parsed = json!({
+            "success": true,
+            "data": [
+                {
+                    "url":"https://example.com/page",
+                    "markdown":"# Heading\n\nFull page content",
+                    "metadata":{"title":"Example page","publishedDate":"2026-07-23"}
+                }
+            ]
+        });
+        let results = parse_results(&parsed, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Example page");
+        assert_eq!(results[0].snippet, "# Heading Full page content");
+        assert_eq!(
+            results[0].content_excerpt.as_deref(),
+            Some("# Heading Full page content")
+        );
+        assert_eq!(results[0].published_at.as_deref(), Some("2026-07-23"));
+    }
+
+    #[test]
+    fn classifies_firecrawl_key_statuses() {
+        assert_eq!(
+            classify_key_status("Firecrawl HTTP 401: Unauthorized"),
+            "invalid_key"
+        );
+        assert_eq!(
+            classify_key_status("Firecrawl HTTP 402: Insufficient credits"),
+            "quota_exhausted"
+        );
+        assert_eq!(
+            classify_key_status("Firecrawl HTTP 429: Rate limit exceeded"),
+            "rate_limited"
+        );
+    }
+}

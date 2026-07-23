@@ -146,8 +146,8 @@ struct ExecuteTerminalArgs {
 
 #[async_trait]
 impl AgentTool for ExecuteTerminalTool {
-    fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
-        let description = build_execute_terminal_description();
+    fn definition(&self, config: &AgentToolsConfig) -> ToolDefinition {
+        let description = build_execute_terminal_description(config);
         tool_definition(
             "execute_terminal",
             &description,
@@ -290,23 +290,16 @@ impl AgentTool for ExecuteTerminalTool {
                     .to_string(),
             };
         };
+        let approval_cwd = cwd
+            .clone()
+            .or_else(|| Some(context.store.terminal_workspace_dir.display().to_string()));
         let decision_rx = context.approval_manager.register(PendingApproval {
             approval_id: approval_id.clone(),
             agent_id: context.agent_id,
             conversation_id: context.conversation_id,
             tool_call_id: context.call_id.clone(),
             command: command.clone(),
-            cwd: cwd
-                .clone()
-                .or_else(|| {
-                    context
-                        .tools_config
-                        .terminal
-                        .allowed_cwd_roots
-                        .first()
-                        .cloned()
-                })
-                .or_else(|| Some(context.store.terminal_workspace_dir.display().to_string())),
+            cwd: approval_cwd.clone(),
             runtime: "codex_full_access".to_string(),
             permission: "full_access".to_string(),
             justification: justification.clone(),
@@ -322,7 +315,7 @@ impl AgentTool for ExecuteTerminalTool {
                 agent_id: context.agent_id,
                 command: command.clone(),
                 approval_id: approval_id.clone(),
-                cwd: cwd.clone(),
+                cwd: approval_cwd,
                 runtime: "codex_full_access".to_string(),
                 permission: "full_access".to_string(),
                 justification: justification.clone(),
@@ -596,8 +589,11 @@ struct MultiEditFileTool;
 
 #[async_trait]
 impl AgentTool for MultiEditFileTool {
-    fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
-        let description = "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated by the server; failure leaves files unchanged. In-workspace edits may require approval under request_approval. Paths outside the configured workspace roots must set sandbox_permissions=require_escalated with a short justification so the user can approve; do not bypass multi_edit_file via shell when an outside-root edit is needed. Exact edits compare LF-normalized text; use replace_all or startLine only when needed.";
+    fn definition(&self, config: &AgentToolsConfig) -> ToolDefinition {
+        let description = format!(
+            "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated by the server; failure leaves files unchanged. In-workspace edits may require approval under request_approval. Paths outside the configured workspace roots must set sandbox_permissions=require_escalated with a short justification so the user can approve; do not bypass multi_edit_file via shell when an outside-root edit is needed. Exact edits compare LF-normalized text; use replace_all or startLine only when needed.{}",
+            configured_working_directories_guidance(config)
+        );
         tool_definition(
             MULTI_EDIT_TOOL_NAME,
             &description,
@@ -761,14 +757,6 @@ impl AgentTool for MultiEditFileTool {
 
         let approval_cwd = cwd
             .clone()
-            .or_else(|| {
-                context
-                    .tools_config
-                    .terminal
-                    .allowed_cwd_roots
-                    .first()
-                    .cloned()
-            })
             .or_else(|| Some(context.store.terminal_workspace_dir.display().to_string()));
         let decision_rx = context.approval_manager.register(PendingApproval {
             approval_id: approval_id.clone(),
@@ -1129,13 +1117,25 @@ fn unsupported_host_shell_syntax(command: &str) -> Option<String> {
     None
 }
 
-fn build_execute_terminal_description() -> String {
+fn configured_working_directories_guidance(config: &AgentToolsConfig) -> String {
+    if config.terminal.allowed_cwd_roots.is_empty() {
+        return String::new();
+    }
+    let directories = serde_json::to_string(&config.terminal.allowed_cwd_roots)
+        .unwrap_or_else(|_| "[]".to_string());
+    format!(
+        " The user configured these additional working directories: {directories}. Treat them as known candidate locations when relevant to the request. They do not replace the WeiAgent default workspace and are not an exhaustive list of paths this tool may access; approved or full-access operations can use other locations. Set cwd explicitly to make one of these directories the base for commands or relative paths; absolute paths may refer to them directly. Omitting cwd always uses the WeiAgent default workspace."
+    )
+}
+
+fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
     let shell = crate::tools::shell::selected_host_shell();
     let host_guidance = shell.tool_guidance();
     let examples = shell.command_examples();
+    let working_directories = configured_working_directories_guidance(config);
 
     format!(
-        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. Prefer multi_edit_file for source/config edits (including outside-root paths via sandbox_permissions=require_escalated + justification) instead of rewriting files through shell. Selected shell: {}. {host_guidance} {examples} The server enforces its current execution policy; request elevated access with sandbox_permissions=require_escalated and a justification when needed. Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again.",
+        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. Prefer multi_edit_file for source/config edits (including outside-root paths via sandbox_permissions=require_escalated + justification) instead of rewriting files through shell. Selected shell: {}. {host_guidance} {examples} The server enforces its current execution policy; request elevated access with sandbox_permissions=require_escalated and a justification when needed. Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again.{working_directories}",
         shell.display_name()
     )
 }
@@ -1228,7 +1228,7 @@ mod tests {
 
     #[test]
     fn terminal_description_explains_stable_escalation_contract() {
-        let description = super::build_execute_terminal_description();
+        let description = super::build_execute_terminal_description(&AgentToolsConfig::default());
         assert!(description.contains("sandbox_permissions=require_escalated"));
         assert!(description.contains("justification"));
         assert!(description.contains("server enforces its current execution policy"));
@@ -1295,6 +1295,35 @@ mod tests {
                 .unwrap()
                 .contains("Codex PTY")
         );
+    }
+
+    #[test]
+    fn terminal_tool_schemas_include_configured_working_directories_as_guidance() {
+        let mut config = AgentToolsConfig::default();
+        config.terminal.enabled = true;
+        config.terminal.allowed_cwd_roots = vec![
+            "D:/Projects/alpha".to_string(),
+            "D:/Clients/beta".to_string(),
+        ];
+        let encoded_directories =
+            serde_json::to_string(&config.terminal.allowed_cwd_roots).unwrap();
+        let definitions = ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .unwrap();
+
+        for tool_name in ["execute_terminal", "multi_edit_file"] {
+            let description = &definitions
+                .iter()
+                .find(|definition| definition.function.name == tool_name)
+                .unwrap()
+                .function
+                .description;
+            assert!(description.contains(&encoded_directories));
+            assert!(description.contains("known candidate locations"));
+            assert!(description.contains("do not replace the WeiAgent default workspace"));
+            assert!(description.contains("not an exhaustive list"));
+            assert!(description.contains("Omitting cwd always uses"));
+        }
     }
 
     #[test]

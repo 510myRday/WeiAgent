@@ -15,7 +15,7 @@ use crate::domain::{
 };
 
 use self::key_pool::key_attempt_order;
-use self::providers::{exa, grok, jina, tavily};
+use self::providers::{exa, firecrawl, grok, jina, tavily};
 use self::types::{
     AggregatedSearchResult, ProviderError, ProviderSearchOutput, ProviderSearchRequest,
     SearchHitKind, SearchMode, SearchSourceDescriptor, SourceRunSummary, WebSearchOutput,
@@ -117,16 +117,20 @@ pub(crate) async fn execute_web_search_with_status_updates(
         .clamp(1, MAX_WEB_SEARCH_RESULTS);
     let allowed_domains = normalize_domains(&args.allowed_domains);
     let blocked_domains = normalize_domains(&args.blocked_domains);
+    let batch_options = SourceBatchOptions {
+        max_results,
+        allowed_domains: &allowed_domains,
+        blocked_domains: &blocked_domains,
+        recency_days: args.recency_days,
+        mode: &actual_mode,
+    };
     let executions = if actual_mode == SearchMode::Fast {
         let mut attempts = Vec::new();
         for source in &selected_sources {
             let batch = execute_source_batch(
                 std::slice::from_ref(source),
                 &queries,
-                max_results,
-                &allowed_domains,
-                &blocked_domains,
-                args.recency_days,
+                &batch_options,
                 config,
             )
             .await;
@@ -142,16 +146,7 @@ pub(crate) async fn execute_web_search_with_status_updates(
         }
         attempts
     } else {
-        execute_source_batch(
-            &selected_sources,
-            &queries,
-            max_results,
-            &allowed_domains,
-            &blocked_domains,
-            args.recency_days,
-            config,
-        )
-        .await
+        execute_source_batch(&selected_sources, &queries, &batch_options, config).await
     };
 
     let mut status_update_map = BTreeMap::new();
@@ -248,13 +243,18 @@ fn key_status_severity(status: &str) -> u8 {
     }
 }
 
+struct SourceBatchOptions<'a> {
+    max_results: u32,
+    allowed_domains: &'a [String],
+    blocked_domains: &'a [String],
+    recency_days: Option<u32>,
+    mode: &'a SearchMode,
+}
+
 async fn execute_source_batch(
     sources: &[WebSearchSourceConfig],
     queries: &[String],
-    max_results: u32,
-    allowed_domains: &[String],
-    blocked_domains: &[String],
-    recency_days: Option<u32>,
+    options: &SourceBatchOptions<'_>,
     config: &WebSearchToolConfig,
 ) -> Vec<SourceExecution> {
     let selected_keys = sources
@@ -265,16 +265,18 @@ async fn execute_source_batch(
         .iter()
         .flat_map(|query| {
             let selected_keys = &selected_keys;
+            let mode = options.mode.clone();
             sources.iter().cloned().map(move |source| {
                 let selected_key = selected_keys.get(&source.id).cloned().flatten();
                 (
                     source,
                     ProviderSearchRequest {
                         query: query.clone(),
-                        max_results,
-                        allowed_domains: allowed_domains.to_vec(),
-                        blocked_domains: blocked_domains.to_vec(),
-                        recency_days,
+                        max_results: options.max_results,
+                        mode: mode.clone(),
+                        allowed_domains: options.allowed_domains.to_vec(),
+                        blocked_domains: options.blocked_domains.to_vec(),
+                        recency_days: options.recency_days,
                     },
                     selected_key,
                 )
@@ -774,6 +776,9 @@ async fn execute_source_query(
         WebSearchProviderKind::Jina => {
             jina::search(&control_client, &base_url, &api_key, &request).await
         }
+        WebSearchProviderKind::Firecrawl => {
+            firecrawl::search(&control_client, &base_url, &api_key, &request).await
+        }
         WebSearchProviderKind::Grok => {
             let grok_timeout = std::cmp::max(timeout, Duration::from_secs(90));
             match providers::grok_support::build_emulated_client(
@@ -896,6 +901,7 @@ struct AggregateEntry {
     title: String,
     url: String,
     snippet: String,
+    content_excerpt: Option<String>,
     kind: SearchHitKind,
     published_at: Option<String>,
     source_ids: HashSet<String>,
@@ -925,6 +931,7 @@ fn aggregate_results(
                     title: hit.title.clone(),
                     url: url.clone(),
                     snippet: hit.snippet.clone(),
+                    content_excerpt: hit.content_excerpt.clone(),
                     kind: hit.kind.clone(),
                     published_at: hit.published_at.clone(),
                     source_ids: HashSet::new(),
@@ -935,6 +942,16 @@ fn aggregate_results(
             entry.score += 1.0 / (60.0 + rank as f64 + 1.0);
             if hit.snippet.chars().count() > entry.snippet.chars().count() {
                 entry.snippet = hit.snippet.clone();
+            }
+            if hit.content_excerpt.as_ref().is_some_and(|content| {
+                content.chars().count()
+                    > entry
+                        .content_excerpt
+                        .as_ref()
+                        .map(|value| value.chars().count())
+                        .unwrap_or_default()
+            }) {
+                entry.content_excerpt = hit.content_excerpt.clone();
             }
             if evidence_priority(&hit.kind) > evidence_priority(&entry.kind) {
                 entry.kind = hit.kind.clone();
@@ -983,6 +1000,9 @@ fn aggregate_results(
                 title: entry.title,
                 url: entry.url,
                 snippet: truncate_chars(&entry.snippet, 500),
+                content_excerpt: entry
+                    .content_excerpt
+                    .map(|value| truncate_chars(&value, 4_000)),
                 evidence_kind: entry.kind,
                 source_ids,
                 provider_kinds,
@@ -1097,6 +1117,7 @@ pub(crate) fn classify_key_status(provider: WebSearchProviderKind, message: &str
         WebSearchProviderKind::Exa => exa::classify_key_status(message),
         WebSearchProviderKind::Jina => jina::classify_key_status(message),
         WebSearchProviderKind::Grok => grok::classify_key_status(message),
+        WebSearchProviderKind::Firecrawl => firecrawl::classify_key_status(message),
     }
     .to_string()
 }
@@ -1182,17 +1203,18 @@ mod tests {
     #[test]
     fn aggregation_does_not_count_model_provided_urls_as_independent_evidence() {
         let config = WebSearchToolConfig::default();
-        let exa = config.sources[1].clone();
+        let firecrawl = config.sources[4].clone();
         let grok = config.sources[3].clone();
         let outputs = vec![
             (
-                exa,
+                firecrawl,
                 "rust".to_string(),
                 ProviderSearchOutput {
                     results: vec![types::WebSearchHit {
                         title: "Rust".to_string(),
                         url: "https://www.rust-lang.org/?utm_source=test".to_string(),
                         snippet: "Official language site".to_string(),
+                        content_excerpt: Some("Full extracted page evidence".to_string()),
                         kind: SearchHitKind::WebPage,
                         published_at: None,
                         score: Some(0.9),
@@ -1208,6 +1230,7 @@ mod tests {
                         title: "Rust generated source".to_string(),
                         url: "https://www.rust-lang.org/".to_string(),
                         snippet: "Model-provided candidate".to_string(),
+                        content_excerpt: None,
                         kind: SearchHitKind::GrokModelProvidedUrl,
                         published_at: None,
                         score: None,
@@ -1219,8 +1242,12 @@ mod tests {
         let results = aggregate_results(&outputs, &[], &[]);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].corroboration_count, 1);
-        assert_eq!(results[0].source_ids, vec!["exa", "grok"]);
+        assert_eq!(results[0].source_ids, vec!["firecrawl", "grok"]);
         assert_eq!(results[0].evidence_kind, SearchHitKind::WebPage);
+        assert_eq!(
+            results[0].content_excerpt.as_deref(),
+            Some("Full extracted page evidence")
+        );
     }
 
     #[test]

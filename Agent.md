@@ -103,7 +103,7 @@ WeiAgent/
 │   ├── tools/
 │   │   ├── registry.rs       # ToolRegistry、AgentTool、内置工具注册
 │   │   ├── terminal.rs       # Codex 终端执行、会话、输出和后台进程管理
-│   │   └── web_search/       # 网络搜索：调度、Key 池、Tavily/Exa 适配
+│   │   └── web_search/       # 网络搜索：调度、Key 池、多搜索源适配与证据抽取
 │   │   ├── codex_app_server.rs # Codex app-server JSON-RPC 连接
 │   │   ├── runtime.rs        # Codex CLI 发现、下载、校验和隔离环境
 │   │   ├── approval.rs       # 审批管理和自动 TTL 过期
@@ -383,7 +383,8 @@ User Message
 - `execute_terminal` 参数：`command`、`cwd`、`timeout_ms`、`background`、`tty`、`sandbox_permissions`、`justification`
 - `multi_edit_file`：单文件/多文件精确替换，以及 create/delete/move；不出现在 Tools UI，仅随 `terminal.enabled` 注册到模型 schema。参数含 `operations`、`cwd`、`sandbox_permissions`、`justification`。`request_approval` 下工作区内写文件需审批（支持 24h always-allow）；工作区外路径必须 `sandbox_permissions=require_escalated` 并附 `justification` 后走审批，不得用 `execute_terminal` 绕过编辑工具。`full_access` 下可直接写工作区内外路径
 - `terminal_session` 操作：`poll`、`write`、`submit`、`interrupt`、`eof`、`terminate`、`resize`，通过 `output_cursor` 增量读取输出
-- `cwd` 省略、空字符串或 `.` 都使用配置的默认工作区；`allowed_cwd_roots` 为空时默认工作区是 WeiAgent 数据目录下独立的 `workspace` 文件夹（开发模式为 `data/workspace`，生产模式默认为 `%USERPROFILE%\.WeiAgent\workspace`），启动时若不存在会自动创建；非空 `cwd` 必须是已存在目录，不允许失败后静默切换到猜测路径
+- `cwd` 省略、空字符串或 `.` 时始终使用 WeiAgent 数据目录下独立的 `workspace` 文件夹（开发模式为 `data/workspace`，生产模式默认为 `%USERPROFILE%\.WeiAgent\workspace`），不受 `allowed_cwd_roots` 是否配置或排列顺序影响；该目录启动时若不存在会自动创建。`allowed_cwd_roots` 是额外的可操作目录，显式设置 `cwd` 可将其中某个目录选为命令和相对路径的基准；非空 `cwd` 必须是已存在目录，不允许失败后静默切换到猜测路径
+- `allowed_cwd_roots` 非空时，`execute_terminal` 与 `multi_edit_file` 的模型 schema 会列出这些用户配置的额外工作目录，作为任务相关时的候选位置提示；文案明确它们不替代默认 workspace，也不是完整的可访问路径清单，完整权限或经批准的操作仍可使用其他路径
 - 实际执行器、终端工具定义、系统环境提示和命令示例共用同一个 Shell 探测结果，避免 PowerShell、CMD 与 POSIX 语法混用
 - 支持 Codex PTY、stdin 续写、Ctrl+C/EOF、终止和尺寸调整；后台或超时转后台后返回 `process_id`
 - Windows 的 Codex unelevated 沙箱是上游例外：只允许短时、非交互、前台命令；后台、stdin 续写、PTY 和超时转后台必须请求完整权限
@@ -436,7 +437,8 @@ User Message
     "key_selection": "sequential",
     "sources": [
       { "id": "tavily", "provider": "tavily", "enabled": true, "api_keys": [] },
-      { "id": "exa", "provider": "exa", "enabled": true, "api_keys": [] }
+      { "id": "exa", "provider": "exa", "enabled": true, "api_keys": [] },
+      { "id": "firecrawl", "provider": "firecrawl", "enabled": true, "api_keys": [] }
     ]
   }
 }
@@ -444,7 +446,8 @@ User Message
 
 - `key_selection`: `sequential` | `round_robin` | `random`（仅作用于同一源内的多 Key）
 - 源数组顺序 = 跨源失败降级优先级
-- v1 内置 provider：`tavily`、`exa`；可选 `base_url` 覆盖默认端点
+- 内置 provider：`tavily`、`exa`、`jina`、`grok`、`firecrawl`；可选 `base_url` 覆盖默认端点
+- Firecrawl 使用 `/v2/search`：普通模式返回 Highlights；时效查询可合并 web/news；Deep 模式为最多 5 条结果请求 Markdown 正文
 - 读 API 返回脱敏 Key（`****` + 后 4 位）；写更新：`["__preserve__"]` 保留、`[]` 清空、明文列表替换
 
 Agent `tools.json` 覆盖仅允许：
@@ -465,7 +468,8 @@ Agent `tools.json` 覆盖仅允许：
 - 参数：`query`（必填，1–500 字符）、`max_results`（可选，1–20）
 - 启用条件：`web_search.enabled == true` 且至少一个 enabled 源有非空 API Key
 - 执行结果：`ToolResult::Completed`，`runtime=builtin_web_search`，`stdout` 为统一 JSON：
-  - `provider`、`source_id`、`query`、`results[{title,url,snippet,score?}]`、`result_count`
+  - `mode`、`queries`、`selected_sources`、`results[{title,url,snippet,content_excerpt?}]`、`source_runs`、`result_count`
+  - `content_excerpt` 目前用于 Firecrawl Deep 模式抓取的正文摘录；完整输出最多 4000 字符，写入模型历史前再压缩到 2000 字符
 - 失败旋转：同源内按策略换 Key；`401/403/429`/网络错误可旋转；同源耗尽后切下一源；全部失败返回 `ToolResult::Error`
 - 无审批、无沙箱、无进程管理（与终端工具不同）
 

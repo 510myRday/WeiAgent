@@ -18,8 +18,8 @@ use crate::{
 };
 
 use crate::domain::tools::{WebSearchKeyStatusUpdate, mask_api_key};
-use crate::tools::web_search::providers::{exa, grok, grok_support, jina, tavily};
-use crate::tools::web_search::types::ProviderSearchRequest;
+use crate::tools::web_search::providers::{exa, firecrawl, grok, grok_support, jina, tavily};
+use crate::tools::web_search::types::{ProviderSearchRequest, SearchMode};
 
 #[derive(Debug, Deserialize)]
 pub struct CheckWebSearchKeysRequest {
@@ -338,6 +338,7 @@ pub async fn check_web_search_keys(
     let check_request = ProviderSearchRequest {
         query: "WeiAgent key status check".to_string(),
         max_results: 1,
+        mode: SearchMode::Fast,
         allowed_domains: Vec::new(),
         blocked_domains: Vec::new(),
         recency_days: None,
@@ -370,6 +371,11 @@ pub async fn check_web_search_keys(
             }
             WebSearchProviderKind::Jina => {
                 jina::search(&control_client, &base_url, api_key, &check_request)
+                    .await
+                    .map_err(|error| error.message().to_string())
+            }
+            WebSearchProviderKind::Firecrawl => {
+                firecrawl::search(&control_client, &base_url, api_key, &check_request)
                     .await
                     .map_err(|error| error.message().to_string())
             }

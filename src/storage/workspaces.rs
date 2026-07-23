@@ -184,6 +184,9 @@ impl JsonStore {
         let _guard = self.lock.lock().await;
         let existing = self.read_tool_defaults_unlocked().await?;
         config.web_search = existing.web_search.merge_secret_update(&config.web_search);
+        config
+            .web_search
+            .ensure_builtin_sources(Some(&existing.web_search));
         validate_tools_config(&config)?;
         let content = serde_json::to_string_pretty(&config)
             .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
@@ -358,16 +361,16 @@ impl JsonStore {
             ));
         }
         config.terminal.approval_grants.clear();
-        let mut repaired_key_status_slots = false;
+        let mut repaired_config = config.web_search.ensure_builtin_sources(None);
         for source in &mut config.web_search.sources {
             let key_count = source.api_keys.len();
             if source.key_statuses.len() != key_count {
                 source.key_statuses.resize_with(key_count, || None);
-                repaired_key_status_slots = true;
+                repaired_config = true;
             }
         }
         validate_tools_config(&config)?;
-        if repaired_key_status_slots {
+        if repaired_config {
             let content = serde_json::to_string_pretty(&config)
                 .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
             crate::fsutil::write_atomic(&self.tool_defaults_file, content).await?;

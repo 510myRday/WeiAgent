@@ -357,7 +357,7 @@
       "maxLlmIterationsDesc": "Limit how many times an agent can use tools during one task to prevent repetitive, long-running work.",
       "remove": "Remove",
       "allowedRootsLabel": "Folders agents can work in",
-      "allowedRootsDesc": "With “Ask when needed” selected, agents can edit these folders directly. Leave this empty to use the dedicated workspace folder under WeiAgent's data directory.",
+      "allowedRootsDesc": "When no working directory is specified, agents always use the dedicated workspace under WeiAgent's data directory. With “Ask when needed” selected, agents can also work directly in folders added here.",
       "pathPlaceholder": "Enter the full folder path",
       "permissionMode": "Access level",
       "permissionModeDesc": "Choose what agents can do directly and when they need to ask you first.",
@@ -429,7 +429,8 @@
         "tavily": "Tavily",
         "exa": "Exa",
         "jina": "Jina",
-        "grok": "Grok (X)"
+        "grok": "Grok (X)",
+        "firecrawl": "Firecrawl"
       },
       "sourceProfile": "Search preferences",
       "sourceProfileDesc": "Mark the search scenarios this source handles best by discovery style, content focus, and task intent.",

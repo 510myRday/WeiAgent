@@ -113,6 +113,7 @@ pub async fn search(
                     .unwrap_or_else(|| url.clone()),
                 url,
                 snippet: item.content.unwrap_or_default(),
+                content_excerpt: None,
                 kind: SearchHitKind::WebPage,
                 published_at: None,
                 score: item.score,

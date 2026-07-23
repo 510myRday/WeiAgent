@@ -119,6 +119,7 @@ function defaultWebSearch(): WebSearchToolConfig {
       { id: 'exa', provider: 'exa', display_name: 'Exa', enabled: true, deep_enabled: true, priority: 20, independence_group: 'exa', roles: ['semantic_research', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
       { id: 'jina', provider: 'jina', display_name: 'Jina Search', enabled: true, deep_enabled: true, priority: 30, independence_group: 'jina', roles: ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
       { id: 'grok', provider: 'grok', display_name: 'Grok Research', enabled: true, deep_enabled: true, priority: 40, independence_group: 'grok', roles: ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'firecrawl', provider: 'firecrawl', display_name: 'Firecrawl', enabled: true, deep_enabled: true, priority: 50, independence_group: 'firecrawl', roles: ['general_search', 'current_news', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'market_research', 'product_research', 'multilingual_search'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
     ],
   };
 }
@@ -140,7 +141,10 @@ function normalizeWebSearchSources(sources: WebSearchSourceConfig[]): WebSearchS
 }
 
 function providerLabelFallback(provider: WebSearchProviderKind): string {
-  return provider === 'jina' ? 'Jina Search' : provider === 'grok' ? 'Grok Research' : provider[0].toUpperCase() + provider.slice(1);
+  if (provider === 'jina') return 'Jina Search';
+  if (provider === 'grok') return 'Grok Research';
+  if (provider === 'firecrawl') return 'Firecrawl';
+  return provider[0].toUpperCase() + provider.slice(1);
 }
 
 function defaultRoles(provider: WebSearchProviderKind): WebSearchSourceRole[] {
@@ -152,6 +156,9 @@ function defaultRoles(provider: WebSearchProviderKind): WebSearchSourceRole[] {
   }
   if (provider === 'jina') {
     return ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'];
+  }
+  if (provider === 'firecrawl') {
+    return ['general_search', 'current_news', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'market_research', 'product_research', 'multilingual_search'];
   }
   return ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'];
 }
