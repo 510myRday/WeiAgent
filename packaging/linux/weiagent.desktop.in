@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=WeiAgent
+Comment=AI agent workspace
+Exec=@EXECUTABLE@
+Icon=weiagent
+Terminal=true
+Categories=Development;Utility;
+StartupNotify=false

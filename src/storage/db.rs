@@ -83,7 +83,10 @@ pub fn open_connection(db_path: &Path) -> AppResult<Connection> {
         "ALTER TABLE model_providers ADD COLUMN prompt_cache_json TEXT NOT NULL DEFAULT '{}'",
         [],
     );
-    let _ = conn.execute("ALTER TABLE model_providers ADD COLUMN cache_capabilities_json TEXT NOT NULL DEFAULT 'null'", []);
+    let _ = conn.execute(
+        "ALTER TABLE model_providers ADD COLUMN cache_capabilities_json TEXT NOT NULL DEFAULT 'null'",
+        [],
+    );
     Ok(conn)
 }
 

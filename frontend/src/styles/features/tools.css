@@ -343,12 +343,9 @@
   font-size: var(--font-size-ui);
 }
 
+.browse-btn,
 .add-btn {
   padding-inline: 16px;
-}
-
-.pattern-tag {
-  border-radius: 8px;
 }
 
 .inherit-control {

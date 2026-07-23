@@ -1,0 +1,1802 @@
+use std::collections::HashSet;
+
+use chrono::{DateTime, Utc};
+use rusqlite::{Connection, OptionalExtension, params};
+use tokio::fs;
+use uuid::Uuid;
+
+use crate::domain::tools::TerminalToolOverrides;
+use crate::{
+    domain::{
+        AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, EvidenceStorageConfig,
+        TerminalApprovalGrant, TerminalPermissionMode, TerminalToolConfig, WebSearchKeySelection,
+        WebSearchKeyStatusRecord, WebSearchProviderKind, WebSearchSourceConfig,
+        WebSearchSourceRole, WebSearchToolConfig, WebSearchToolOverrides,
+    },
+    error::{AppError, AppResult},
+    storage::{db, json_store::JsonStore},
+};
+
+const LEGACY_TOOL_DEFAULTS_FILE: &str = "tool_defaults.json";
+const LEGACY_AGENT_TOOLS_FILE: &str = "tools.json";
+
+const TOOL_SETTINGS_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS tool_settings (
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('default', 'agent')),
+    scope_id TEXT NOT NULL,
+    config_version INTEGER NOT NULL DEFAULT 1 CHECK (config_version = 1),
+    max_llm_iterations INTEGER
+        CHECK (max_llm_iterations IS NULL OR max_llm_iterations BETWEEN 1 AND 999),
+    terminal_enabled INTEGER
+        CHECK (terminal_enabled IS NULL OR terminal_enabled IN (0, 1)),
+    terminal_permission_mode TEXT
+        CHECK (terminal_permission_mode IS NULL OR terminal_permission_mode IN ('request_approval', 'full_access')),
+    terminal_default_timeout_ms INTEGER
+        CHECK (terminal_default_timeout_ms IS NULL OR terminal_default_timeout_ms > 0),
+    terminal_allowed_cwd_roots_json TEXT
+        CHECK (terminal_allowed_cwd_roots_json IS NULL OR (json_valid(terminal_allowed_cwd_roots_json) AND json_type(terminal_allowed_cwd_roots_json) = 'array')),
+    web_search_enabled INTEGER
+        CHECK (web_search_enabled IS NULL OR web_search_enabled IN (0, 1)),
+    web_search_max_results INTEGER
+        CHECK (web_search_max_results IS NULL OR web_search_max_results > 0),
+    web_search_timeout_ms INTEGER
+        CHECK (web_search_timeout_ms IS NULL OR web_search_timeout_ms > 0),
+    web_search_key_selection TEXT
+        CHECK (web_search_key_selection IS NULL OR web_search_key_selection IN ('sequential', 'round_robin', 'random')),
+    evidence_storage_enabled INTEGER
+        CHECK (evidence_storage_enabled IS NULL OR evidence_storage_enabled IN (0, 1)),
+    evidence_retention_days INTEGER
+        CHECK (evidence_retention_days IS NULL OR evidence_retention_days > 0),
+    evidence_max_total_mb INTEGER
+        CHECK (evidence_max_total_mb IS NULL OR evidence_max_total_mb > 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (scope_type, scope_id),
+    UNIQUE (scope_id),
+    CHECK (
+        (
+            scope_type = 'default'
+            AND scope_id = 'default'
+            AND max_llm_iterations IS NOT NULL
+            AND terminal_enabled IS NOT NULL
+            AND terminal_permission_mode IS NOT NULL
+            AND terminal_default_timeout_ms IS NOT NULL
+            AND terminal_allowed_cwd_roots_json IS NOT NULL
+            AND web_search_enabled IS NOT NULL
+            AND web_search_max_results IS NOT NULL
+            AND web_search_timeout_ms IS NOT NULL
+            AND web_search_key_selection IS NOT NULL
+            AND evidence_storage_enabled IS NOT NULL
+            AND evidence_retention_days IS NOT NULL
+            AND evidence_max_total_mb IS NOT NULL
+        )
+        OR
+        (
+            scope_type = 'agent'
+            AND length(scope_id) = 36
+            AND web_search_timeout_ms IS NULL
+            AND web_search_key_selection IS NULL
+            AND evidence_storage_enabled IS NULL
+            AND evidence_retention_days IS NULL
+            AND evidence_max_total_mb IS NULL
+        )
+    )
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS tool_terminal_approval_grants (
+    agent_id TEXT NOT NULL CHECK (length(agent_id) = 36),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    command TEXT NOT NULL CHECK (length(trim(command)) > 0),
+    cwd TEXT,
+    permission_mode TEXT NOT NULL CHECK (permission_mode = 'request_approval'),
+    created_at TEXT,
+    expires_at TEXT NOT NULL,
+    PRIMARY KEY (agent_id, position),
+    FOREIGN KEY (agent_id) REFERENCES tool_settings(scope_id) ON DELETE CASCADE
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_tool_terminal_grants_expiry
+    ON tool_terminal_approval_grants(expires_at);
+
+CREATE TABLE IF NOT EXISTS tool_web_search_sources (
+    source_id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(source_id)) > 0),
+    scope_id TEXT NOT NULL DEFAULT 'default' CHECK (scope_id = 'default'),
+    position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+    provider TEXT NOT NULL CHECK (provider IN ('tavily', 'exa', 'jina', 'grok', 'firecrawl')),
+    display_name TEXT NOT NULL,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    deep_enabled INTEGER NOT NULL CHECK (deep_enabled IN (0, 1)),
+    priority INTEGER NOT NULL CHECK (priority >= 0),
+    independence_group TEXT NOT NULL,
+    roles_json TEXT NOT NULL
+        CHECK (json_valid(roles_json) AND json_type(roles_json) = 'array'),
+    blocked_api_key_hashes_json TEXT NOT NULL DEFAULT '[]'
+        CHECK (json_valid(blocked_api_key_hashes_json) AND json_type(blocked_api_key_hashes_json) = 'array'),
+    base_url TEXT,
+    flaresolverr_url TEXT,
+    flaresolverr_proxy_url TEXT,
+    proxy_url TEXT,
+    FOREIGN KEY (scope_id) REFERENCES tool_settings(scope_id) ON DELETE CASCADE
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS tool_web_search_api_keys (
+    source_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    api_key TEXT NOT NULL CHECK (length(trim(api_key)) > 0),
+    key_status TEXT,
+    status_detail TEXT,
+    checked_at TEXT,
+    PRIMARY KEY (source_id, position),
+    UNIQUE (source_id, api_key),
+    FOREIGN KEY (source_id) REFERENCES tool_web_search_sources(source_id) ON DELETE CASCADE
+) WITHOUT ROWID;
+"#;
+
+impl JsonStore {
+    pub(super) async fn initialize_tool_settings(&self) -> AppResult<()> {
+        let agents = self.read_agents_unlocked().await?;
+        let mut conn = db::open_data_dir(&self.data_dir)?;
+        ensure_tool_settings_schema(&mut conn)?;
+        let default_exists = compact_default_exists(&conn)?;
+        drop(conn);
+
+        if !default_exists {
+            let defaults = self.read_legacy_tool_defaults().await?;
+            let mut migrated_overrides = Vec::new();
+            for agent in &agents {
+                if let Some(overrides) = self.read_legacy_agent_tools(agent.id, &defaults).await? {
+                    migrated_overrides.push((agent.id, overrides));
+                }
+            }
+
+            let mut conn = db::open_data_dir(&self.data_dir)?;
+            let tx = conn.transaction()?;
+            write_default_settings_conn(&tx, &defaults)?;
+            for (agent_id, overrides) in &migrated_overrides {
+                write_agent_overrides_conn(&tx, *agent_id, overrides)?;
+            }
+            tx.commit()?;
+        }
+
+        self.remove_legacy_tool_files().await;
+        self.prune_orphan_agent_tool_settings(&agents)?;
+        Ok(())
+    }
+
+    pub async fn read_tool_defaults(&self) -> AppResult<AgentToolsConfig> {
+        let _guard = self.lock.lock().await;
+        self.read_tool_defaults_unlocked().await
+    }
+
+    pub async fn update_tool_defaults(
+        &self,
+        mut config: AgentToolsConfig,
+    ) -> AppResult<AgentToolsConfig> {
+        if !config.terminal.approval_grants.is_empty() {
+            return Err(AppError::BadRequest(
+                "global tool defaults cannot contain agent approval grants".to_string(),
+            ));
+        }
+        config.terminal.approval_grants.clear();
+        let _guard = self.lock.lock().await;
+        let existing = self.read_tool_defaults_unlocked().await?;
+        config.web_search = existing.web_search.merge_secret_update(&config.web_search);
+        config
+            .web_search
+            .ensure_builtin_sources(Some(&existing.web_search));
+        normalize_key_status_slots(&mut config);
+        validate_tools_config(&config)?;
+        self.write_tool_defaults_unlocked(&config)?;
+        Ok(config)
+    }
+
+    pub async fn update_web_search_key_statuses(
+        &self,
+        updates: &[crate::domain::tools::WebSearchKeyStatusUpdate],
+    ) -> AppResult<usize> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+
+        let _guard = self.lock.lock().await;
+        let mut config = self.read_tool_defaults_unlocked().await?;
+        let mut updated = 0;
+        for update in updates {
+            let Some(source) = config
+                .web_search
+                .sources
+                .iter_mut()
+                .find(|source| source.id == update.source_id)
+            else {
+                continue;
+            };
+            let blocked_recorded = update.record.status == "officially_blocked"
+                && source.remember_blocked_api_key(&update.api_key);
+            let key_index = source
+                .api_keys
+                .get(update.key_index)
+                .filter(|key| key.trim() == update.api_key)
+                .map(|_| update.key_index)
+                .or_else(|| {
+                    source
+                        .api_keys
+                        .iter()
+                        .position(|key| key.trim() == update.api_key)
+                });
+            let Some(key_index) = key_index else {
+                if blocked_recorded {
+                    updated += 1;
+                }
+                continue;
+            };
+            source
+                .key_statuses
+                .resize_with(source.api_keys.len(), || None);
+            source.key_statuses.truncate(source.api_keys.len());
+            source.key_statuses[key_index] = Some(update.record.clone());
+            updated += 1;
+        }
+
+        if updated > 0 {
+            validate_tools_config(&config)?;
+            self.write_tool_defaults_unlocked(&config)?;
+        }
+        Ok(updated)
+    }
+
+    pub async fn read_agent_tools_settings(&self, id: Uuid) -> AppResult<AgentToolsSettings> {
+        self.get_agent(id).await?;
+        let _guard = self.lock.lock().await;
+        let defaults = self.read_tool_defaults_unlocked().await?;
+        let overrides = self
+            .read_agent_tools_overrides_unlocked(id, &defaults)
+            .await?;
+        let effective = overrides.apply_to(&defaults);
+        Ok(AgentToolsSettings {
+            defaults,
+            overrides,
+            effective,
+        })
+    }
+
+    pub async fn read_agent_tools_config(&self, id: Uuid) -> AppResult<AgentToolsConfig> {
+        Ok(self.read_agent_tools_settings(id).await?.effective)
+    }
+
+    pub async fn update_agent_tools_overrides(
+        &self,
+        id: Uuid,
+        mut overrides: AgentToolsOverrides,
+    ) -> AppResult<AgentToolsSettings> {
+        self.get_agent(id).await?;
+        let _guard = self.lock.lock().await;
+        let defaults = self.read_tool_defaults_unlocked().await?;
+        overrides.remove_expired_approval_grants(Utc::now());
+        validate_tools_overrides(&overrides, &defaults)?;
+        self.write_agent_tools_overrides_unlocked(id, &overrides)?;
+        let effective = overrides.apply_to(&defaults);
+        Ok(AgentToolsSettings {
+            defaults,
+            overrides,
+            effective,
+        })
+    }
+
+    #[cfg(test)]
+    pub async fn update_agent_tools_config(
+        &self,
+        id: Uuid,
+        config: AgentToolsConfig,
+    ) -> AppResult<AgentToolsConfig> {
+        self.get_agent(id).await?;
+        validate_tools_config(&config)?;
+        let _guard = self.lock.lock().await;
+        let overrides = AgentToolsOverrides::full_override(&config);
+        self.write_agent_tools_overrides_unlocked(id, &overrides)?;
+        Ok(config)
+    }
+
+    pub async fn always_allow_terminal_command(
+        &self,
+        id: Uuid,
+        command: &str,
+        cwd: Option<&str>,
+    ) -> AppResult<AgentToolsConfig> {
+        self.get_agent(id).await?;
+        let _guard = self.lock.lock().await;
+        let defaults = self.read_tool_defaults_unlocked().await?;
+        let mut overrides = self
+            .read_agent_tools_overrides_unlocked(id, &defaults)
+            .await?;
+        let now = Utc::now();
+        let grant = TerminalApprovalGrant {
+            command: command.to_string(),
+            cwd: cwd.map(str::to_string),
+            permission_mode: TerminalPermissionMode::RequestApproval,
+            created_at: Some(now),
+            expires_at: Some(now + chrono::Duration::hours(24)),
+        };
+        overrides.remove_expired_approval_grants(now);
+        if !overrides.terminal.approval_grants.iter().any(|existing| {
+            existing.command == grant.command
+                && existing.cwd == grant.cwd
+                && existing.permission_mode == grant.permission_mode
+                && existing
+                    .expires_at
+                    .is_some_and(|expires_at| expires_at > now)
+        }) {
+            overrides.terminal.approval_grants.push(grant);
+        }
+        validate_tools_overrides(&overrides, &defaults)?;
+        self.write_agent_tools_overrides_unlocked(id, &overrides)?;
+        Ok(overrides.apply_to(&defaults))
+    }
+
+    pub(super) fn delete_agent_tool_settings_unlocked(&self, id: Uuid) -> AppResult<()> {
+        let conn = db::open_data_dir(&self.data_dir)?;
+        conn.execute(
+            "DELETE FROM tool_settings WHERE scope_type = 'agent' AND scope_id = ?1",
+            [id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    async fn read_tool_defaults_unlocked(&self) -> AppResult<AgentToolsConfig> {
+        let conn = db::open_data_dir(&self.data_dir)?;
+        let mut config = read_default_settings_conn(&conn)?.ok_or_else(|| {
+            AppError::Database("default tool settings row is missing".to_string())
+        })?;
+        let mut repaired = config.web_search.ensure_builtin_sources(None);
+        repaired |= normalize_key_status_slots(&mut config);
+        validate_tools_config(&config)?;
+        if repaired {
+            drop(conn);
+            self.write_tool_defaults_unlocked(&config)?;
+        }
+        Ok(config)
+    }
+
+    async fn read_agent_tools_overrides_unlocked(
+        &self,
+        id: Uuid,
+        defaults: &AgentToolsConfig,
+    ) -> AppResult<AgentToolsOverrides> {
+        let conn = db::open_data_dir(&self.data_dir)?;
+        let mut overrides = read_agent_overrides_conn(&conn, id)?.unwrap_or_default();
+        drop(conn);
+        if overrides.remove_expired_approval_grants(Utc::now()) {
+            self.write_agent_tools_overrides_unlocked(id, &overrides)?;
+        }
+        validate_tools_overrides(&overrides, defaults)?;
+        Ok(overrides)
+    }
+
+    fn write_tool_defaults_unlocked(&self, config: &AgentToolsConfig) -> AppResult<()> {
+        let mut conn = db::open_data_dir(&self.data_dir)?;
+        let tx = conn.transaction()?;
+        write_default_settings_conn(&tx, config)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn write_agent_tools_overrides_unlocked(
+        &self,
+        id: Uuid,
+        overrides: &AgentToolsOverrides,
+    ) -> AppResult<()> {
+        let mut conn = db::open_data_dir(&self.data_dir)?;
+        let tx = conn.transaction()?;
+        write_agent_overrides_conn(&tx, id, overrides)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    async fn read_legacy_tool_defaults(&self) -> AppResult<AgentToolsConfig> {
+        let path = self.data_dir.join(LEGACY_TOOL_DEFAULTS_FILE);
+        let mut config = if fs::metadata(&path).await.is_ok() {
+            let content = fs::read_to_string(&path).await?;
+            serde_json::from_str::<AgentToolsConfig>(content.trim()).map_err(|error| {
+                AppError::BadRequest(format!("invalid legacy tool_defaults.json: {error}"))
+            })?
+        } else {
+            AgentToolsConfig::default()
+        };
+        if !config.terminal.approval_grants.is_empty() {
+            return Err(AppError::BadRequest(
+                "legacy tool_defaults.json cannot contain agent approval grants".to_string(),
+            ));
+        }
+        config.terminal.approval_grants.clear();
+        config.web_search.ensure_builtin_sources(None);
+        normalize_key_status_slots(&mut config);
+        validate_tools_config(&config)?;
+        Ok(config)
+    }
+
+    async fn read_legacy_agent_tools(
+        &self,
+        id: Uuid,
+        defaults: &AgentToolsConfig,
+    ) -> AppResult<Option<AgentToolsOverrides>> {
+        let path = self.agent_workspace_dir(id).join(LEGACY_AGENT_TOOLS_FILE);
+        if fs::metadata(&path).await.is_err() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&path).await?;
+        let trimmed = content.trim();
+        if trimmed.is_empty() || trimmed == "[]" {
+            return Ok(None);
+        }
+        let value: serde_json::Value = serde_json::from_str(trimmed).map_err(|error| {
+            AppError::BadRequest(format!("invalid legacy tools.json for agent {id}: {error}"))
+        })?;
+        let mut overrides = if value.get("version").is_some() {
+            serde_json::from_value::<AgentToolsOverrides>(value).map_err(|error| {
+                AppError::BadRequest(format!("invalid legacy tools.json for agent {id}: {error}"))
+            })?
+        } else {
+            let legacy = serde_json::from_value::<AgentToolsConfig>(value).map_err(|error| {
+                AppError::BadRequest(format!(
+                    "invalid legacy full tools.json for agent {id}: {error}"
+                ))
+            })?;
+            AgentToolsOverrides::from_full_config(&legacy, defaults)
+        };
+        overrides.remove_expired_approval_grants(Utc::now());
+        validate_tools_overrides(&overrides, defaults)?;
+        Ok((!agent_overrides_are_empty(&overrides)).then_some(overrides))
+    }
+
+    async fn remove_legacy_tool_files(&self) {
+        remove_legacy_file(&self.data_dir.join(LEGACY_TOOL_DEFAULTS_FILE)).await;
+        let mut entries = match fs::read_dir(&self.agents_dir).await {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(%error, "failed to scan agent workspaces for legacy tool files");
+                return;
+            }
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            remove_legacy_file(&entry.path().join(LEGACY_AGENT_TOOLS_FILE)).await;
+        }
+    }
+
+    fn prune_orphan_agent_tool_settings(&self, agents: &[crate::domain::Agent]) -> AppResult<()> {
+        let valid_ids = agents
+            .iter()
+            .map(|agent| agent.id.to_string())
+            .collect::<HashSet<_>>();
+        let mut conn = db::open_data_dir(&self.data_dir)?;
+        let tx = conn.transaction()?;
+        let mut stmt = tx.prepare(
+            "SELECT scope_id FROM tool_settings WHERE scope_type = 'agent' ORDER BY scope_id",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut orphan_ids = Vec::new();
+        for row in rows {
+            let id = row?;
+            if !valid_ids.contains(&id) {
+                orphan_ids.push(id);
+            }
+        }
+        drop(stmt);
+        for id in orphan_ids {
+            tx.execute(
+                "DELETE FROM tool_settings WHERE scope_type = 'agent' AND scope_id = ?1",
+                [id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+async fn remove_legacy_file(path: &std::path::Path) {
+    match fs::remove_file(path).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "failed to remove migrated tool settings file");
+        }
+    }
+}
+
+fn normalize_key_status_slots(config: &mut AgentToolsConfig) -> bool {
+    let mut changed = false;
+    for source in &mut config.web_search.sources {
+        if source.key_statuses.len() != source.api_keys.len() {
+            source
+                .key_statuses
+                .resize_with(source.api_keys.len(), || None);
+            source.key_statuses.truncate(source.api_keys.len());
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn ensure_tool_settings_schema(conn: &mut Connection) -> AppResult<()> {
+    if !table_exists(conn, "tool_settings")? {
+        conn.execute_batch(TOOL_SETTINGS_SCHEMA_SQL)?;
+        return Ok(());
+    }
+    let columns = table_columns(conn, "tool_settings")?;
+    if columns.contains("terminal_allowed_cwd_roots_json") {
+        conn.execute_batch(TOOL_SETTINGS_SCHEMA_SQL)?;
+        return Ok(());
+    }
+    if columns.contains("id") && columns.contains("terminal_allowed_cwd_roots_overridden") {
+        migrate_normalized_tool_schema(conn)?;
+        return Ok(());
+    }
+    Err(AppError::Database(
+        "unsupported tool_settings table layout".to_string(),
+    ))
+}
+
+fn table_exists(conn: &Connection, name: &str) -> AppResult<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+fn table_columns(conn: &Connection, name: &str) -> AppResult<HashSet<String>> {
+    let sql = format!("PRAGMA table_info({name})");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    let mut columns = HashSet::new();
+    for row in rows {
+        columns.insert(row?);
+    }
+    Ok(columns)
+}
+
+fn migrate_normalized_tool_schema(conn: &mut Connection) -> AppResult<()> {
+    let defaults = read_normalized_default_settings(conn)?.ok_or_else(|| {
+        AppError::Database("normalized default tool settings row is missing".to_string())
+    })?;
+    let mut stmt = conn.prepare(
+        "SELECT scope_id FROM tool_settings WHERE scope_type = 'agent' ORDER BY scope_id",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut agent_overrides = Vec::new();
+    for row in rows {
+        let id = Uuid::parse_str(&row?)
+            .map_err(|error| AppError::Database(format!("invalid agent scope UUID: {error}")))?;
+        if let Some(mut overrides) = read_normalized_agent_overrides(conn, id)? {
+            overrides.remove_expired_approval_grants(Utc::now());
+            if !agent_overrides_are_empty(&overrides) {
+                agent_overrides.push((id, overrides));
+            }
+        }
+    }
+    drop(stmt);
+    validate_tools_config(&defaults)?;
+
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "DROP TABLE IF EXISTS tool_web_search_source_roles;
+         DROP TABLE IF EXISTS tool_web_search_api_keys;
+         DROP TABLE IF EXISTS tool_web_search_blocked_keys;
+         DROP TABLE IF EXISTS tool_web_search_sources;
+         DROP TABLE IF EXISTS tool_terminal_approval_grants;
+         DROP TABLE IF EXISTS tool_terminal_cwd_roots;
+         DROP TABLE IF EXISTS tool_settings;
+         DROP TABLE IF EXISTS storage_migrations;",
+    )?;
+    tx.execute_batch(TOOL_SETTINGS_SCHEMA_SQL)?;
+    write_default_settings_conn(&tx, &defaults)?;
+    for (agent_id, overrides) in &agent_overrides {
+        validate_tools_overrides(overrides, &defaults)?;
+        write_agent_overrides_conn(&tx, *agent_id, overrides)?;
+    }
+    tx.commit()?;
+    conn.execute_batch("VACUUM")?;
+    Ok(())
+}
+
+fn compact_default_exists(conn: &Connection) -> AppResult<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM tool_settings WHERE scope_type = 'default' AND scope_id = 'default'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> AppResult<()> {
+    let now = Utc::now().to_rfc3339();
+    let roots_json = serde_json::to_string(&config.terminal.allowed_cwd_roots)?;
+    conn.execute(
+        "INSERT INTO tool_settings (
+            scope_type, scope_id, config_version, max_llm_iterations,
+            terminal_enabled, terminal_permission_mode, terminal_default_timeout_ms,
+            terminal_allowed_cwd_roots_json, web_search_enabled, web_search_max_results,
+            web_search_timeout_ms, web_search_key_selection, evidence_storage_enabled,
+            evidence_retention_days, evidence_max_total_mb, created_at, updated_at
+         ) VALUES (
+            'default', 'default', 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13
+         )
+         ON CONFLICT(scope_type, scope_id) DO UPDATE SET
+            config_version = 1,
+            max_llm_iterations = excluded.max_llm_iterations,
+            terminal_enabled = excluded.terminal_enabled,
+            terminal_permission_mode = excluded.terminal_permission_mode,
+            terminal_default_timeout_ms = excluded.terminal_default_timeout_ms,
+            terminal_allowed_cwd_roots_json = excluded.terminal_allowed_cwd_roots_json,
+            web_search_enabled = excluded.web_search_enabled,
+            web_search_max_results = excluded.web_search_max_results,
+            web_search_timeout_ms = excluded.web_search_timeout_ms,
+            web_search_key_selection = excluded.web_search_key_selection,
+            evidence_storage_enabled = excluded.evidence_storage_enabled,
+            evidence_retention_days = excluded.evidence_retention_days,
+            evidence_max_total_mb = excluded.evidence_max_total_mb,
+            updated_at = excluded.updated_at",
+        params![
+            i64::from(config.max_llm_iterations),
+            bool_to_i64(config.terminal.enabled),
+            permission_mode_as_str(&config.terminal.permission_mode),
+            u64_to_i64(
+                config.terminal.default_timeout_ms,
+                "terminal_default_timeout_ms"
+            )?,
+            roots_json,
+            bool_to_i64(config.web_search.enabled),
+            i64::from(config.web_search.max_results),
+            u64_to_i64(config.web_search.timeout_ms, "web_search_timeout_ms")?,
+            key_selection_as_str(&config.web_search.key_selection),
+            bool_to_i64(config.evidence_storage.enabled),
+            i64::from(config.evidence_storage.retention_days),
+            u64_to_i64(
+                config.evidence_storage.max_total_mb,
+                "evidence_max_total_mb"
+            )?,
+            now,
+        ],
+    )?;
+
+    conn.execute("DELETE FROM tool_web_search_sources", [])?;
+    for (position, source) in config.web_search.sources.iter().enumerate() {
+        let roles_json = serde_json::to_string(&source.roles)?;
+        let blocked_json = serde_json::to_string(&source.blocked_api_key_hashes)?;
+        conn.execute(
+            "INSERT INTO tool_web_search_sources (
+                source_id, scope_id, position, provider, display_name, enabled,
+                deep_enabled, priority, independence_group, roles_json,
+                blocked_api_key_hashes_json, base_url, flaresolverr_url,
+                flaresolverr_proxy_url, proxy_url
+             ) VALUES (?1, 'default', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                source.id,
+                usize_to_i64(position)?,
+                source.provider.as_str(),
+                source.display_name,
+                bool_to_i64(source.enabled),
+                bool_to_i64(source.deep_enabled),
+                i64::from(source.priority),
+                source.independence_group,
+                roles_json,
+                blocked_json,
+                source.base_url,
+                source.flaresolverr_url,
+                source.flaresolverr_proxy_url,
+                source.proxy_url,
+            ],
+        )?;
+        for (key_position, api_key) in source.api_keys.iter().enumerate() {
+            let status = source
+                .key_statuses
+                .get(key_position)
+                .and_then(Option::as_ref);
+            conn.execute(
+                "INSERT INTO tool_web_search_api_keys (
+                    source_id, position, api_key, key_status, status_detail, checked_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    source.id,
+                    usize_to_i64(key_position)?,
+                    api_key,
+                    status.map(|record| record.status.as_str()),
+                    status.map(|record| record.detail.as_str()),
+                    status.map(|record| record.checked_at.as_str()),
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn write_agent_overrides_conn(
+    conn: &Connection,
+    agent_id: Uuid,
+    overrides: &AgentToolsOverrides,
+) -> AppResult<()> {
+    let agent_id = agent_id.to_string();
+    if agent_overrides_are_empty(overrides) {
+        conn.execute(
+            "DELETE FROM tool_settings WHERE scope_type = 'agent' AND scope_id = ?1",
+            [&agent_id],
+        )?;
+        return Ok(());
+    }
+
+    let roots_json = overrides
+        .terminal
+        .allowed_cwd_roots
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO tool_settings (
+            scope_type, scope_id, config_version, max_llm_iterations,
+            terminal_enabled, terminal_permission_mode, terminal_default_timeout_ms,
+            terminal_allowed_cwd_roots_json, web_search_enabled, web_search_max_results,
+            web_search_timeout_ms, web_search_key_selection, evidence_storage_enabled,
+            evidence_retention_days, evidence_max_total_mb, created_at, updated_at
+         ) VALUES (
+            'agent', ?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+            NULL, NULL, NULL, NULL, NULL, ?9, ?9
+         )
+         ON CONFLICT(scope_type, scope_id) DO UPDATE SET
+            config_version = 1,
+            max_llm_iterations = excluded.max_llm_iterations,
+            terminal_enabled = excluded.terminal_enabled,
+            terminal_permission_mode = excluded.terminal_permission_mode,
+            terminal_default_timeout_ms = excluded.terminal_default_timeout_ms,
+            terminal_allowed_cwd_roots_json = excluded.terminal_allowed_cwd_roots_json,
+            web_search_enabled = excluded.web_search_enabled,
+            web_search_max_results = excluded.web_search_max_results,
+            web_search_timeout_ms = NULL,
+            web_search_key_selection = NULL,
+            evidence_storage_enabled = NULL,
+            evidence_retention_days = NULL,
+            evidence_max_total_mb = NULL,
+            updated_at = excluded.updated_at",
+        params![
+            agent_id,
+            overrides.max_llm_iterations.map(i64::from),
+            overrides.terminal.enabled.map(bool_to_i64),
+            overrides
+                .terminal
+                .permission_mode
+                .as_ref()
+                .map(permission_mode_as_str),
+            overrides
+                .terminal
+                .default_timeout_ms
+                .map(|value| u64_to_i64(value, "terminal_default_timeout_ms"))
+                .transpose()?,
+            roots_json,
+            overrides.web_search.enabled.map(bool_to_i64),
+            overrides.web_search.max_results.map(i64::from),
+            now,
+        ],
+    )?;
+
+    conn.execute(
+        "DELETE FROM tool_terminal_approval_grants WHERE agent_id = ?1",
+        [&agent_id],
+    )?;
+    for (position, grant) in overrides.terminal.approval_grants.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO tool_terminal_approval_grants (
+                agent_id, position, command, cwd, permission_mode, created_at, expires_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                agent_id,
+                usize_to_i64(position)?,
+                grant.command,
+                grant.cwd,
+                permission_mode_as_str(&grant.permission_mode),
+                grant.created_at.map(|value| value.to_rfc3339()),
+                grant.expires_at.map(|value| value.to_rfc3339()),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+struct DefaultSettingsRow {
+    max_llm_iterations: i64,
+    terminal_enabled: i64,
+    terminal_permission_mode: String,
+    terminal_default_timeout_ms: i64,
+    terminal_allowed_cwd_roots_json: String,
+    web_search_enabled: i64,
+    web_search_max_results: i64,
+    web_search_timeout_ms: i64,
+    web_search_key_selection: String,
+    evidence_storage_enabled: i64,
+    evidence_retention_days: i64,
+    evidence_max_total_mb: i64,
+}
+
+fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsConfig>> {
+    let row = conn
+        .query_row(
+            "SELECT max_llm_iterations, terminal_enabled, terminal_permission_mode,
+                    terminal_default_timeout_ms, terminal_allowed_cwd_roots_json,
+                    web_search_enabled, web_search_max_results, web_search_timeout_ms,
+                    web_search_key_selection, evidence_storage_enabled,
+                    evidence_retention_days, evidence_max_total_mb
+             FROM tool_settings
+             WHERE scope_type = 'default' AND scope_id = 'default'",
+            [],
+            |row| {
+                Ok(DefaultSettingsRow {
+                    max_llm_iterations: row.get(0)?,
+                    terminal_enabled: row.get(1)?,
+                    terminal_permission_mode: row.get(2)?,
+                    terminal_default_timeout_ms: row.get(3)?,
+                    terminal_allowed_cwd_roots_json: row.get(4)?,
+                    web_search_enabled: row.get(5)?,
+                    web_search_max_results: row.get(6)?,
+                    web_search_timeout_ms: row.get(7)?,
+                    web_search_key_selection: row.get(8)?,
+                    evidence_storage_enabled: row.get(9)?,
+                    evidence_retention_days: row.get(10)?,
+                    evidence_max_total_mb: row.get(11)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let allowed_cwd_roots = serde_json::from_str(&row.terminal_allowed_cwd_roots_json)?;
+    Ok(Some(AgentToolsConfig {
+        max_llm_iterations: i64_to_u32(row.max_llm_iterations, "max_llm_iterations")?,
+        terminal: TerminalToolConfig {
+            enabled: i64_to_bool(row.terminal_enabled, "terminal_enabled")?,
+            permission_mode: permission_mode_from_str(&row.terminal_permission_mode)?,
+            approval_grants: Vec::new(),
+            default_timeout_ms: i64_to_u64(
+                row.terminal_default_timeout_ms,
+                "terminal_default_timeout_ms",
+            )?,
+            allowed_cwd_roots,
+        },
+        web_search: WebSearchToolConfig {
+            enabled: i64_to_bool(row.web_search_enabled, "web_search_enabled")?,
+            max_results: i64_to_u32(row.web_search_max_results, "web_search_max_results")?,
+            timeout_ms: i64_to_u64(row.web_search_timeout_ms, "web_search_timeout_ms")?,
+            key_selection: key_selection_from_str(&row.web_search_key_selection)?,
+            sources: read_compact_web_search_sources(conn)?,
+        },
+        evidence_storage: EvidenceStorageConfig {
+            enabled: i64_to_bool(row.evidence_storage_enabled, "evidence_storage_enabled")?,
+            retention_days: i64_to_u32(row.evidence_retention_days, "evidence_retention_days")?,
+            max_total_mb: i64_to_u64(row.evidence_max_total_mb, "evidence_max_total_mb")?,
+        },
+    }))
+}
+
+struct AgentSettingsRow {
+    max_llm_iterations: Option<i64>,
+    terminal_enabled: Option<i64>,
+    terminal_permission_mode: Option<String>,
+    terminal_default_timeout_ms: Option<i64>,
+    terminal_allowed_cwd_roots_json: Option<String>,
+    web_search_enabled: Option<i64>,
+    web_search_max_results: Option<i64>,
+}
+
+fn read_agent_overrides_conn(
+    conn: &Connection,
+    agent_id: Uuid,
+) -> AppResult<Option<AgentToolsOverrides>> {
+    let agent_id = agent_id.to_string();
+    let row = conn
+        .query_row(
+            "SELECT max_llm_iterations, terminal_enabled, terminal_permission_mode,
+                    terminal_default_timeout_ms, terminal_allowed_cwd_roots_json,
+                    web_search_enabled, web_search_max_results
+             FROM tool_settings
+             WHERE scope_type = 'agent' AND scope_id = ?1",
+            [&agent_id],
+            |row| {
+                Ok(AgentSettingsRow {
+                    max_llm_iterations: row.get(0)?,
+                    terminal_enabled: row.get(1)?,
+                    terminal_permission_mode: row.get(2)?,
+                    terminal_default_timeout_ms: row.get(3)?,
+                    terminal_allowed_cwd_roots_json: row.get(4)?,
+                    web_search_enabled: row.get(5)?,
+                    web_search_max_results: row.get(6)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let allowed_cwd_roots = row
+        .terminal_allowed_cwd_roots_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()?;
+    Ok(Some(AgentToolsOverrides {
+        version: 1,
+        max_llm_iterations: row
+            .max_llm_iterations
+            .map(|value| i64_to_u32(value, "max_llm_iterations"))
+            .transpose()?,
+        terminal: TerminalToolOverrides {
+            enabled: row
+                .terminal_enabled
+                .map(|value| i64_to_bool(value, "terminal_enabled"))
+                .transpose()?,
+            permission_mode: row
+                .terminal_permission_mode
+                .as_deref()
+                .map(permission_mode_from_str)
+                .transpose()?,
+            approval_grants: read_compact_terminal_grants(conn, &agent_id)?,
+            default_timeout_ms: row
+                .terminal_default_timeout_ms
+                .map(|value| i64_to_u64(value, "terminal_default_timeout_ms"))
+                .transpose()?,
+            allowed_cwd_roots,
+        },
+        web_search: WebSearchToolOverrides {
+            enabled: row
+                .web_search_enabled
+                .map(|value| i64_to_bool(value, "web_search_enabled"))
+                .transpose()?,
+            max_results: row
+                .web_search_max_results
+                .map(|value| i64_to_u32(value, "web_search_max_results"))
+                .transpose()?,
+        },
+    }))
+}
+
+fn read_compact_terminal_grants(
+    conn: &Connection,
+    agent_id: &str,
+) -> AppResult<Vec<TerminalApprovalGrant>> {
+    let mut stmt = conn.prepare(
+        "SELECT command, cwd, permission_mode, created_at, expires_at
+         FROM tool_terminal_approval_grants
+         WHERE agent_id = ?1 ORDER BY position ASC",
+    )?;
+    let rows = stmt.query_map([agent_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, String>(4)?,
+        ))
+    })?;
+    let mut grants = Vec::new();
+    for row in rows {
+        let (command, cwd, permission_mode, created_at, expires_at) = row?;
+        grants.push(TerminalApprovalGrant {
+            command,
+            cwd,
+            permission_mode: permission_mode_from_str(&permission_mode)?,
+            created_at: parse_optional_datetime(created_at, "approval created_at")?,
+            expires_at: Some(parse_datetime(&expires_at, "approval expires_at")?),
+        });
+    }
+    Ok(grants)
+}
+
+struct CompactSourceRow {
+    source_id: String,
+    provider: String,
+    display_name: String,
+    enabled: i64,
+    deep_enabled: i64,
+    priority: i64,
+    independence_group: String,
+    roles_json: String,
+    blocked_api_key_hashes_json: String,
+    base_url: Option<String>,
+    flaresolverr_url: Option<String>,
+    flaresolverr_proxy_url: Option<String>,
+    proxy_url: Option<String>,
+}
+
+fn read_compact_web_search_sources(conn: &Connection) -> AppResult<Vec<WebSearchSourceConfig>> {
+    let mut stmt = conn.prepare(
+        "SELECT source_id, provider, display_name, enabled, deep_enabled, priority,
+                independence_group, roles_json, blocked_api_key_hashes_json, base_url,
+                flaresolverr_url, flaresolverr_proxy_url, proxy_url
+         FROM tool_web_search_sources ORDER BY position ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CompactSourceRow {
+            source_id: row.get(0)?,
+            provider: row.get(1)?,
+            display_name: row.get(2)?,
+            enabled: row.get(3)?,
+            deep_enabled: row.get(4)?,
+            priority: row.get(5)?,
+            independence_group: row.get(6)?,
+            roles_json: row.get(7)?,
+            blocked_api_key_hashes_json: row.get(8)?,
+            base_url: row.get(9)?,
+            flaresolverr_url: row.get(10)?,
+            flaresolverr_proxy_url: row.get(11)?,
+            proxy_url: row.get(12)?,
+        })
+    })?;
+    let mut source_rows = Vec::new();
+    for row in rows {
+        source_rows.push(row?);
+    }
+    drop(stmt);
+
+    let mut sources = Vec::with_capacity(source_rows.len());
+    for row in source_rows {
+        let (api_keys, key_statuses) = read_compact_web_search_keys(conn, &row.source_id)?;
+        sources.push(WebSearchSourceConfig {
+            id: row.source_id,
+            provider: source_provider_from_str(&row.provider)?,
+            display_name: row.display_name,
+            enabled: i64_to_bool(row.enabled, "web search source enabled")?,
+            deep_enabled: i64_to_bool(row.deep_enabled, "web search source deep_enabled")?,
+            priority: i64_to_u16(row.priority, "web search source priority")?,
+            independence_group: row.independence_group,
+            roles: serde_json::from_str(&row.roles_json)?,
+            base_url: row.base_url,
+            api_keys,
+            blocked_api_key_hashes: serde_json::from_str(&row.blocked_api_key_hashes_json)?,
+            key_statuses,
+            flaresolverr_url: row.flaresolverr_url,
+            flaresolverr_proxy_url: row.flaresolverr_proxy_url,
+            proxy_url: row.proxy_url,
+        });
+    }
+    Ok(sources)
+}
+
+fn read_compact_web_search_keys(
+    conn: &Connection,
+    source_id: &str,
+) -> AppResult<(Vec<String>, Vec<Option<WebSearchKeyStatusRecord>>)> {
+    let mut stmt = conn.prepare(
+        "SELECT api_key, key_status, status_detail, checked_at
+         FROM tool_web_search_api_keys WHERE source_id = ?1 ORDER BY position ASC",
+    )?;
+    let rows = stmt.query_map([source_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })?;
+    let mut api_keys = Vec::new();
+    let mut statuses = Vec::new();
+    for row in rows {
+        let (api_key, status, detail, checked_at) = row?;
+        api_keys.push(api_key);
+        statuses.push(status.map(|status| WebSearchKeyStatusRecord {
+            status,
+            detail: detail.unwrap_or_default(),
+            checked_at: checked_at.unwrap_or_default(),
+        }));
+    }
+    Ok((api_keys, statuses))
+}
+
+struct NormalizedDefaultRow {
+    settings_id: i64,
+    max_llm_iterations: i64,
+    terminal_enabled: i64,
+    terminal_permission_mode: String,
+    terminal_default_timeout_ms: i64,
+    web_search_enabled: i64,
+    web_search_max_results: i64,
+    web_search_timeout_ms: i64,
+    web_search_key_selection: String,
+    evidence_storage_enabled: i64,
+    evidence_retention_days: i64,
+    evidence_max_total_mb: i64,
+}
+
+fn read_normalized_default_settings(conn: &Connection) -> AppResult<Option<AgentToolsConfig>> {
+    let row = conn
+        .query_row(
+            "SELECT id, max_llm_iterations, terminal_enabled, terminal_permission_mode,
+                    terminal_default_timeout_ms, web_search_enabled, web_search_max_results,
+                    web_search_timeout_ms, web_search_key_selection,
+                    evidence_storage_enabled, evidence_retention_days, evidence_max_total_mb
+             FROM tool_settings WHERE scope_type = 'default' AND scope_id IS NULL",
+            [],
+            |row| {
+                Ok(NormalizedDefaultRow {
+                    settings_id: row.get(0)?,
+                    max_llm_iterations: row.get(1)?,
+                    terminal_enabled: row.get(2)?,
+                    terminal_permission_mode: row.get(3)?,
+                    terminal_default_timeout_ms: row.get(4)?,
+                    web_search_enabled: row.get(5)?,
+                    web_search_max_results: row.get(6)?,
+                    web_search_timeout_ms: row.get(7)?,
+                    web_search_key_selection: row.get(8)?,
+                    evidence_storage_enabled: row.get(9)?,
+                    evidence_retention_days: row.get(10)?,
+                    evidence_max_total_mb: row.get(11)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    Ok(Some(AgentToolsConfig {
+        max_llm_iterations: i64_to_u32(row.max_llm_iterations, "max_llm_iterations")?,
+        terminal: TerminalToolConfig {
+            enabled: i64_to_bool(row.terminal_enabled, "terminal_enabled")?,
+            permission_mode: permission_mode_from_str(&row.terminal_permission_mode)?,
+            approval_grants: Vec::new(),
+            default_timeout_ms: i64_to_u64(
+                row.terminal_default_timeout_ms,
+                "terminal_default_timeout_ms",
+            )?,
+            allowed_cwd_roots: read_normalized_terminal_roots(conn, row.settings_id)?,
+        },
+        web_search: WebSearchToolConfig {
+            enabled: i64_to_bool(row.web_search_enabled, "web_search_enabled")?,
+            max_results: i64_to_u32(row.web_search_max_results, "web_search_max_results")?,
+            timeout_ms: i64_to_u64(row.web_search_timeout_ms, "web_search_timeout_ms")?,
+            key_selection: key_selection_from_str(&row.web_search_key_selection)?,
+            sources: read_normalized_web_search_sources(conn, row.settings_id)?,
+        },
+        evidence_storage: EvidenceStorageConfig {
+            enabled: i64_to_bool(row.evidence_storage_enabled, "evidence_storage_enabled")?,
+            retention_days: i64_to_u32(row.evidence_retention_days, "evidence_retention_days")?,
+            max_total_mb: i64_to_u64(row.evidence_max_total_mb, "evidence_max_total_mb")?,
+        },
+    }))
+}
+
+struct NormalizedAgentRow {
+    settings_id: i64,
+    max_llm_iterations: Option<i64>,
+    terminal_enabled: Option<i64>,
+    terminal_permission_mode: Option<String>,
+    terminal_default_timeout_ms: Option<i64>,
+    terminal_allowed_cwd_roots_overridden: i64,
+    web_search_enabled: Option<i64>,
+    web_search_max_results: Option<i64>,
+}
+
+fn read_normalized_agent_overrides(
+    conn: &Connection,
+    agent_id: Uuid,
+) -> AppResult<Option<AgentToolsOverrides>> {
+    let row = conn
+        .query_row(
+            "SELECT id, max_llm_iterations, terminal_enabled, terminal_permission_mode,
+                    terminal_default_timeout_ms, terminal_allowed_cwd_roots_overridden,
+                    web_search_enabled, web_search_max_results
+             FROM tool_settings WHERE scope_type = 'agent' AND scope_id = ?1",
+            [agent_id.to_string()],
+            |row| {
+                Ok(NormalizedAgentRow {
+                    settings_id: row.get(0)?,
+                    max_llm_iterations: row.get(1)?,
+                    terminal_enabled: row.get(2)?,
+                    terminal_permission_mode: row.get(3)?,
+                    terminal_default_timeout_ms: row.get(4)?,
+                    terminal_allowed_cwd_roots_overridden: row.get(5)?,
+                    web_search_enabled: row.get(6)?,
+                    web_search_max_results: row.get(7)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let roots_overridden = i64_to_bool(
+        row.terminal_allowed_cwd_roots_overridden,
+        "terminal_allowed_cwd_roots_overridden",
+    )?;
+    Ok(Some(AgentToolsOverrides {
+        version: 1,
+        max_llm_iterations: row
+            .max_llm_iterations
+            .map(|value| i64_to_u32(value, "max_llm_iterations"))
+            .transpose()?,
+        terminal: TerminalToolOverrides {
+            enabled: row
+                .terminal_enabled
+                .map(|value| i64_to_bool(value, "terminal_enabled"))
+                .transpose()?,
+            permission_mode: row
+                .terminal_permission_mode
+                .as_deref()
+                .map(permission_mode_from_str)
+                .transpose()?,
+            approval_grants: read_normalized_terminal_grants(conn, row.settings_id)?,
+            default_timeout_ms: row
+                .terminal_default_timeout_ms
+                .map(|value| i64_to_u64(value, "terminal_default_timeout_ms"))
+                .transpose()?,
+            allowed_cwd_roots: if roots_overridden {
+                Some(read_normalized_terminal_roots(conn, row.settings_id)?)
+            } else {
+                None
+            },
+        },
+        web_search: WebSearchToolOverrides {
+            enabled: row
+                .web_search_enabled
+                .map(|value| i64_to_bool(value, "web_search_enabled"))
+                .transpose()?,
+            max_results: row
+                .web_search_max_results
+                .map(|value| i64_to_u32(value, "web_search_max_results"))
+                .transpose()?,
+        },
+    }))
+}
+
+fn read_normalized_terminal_roots(conn: &Connection, settings_id: i64) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT path FROM tool_terminal_cwd_roots
+         WHERE settings_id = ?1 ORDER BY position ASC",
+    )?;
+    let rows = stmt.query_map([settings_id], |row| row.get(0))?;
+    let mut roots = Vec::new();
+    for row in rows {
+        roots.push(row?);
+    }
+    Ok(roots)
+}
+
+fn read_normalized_terminal_grants(
+    conn: &Connection,
+    settings_id: i64,
+) -> AppResult<Vec<TerminalApprovalGrant>> {
+    let mut stmt = conn.prepare(
+        "SELECT command, cwd, permission_mode, created_at, expires_at
+         FROM tool_terminal_approval_grants
+         WHERE settings_id = ?1 ORDER BY position ASC",
+    )?;
+    let rows = stmt.query_map([settings_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    })?;
+    let mut grants = Vec::new();
+    for row in rows {
+        let (command, cwd, permission_mode, created_at, expires_at) = row?;
+        grants.push(TerminalApprovalGrant {
+            command,
+            cwd,
+            permission_mode: permission_mode_from_str(&permission_mode)?,
+            created_at: parse_optional_datetime(created_at, "approval created_at")?,
+            expires_at: parse_optional_datetime(expires_at, "approval expires_at")?,
+        });
+    }
+    Ok(grants)
+}
+
+struct NormalizedSourceRow {
+    source_row_id: i64,
+    source_id: String,
+    provider: String,
+    display_name: String,
+    enabled: i64,
+    deep_enabled: i64,
+    priority: i64,
+    independence_group: String,
+    base_url: Option<String>,
+    flaresolverr_url: Option<String>,
+    flaresolverr_proxy_url: Option<String>,
+    proxy_url: Option<String>,
+}
+
+fn read_normalized_web_search_sources(
+    conn: &Connection,
+    settings_id: i64,
+) -> AppResult<Vec<WebSearchSourceConfig>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, source_key, provider, display_name, enabled, deep_enabled, priority,
+                independence_group, base_url, flaresolverr_url, flaresolverr_proxy_url, proxy_url
+         FROM tool_web_search_sources
+         WHERE settings_id = ?1 ORDER BY position ASC",
+    )?;
+    let rows = stmt.query_map([settings_id], |row| {
+        Ok(NormalizedSourceRow {
+            source_row_id: row.get(0)?,
+            source_id: row.get(1)?,
+            provider: row.get(2)?,
+            display_name: row.get(3)?,
+            enabled: row.get(4)?,
+            deep_enabled: row.get(5)?,
+            priority: row.get(6)?,
+            independence_group: row.get(7)?,
+            base_url: row.get(8)?,
+            flaresolverr_url: row.get(9)?,
+            flaresolverr_proxy_url: row.get(10)?,
+            proxy_url: row.get(11)?,
+        })
+    })?;
+    let mut source_rows = Vec::new();
+    for row in rows {
+        source_rows.push(row?);
+    }
+    drop(stmt);
+
+    let mut sources = Vec::with_capacity(source_rows.len());
+    for row in source_rows {
+        let (api_keys, key_statuses) = read_normalized_web_search_keys(conn, row.source_row_id)?;
+        sources.push(WebSearchSourceConfig {
+            id: row.source_id,
+            provider: source_provider_from_str(&row.provider)?,
+            display_name: row.display_name,
+            enabled: i64_to_bool(row.enabled, "web search source enabled")?,
+            deep_enabled: i64_to_bool(row.deep_enabled, "web search source deep_enabled")?,
+            priority: i64_to_u16(row.priority, "web search source priority")?,
+            independence_group: row.independence_group,
+            roles: read_normalized_web_search_roles(conn, row.source_row_id)?,
+            base_url: row.base_url,
+            api_keys,
+            blocked_api_key_hashes: read_normalized_blocked_hashes(conn, row.source_row_id)?,
+            key_statuses,
+            flaresolverr_url: row.flaresolverr_url,
+            flaresolverr_proxy_url: row.flaresolverr_proxy_url,
+            proxy_url: row.proxy_url,
+        });
+    }
+    Ok(sources)
+}
+
+fn read_normalized_web_search_roles(
+    conn: &Connection,
+    source_id: i64,
+) -> AppResult<Vec<WebSearchSourceRole>> {
+    let mut stmt = conn.prepare(
+        "SELECT role FROM tool_web_search_source_roles
+         WHERE source_id = ?1 ORDER BY position ASC",
+    )?;
+    let rows = stmt.query_map([source_id], |row| row.get::<_, String>(0))?;
+    let mut roles = Vec::new();
+    for row in rows {
+        roles.push(source_role_from_str(&row?)?);
+    }
+    Ok(roles)
+}
+
+fn read_normalized_web_search_keys(
+    conn: &Connection,
+    source_id: i64,
+) -> AppResult<(Vec<String>, Vec<Option<WebSearchKeyStatusRecord>>)> {
+    let mut stmt = conn.prepare(
+        "SELECT api_key, key_status, status_detail, checked_at
+         FROM tool_web_search_api_keys
+         WHERE source_id = ?1 ORDER BY position ASC",
+    )?;
+    let rows = stmt.query_map([source_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })?;
+    let mut api_keys = Vec::new();
+    let mut statuses = Vec::new();
+    for row in rows {
+        let (api_key, status, detail, checked_at) = row?;
+        api_keys.push(api_key);
+        statuses.push(status.map(|status| WebSearchKeyStatusRecord {
+            status,
+            detail: detail.unwrap_or_default(),
+            checked_at: checked_at.unwrap_or_default(),
+        }));
+    }
+    Ok((api_keys, statuses))
+}
+
+fn read_normalized_blocked_hashes(conn: &Connection, source_id: i64) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT fingerprint FROM tool_web_search_blocked_keys
+         WHERE source_id = ?1 ORDER BY position ASC",
+    )?;
+    let rows = stmt.query_map([source_id], |row| row.get(0))?;
+    let mut fingerprints = Vec::new();
+    for row in rows {
+        fingerprints.push(row?);
+    }
+    Ok(fingerprints)
+}
+
+fn agent_overrides_are_empty(overrides: &AgentToolsOverrides) -> bool {
+    overrides.max_llm_iterations.is_none()
+        && overrides.terminal.enabled.is_none()
+        && overrides.terminal.permission_mode.is_none()
+        && overrides.terminal.approval_grants.is_empty()
+        && overrides.terminal.default_timeout_ms.is_none()
+        && overrides.terminal.allowed_cwd_roots.is_none()
+        && overrides.web_search.enabled.is_none()
+        && overrides.web_search.max_results.is_none()
+}
+
+fn bool_to_i64(value: bool) -> i64 {
+    if value { 1 } else { 0 }
+}
+
+fn i64_to_bool(value: i64, field: &str) -> AppResult<bool> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(AppError::Database(format!(
+            "invalid boolean value {value} for {field}"
+        ))),
+    }
+}
+
+fn usize_to_i64(value: usize) -> AppResult<i64> {
+    i64::try_from(value)
+        .map_err(|_| AppError::Database("collection position exceeds SQLite range".to_string()))
+}
+
+fn u64_to_i64(value: u64, field: &str) -> AppResult<i64> {
+    i64::try_from(value)
+        .map_err(|_| AppError::Database(format!("{field} exceeds SQLite integer range")))
+}
+
+fn i64_to_u64(value: i64, field: &str) -> AppResult<u64> {
+    u64::try_from(value)
+        .map_err(|_| AppError::Database(format!("invalid negative value for {field}")))
+}
+
+fn i64_to_u32(value: i64, field: &str) -> AppResult<u32> {
+    u32::try_from(value)
+        .map_err(|_| AppError::Database(format!("invalid integer value for {field}")))
+}
+
+fn i64_to_u16(value: i64, field: &str) -> AppResult<u16> {
+    u16::try_from(value)
+        .map_err(|_| AppError::Database(format!("invalid integer value for {field}")))
+}
+
+fn parse_datetime(value: &str, field: &str) -> AppResult<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|value| value.with_timezone(&Utc))
+        .map_err(|error| AppError::Database(format!("invalid {field}: {error}")))
+}
+
+fn parse_optional_datetime(value: Option<String>, field: &str) -> AppResult<Option<DateTime<Utc>>> {
+    value
+        .as_deref()
+        .map(|value| parse_datetime(value, field))
+        .transpose()
+}
+
+fn permission_mode_as_str(mode: &TerminalPermissionMode) -> &'static str {
+    match mode {
+        TerminalPermissionMode::RequestApproval => "request_approval",
+        TerminalPermissionMode::FullAccess => "full_access",
+    }
+}
+
+fn permission_mode_from_str(value: &str) -> AppResult<TerminalPermissionMode> {
+    match value {
+        "request_approval" => Ok(TerminalPermissionMode::RequestApproval),
+        "full_access" => Ok(TerminalPermissionMode::FullAccess),
+        _ => Err(AppError::Database(format!(
+            "unknown terminal permission mode '{value}'"
+        ))),
+    }
+}
+
+fn key_selection_as_str(selection: &WebSearchKeySelection) -> &'static str {
+    match selection {
+        WebSearchKeySelection::Sequential => "sequential",
+        WebSearchKeySelection::RoundRobin => "round_robin",
+        WebSearchKeySelection::Random => "random",
+    }
+}
+
+fn key_selection_from_str(value: &str) -> AppResult<WebSearchKeySelection> {
+    match value {
+        "sequential" => Ok(WebSearchKeySelection::Sequential),
+        "round_robin" => Ok(WebSearchKeySelection::RoundRobin),
+        "random" => Ok(WebSearchKeySelection::Random),
+        _ => Err(AppError::Database(format!(
+            "unknown web search key selection '{value}'"
+        ))),
+    }
+}
+
+fn source_provider_from_str(value: &str) -> AppResult<WebSearchProviderKind> {
+    match value {
+        "tavily" => Ok(WebSearchProviderKind::Tavily),
+        "exa" => Ok(WebSearchProviderKind::Exa),
+        "jina" => Ok(WebSearchProviderKind::Jina),
+        "grok" => Ok(WebSearchProviderKind::Grok),
+        "firecrawl" => Ok(WebSearchProviderKind::Firecrawl),
+        _ => Err(AppError::Database(format!(
+            "unknown web search provider '{value}'"
+        ))),
+    }
+}
+
+fn source_role_from_str(value: &str) -> AppResult<WebSearchSourceRole> {
+    match value {
+        "general_search" => Ok(WebSearchSourceRole::GeneralSearch),
+        "semantic_research" => Ok(WebSearchSourceRole::SemanticResearch),
+        "current_news" => Ok(WebSearchSourceRole::CurrentNews),
+        "official_docs" => Ok(WebSearchSourceRole::OfficialDocs),
+        "technical_research" => Ok(WebSearchSourceRole::TechnicalResearch),
+        "academic_research" => Ok(WebSearchSourceRole::AcademicResearch),
+        "fact_checking" => Ok(WebSearchSourceRole::FactChecking),
+        "market_research" => Ok(WebSearchSourceRole::MarketResearch),
+        "product_research" => Ok(WebSearchSourceRole::ProductResearch),
+        "multilingual_search" => Ok(WebSearchSourceRole::MultilingualSearch),
+        "ai_research" => Ok(WebSearchSourceRole::AiResearch),
+        "social_search" => Ok(WebSearchSourceRole::SocialSearch),
+        _ => Err(AppError::Database(format!(
+            "unknown web search source role '{value}'"
+        ))),
+    }
+}
+
+fn validate_tools_config(config: &AgentToolsConfig) -> AppResult<()> {
+    const MAX_ALLOWED_ROOTS: usize = 8;
+    if config.max_llm_iterations == 0
+        || config.max_llm_iterations > crate::domain::tools::MAX_LLM_ITERATIONS
+    {
+        return Err(AppError::BadRequest(format!(
+            "max_llm_iterations must be between 1 and {}",
+            crate::domain::tools::MAX_LLM_ITERATIONS
+        )));
+    }
+    if config.terminal.default_timeout_ms == 0
+        || config.terminal.default_timeout_ms > crate::tools::terminal::MAX_TERMINAL_TIMEOUT_MS
+    {
+        return Err(AppError::BadRequest(format!(
+            "terminal default_timeout_ms must be between 1 and {}",
+            crate::tools::terminal::MAX_TERMINAL_TIMEOUT_MS
+        )));
+    }
+    if config.terminal.allowed_cwd_roots.len() > MAX_ALLOWED_ROOTS {
+        return Err(AppError::BadRequest(format!(
+            "at most {MAX_ALLOWED_ROOTS} terminal workspace roots may be configured"
+        )));
+    }
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .and_then(|path| std::fs::canonicalize(path).ok());
+    let mut canonical_roots = HashSet::new();
+    for root in &config.terminal.allowed_cwd_roots {
+        let path = std::fs::canonicalize(root).map_err(|error| {
+            AppError::BadRequest(format!(
+                "terminal workspace root '{root}' is invalid: {error}"
+            ))
+        })?;
+        if path.parent().is_none() {
+            return Err(AppError::BadRequest(
+                "filesystem roots cannot be used as terminal workspace roots".to_string(),
+            ));
+        }
+        if home
+            .as_ref()
+            .is_some_and(|home| crate::fsutil::paths_equal(home, &path))
+        {
+            return Err(AppError::BadRequest(
+                "the entire user home directory cannot be used as terminal workspace root"
+                    .to_string(),
+            ));
+        }
+        if !canonical_roots.insert(crate::fsutil::path_identity_key(&path)) {
+            return Err(AppError::BadRequest(
+                "terminal workspace roots must be unique".to_string(),
+            ));
+        }
+    }
+    if config.web_search.max_results == 0
+        || config.web_search.max_results > crate::domain::tools::MAX_WEB_SEARCH_RESULTS
+    {
+        return Err(AppError::BadRequest(format!(
+            "web_search max_results must be between 1 and {}",
+            crate::domain::tools::MAX_WEB_SEARCH_RESULTS
+        )));
+    }
+    if config.web_search.timeout_ms == 0
+        || config.web_search.timeout_ms > crate::domain::tools::MAX_WEB_SEARCH_TIMEOUT_MS
+    {
+        return Err(AppError::BadRequest(format!(
+            "web_search timeout_ms must be between 1 and {}",
+            crate::domain::tools::MAX_WEB_SEARCH_TIMEOUT_MS
+        )));
+    }
+    if config.evidence_storage.retention_days == 0
+        || config.evidence_storage.retention_days
+            > crate::domain::tools::MAX_EVIDENCE_RETENTION_DAYS
+    {
+        return Err(AppError::BadRequest(format!(
+            "evidence_storage retention_days must be between 1 and {}",
+            crate::domain::tools::MAX_EVIDENCE_RETENTION_DAYS
+        )));
+    }
+    if config.evidence_storage.max_total_mb == 0
+        || config.evidence_storage.max_total_mb > crate::domain::tools::MAX_EVIDENCE_TOTAL_MB
+    {
+        return Err(AppError::BadRequest(format!(
+            "evidence_storage max_total_mb must be between 1 and {}",
+            crate::domain::tools::MAX_EVIDENCE_TOTAL_MB
+        )));
+    }
+    if config.web_search.sources.len() > crate::domain::tools::MAX_WEB_SEARCH_SOURCES {
+        return Err(AppError::BadRequest(format!(
+            "at most {} web_search sources may be configured",
+            crate::domain::tools::MAX_WEB_SEARCH_SOURCES
+        )));
+    }
+    let mut source_ids = HashSet::new();
+    for source in &config.web_search.sources {
+        let id = source.id.trim();
+        if id.is_empty() || id.len() > 80 {
+            return Err(AppError::BadRequest(
+                "web_search source id must contain 1 to 80 bytes".to_string(),
+            ));
+        }
+        if !source_ids.insert(id.to_string()) {
+            return Err(AppError::BadRequest(format!(
+                "duplicate web_search source id '{id}'"
+            )));
+        }
+        if source.api_keys.len() > crate::domain::tools::MAX_WEB_SEARCH_KEYS_PER_SOURCE {
+            return Err(AppError::BadRequest(format!(
+                "web_search source '{id}' has too many API keys (max {})",
+                crate::domain::tools::MAX_WEB_SEARCH_KEYS_PER_SOURCE
+            )));
+        }
+        let mut api_keys = HashSet::new();
+        for api_key in &source.api_keys {
+            let api_key = api_key.trim();
+            if api_key.is_empty() || !api_keys.insert(api_key) {
+                return Err(AppError::BadRequest(format!(
+                    "web_search source '{id}' API keys must be non-empty and unique"
+                )));
+            }
+        }
+        let mut blocked_hashes = HashSet::new();
+        for fingerprint in &source.blocked_api_key_hashes {
+            if fingerprint.len() != 64
+                || !fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || !blocked_hashes.insert(fingerprint.to_ascii_lowercase())
+            {
+                return Err(AppError::BadRequest(format!(
+                    "web_search source '{id}' blocked key fingerprints must be valid and unique"
+                )));
+            }
+        }
+        if source.display_name.chars().count() > 100
+            || source.independence_group.chars().count() > 80
+        {
+            return Err(AppError::BadRequest(format!(
+                "web_search source '{id}' display metadata is too long"
+            )));
+        }
+        let mut roles = HashSet::new();
+        if source.roles.iter().any(|role| !roles.insert(role)) {
+            return Err(AppError::BadRequest(format!(
+                "web_search source '{id}' roles must be unique"
+            )));
+        }
+        validate_optional_http_url(id, "base_url", source.base_url.as_deref())?;
+        validate_optional_http_url(id, "flaresolverr_url", source.flaresolverr_url.as_deref())?;
+        validate_optional_proxy_url(id, "proxy_url", source.proxy_url.as_deref())?;
+        validate_optional_proxy_url(
+            id,
+            "flaresolverr_proxy_url",
+            source.flaresolverr_proxy_url.as_deref(),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_optional_http_url(source_id: &str, field: &str, value: Option<&str>) -> AppResult<()> {
+    if let Some(value) = value {
+        let value = value.trim();
+        if !value.is_empty() && !(value.starts_with("https://") || value.starts_with("http://")) {
+            return Err(AppError::BadRequest(format!(
+                "web_search source '{source_id}' {field} must start with http:// or https://"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_optional_proxy_url(source_id: &str, field: &str, value: Option<&str>) -> AppResult<()> {
+    if let Some(value) = value {
+        let value = value.trim();
+        if !value.is_empty()
+            && !(value.starts_with("http://")
+                || value.starts_with("https://")
+                || value.starts_with("socks5://")
+                || value.starts_with("socks5h://")
+                || value.starts_with("socks://"))
+        {
+            return Err(AppError::BadRequest(format!(
+                "web_search source '{source_id}' {field} must start with http://, https://, socks5:// or socks5h://"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_tools_overrides(
+    overrides: &AgentToolsOverrides,
+    defaults: &AgentToolsConfig,
+) -> AppResult<()> {
+    const MAX_APPROVAL_GRANTS: usize = 256;
+    if overrides.version != 1 {
+        return Err(AppError::BadRequest(format!(
+            "unsupported agent tool settings version {}",
+            overrides.version
+        )));
+    }
+    if overrides.terminal.approval_grants.len() > MAX_APPROVAL_GRANTS {
+        return Err(AppError::BadRequest(format!(
+            "at most {MAX_APPROVAL_GRANTS} terminal approval grants may be stored per agent"
+        )));
+    }
+    let now = Utc::now();
+    let mut unique_grants = HashSet::new();
+    for grant in &overrides.terminal.approval_grants {
+        if grant.command.trim().is_empty() || grant.command.len() > 8_000 {
+            return Err(AppError::BadRequest(
+                "terminal approval grant command must contain 1 to 8000 bytes".to_string(),
+            ));
+        }
+        if grant.permission_mode != TerminalPermissionMode::RequestApproval {
+            return Err(AppError::BadRequest(
+                "terminal approval grants require request_approval mode".to_string(),
+            ));
+        }
+        if grant
+            .cwd
+            .as_deref()
+            .is_some_and(|cwd| cwd.trim().is_empty())
+        {
+            return Err(AppError::BadRequest(
+                "terminal approval grant cwd must be null or non-empty".to_string(),
+            ));
+        }
+        let Some(expires_at) = grant.expires_at else {
+            return Err(AppError::BadRequest(
+                "terminal approval grants require an expiry time".to_string(),
+            ));
+        };
+        if expires_at <= now
+            || grant
+                .created_at
+                .is_some_and(|created_at| created_at > expires_at)
+        {
+            return Err(AppError::BadRequest(
+                "terminal approval grant timestamps are invalid".to_string(),
+            ));
+        }
+        if !unique_grants.insert((grant.command.clone(), grant.cwd.clone())) {
+            return Err(AppError::BadRequest(
+                "terminal approval grants must be unique by command and cwd".to_string(),
+            ));
+        }
+    }
+    validate_tools_config(&overrides.apply_to(defaults))
+}

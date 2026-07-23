@@ -147,6 +147,9 @@ impl JsonStore {
                 .await;
             return Err(error);
         }
+        if let Err(error) = self.delete_agent_tool_settings_unlocked(id) {
+            tracing::warn!(agent_id = %id, %error, "failed to remove deleted agent tool settings");
+        }
         for conversation_id in deleted {
             let file = self.conversation_file(conversation_id);
             if fs::metadata(&file).await.is_ok()

@@ -5,6 +5,7 @@ mod files;
 mod json_store;
 pub mod llm_logs;
 mod providers;
+mod tool_settings;
 mod validation;
 mod workspaces;
 
@@ -18,7 +19,6 @@ pub(super) const BUILTIN_CEO_COLOR: &str = "#2563eb";
 pub(super) const WORKSPACE_PERSONALITY: &str = "personality.md";
 pub(super) const WORKSPACE_MEMORY: &str = "memory.md";
 pub(super) const WORKSPACE_INSTRUCTIONS: &str = "instructions.md";
-pub(super) const WORKSPACE_TOOLS: &str = "tools.json";
 
 #[cfg(test)]
 mod tests {
@@ -47,8 +47,23 @@ mod tests {
         }
     }
 
+    fn tool_table_names(conn: &rusqlite::Connection) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type = 'table'
+                   AND (name LIKE 'tool_%' OR name IN ('storage_migrations', 'sqlite_sequence'))
+                 ORDER BY name",
+            )
+            .unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
     #[tokio::test]
-    async fn initializes_settings_and_providers_files() {
+    async fn initializes_settings_and_database() {
         let temp_dir = tempfile::tempdir().unwrap();
         let store = JsonStore::new(temp_dir.path()).await.unwrap();
 
@@ -57,7 +72,29 @@ mod tests {
         assert!(temp_dir.path().join("settings.json").exists());
         assert!(temp_dir.path().join("weiagent.db").exists());
         assert!(store.list_model_providers().await.unwrap().is_empty());
-        assert!(temp_dir.path().join("tool_defaults.json").exists());
+        assert!(!temp_dir.path().join("tool_defaults.json").exists());
+        assert_eq!(
+            store.read_tool_defaults().await.unwrap().max_llm_iterations,
+            crate::domain::tools::DEFAULT_MAX_LLM_ITERATIONS
+        );
+        let conn = db::open_data_dir(temp_dir.path()).unwrap();
+        let default_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tool_settings WHERE scope_type = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(default_rows, 1);
+        assert_eq!(
+            tool_table_names(&conn),
+            vec![
+                "tool_settings",
+                "tool_terminal_approval_grants",
+                "tool_web_search_api_keys",
+                "tool_web_search_sources",
+            ]
+        );
     }
 
     #[tokio::test]
@@ -171,6 +208,22 @@ mod tests {
         assert!(!updated.effective.terminal.enabled);
         assert_eq!(updated.effective.max_llm_iterations, 12);
         assert_eq!(updated.effective.terminal.default_timeout_ms, 45_000);
+
+        let mut explicit_empty_roots = updated.overrides;
+        explicit_empty_roots.terminal.allowed_cwd_roots = Some(Vec::new());
+        let saved = store
+            .update_agent_tools_overrides(agent.id, explicit_empty_roots)
+            .await
+            .unwrap();
+        assert_eq!(saved.overrides.terminal.allowed_cwd_roots, Some(Vec::new()));
+
+        let mut inherited_roots = saved.overrides;
+        inherited_roots.terminal.allowed_cwd_roots = None;
+        let saved = store
+            .update_agent_tools_overrides(agent.id, inherited_roots)
+            .await
+            .unwrap();
+        assert_eq!(saved.overrides.terminal.allowed_cwd_roots, None);
     }
 
     #[tokio::test]
@@ -296,29 +349,234 @@ mod tests {
     #[tokio::test]
     async fn legacy_agent_tools_config_migrates_to_differences() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
-        let agent = store
-            .list_agents()
+        let agent_id = Uuid::new_v4();
+        let now = Utc::now();
+        let agent = crate::domain::Agent {
+            id: agent_id,
+            name: "Master".to_string(),
+            description: "Coordinates tasks".to_string(),
+            model_provider_id: Uuid::nil(),
+            model_id: String::new(),
+            is_builtin: true,
+            avatar_icon: BUILTIN_CEO_ICON.to_string(),
+            avatar_color: BUILTIN_CEO_COLOR.to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        tokio::fs::create_dir_all(temp_dir.path().join("agents").join(agent_id.to_string()))
             .await
-            .unwrap()
-            .into_iter()
-            .find(|agent| agent.is_builtin)
             .unwrap();
-        let defaults = store.read_tool_defaults().await.unwrap();
+        tokio::fs::write(
+            temp_dir.path().join("agents.json"),
+            serde_json::to_string_pretty(&vec![agent]).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let defaults = crate::domain::AgentToolsConfig {
+            max_llm_iterations: 37,
+            ..crate::domain::AgentToolsConfig::default()
+        };
+        tokio::fs::write(
+            temp_dir.path().join("tool_defaults.json"),
+            serde_json::to_string_pretty(&defaults).unwrap(),
+        )
+        .await
+        .unwrap();
         let mut legacy = defaults.clone();
         let legacy_enabled = !defaults.terminal.enabled;
         legacy.terminal.enabled = legacy_enabled;
-        let legacy_path = store.agent_workspace_dir(agent.id).join(WORKSPACE_TOOLS);
+        let legacy_path = temp_dir
+            .path()
+            .join("agents")
+            .join(agent_id.to_string())
+            .join("tools.json");
         tokio::fs::write(&legacy_path, serde_json::to_string_pretty(&legacy).unwrap())
             .await
             .unwrap();
 
-        let settings = store.read_agent_tools_settings(agent.id).await.unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let settings = store.read_agent_tools_settings(agent_id).await.unwrap();
         assert_eq!(settings.overrides.terminal.enabled, Some(legacy_enabled));
         assert_eq!(settings.overrides.max_llm_iterations, None);
-        let migrated: serde_json::Value =
-            serde_json::from_str(&tokio::fs::read_to_string(legacy_path).await.unwrap()).unwrap();
-        assert_eq!(migrated["version"], 1);
+        assert_eq!(settings.defaults.max_llm_iterations, 37);
+        assert!(!legacy_path.exists());
+        assert!(!temp_dir.path().join("tool_defaults.json").exists());
+
+        let conn = db::open_data_dir(temp_dir.path()).unwrap();
+        let agent_scope: (String, String, Option<i64>) = conn
+            .query_row(
+                "SELECT scope_type, scope_id, terminal_enabled
+                 FROM tool_settings WHERE scope_type = 'agent'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(agent_scope.0, "agent");
+        assert_eq!(agent_scope.1, agent_id.to_string());
+        assert_eq!(agent_scope.2, Some(i64::from(legacy_enabled)));
+        drop(conn);
+        drop(store);
+
+        let mut stale_defaults = defaults;
+        stale_defaults.max_llm_iterations = 3;
+        tokio::fs::write(
+            temp_dir.path().join("tool_defaults.json"),
+            serde_json::to_string_pretty(&stale_defaults).unwrap(),
+        )
+        .await
+        .unwrap();
+        let reopened = JsonStore::new(temp_dir.path()).await.unwrap();
+        assert_eq!(
+            reopened
+                .read_tool_defaults()
+                .await
+                .unwrap()
+                .max_llm_iterations,
+            37
+        );
+        assert!(!temp_dir.path().join("tool_defaults.json").exists());
+    }
+
+    #[tokio::test]
+    async fn normalized_tool_tables_collapse_to_four_tables() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let agent_id = Uuid::new_v4();
+        let now = Utc::now();
+        let agent = crate::domain::Agent {
+            id: agent_id,
+            name: "Master".to_string(),
+            description: "Coordinates tasks".to_string(),
+            model_provider_id: Uuid::nil(),
+            model_id: String::new(),
+            is_builtin: true,
+            avatar_icon: BUILTIN_CEO_ICON.to_string(),
+            avatar_color: BUILTIN_CEO_COLOR.to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        tokio::fs::write(
+            temp_dir.path().join("agents.json"),
+            serde_json::to_string_pretty(&vec![agent]).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let conn = db::open_data_dir(temp_dir.path()).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tool_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_type TEXT NOT NULL,
+                scope_id TEXT,
+                max_llm_iterations INTEGER,
+                terminal_enabled INTEGER,
+                terminal_permission_mode TEXT,
+                terminal_default_timeout_ms INTEGER,
+                terminal_allowed_cwd_roots_overridden INTEGER NOT NULL DEFAULT 0,
+                web_search_enabled INTEGER,
+                web_search_max_results INTEGER,
+                web_search_timeout_ms INTEGER,
+                web_search_key_selection TEXT,
+                evidence_storage_enabled INTEGER,
+                evidence_retention_days INTEGER,
+                evidence_max_total_mb INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+             );
+             CREATE TABLE tool_terminal_cwd_roots (
+                settings_id INTEGER, position INTEGER, path TEXT
+             );
+             CREATE TABLE tool_terminal_approval_grants (
+                settings_id INTEGER, position INTEGER, command TEXT, cwd TEXT,
+                permission_mode TEXT, created_at TEXT, expires_at TEXT
+             );
+             CREATE TABLE tool_web_search_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                settings_id INTEGER, position INTEGER, source_key TEXT, provider TEXT,
+                display_name TEXT, enabled INTEGER, deep_enabled INTEGER, priority INTEGER,
+                independence_group TEXT, base_url TEXT, flaresolverr_url TEXT,
+                flaresolverr_proxy_url TEXT, proxy_url TEXT
+             );
+             CREATE TABLE tool_web_search_source_roles (
+                source_id INTEGER, position INTEGER, role TEXT
+             );
+             CREATE TABLE tool_web_search_api_keys (
+                source_id INTEGER, position INTEGER, api_key TEXT, key_status TEXT,
+                status_detail TEXT, checked_at TEXT
+             );
+             CREATE TABLE tool_web_search_blocked_keys (
+                source_id INTEGER, position INTEGER, fingerprint TEXT
+             );
+             CREATE TABLE storage_migrations (name TEXT PRIMARY KEY, applied_at TEXT);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_settings VALUES (
+                1, 'default', NULL, 41, 1, 'request_approval', 30000, 1,
+                1, 5, 15000, 'sequential', 1, 30, 200, ?1, ?1
+             )",
+            [now.to_rfc3339()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_settings VALUES (
+                2, 'agent', ?1, NULL, 0, NULL, NULL, 0,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?2, ?2
+             )",
+            rusqlite::params![agent_id.to_string(), now.to_rfc3339()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_web_search_sources VALUES (
+                1, 1, 0, 'tavily', 'tavily', 'Tavily', 1, 1, 10,
+                'tavily', NULL, NULL, NULL, NULL
+             )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_web_search_source_roles VALUES (1, 0, 'general_search')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_web_search_api_keys VALUES (
+                1, 0, 'legacy-key', 'normal', 'request succeeded', '2026-07-23T00:00:00Z'
+             )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_web_search_blocked_keys VALUES (1, 0, ?1)",
+            ["a".repeat(64)],
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let defaults = store.read_tool_defaults().await.unwrap();
+        assert_eq!(defaults.max_llm_iterations, 41);
+        let tavily = defaults
+            .web_search
+            .sources
+            .iter()
+            .find(|source| source.id == "tavily")
+            .unwrap();
+        assert_eq!(tavily.api_keys, vec!["legacy-key".to_string()]);
+        assert_eq!(tavily.blocked_api_key_hashes, vec!["a".repeat(64)]);
+        let agent = store.read_agent_tools_settings(agent_id).await.unwrap();
+        assert_eq!(agent.overrides.terminal.enabled, Some(false));
+
+        let conn = db::open_data_dir(temp_dir.path()).unwrap();
+        assert_eq!(
+            tool_table_names(&conn),
+            vec![
+                "tool_settings",
+                "tool_terminal_approval_grants",
+                "tool_web_search_api_keys",
+                "tool_web_search_sources",
+            ]
+        );
     }
 
     #[tokio::test]

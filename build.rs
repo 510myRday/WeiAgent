@@ -5,7 +5,10 @@ use std::{
     time::SystemTime,
 };
 
+const WINDOWS_ICON: &str = "design/weiagent-logo-final/weiagent-app-icon.ico";
+
 fn main() {
+    println!("cargo:rerun-if-changed={WINDOWS_ICON}");
     println!("cargo:rerun-if-changed=frontend/src");
     println!("cargo:rerun-if-changed=frontend/public");
     println!("cargo:rerun-if-changed=frontend/locales");
@@ -13,6 +16,8 @@ fn main() {
     println!("cargo:rerun-if-changed=frontend/package.json");
     println!("cargo:rerun-if-changed=frontend/package-lock.json");
     println!("cargo:rerun-if-env-changed=WEIAGENT_FORCE_FRONTEND_BUILD");
+
+    embed_windows_resources();
 
     let frontend_dir = Path::new("frontend");
     let dist_index = frontend_dir.join("dist").join("index.html");
@@ -38,6 +43,20 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=frontend/dist");
+}
+
+fn embed_windows_resources() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+
+    let mut resource = winresource::WindowsResource::new();
+    resource.set_icon(WINDOWS_ICON);
+    resource.set("ProductName", "WeiAgent");
+    resource.set("FileDescription", "WeiAgent");
+    resource
+        .compile()
+        .expect("failed to embed the WeiAgent Windows icon");
 }
 
 fn ensure_frontend_dependencies(frontend_dir: &Path) {

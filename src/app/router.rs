@@ -131,6 +131,7 @@ fn api_router() -> Router<AppState> {
             "/api/tools/defaults",
             get(tools::read_tool_defaults).put(tools::update_tool_defaults),
         )
+        .route("/api/tools/pick-directory", post(tools::pick_directory))
         .route(
             "/api/tools/web-search-keys/check",
             post(tools::check_web_search_keys),

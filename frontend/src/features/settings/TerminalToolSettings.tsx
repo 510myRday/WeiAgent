@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, Download, Pencil, Plus, RefreshCw, ShieldCheck, Square, Trash2 } from 'lucide-react';
+import { ArrowLeft, Download, Folder, FolderOpen, LoaderCircle, Pencil, Plus, RefreshCw, ShieldCheck, Square, Trash2 } from 'lucide-react';
 
 import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, ToolProcessInfo } from '../../api';
 import {
   installRuntimeComponent,
   listToolProcesses,
+  pickDirectory,
   readAgentToolsConfig,
   readCodexRuntime,
   readToolDefaults,
@@ -76,6 +77,7 @@ export function TerminalToolSettings({
   const [processRequestKey, setProcessRequestKey] = useState(0);
   const [isStoppingProcess, setIsStoppingProcess] = useState('');
   const [rootInput, setRootInput] = useState('');
+  const [isPickingRoot, setIsPickingRoot] = useState(false);
   const isPageVisible = usePageVisibility();
   const activeContextRef = useRef(contextKey);
   const loadedContextRef = useRef('');
@@ -557,6 +559,21 @@ export function TerminalToolSettings({
     setRootInput('');
   }
 
+  async function browseForRoot() {
+    if (!config || isPickingRoot) return;
+    setIsPickingRoot(true);
+    try {
+      const roots = config.terminal.allowed_cwd_roots;
+      const initialDirectory = rootInput.trim() || roots[roots.length - 1];
+      const selection = await pickDirectory(initialDirectory);
+      if (selection.path) setRootInput(selection.path);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('tools.terminal.browseFailed'));
+    } finally {
+      setIsPickingRoot(false);
+    }
+  }
+
   function removeRoot(index: number) {
     if (!config) return;
     updateTerminal({
@@ -601,6 +618,8 @@ export function TerminalToolSettings({
   const sandboxAvailable = runtime?.available === true;
   const terminalUnavailable = !sandboxAvailable;
   const runtimeComponents = normalizeRuntimeComponents(runtime);
+  const normalizedRootInput = rootInput.trim();
+  const rootAlreadyAdded = terminal.allowed_cwd_roots.includes(normalizedRootInput);
 
   if (isAgentScope && agentToolView === 'list') {
     return (
@@ -811,19 +830,39 @@ export function TerminalToolSettings({
           <p className="card-description">{t('tools.terminal.allowedRootsDesc')}</p>
           <div className="pattern-input-wrapper">
             <input disabled={fieldInherited('allowed_cwd_roots')} value={rootInput} onChange={(event) => setRootInput(event.target.value)} placeholder={t('tools.terminal.pathPlaceholder')} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addRoot(); } }} className="pattern-input" />
-            <Button variant="secondary" disabled={fieldInherited('allowed_cwd_roots')} onClick={addRoot} icon={<Plus size={16} />} className="add-btn">{t('tools.terminal.add')}</Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={fieldInherited('allowed_cwd_roots') || isPickingRoot}
+              onClick={() => void browseForRoot()}
+              icon={isPickingRoot ? <LoaderCircle size={16} className="is-spinning" /> : <FolderOpen size={16} />}
+              className="browse-btn"
+            >
+              {isPickingRoot ? t('tools.terminal.browsing') : t('tools.terminal.browse')}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={fieldInherited('allowed_cwd_roots') || !normalizedRootInput || rootAlreadyAdded}
+              onClick={addRoot}
+              icon={<Plus size={16} />}
+              className="add-btn"
+            >
+              {t('tools.terminal.add')}
+            </Button>
           </div>
           {terminal.allowed_cwd_roots.length > 0 ? (
-            <ul className="pattern-tags">
+            <ul className="allowed-root-list">
               {terminal.allowed_cwd_roots.map((value, index) => (
-                <li key={`${value}-${index}`} className="pattern-tag safe">
-                  <code>{value}</code>
+                <li key={`${value}-${index}`} className="allowed-root-item">
+                  <Folder size={16} aria-hidden="true" className="allowed-root-icon" />
+                  <code title={value}>{value}</code>
                   <IconButton
                     type="button"
                     variant="ghost"
                     disabled={fieldInherited('allowed_cwd_roots')}
                     onClick={() => removeRoot(index)}
-                    className="remove-btn"
+                    className="allowed-root-remove"
                     label={t('tools.terminal.remove')}
                   >
                     <Trash2 size={14} />

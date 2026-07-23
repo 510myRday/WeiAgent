@@ -426,6 +426,11 @@ export type ToolProcessInfo = {
   tty: boolean;
   output_cursor: number;
 };
+
+export type PickDirectoryResponse = {
+  path: string | null;
+};
+
 export function readToolDefaults(): Promise<AgentToolsConfig> {
   return request<AgentToolsConfig>('/api/tools/defaults').then(normalizeToolDefaults);
 }
@@ -578,6 +583,18 @@ function normalizeAgentToolsSettings(settings: AgentToolsSettings): AgentToolsSe
 
 export function readCodexRuntime(): Promise<CodexRuntimeStatus> {
   return request<CodexRuntimeStatus>('/api/tools/codex-runtime');
+}
+
+export function pickDirectory(initialDirectory?: string): Promise<PickDirectoryResponse> {
+  return request<PickDirectoryResponse>(
+    '/api/tools/pick-directory',
+    {
+      method: 'POST',
+      body: JSON.stringify({ initial_directory: initialDirectory || null }),
+    },
+    undefined,
+    15 * 60 * 1000,
+  );
 }
 
 

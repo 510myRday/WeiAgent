@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Terminal tool configuration stored in data/agents/{agent_id}/tools.json.
+/// Effective terminal tool configuration assembled from SQLite defaults and agent overrides.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TerminalToolConfig {
@@ -87,7 +87,7 @@ impl Default for TerminalToolConfig {
     }
 }
 
-/// Agent tool configuration collection (tools.json top-level structure).
+/// Effective tool configuration collection returned by the storage layer.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentToolsConfig {

@@ -21,6 +21,16 @@ use crate::domain::tools::{WebSearchKeyStatusUpdate, mask_api_key};
 use crate::tools::web_search::providers::{exa, firecrawl, grok, grok_support, jina, tavily};
 use crate::tools::web_search::types::{ProviderSearchRequest, SearchMode};
 
+#[cfg(windows)]
+use {
+    raw_window_handle::{
+        DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, Win32WindowHandle,
+        WindowHandle,
+    },
+    std::num::NonZeroIsize,
+    windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow,
+};
+
 #[derive(Debug, Deserialize)]
 pub struct CheckWebSearchKeysRequest {
     #[serde(default)]
@@ -79,6 +89,46 @@ pub struct DeleteWebSearchKeyResponse {
     pub source: WebSearchSourceConfig,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PickDirectoryRequest {
+    #[serde(default)]
+    pub initial_directory: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PickDirectoryResponse {
+    pub path: Option<String>,
+}
+
+#[cfg(windows)]
+struct DialogParentWindow {
+    hwnd: NonZeroIsize,
+}
+
+#[cfg(windows)]
+impl DialogParentWindow {
+    fn foreground() -> Option<Self> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        NonZeroIsize::new(hwnd as isize).map(|hwnd| Self { hwnd })
+    }
+}
+
+#[cfg(windows)]
+impl HasWindowHandle for DialogParentWindow {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+        let handle = Win32WindowHandle::new(self.hwnd);
+        // The HWND is borrowed only while rfd copies it into the dialog options.
+        Ok(unsafe { WindowHandle::borrow_raw(handle.into()) })
+    }
+}
+
+#[cfg(windows)]
+impl HasDisplayHandle for DialogParentWindow {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+        Ok(DisplayHandle::windows())
+    }
+}
+
 pub async fn read_agent_tools_config(
     State(state): State<AppState>,
     Path(agent_id): Path<Uuid>,
@@ -122,6 +172,35 @@ pub async fn update_tool_defaults(
         }
     }
     Ok(Json(config.redact_secrets()))
+}
+
+pub async fn pick_directory(
+    Json(request): Json<PickDirectoryRequest>,
+) -> AppResult<Json<PickDirectoryResponse>> {
+    let mut dialog = rfd::AsyncFileDialog::new();
+    #[cfg(windows)]
+    let parent_window = DialogParentWindow::foreground();
+    #[cfg(windows)]
+    if let Some(parent_window) = parent_window.as_ref() {
+        dialog = dialog.set_parent(parent_window);
+    }
+    if let Some(initial_directory) = request
+        .initial_directory
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let initial_directory = std::path::Path::new(initial_directory);
+        if initial_directory.is_dir() {
+            dialog = dialog.set_directory(initial_directory);
+        }
+    }
+
+    let path = dialog
+        .pick_folder()
+        .await
+        .map(|folder| folder.path().to_string_lossy().into_owned());
+    Ok(Json(PickDirectoryResponse { path }))
 }
 
 pub async fn import_web_search_keys(

@@ -114,6 +114,8 @@ WeiAgent/
 │       ├── agents.rs         # Agent CRUD
 │       ├── providers.rs      # Provider CRUD（含关联 Agent 校验）
 │       ├── conversations.rs  # Conversation CRUD、消息持久化
+│       ├── db.rs             # SQLite schema、连接和 Provider 持久化
+│       ├── tool_settings.rs  # 工具配置关系存储、继承合并和旧 JSON 一次迁移
 │       ├── workspaces.rs     # Workspace 读写、system_prompt 拼接、内置 Agent 初始化
 │       ├── validation.rs     # 字段校验（avatar 去重、hex 颜色、provider/model 关联）
 │       └── files.rs          # JSON 文件读写工具
@@ -129,29 +131,60 @@ WeiAgent/
 │   └── vite.config.ts        # Vite 配置（proxy、vendor chunk 分割）
 └── data/                     # 运行时数据（dev 模式在项目根目录，release 在 exe 同目录）
     ├── settings.json
-    ├── tool_defaults.json
+    ├── weiagent.db            # Provider、日志和全部工具配置
     ├── agents.json
     ├── conversations.json
     ├── agents/{agent_id}/    # 工作空间文件
     │   ├── personality.md
     │   ├── memory.md
-    │   ├── instructions.md
-    │   └── tools.json         # Agent 工具覆盖项和上下文授权
+    │   └── instructions.md
     ├── runtimes/              # WeiAgent 托管的 Codex 运行时和隔离 CODEX_HOME
     └── conversations/{conversation_id}.json
 ```
 
-## JSON 配置
+## 运行时数据
 
 项目不再从 `.env` 或系统环境变量读取运行配置。`cargo run dev` 使用项目根目录下的 `data`；直接运行打包后的二进制文件时，使用二进制文件同目录下的 `data`，不存在则自动初始化。
 
 - `data/settings.json`：保存应用监听地址、端口、日志级别、用户头像图标和颜色、语言、请求超时秒数、超时重试次数。默认值：`127.0.0.1:18283`、`info`、`bot/#22c55e`、`zh`、`60`、`3`
-- `data/weiagent.db` 表 `model_providers`：保存模型提供商、Base URL、API Key、模型列表和 extra_body。API Key 本地明文保存，API 响应通过 `has_api_key` / `masked_api_key` 脱敏
-- `data/tool_defaults.json`：保存所有 Agent 默认继承的工具配置，不保存任何 Agent 上下文授权
+- `data/weiagent.db`：保存模型提供商、LLM 日志和全部工具配置。Provider API Key 与工具 API Key 本地明文保存，API 响应只返回脱敏值
 - `data/agents.json`：保存 Agent 配置，包含 `id`、`name`、`description`、`model_provider_id`、`model_id`、`is_builtin`、`avatar_icon`、`avatar_color`、`created_at`、`updated_at`
 - `data/conversations.json` 与 `data/conversations/{conversation_id}.json`：保存多会话元数据和消息。会话标题自动从第一条用户消息截取（最多 80 字符）；`message_count` 在列表查询时自动修正
 
 旧版 `model` 字段和 `data/chats/{agent_id}.json` 会在启动时迁移到 Provider 与 Conversation 结构。
+
+## 工具配置数据库结构
+
+工具配置不再使用运行时 JSON 文件。整个工具配置只使用 4 张业务表；`tool_settings` 是统一作用域主表，默认配置与 Agent 覆盖使用同一套字段，通过作用域区分。
+
+| 字段 | 含义 |
+| --- | --- |
+| `scope_type` | `default` 或 `agent` |
+| `scope_id` | 默认行固定为 `default`；Agent 行保存 Agent UUID；与 `scope_type` 组成主键 |
+| `config_version` | 当前配置结构版本，现为 `1` |
+| `max_llm_iterations` | 单轮最大工具迭代数；Agent 行为 `NULL` 时继承 |
+| `terminal_enabled` | 终端工具开关；Agent 行为 `NULL` 时继承 |
+| `terminal_permission_mode` | `request_approval` / `full_access`；Agent 行为 `NULL` 时继承 |
+| `terminal_default_timeout_ms` | 前台等待超时；Agent 行为 `NULL` 时继承 |
+| `terminal_allowed_cwd_roots_json` | 小型目录数组；`NULL` 表示继承，`[]` 表示显式覆盖为空 |
+| `web_search_enabled` | 网络搜索开关；Agent 行为 `NULL` 时继承 |
+| `web_search_max_results` | 搜索结果数；Agent 行为 `NULL` 时继承 |
+| `web_search_timeout_ms` | 全局搜索超时，Agent 行必须为 `NULL` |
+| `web_search_key_selection` | 全局 Key 选择策略，Agent 行必须为 `NULL` |
+| `evidence_storage_*` | 全局证据存储开关、保留天数和容量，Agent 行必须为 `NULL` |
+| `created_at` / `updated_at` | 配置行创建和更新时间 |
+
+其余 3 张表只拆分需要独立查询、更新或生命周期管理的数据：
+
+- `tool_terminal_approval_grants`：只属于 Agent 的命令授权，包含命令、cwd、权限模式和有效期。
+- `tool_web_search_sources`：全局搜索源及其 provider、开关、优先级、URL 和代理配置；角色列表与封禁指纹分别保存在 `roles_json`、`blocked_api_key_hashes_json` 两列。
+- `tool_web_search_api_keys`：搜索源 API Key 及对应状态、详情和检测时间。
+
+目录、角色、封禁指纹都是数量小且不单独检索的数组，因此保留为 JSON 列，避免再拆 3 张低价值表。授权需要按过期时间管理，搜索 Key 需要独立更新状态，所以继续使用独立行。所有表使用自然主键或组合主键，不使用 `AUTOINCREMENT`，数据库不会保留 `sqlite_sequence`。
+
+数据库约束保证只有一行 `default`，每个 Agent 最多一行覆盖；Agent 覆盖使用稀疏存储，整行没有覆盖和授权时直接删除该行。读取时仍向 API 返回 `defaults`、`overrides`、`effective`，因此前端契约不变。
+
+旧 `data/tool_defaults.json`、Agent `tools.json` 以及上一版 9 表结构都会在单个 SQLite 事务中迁移到这 4 张表。提交后删除旧文件和旧表并执行 `VACUUM`；迁移完成通过新表结构和默认行判断，不再保留 `storage_migrations` 标记表。
 
 ## 第一版 API
 
@@ -222,7 +255,6 @@ WeiAgent/
 - `data/agents/{agent_id}/personality.md`：个性、人设、沟通风格
 - `data/agents/{agent_id}/memory.md`：长期记忆、用户偏好、项目背景和重要决策
 - `data/agents/{agent_id}/instructions.md`：核心工作规则、输出要求和默认流程
-- `data/agents/{agent_id}/tools.json`：只保存该 Agent 相对全局默认值的覆盖字段，以及该 Agent 的上下文授权；旧版完整配置会自动迁移为差异覆盖
 
 运行时 system prompt 由以下几部分按固定顺序拼接后发送给模型：
 
@@ -235,7 +267,7 @@ WeiAgent/
 
 工具与缓存相关约定：
 
-- 工具执行使用“全局默认 + Agent 覆盖 + Agent 授权”合并后的有效配置，`tools.json` 本身不进入提示词。
+- 工具执行使用数据库中的“全局默认 + Agent 覆盖 + Agent 授权”合并后的有效配置；工具配置本身不进入提示词。
 - **同一 Agent run 内**：发给模型的 `tools` 定义在 run 开始时冻结，避免中途配置变化打断 prompt cache 前缀；工具**执行**仍按调用热读配置（如权限模式），可在 run 内热更新。
 - 历史里的 `tool_calls` 可为 UI 保留 `permission_mode`，但 OpenAI Chat 等协议回传模型时会剥离该字段。
 - 写入对话历史的 tool result 会对模型侧做精简（去掉 `duration_ms` 等易变字段、截断过长 stdout/stderr、压缩 `web_search` snippet），前端事件仍可使用完整执行结果。
@@ -339,7 +371,7 @@ Agent 响应会额外返回后端保存的内置身份信息：
 
 ### 工具配置
 
-- 全局工具页编辑 `data/tool_defaults.json`，作为所有 Agent 的默认配置。
+- 全局工具页编辑 `weiagent.db` 中 `scope_type = 'default'` 的工具设置，作为所有 Agent 的默认配置。
 - Agent 的 Tools 标签按字段选择“继承默认”或保存独立覆盖，不复制整份全局配置。
 - `approval_grants` 始终属于具体 Agent，不参与全局继承。
 - API 同时返回 `defaults`、`overrides`、`effective`，聊天执行只使用合并后的 `effective`。
@@ -420,11 +452,11 @@ User Message
 
 ## 第四阶段：网络搜索工具
 
-网络搜索是第二个内置工具组，模型侧只暴露 `web_search`。密钥仅保存在全局 `data/tool_defaults.json`；Agent 只能覆盖启用状态和 `max_results`。
+网络搜索是第二个内置工具组，模型侧只暴露 `web_search`。密钥仅保存在全局数据库子表 `tool_web_search_api_keys`；Agent 只能覆盖启用状态和 `max_results`。
 
 ### 配置结构
 
-全局默认（`tool_defaults.json`）：
+全局默认的 API 读写结构（持久化时拆分到关系表）：
 
 ```json
 {
@@ -450,7 +482,7 @@ User Message
 - Firecrawl 使用 `/v2/search`：普通模式返回 Highlights；时效查询可合并 web/news；Deep 模式为最多 5 条结果请求 Markdown 正文
 - 读 API 返回脱敏 Key（`****` + 后 4 位）；写更新：`["__preserve__"]` 保留、`[]` 清空、明文列表替换
 
-Agent `tools.json` 覆盖仅允许：
+Agent 覆盖的 API 结构仅允许：
 
 ```json
 {

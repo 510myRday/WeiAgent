@@ -17,7 +17,6 @@ pub struct JsonStore {
     pub data_dir: PathBuf,
     pub terminal_workspace_dir: PathBuf,
     pub(super) settings_file: PathBuf,
-    pub(super) tool_defaults_file: PathBuf,
     pub(super) agents_file: PathBuf,
     pub(super) agents_dir: PathBuf,
     pub(super) conversations_file: PathBuf,
@@ -30,7 +29,6 @@ impl JsonStore {
         let root = root.as_ref().to_path_buf();
         let terminal_workspace_dir = crate::config::terminal_workspace_dir(&root);
         let settings_file = root.join("settings.json");
-        let tool_defaults_file = root.join("tool_defaults.json");
         let agents_file = root.join("agents.json");
         let agents_dir = root.join("agents");
         let conversations_file = root.join("conversations.json");
@@ -43,23 +41,18 @@ impl JsonStore {
         ensure_json_array(&conversations_file).await?;
         load_or_init_settings(&settings_file).await?;
         db::ensure_schema(&root)?;
-        if fs::metadata(&tool_defaults_file).await.is_err() {
-            let content =
-                serde_json::to_string_pretty(&crate::domain::AgentToolsConfig::default())?;
-            crate::fsutil::write_atomic(&tool_defaults_file, content).await?;
-        }
 
         let store = Self {
             data_dir: root,
             terminal_workspace_dir,
             settings_file,
-            tool_defaults_file,
             agents_file,
             agents_dir,
             conversations_file,
             conversations_dir,
             lock: Mutex::new(()),
         };
+        store.initialize_tool_settings().await?;
         store.ensure_builtin_agents().await?;
         store.repair_conversation_metadata().await?;
         Ok(store)
