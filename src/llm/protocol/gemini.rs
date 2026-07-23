@@ -194,6 +194,7 @@ impl ProtocolAdapter for GeminiAdapter {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_gemini_request(
     model_id: &str,
     agent_id: Uuid,

@@ -468,8 +468,8 @@ mod tests {
             tools: Option<Vec<ToolDefinition>>,
         ) -> AppResult<ChatCompletionOutput> {
             if let Some(list) = &tools {
-                // execute_terminal + terminal_session + multi_edit_file
-                assert_eq!(list.len(), 3);
+                // Three terminal tools plus three web-search tools.
+                assert_eq!(list.len(), 6);
             }
             self.complete_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1290,8 +1290,8 @@ mod tests {
             _options: crate::llm::client::RequestOptions,
             tools: Option<Vec<ToolDefinition>>,
         ) -> AppResult<ChatStream> {
-            // execute_terminal + terminal_session + multi_edit_file
-            assert_eq!(tools.as_ref().map(Vec::len), Some(3));
+            // Three terminal tools plus three web-search tools.
+            assert_eq!(tools.as_ref().map(Vec::len), Some(6));
             let events = self.streams.lock().unwrap().pop_front().ok_or_else(|| {
                 crate::error::AppError::Llm("stream script exhausted".to_string())
             })?;

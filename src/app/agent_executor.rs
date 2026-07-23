@@ -97,6 +97,7 @@ struct AgentRuntime<'a> {
 struct ToolBudget {
     seen_call_ids: HashSet<String>,
     total_calls: usize,
+    web_search_provenance: crate::tools::web_search::evidence::WebSearchProvenanceCache,
 }
 
 async fn ensure_messages_within_context(
@@ -523,6 +524,7 @@ async fn execute_tool_calls(
             terminal_manager: state.terminal_manager.clone(),
             approval_manager: state.approval_manager.clone(),
             event_sender: None,
+            web_search_provenance: budget.web_search_provenance.clone(),
         };
         let result = execute_tool_with_events(
             state,

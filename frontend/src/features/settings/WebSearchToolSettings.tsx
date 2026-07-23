@@ -110,34 +110,55 @@ const SOURCE_ROLE_GROUPS: Array<{
 
 function defaultWebSearch(): WebSearchToolConfig {
   return {
-    enabled: false,
+    enabled: true,
     max_results: 5,
     timeout_ms: 15000,
     key_selection: 'sequential',
+    extraction: {
+      remote_enabled: true,
+      max_remote_attempts_per_url: 3,
+      allow_grok_fallback: true,
+    },
     sources: [
-      { id: 'tavily', provider: 'tavily', display_name: 'Tavily', enabled: true, deep_enabled: true, priority: 10, independence_group: 'tavily', roles: ['general_search', 'current_news', 'fact_checking', 'market_research', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'exa', provider: 'exa', display_name: 'Exa', enabled: true, deep_enabled: true, priority: 20, independence_group: 'exa', roles: ['semantic_research', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'jina', provider: 'jina', display_name: 'Jina Search', enabled: true, deep_enabled: true, priority: 30, independence_group: 'jina', roles: ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'grok', provider: 'grok', display_name: 'Grok Research', enabled: true, deep_enabled: true, priority: 40, independence_group: 'grok', roles: ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'firecrawl', provider: 'firecrawl', display_name: 'Firecrawl', enabled: true, deep_enabled: true, priority: 50, independence_group: 'firecrawl', roles: ['general_search', 'current_news', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'market_research', 'product_research', 'multilingual_search'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'tavily', provider: 'tavily', display_name: 'Tavily', enabled: false, deep_enabled: true, extract_enabled: true, priority: 10, independence_group: 'tavily', roles: ['general_search', 'current_news', 'fact_checking', 'market_research', 'product_research'], api_keys: [], extract_base_url: null, flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'exa', provider: 'exa', display_name: 'Exa', enabled: false, deep_enabled: true, extract_enabled: true, priority: 20, independence_group: 'exa', roles: ['semantic_research', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'product_research'], api_keys: [], extract_base_url: null, flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'jina', provider: 'jina', display_name: 'Jina Search', enabled: true, deep_enabled: true, extract_enabled: true, priority: 30, independence_group: 'jina', roles: ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'], api_keys: [], extract_base_url: null, flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'grok', provider: 'grok', display_name: 'Grok Research', enabled: false, deep_enabled: true, extract_enabled: true, priority: 40, independence_group: 'grok', roles: ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'], api_keys: [], extract_base_url: null, flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'firecrawl', provider: 'firecrawl', display_name: 'Firecrawl', enabled: false, deep_enabled: true, extract_enabled: true, priority: 50, independence_group: 'firecrawl', roles: ['general_search', 'current_news', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'market_research', 'product_research', 'multilingual_search'], api_keys: [], extract_base_url: null, flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
     ],
   };
 }
 
 function normalizeWebSearchSources(sources: WebSearchSourceConfig[]): WebSearchSourceConfig[] {
-  return sources.map((source, index) => ({
-    ...source,
-    display_name: providerLabelFallback(source.provider),
-    deep_enabled: source.deep_enabled ?? true,
-    priority: (index + 1) * 10,
-    independence_group: source.provider,
-    roles: source.roles?.length ? source.roles : defaultRoles(source.provider),
-    api_keys: source.api_keys ?? [],
-    key_statuses: source.key_statuses ?? [],
-    flaresolverr_url: source.flaresolverr_url ?? null,
-    flaresolverr_proxy_url: source.flaresolverr_proxy_url ?? null,
-    proxy_url: source.proxy_url ?? null,
-  }));
+  return sources.map((source, index) => {
+    const normalized = {
+      ...source,
+      display_name: providerLabelFallback(source.provider),
+      deep_enabled: source.deep_enabled ?? true,
+      extract_enabled: source.extract_enabled ?? true,
+      priority: (index + 1) * 10,
+      independence_group: source.provider,
+      roles: source.roles?.length ? source.roles : defaultRoles(source.provider),
+      api_keys: source.api_keys ?? [],
+      key_statuses: source.key_statuses ?? [],
+      extract_key_statuses: source.extract_key_statuses ?? [],
+      extract_base_url: source.extract_base_url ?? null,
+      flaresolverr_url: source.flaresolverr_url ?? null,
+      flaresolverr_proxy_url: source.flaresolverr_proxy_url ?? null,
+      proxy_url: source.proxy_url ?? null,
+    };
+    return {
+      ...normalized,
+      enabled: normalized.enabled && sourceCanBeEnabled(normalized),
+    };
+  });
+}
+
+function sourceCanBeEnabled(source: WebSearchSourceConfig): boolean {
+  if (source.provider === 'jina') return true;
+  return source.api_keys.some((key, index) => (
+    key.trim().length > 0 && source.key_statuses?.[index]?.status !== 'officially_blocked'
+  ));
 }
 
 function providerLabelFallback(provider: WebSearchProviderKind): string {
@@ -180,6 +201,10 @@ function withWebSearch(config: AgentToolsConfig): AgentToolsConfig {
     web_search: {
       ...defaultWebSearch(),
       ...config.web_search,
+      extraction: {
+        ...defaultWebSearch().extraction,
+        ...config.web_search?.extraction,
+      },
       sources,
     },
   };
@@ -606,6 +631,15 @@ export function WebSearchToolSettings({
     if (patch.enabled !== undefined) nextWebSearch.enabled = patch.enabled;
     if (patch.max_results !== undefined) nextWebSearch.max_results = patch.max_results;
     updateOverrides({ ...overrides, web_search: nextWebSearch });
+  }
+
+  function updateExtraction(patch: Partial<WebSearchToolConfig['extraction']>) {
+    updateWebSearch({
+      extraction: {
+        ...config!.web_search.extraction,
+        ...patch,
+      },
+    });
   }
 
   function updateEvidenceStorage(patch: Partial<AgentToolsConfig['evidence_storage']>) {
@@ -1132,6 +1166,61 @@ export function WebSearchToolSettings({
                   </select>
                 </div>
 
+                <div className="setting-row">
+                  <div className="setting-info">
+                    <label>{t('tools.webSearch.remoteExtractionEnabled')}</label>
+                    <p className="setting-desc">{t('tools.webSearch.remoteExtractionEnabledDesc')}</p>
+                  </div>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      aria-label={t('tools.webSearch.remoteExtractionEnabled')}
+                      checked={webSearch.extraction.remote_enabled}
+                      onChange={(event) => updateExtraction({ remote_enabled: event.target.checked })}
+                    />
+                    <span className="toggle-slider" />
+                  </label>
+                </div>
+
+                <div className="setting-row">
+                  <div className="setting-info">
+                    <label>{t('tools.webSearch.maxRemoteExtractAttempts')}</label>
+                    <p className="setting-desc">{t('tools.webSearch.maxRemoteExtractAttemptsDesc')}</p>
+                  </div>
+                  <div className="timeout-input">
+                    <input
+                      type="number"
+                      min={1}
+                      max={5}
+                      value={webSearch.extraction.max_remote_attempts_per_url}
+                      onChange={(event) => {
+                        const value = Number(event.target.value);
+                        if (!Number.isFinite(value)) return;
+                        updateExtraction({
+                          max_remote_attempts_per_url: Math.min(5, Math.max(1, Math.round(value))),
+                        });
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="setting-row">
+                  <div className="setting-info">
+                    <label>{t('tools.webSearch.allowGrokExtractFallback')}</label>
+                    <p className="setting-desc">{t('tools.webSearch.allowGrokExtractFallbackDesc')}</p>
+                  </div>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      aria-label={t('tools.webSearch.allowGrokExtractFallback')}
+                      checked={webSearch.extraction.allow_grok_fallback}
+                      disabled={!webSearch.extraction.remote_enabled}
+                      onChange={(event) => updateExtraction({ allow_grok_fallback: event.target.checked })}
+                    />
+                    <span className="toggle-slider" />
+                  </label>
+                </div>
+
                 <div className="web-search-evidence-divider">
                   <div className="settings-section-title">
                     <h3>{t('tools.webSearch.evidenceStorageTitle')}</h3>
@@ -1219,6 +1308,7 @@ export function WebSearchToolSettings({
                   const selected = (selectedKeyIndices[source.id] ?? [])
                     .filter((keyIndex) => keyIndex >= 0 && keyIndex < keyCount);
                   const sourceStatuses = keyStatuses[source.id] ?? {};
+                  const canEnableSource = sourceCanBeEnabled(source);
                   const isChecking = Boolean(checkingKeys[source.id]);
                   const isDeleting = Boolean(deletingKeys[source.id]);
                   const isExpanded = Boolean(expandedSources[source.id]);
@@ -1285,12 +1375,15 @@ export function WebSearchToolSettings({
                         </button>
                         <div className="web-search-source__actions">
                           <label
-                            className="toggle-switch web-search-source__toggle"
-                            title={source.enabled ? t('tools.enabled') : t('tools.disabled')}
+                            className={`toggle-switch web-search-source__toggle ${canEnableSource ? '' : 'is-disabled'}`}
+                            title={canEnableSource
+                              ? t(source.enabled ? 'tools.enabled' : 'tools.disabled')
+                              : t('tools.webSearch.keyRequiredToEnable')}
                           >
                             <input
                               type="checkbox"
                               checked={source.enabled}
+                              disabled={!canEnableSource}
                               onChange={(e) => updateSource(index, { enabled: e.target.checked })}
                             />
                             <span className="toggle-slider" />
@@ -1367,14 +1460,24 @@ export function WebSearchToolSettings({
                                           </label>
                                         ))}
                                         {group.key === 'intent' ? (
-                                          <label title={t('tools.webSearch.deepEnabledDesc')}>
-                                            <input
-                                              type="checkbox"
-                                              checked={source.deep_enabled}
-                                              onChange={(event) => updateSource(index, { deep_enabled: event.target.checked })}
-                                            />
-                                            <span>{t('tools.webSearch.deepEnabled')}</span>
-                                          </label>
+                                          <>
+                                            <label title={t('tools.webSearch.deepEnabledDesc')}>
+                                              <input
+                                                type="checkbox"
+                                                checked={source.deep_enabled}
+                                                onChange={(event) => updateSource(index, { deep_enabled: event.target.checked })}
+                                              />
+                                              <span>{t('tools.webSearch.deepEnabled')}</span>
+                                            </label>
+                                            <label title={t('tools.webSearch.extractEnabledDesc')}>
+                                              <input
+                                                type="checkbox"
+                                                checked={source.extract_enabled}
+                                                onChange={(event) => updateSource(index, { extract_enabled: event.target.checked })}
+                                              />
+                                              <span>{t('tools.webSearch.extractEnabled')}</span>
+                                            </label>
+                                          </>
                                         ) : null}
                                       </div>
                                     </fieldset>
@@ -1596,8 +1699,7 @@ export function WebSearchToolSettings({
                             ) : null}
                           </section>
 
-                          {source.provider === 'grok' ? (
-                            <section className={`web-search-subsection web-search-grok-extras ${isConnectionExpanded ? 'is-open' : ''}`}>
+                          <section className={`web-search-subsection web-search-grok-extras ${isConnectionExpanded ? 'is-open' : ''}`}>
                               <div className="web-search-subsection__header">
                                 <button
                                   type="button"
@@ -1619,6 +1721,24 @@ export function WebSearchToolSettings({
                                   className="web-search-subsection__content web-search-grok-extras__content"
                                   id={connectionBodyId}
                                 >
+                                  <div className="web-search-extra-field">
+                                    <div className="web-search-extra-field__label">
+                                      <label htmlFor={`extract-base-url-${source.id}`}>{t('tools.webSearch.extractBaseUrl')}</label>
+                                      <p className="setting-desc">{t('tools.webSearch.extractBaseUrlDesc')}</p>
+                                    </div>
+                                    <input
+                                      id={`extract-base-url-${source.id}`}
+                                      type="text"
+                                      className="pattern-input web-search-extra-input"
+                                      value={source.extract_base_url ?? ''}
+                                      placeholder={t(`tools.webSearch.extractBaseUrlPlaceholder.${source.provider}`)}
+                                      onChange={(event) => updateSource(index, {
+                                        extract_base_url: event.target.value.trim() ? event.target.value.trim() : null,
+                                      })}
+                                    />
+                                  </div>
+                                  {source.provider === 'grok' ? (
+                                    <>
                                   <div className="web-search-extra-field">
                                     <div className="web-search-extra-field__label">
                                       <label htmlFor={`grok-flaresolverr-${source.id}`}>{t('tools.webSearch.flaresolverrUrl')}</label>
@@ -1667,10 +1787,11 @@ export function WebSearchToolSettings({
                                       })}
                                     />
                                   </div>
+                                    </>
+                                  ) : null}
                                 </div>
                               ) : null}
-                            </section>
-                          ) : null}
+                          </section>
                         </div>
                       ) : null}
                     </div>

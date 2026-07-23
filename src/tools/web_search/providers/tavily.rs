@@ -1,11 +1,14 @@
 use reqwest::StatusCode;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::tools::web_search::types::{
-    ProviderError, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind, WebSearchHit,
-    sanitize_error_message,
+    ProviderError, ProviderExtractDocument, ProviderExtractFailure, ProviderExtractOutput,
+    ProviderExtractRequest, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind,
+    WebSearchHit, sanitize_error_message,
 };
+
+const MAX_EXTRACT_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct TavilyResponse {
@@ -126,6 +129,149 @@ pub async fn search(
     })
 }
 
+pub async fn extract(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    request: &ProviderExtractRequest,
+) -> Result<ProviderExtractOutput, ProviderError> {
+    let endpoint = format!("{}/extract", base_url.trim_end_matches('/'));
+    let body = build_extract_body(request);
+    let response = client
+        .post(&endpoint)
+        .bearer_auth(api_key)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| {
+            ProviderError::Retryable(sanitize_error_message(
+                &format!("Tavily extract request failed: {error}"),
+                api_key,
+            ))
+        })?;
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|error| {
+        ProviderError::Retryable(sanitize_error_message(
+            &format!("Tavily extract response body error: {error}"),
+            api_key,
+        ))
+    })?;
+    if bytes.len() > MAX_EXTRACT_RESPONSE_BYTES {
+        return Err(ProviderError::Retryable(format!(
+            "Tavily extract response exceeds {MAX_EXTRACT_RESPONSE_BYTES} bytes"
+        )));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    if !status.is_success() {
+        return Err(ProviderError::Retryable(sanitize_error_message(
+            &format!("Tavily extract HTTP {status}: {}", truncate(&text, 240)),
+            api_key,
+        )));
+    }
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+        ProviderError::Retryable(format!(
+            "Tavily extract returned invalid JSON: {error}; body={}",
+            truncate(&text, 160)
+        ))
+    })?;
+    Ok(parse_extract_output(&value, &request.url))
+}
+
+fn build_extract_body(request: &ProviderExtractRequest) -> Value {
+    let mut body = json!({
+        "urls": [request.url],
+        "extract_depth": if request.hard_page { "advanced" } else { "basic" },
+        "format": "markdown",
+        "timeout": (request.timeout_ms as f64 / 1000.0).clamp(1.0, 60.0),
+        "include_usage": true,
+    });
+    if !request.query.trim().is_empty() {
+        let object = body.as_object_mut().expect("extract body is an object");
+        object.insert(
+            "query".to_string(),
+            Value::String(request.query.trim().to_string()),
+        );
+        object.insert("chunks_per_source".to_string(), Value::from(5));
+    }
+    body
+}
+
+fn parse_extract_output(value: &serde_json::Value, requested_url: &str) -> ProviderExtractOutput {
+    let mut output = ProviderExtractOutput::default();
+    if let Some(results) = value.get("results").and_then(serde_json::Value::as_array) {
+        for result in results {
+            let Some(object) = result.as_object() else {
+                continue;
+            };
+            let content = string_field(object, &["raw_content", "content", "markdown"])
+                .unwrap_or("")
+                .trim();
+            if content.is_empty() {
+                continue;
+            }
+            let final_url = string_field(object, &["url"])
+                .unwrap_or(requested_url)
+                .to_string();
+            output.documents.push(ProviderExtractDocument {
+                requested_url: requested_url.to_string(),
+                title: string_field(object, &["title"])
+                    .unwrap_or(&final_url)
+                    .to_string(),
+                final_url,
+                content: content.to_string(),
+                content_format: "markdown".to_string(),
+                published_at: string_field(
+                    object,
+                    &["published_at", "publishedAt", "published_date"],
+                )
+                .map(ToOwned::to_owned),
+                ai_derived: false,
+            });
+        }
+    }
+    if let Some(failures) = value
+        .get("failed_results")
+        .and_then(serde_json::Value::as_array)
+    {
+        for failure in failures {
+            match failure {
+                serde_json::Value::String(message) => {
+                    output.failures.push(ProviderExtractFailure {
+                        requested_url: requested_url.to_string(),
+                        message: message.clone(),
+                    })
+                }
+                serde_json::Value::Object(object) => {
+                    output.failures.push(ProviderExtractFailure {
+                        requested_url: string_field(object, &["url"])
+                            .unwrap_or(requested_url)
+                            .to_string(),
+                        message: string_field(object, &["error", "message", "detail"])
+                            .unwrap_or("Tavily extraction failed")
+                            .to_string(),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    output
+}
+
+fn string_field<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<&'a str> {
+    keys.iter().find_map(|key| {
+        object
+            .get(*key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
+}
+
 pub fn classify_key_status(message: &str) -> &'static str {
     let lower = message.to_ascii_lowercase();
     if lower.contains("http 401")
@@ -221,5 +367,35 @@ mod tests {
             classify_key_status("Tavily HTTP 429: excessive requests"),
             "rate_limited"
         );
+    }
+
+    #[test]
+    fn maps_tavily_extract_json() {
+        let output = parse_extract_output(
+            &serde_json::json!({
+                "results": [{
+                    "url": "https://example.com/final",
+                    "raw_content": "# Heading\n\nArticle body"
+                }],
+                "failed_results": []
+            }),
+            "https://example.com",
+        );
+        assert_eq!(output.documents.len(), 1);
+        assert_eq!(output.documents[0].content_format, "markdown");
+        assert!(output.documents[0].content.contains("Article body"));
+    }
+
+    #[test]
+    fn extract_query_enables_relevant_chunk_reranking() {
+        let body = build_extract_body(&ProviderExtractRequest {
+            url: "https://example.com".to_string(),
+            query: "specific research question".to_string(),
+            hard_page: false,
+            timeout_ms: 45_000,
+        });
+        assert_eq!(body["query"], "specific research question");
+        assert_eq!(body["chunks_per_source"], 5);
+        assert_eq!(body["extract_depth"], "basic");
     }
 }

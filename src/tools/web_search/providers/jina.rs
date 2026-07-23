@@ -1,14 +1,17 @@
-use reqwest::StatusCode;
+use reqwest::{RequestBuilder, StatusCode};
 use serde::Deserialize;
 
 use crate::tools::web_search::types::{
-    ProviderError, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind, WebSearchHit,
-    sanitize_error_message,
+    ProviderError, ProviderExtractDocument, ProviderExtractFailure, ProviderExtractOutput,
+    ProviderExtractRequest, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind,
+    WebSearchHit, sanitize_error_message,
 };
 
 /// Browser-like UA helps when the provider sits behind Cloudflare bot filters.
 const JINA_USER_AGENT: &str =
     "Mozilla/5.0 (compatible; WeiAgent/1.0; +https://github.com/weiagent)";
+const MAX_EXTRACT_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_CONTENT_EXCERPT_CHARS: usize = 4_000;
 
 #[derive(Debug, Deserialize)]
 struct JinaResponse {
@@ -38,11 +41,7 @@ pub async fn search(
 ) -> Result<ProviderSearchOutput, ProviderError> {
     let endpoint = build_endpoint(base_url, &request.query, request.max_results)?;
 
-    let response = client
-        .get(endpoint)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("Accept", "application/json")
-        .header("User-Agent", JINA_USER_AGENT)
+    let response = build_request(client, endpoint, api_key)
         .send()
         .await
         .map_err(|error| {
@@ -89,12 +88,19 @@ pub async fn search(
         .into_iter()
         .filter_map(|item| {
             let url = item.url.filter(|value| !value.trim().is_empty())?;
+            let content_excerpt = item
+                .content
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| truncate(value, MAX_CONTENT_EXCERPT_CHARS));
             let snippet = item
                 .description
                 .filter(|value| !value.trim().is_empty())
                 .or_else(|| {
-                    item.content
-                        .map(|value| truncate(value.trim(), 500))
+                    content_excerpt
+                        .as_deref()
+                        .map(|value| truncate(value, 500))
                         .filter(|value| !value.is_empty())
                 })
                 .unwrap_or_default();
@@ -105,7 +111,7 @@ pub async fn search(
                     .unwrap_or_else(|| url.clone()),
                 url,
                 snippet,
-                content_excerpt: None,
+                content_excerpt,
                 kind: SearchHitKind::WebPage,
                 published_at: None,
                 score: item.score,
@@ -116,6 +122,149 @@ pub async fn search(
         results,
         ai_syntheses: Vec::new(),
     })
+}
+
+pub async fn extract(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    request: &ProviderExtractRequest,
+) -> Result<ProviderExtractOutput, ProviderError> {
+    let endpoint = format!("{}/{}", base_url.trim_end_matches('/'), request.url);
+    let endpoint = reqwest::Url::parse(&endpoint)
+        .map_err(|error| ProviderError::Fatal(format!("Jina Reader URL is invalid: {error}")))?;
+    let mut builder = client
+        .get(endpoint)
+        .header("Accept", "application/json")
+        .header("User-Agent", JINA_USER_AGENT)
+        .header("X-Return-Format", "markdown")
+        .header(
+            "X-Timeout",
+            (request.timeout_ms / 1_000).clamp(1, 180).to_string(),
+        );
+    if !api_key.trim().is_empty() {
+        builder = builder.bearer_auth(api_key.trim());
+    }
+    let response = builder.send().await.map_err(|error| {
+        ProviderError::Retryable(sanitize_error_message(
+            &format!("Jina Reader request failed: {error}"),
+            api_key,
+        ))
+    })?;
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|error| {
+        ProviderError::Retryable(sanitize_error_message(
+            &format!("Jina Reader response body error: {error}"),
+            api_key,
+        ))
+    })?;
+    if bytes.len() > MAX_EXTRACT_RESPONSE_BYTES {
+        return Err(ProviderError::Retryable(format!(
+            "Jina Reader response exceeds {MAX_EXTRACT_RESPONSE_BYTES} bytes"
+        )));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    if !status.is_success() {
+        return Err(ProviderError::Retryable(sanitize_error_message(
+            &format!("Jina Reader HTTP {status}: {}", truncate(&text, 240)),
+            api_key,
+        )));
+    }
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+        ProviderError::Retryable(format!(
+            "Jina Reader returned invalid JSON: {error}; body={}",
+            truncate(&text, 160)
+        ))
+    })?;
+    Ok(parse_extract_output(&value, &request.url))
+}
+
+fn parse_extract_output(value: &serde_json::Value, requested_url: &str) -> ProviderExtractOutput {
+    let mut output = ProviderExtractOutput::default();
+    if let Some(message) = value
+        .get("message")
+        .or_else(|| value.get("error"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        output.failures.push(ProviderExtractFailure {
+            requested_url: requested_url.to_string(),
+            message: message.to_string(),
+        });
+    }
+    let data = value.get("data").unwrap_or(value);
+    let items = match data {
+        serde_json::Value::Array(items) => items.iter().collect::<Vec<_>>(),
+        serde_json::Value::Object(_) => vec![data],
+        _ => Vec::new(),
+    };
+    for item in items {
+        let Some(object) = item.as_object() else {
+            continue;
+        };
+        let content = object
+            .get("content")
+            .or_else(|| object.get("markdown"))
+            .or_else(|| object.get("text"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(content) = content else {
+            continue;
+        };
+        let final_url = object
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(requested_url)
+            .to_string();
+        output.documents.push(ProviderExtractDocument {
+            requested_url: requested_url.to_string(),
+            title: object
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(&final_url)
+                .to_string(),
+            final_url,
+            content: content.to_string(),
+            content_format: "markdown".to_string(),
+            published_at: object
+                .get("publishedTime")
+                .or_else(|| object.get("published_at"))
+                .or_else(|| object.get("date"))
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+            ai_derived: false,
+        });
+    }
+    if output.documents.is_empty() && output.failures.is_empty() {
+        output.failures.push(ProviderExtractFailure {
+            requested_url: requested_url.to_string(),
+            message: "Jina Reader returned no extractable content".to_string(),
+        });
+    }
+    output
+}
+
+fn build_request(
+    client: &reqwest::Client,
+    endpoint: reqwest::Url,
+    api_key: &str,
+) -> RequestBuilder {
+    let request = client
+        .get(endpoint)
+        .header("Accept", "application/json")
+        .header("User-Agent", JINA_USER_AGENT);
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        request
+    } else {
+        request.bearer_auth(api_key)
+    }
 }
 
 pub fn classify_key_status(message: &str) -> &'static str {
@@ -189,11 +338,8 @@ fn build_endpoint(
     let mut endpoint = reqwest::Url::parse(base_url.trim_end_matches('/'))
         .map_err(|error| ProviderError::Fatal(format!("Jina base URL is invalid: {error}")))?;
     endpoint
-        .path_segments_mut()
-        .map_err(|_| ProviderError::Fatal("Jina base URL cannot accept a path".to_string()))?
-        .push(query);
-    endpoint
         .query_pairs_mut()
+        .append_pair("q", query)
         .append_pair("num", &max_results.to_string())
         .append_pair("type", "web");
     Ok(endpoint)
@@ -218,7 +364,36 @@ mod tests {
         let endpoint = build_endpoint("https://s.jina.ai", "rust async/await", 7).unwrap();
         assert_eq!(
             endpoint.as_str(),
-            "https://s.jina.ai/rust%20async%2Fawait?num=7&type=web"
+            "https://s.jina.ai/?q=rust+async%2Fawait&num=7&type=web"
+        );
+    }
+
+    #[test]
+    fn omits_authorization_for_anonymous_search() {
+        let client = reqwest::Client::new();
+        let endpoint = build_endpoint("https://s.jina.ai", "rust", 1).unwrap();
+        let request = build_request(&client, endpoint, "").build().unwrap();
+        assert!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sends_authorization_when_key_is_configured() {
+        let client = reqwest::Client::new();
+        let endpoint = build_endpoint("https://s.jina.ai", "rust", 1).unwrap();
+        let request = build_request(&client, endpoint, "jina-key")
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer jina-key")
         );
     }
 
@@ -280,5 +455,22 @@ mod tests {
             classify_key_status("Jina HTTP 429: RATE_REQUEST_LIMIT_EXCEEDED"),
             "rate_limited"
         );
+    }
+
+    #[test]
+    fn maps_jina_reader_json() {
+        let output = parse_extract_output(
+            &serde_json::json!({
+                "code": 200,
+                "data": {
+                    "title": "Example",
+                    "url": "https://example.com/final",
+                    "content": "# Example\n\nReader content"
+                }
+            }),
+            "https://example.com",
+        );
+        assert_eq!(output.documents.len(), 1);
+        assert!(output.documents[0].content.contains("Reader content"));
     }
 }

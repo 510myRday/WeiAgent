@@ -2,14 +2,20 @@ import { useState, useEffect, useRef, FormEvent, type SyntheticEvent } from 'rea
 import {
   ArrowLeft,
   ChevronDown,
+  ChevronRight,
   Code2,
   Download,
   Eye,
   EyeOff,
   KeyRound,
+  LayoutTemplate,
+  LockKeyhole,
+  Network,
   Plus,
   Save,
+  SearchX,
   Server,
+  SlidersHorizontal,
   Brain,
   Trash2,
 } from 'lucide-react';
@@ -25,8 +31,9 @@ import { fetchModels, fetchModelsForProvider } from '../../api';
 import { useBeforeUnloadGuard } from '../../hooks';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
-import { AutoSaveIndicator, Button, FormField, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
+import { AutoSaveIndicator, Button, Dialog, FormField, IconButton, ListItem, PaneHeader, SearchInput, useFeedback } from '../../components/ui';
 import { userErrorMessage } from '../../utils/userError';
+import { IpProxySettings } from './IpProxySettings';
 
 interface SettingsPanelProps {
   settingsForm: AppSettings;
@@ -43,7 +50,7 @@ interface SettingsPanelProps {
   onBackToList: () => void;
 }
 
-type SettingsSection = 'runtime' | 'agent' | 'providers';
+type SettingsSection = 'runtime' | 'agent' | 'providers' | 'proxies';
 type RuntimeAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type PendingRuntimeSave = {
   serialized: string;
@@ -73,6 +80,33 @@ type ProtocolPreset = {
   shortKey: string;
   endpoint: string;
   defaultBaseUrl: string;
+};
+
+type ProviderTemplateId =
+  | 'openai'
+  | 'deepseek'
+  | 'google'
+  | 'anthropic'
+  | 'kimi'
+  | 'zhipu'
+  | 'nvidia'
+  | 'bailian'
+  | 'openrouter'
+  | 'siliconflow'
+  | 'stepfun'
+  | 'grok'
+  | 'minimax'
+  | 'opencode'
+  | 'custom';
+
+type ProviderTemplate = {
+  id: ProviderTemplateId;
+  labelKey: string;
+  descriptionKey: string;
+  providerType?: ProviderType;
+  baseUrl?: string;
+  iconPath?: string;
+  fixed: boolean;
 };
 
 const PROTOCOL_PRESETS: ProtocolPreset[] = [
@@ -110,6 +144,145 @@ const protocolPresetByType = Object.fromEntries(
   PROTOCOL_PRESETS.map((preset) => [preset.type, preset]),
 ) as Record<ProviderType, ProtocolPreset>;
 
+const PROVIDER_TEMPLATES: ProviderTemplate[] = [
+  {
+    id: 'custom',
+    labelKey: 'provider.template.custom.name',
+    descriptionKey: 'provider.template.custom.description',
+    fixed: false,
+  },
+  {
+    id: 'openai',
+    labelKey: 'provider.template.openai.name',
+    descriptionKey: 'provider.template.openai.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://api.openai.com/v1',
+    iconPath: '/model-providers/openai.svg',
+    fixed: true,
+  },
+  {
+    id: 'deepseek',
+    labelKey: 'provider.template.deepseek.name',
+    descriptionKey: 'provider.template.deepseek.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://api.deepseek.com/v1',
+    iconPath: '/model-providers/deepseek.svg',
+    fixed: true,
+  },
+  {
+    id: 'google',
+    labelKey: 'provider.template.google.name',
+    descriptionKey: 'provider.template.google.description',
+    providerType: 'google_gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    iconPath: '/model-providers/google-gemini.svg',
+    fixed: true,
+  },
+  {
+    id: 'anthropic',
+    labelKey: 'provider.template.anthropic.name',
+    descriptionKey: 'provider.template.anthropic.description',
+    providerType: 'anthropic_messages',
+    baseUrl: 'https://api.anthropic.com/v1',
+    iconPath: '/model-providers/anthropic.svg',
+    fixed: true,
+  },
+  {
+    id: 'nvidia',
+    labelKey: 'provider.template.nvidia.name',
+    descriptionKey: 'provider.template.nvidia.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    iconPath: '/model-providers/nvidia.svg',
+    fixed: true,
+  },
+  {
+    id: 'bailian',
+    labelKey: 'provider.template.bailian.name',
+    descriptionKey: 'provider.template.bailian.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    iconPath: '/model-providers/alibaba-bailian.svg',
+    fixed: true,
+  },
+  {
+    id: 'openrouter',
+    labelKey: 'provider.template.openrouter.name',
+    descriptionKey: 'provider.template.openrouter.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    iconPath: '/model-providers/openrouter.svg',
+    fixed: true,
+  },
+  {
+    id: 'siliconflow',
+    labelKey: 'provider.template.siliconflow.name',
+    descriptionKey: 'provider.template.siliconflow.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    iconPath: '/model-providers/siliconflow.svg',
+    fixed: true,
+  },
+  {
+    id: 'stepfun',
+    labelKey: 'provider.template.stepfun.name',
+    descriptionKey: 'provider.template.stepfun.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://api.stepfun.com/v1',
+    iconPath: '/model-providers/stepfun.svg',
+    fixed: true,
+  },
+  {
+    id: 'grok',
+    labelKey: 'provider.template.grok.name',
+    descriptionKey: 'provider.template.grok.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://api.x.ai/v1',
+    iconPath: '/model-providers/grok.svg',
+    fixed: true,
+  },
+  {
+    id: 'minimax',
+    labelKey: 'provider.template.minimax.name',
+    descriptionKey: 'provider.template.minimax.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://api.minimaxi.com/v1',
+    iconPath: '/model-providers/minimax.svg',
+    fixed: true,
+  },
+  {
+    id: 'kimi',
+    labelKey: 'provider.template.kimi.name',
+    descriptionKey: 'provider.template.kimi.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    iconPath: '/model-providers/kimi.svg',
+    fixed: true,
+  },
+  {
+    id: 'zhipu',
+    labelKey: 'provider.template.zhipu.name',
+    descriptionKey: 'provider.template.zhipu.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    iconPath: '/model-providers/zhipu.svg',
+    fixed: true,
+  },
+  {
+    id: 'opencode',
+    labelKey: 'provider.template.opencode.name',
+    descriptionKey: 'provider.template.opencode.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://opencode.ai/zen/v1',
+    iconPath: '/model-providers/opencode.svg',
+    fixed: true,
+  },
+];
+
+const providerTemplateById = Object.fromEntries(
+  PROVIDER_TEMPLATES.map((template) => [template.id, template]),
+) as Record<ProviderTemplateId, ProviderTemplate>;
+
 const defaultProviderForm: ProviderForm = {
   provider_type: 'openai_compatible',
   name: '',
@@ -119,6 +292,19 @@ const defaultProviderForm: ProviderForm = {
   modelConfigs: [],
   extraBodyText: '',
 };
+
+function providerTemplateToForm(template: ProviderTemplate, name: string): ProviderForm {
+  if (!template.fixed || !template.providerType || !template.baseUrl) {
+    return { ...defaultProviderForm, modelConfigs: [] };
+  }
+  return {
+    ...defaultProviderForm,
+    provider_type: template.providerType,
+    name,
+    base_url: template.baseUrl,
+    modelConfigs: [],
+  };
+}
 
 const VALID_HOSTS = new Set(['127.0.0.1', '::1']);
 const VALID_LOG_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error']);
@@ -384,6 +570,11 @@ export function SettingsPanel({
   const [providerDirty, setProviderDirty] = useState(false);
   const [providerAutoSaveStatus, setProviderAutoSaveStatus] = useState<ProviderAutoSaveStatus>('idle');
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [providerTemplateDialogOpen, setProviderTemplateDialogOpen] = useState(false);
+  const [providerTemplateSearch, setProviderTemplateSearch] = useState('');
+  const [selectedProviderTemplateId, setSelectedProviderTemplateId] = useState<ProviderTemplateId>('custom');
+  const [pendingProviderTemplateId, setPendingProviderTemplateId] = useState<ProviderTemplateId | null>(null);
+  const [proxyCount, setProxyCount] = useState(0);
 
   const latestSerializedRef = useRef('');
   const persistedSerializedRef = useRef('');
@@ -423,6 +614,21 @@ export function SettingsPanel({
   const activeProvider = providers.find((provider) => provider.id === activeProviderId);
   const modelCount = parseModels(providerForm.modelsText).length;
   const extraBodyStatus = parseExtraBodyText(providerForm.extraBodyText).status;
+  const selectedProviderTemplate = providerTemplateById[selectedProviderTemplateId];
+  const providerConnectionLocked = !activeProvider && selectedProviderTemplate.fixed;
+  const normalizedProviderTemplateSearch = providerTemplateSearch.trim().toLocaleLowerCase();
+  const filteredProviderTemplates = PROVIDER_TEMPLATES.filter((template) => {
+    if (!template.fixed) return false;
+    if (!normalizedProviderTemplateSearch) return true;
+    const protocol = template.providerType ? protocolPresetByType[template.providerType] : null;
+    return [
+      t(template.labelKey),
+      t(template.descriptionKey),
+      template.baseUrl,
+      protocol ? t(protocol.labelKey) : '',
+      protocol ? t(protocol.shortKey) : '',
+    ].some((value) => value?.toLocaleLowerCase().includes(normalizedProviderTemplateSearch));
+  });
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -473,6 +679,7 @@ export function SettingsPanel({
       setProviderDirty(false);
       setProviderAutoSaveStatus('idle');
       setAdvancedOpen(false);
+      setSelectedProviderTemplateId('custom');
       return;
     }
     const nextForm = providerToForm(activeProvider);
@@ -482,9 +689,22 @@ export function SettingsPanel({
     setProviderDirty(false);
     setProviderAutoSaveStatus('idle');
     setAdvancedOpen(Boolean(nextForm.extraBodyText.trim()));
+    setSelectedProviderTemplateId('custom');
     providerLatestSerializedByIdRef.current.set(activeProvider.id, serialized);
     providerPersistedSerializedByIdRef.current.set(activeProvider.id, serialized);
   }, [activeProvider, activeProviderId]);
+
+  useEffect(() => {
+    if (!pendingProviderTemplateId || activeProviderId) return;
+    const template = providerTemplateById[pendingProviderTemplateId];
+    setProviderForm(providerTemplateToForm(template, template.fixed ? t(template.labelKey) : ''));
+    setShowApiKey(false);
+    setProviderDirty(false);
+    setProviderAutoSaveStatus('idle');
+    setAdvancedOpen(false);
+    setSelectedProviderTemplateId(template.id);
+    setPendingProviderTemplateId(null);
+  }, [activeProviderId, pendingProviderTemplateId, t]);
 
   // Seed persisted snapshot once settings become valid (initial load / external refresh).
   useEffect(() => {
@@ -775,6 +995,15 @@ export function SettingsPanel({
     onProviderChange(id);
   }
 
+  function handleProviderTemplateSelect(templateId: ProviderTemplateId) {
+    setProviderTemplateDialogOpen(false);
+    setProviderTemplateSearch('');
+    setPendingProviderTemplateId(templateId);
+    if (activeProviderId) {
+      handleProviderChange('');
+    }
+  }
+
   async function handleProviderSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (activeProvider) {
@@ -897,6 +1126,37 @@ export function SettingsPanel({
     }));
   }
 
+  function renderProviderTemplateOption(template: ProviderTemplate) {
+    const protocol = template.providerType
+      ? protocolPresetByType[template.providerType]
+      : null;
+    return (
+      <button
+        className={`provider-template-option provider-template-option--${template.id}`}
+        key={template.id}
+        type="button"
+        onClick={() => handleProviderTemplateSelect(template.id)}
+      >
+        <span className="provider-template-option__mark" aria-hidden="true">
+          {template.iconPath ? (
+            <img src={template.iconPath} alt="" width="26" height="26" />
+          ) : (
+            <SlidersHorizontal size={21} />
+          )}
+        </span>
+        <span className="provider-template-option__copy">
+          <strong>{t(template.labelKey)}</strong>
+          <small>{t(template.descriptionKey)}</small>
+          <span className="provider-template-option__meta">
+            <span>{protocol ? t(protocol.shortKey) : t('provider.template.customMode')}</span>
+            {template.baseUrl ? <code>{template.baseUrl}</code> : null}
+          </span>
+        </span>
+        <ChevronRight className="provider-template-option__chevron" size={18} aria-hidden="true" />
+      </button>
+    );
+  }
+
   return (
     <>
       <PanelShell
@@ -932,6 +1192,14 @@ export function SettingsPanel({
                 leading={<KeyRound size={18} />}
                 onClick={() => { setActiveSection('providers'); onOpenMain(); }}
               />
+              <ListItem
+                type="button"
+                active={activeSection === 'proxies'}
+                title={t('ipProxy.title')}
+                subtitle={t('ipProxy.description')}
+                leading={<Network size={18} />}
+                onClick={() => { setActiveSection('proxies'); onOpenMain(); }}
+              />
             </div>
           </div>
         )}
@@ -945,11 +1213,18 @@ export function SettingsPanel({
               ? t('settings.title')
               : activeSection === 'agent'
                 ? t('settings.agentTitle')
-                : (
+                : activeSection === 'providers' ? (
                   <span className="provider-page-title">
                     {t('provider.title')}
                     <span className="mini-status-badge provider-title-count">
                       {t('provider.configuredCount', { count: providers.length })}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="provider-page-title">
+                    {t('ipProxy.title')}
+                    <span className="mini-status-badge provider-title-count">
+                      {t('ipProxy.configuredCount', { count: proxyCount })}
                     </span>
                   </span>
                 )}
@@ -957,10 +1232,14 @@ export function SettingsPanel({
               ? t('settings.description')
               : activeSection === 'agent'
                 ? t('settings.agentDescription')
-                : t('provider.description')}
+                : activeSection === 'providers'
+                  ? t('provider.description')
+                  : t('ipProxy.description')}
             actions={activeSection === 'providers'
               ? <AutoSaveIndicator status={providerAutoSaveStatus} t={t} onRetry={retryProviderSaveNow} />
-              : <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryRuntimeSaveNow} />}
+              : activeSection === 'proxies'
+                ? undefined
+                : <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryRuntimeSaveNow} />}
           />
 
           {activeSection === 'runtime' ? (
@@ -1111,6 +1390,8 @@ export function SettingsPanel({
                 </select>
               </div>
             </div>
+          ) : activeSection === 'proxies' ? (
+            <IpProxySettings onCountChange={setProxyCount} />
           ) : (
             <div className="provider-page">
               <div className="form-card provider-picker-bar">
@@ -1131,7 +1412,15 @@ export function SettingsPanel({
                   </select>
                 </FormField>
                 <div className="provider-picker-actions">
-                  <Button variant="secondary" type="button" onClick={() => handleProviderChange('')} icon={<Plus size={16} />}>
+                  <Button
+                    variant="secondary"
+                    type="button"
+                    onClick={() => {
+                      setProviderTemplateSearch('');
+                      setProviderTemplateDialogOpen(true);
+                    }}
+                    icon={<Plus size={16} />}
+                  >
                     {t('provider.create')}
                   </Button>
                   {activeProvider ? (
@@ -1158,13 +1447,21 @@ export function SettingsPanel({
                     compact
                     title={t('provider.connection')}
                     actions={(
-                      <span className={`mini-status-badge${
-                        activeProvider?.has_api_key || providerForm.api_key ? '' : ' is-required'
-                      }`}>
-                        {activeProvider?.has_api_key || providerForm.api_key
-                          ? t('provider.keyConfigured')
-                          : t('provider.keyRequired')}
-                      </span>
+                      <div className="provider-connection-statuses">
+                        {providerConnectionLocked ? (
+                          <span className="mini-status-badge provider-template-locked">
+                            <LockKeyhole size={13} aria-hidden="true" />
+                            {t('provider.template.locked')}
+                          </span>
+                        ) : null}
+                        <span className={`mini-status-badge${
+                          activeProvider?.has_api_key || providerForm.api_key ? '' : ' is-required'
+                        }`}>
+                          {activeProvider?.has_api_key || providerForm.api_key
+                            ? t('provider.keyConfigured')
+                            : t('provider.keyRequired')}
+                        </span>
+                      </div>
                     )}
                   />
                   <div className="form-grid two-column provider-connection-grid">
@@ -1173,10 +1470,11 @@ export function SettingsPanel({
                     </FormField>
                     <FormField label={t('provider.apiMode')} htmlFor="provider-api-mode" required>
                       <select
+                        className={providerConnectionLocked ? 'provider-template-fixed-control' : undefined}
                         id="provider-api-mode"
                         value={providerForm.provider_type}
                         onChange={(event) => handleProtocolChange(event.target.value as ProviderType)}
-                        disabled={isSubmittingProvider}
+                        disabled={isSubmittingProvider || providerConnectionLocked}
                         required
                       >
                         {PROTOCOL_PRESETS.map((preset) => (
@@ -1187,7 +1485,7 @@ export function SettingsPanel({
                       </select>
                     </FormField>
                     <FormField label={t('provider.baseUrl')} htmlFor="provider-base-url" required>
-                      <input id="provider-base-url" value={providerForm.base_url} onChange={(e) => changeProviderForm((current) => ({ ...current, base_url: e.target.value }))} disabled={isSubmittingProvider} required />
+                      <input className={providerConnectionLocked ? 'provider-template-fixed-control' : undefined} id="provider-base-url" value={providerForm.base_url} onChange={(e) => changeProviderForm((current) => ({ ...current, base_url: e.target.value }))} disabled={isSubmittingProvider || providerConnectionLocked} required />
                     </FormField>
                     <FormField label={t('provider.apiKey')} htmlFor="provider-api-key" required={!activeProvider}>
                       <div className="provider-secret-input">
@@ -1415,6 +1713,47 @@ export function SettingsPanel({
           </div>
         )}
       />
+      <Dialog
+        open={providerTemplateDialogOpen}
+        title={t('provider.template.title')}
+        description={t('provider.template.description')}
+        icon={<LayoutTemplate size={21} />}
+        closeLabel={t('common.close')}
+        onClose={() => {
+          setProviderTemplateDialogOpen(false);
+          setProviderTemplateSearch('');
+        }}
+        size="lg"
+        className="provider-template-dialog"
+        bodyClassName="provider-template-dialog__body"
+      >
+        <div className="provider-template-featured">
+          {renderProviderTemplateOption(providerTemplateById.custom)}
+        </div>
+        <div className="provider-template-search">
+          <SearchInput
+            value={providerTemplateSearch}
+            onChange={setProviderTemplateSearch}
+            placeholder={t('provider.template.searchPlaceholder')}
+          />
+        </div>
+        {filteredProviderTemplates.length > 0 ? (
+          <div className="provider-template-grid">
+            {filteredProviderTemplates.map(renderProviderTemplateOption)}
+          </div>
+        ) : (
+          <div className="provider-template-empty" role="status">
+            <SearchX size={24} aria-hidden="true" />
+            <div>
+              <strong>{t('provider.template.searchEmpty')}</strong>
+              <span>{t('provider.template.searchEmptyDescription')}</span>
+            </div>
+            <Button variant="ghost" type="button" onClick={() => setProviderTemplateSearch('')}>
+              {t('provider.template.clearSearch')}
+            </Button>
+          </div>
+        )}
+      </Dialog>
     </>
   );
 }

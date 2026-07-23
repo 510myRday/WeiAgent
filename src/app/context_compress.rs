@@ -373,6 +373,7 @@ pub fn needs_compaction(
 }
 
 /// Ensure `messages` fit under the global threshold. May call the model for a summary.
+#[allow(clippy::too_many_arguments)]
 pub async fn ensure_within_threshold<T: Send>(
     client: &DynChatClient,
     agent: &Agent,
@@ -433,6 +434,7 @@ pub async fn ensure_within_threshold<T: Send>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn compact_with_summary<T>(
     client: &DynChatClient,
     agent: &Agent,
@@ -481,7 +483,7 @@ where
     let mut compact_options = options.clone();
     compact_options.thinking_level = Some(ThinkingLevel::Off);
     // One retry is enough for compaction; keep it snappy.
-    compact_options.retry_attempts = compact_options.retry_attempts.min(2).max(1);
+    compact_options.retry_attempts = compact_options.retry_attempts.clamp(1, 2);
 
     let compaction_provider = provider_for_compaction(provider);
     let completion = client.complete(
@@ -676,32 +678,32 @@ fn build_summarizer_messages(
     existing_checkpoint: Option<&ContextCheckpoint>,
 ) -> Vec<ChatMessage> {
     let mut out = Vec::new();
-    if let Some(checkpoint) = existing_checkpoint {
-        if !checkpoint.summary.trim().is_empty() {
-            out.push(ChatMessage {
-                id: Uuid::new_v4(),
-                agent_id: covered
-                    .first()
-                    .map(|message| message.agent_id)
-                    .unwrap_or_else(Uuid::nil),
-                conversation_id: covered
-                    .first()
-                    .map(|message| message.conversation_id)
-                    .unwrap_or_else(Uuid::nil),
-                role: ChatRole::User,
-                content: format!(
-                    "[Previous compaction summary]\n{}",
-                    checkpoint.summary.trim()
-                ),
-                reasoning_content: None,
-                status: ChatMessageStatus::Done,
-                created_at: checkpoint.created_at,
-                tool_calls: None,
-                tool_call_id: None,
-                attachments: Vec::new(),
-                usage: None,
-            });
-        }
+    if let Some(checkpoint) = existing_checkpoint
+        && !checkpoint.summary.trim().is_empty()
+    {
+        out.push(ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: covered
+                .first()
+                .map(|message| message.agent_id)
+                .unwrap_or_else(Uuid::nil),
+            conversation_id: covered
+                .first()
+                .map(|message| message.conversation_id)
+                .unwrap_or_else(Uuid::nil),
+            role: ChatRole::User,
+            content: format!(
+                "[Previous compaction summary]\n{}",
+                checkpoint.summary.trim()
+            ),
+            reasoning_content: None,
+            status: ChatMessageStatus::Done,
+            created_at: checkpoint.created_at,
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        });
     }
     for message in covered {
         if existing_checkpoint.is_some_and(|checkpoint| {
@@ -784,9 +786,7 @@ fn trim_messages_to_token_budget(
     let required_index =
         required_prefix_id.and_then(|id| messages.iter().position(|message| message.id == id));
     let required_message = required_index.map(|index| messages[index].clone());
-    let required_tokens = required_message
-        .as_ref()
-        .map_or(0, |message| estimate_message_tokens(message));
+    let required_tokens = required_message.as_ref().map_or(0, estimate_message_tokens);
     let available_for_tail = budget_tokens.saturating_sub(required_tokens);
     let mut selected_rev: Vec<Vec<usize>> = Vec::new();
     let mut tokens = 0_u64;
@@ -816,13 +816,13 @@ fn trim_messages_to_token_budget(
             out.push(messages[index].clone());
         }
     }
-    if out.is_empty() {
-        if let Some(last) = messages.last() {
-            let mut last = last.clone();
-            last.content = truncate_chars(&last.content, 2_000);
-            last.attachments.clear();
-            out.push(last);
-        }
+    if out.is_empty()
+        && let Some(last) = messages.last()
+    {
+        let mut last = last.clone();
+        last.content = truncate_chars(&last.content, 2_000);
+        last.attachments.clear();
+        out.push(last);
     }
     force_fit_messages(out, budget_tokens, required_prefix_id)
 }

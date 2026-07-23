@@ -5,7 +5,8 @@ use reqwest::StatusCode;
 use serde_json::{Map, Value, json};
 
 use crate::tools::web_search::types::{
-    ProviderError, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind, SearchMode,
+    ProviderError, ProviderExtractDocument, ProviderExtractFailure, ProviderExtractOutput,
+    ProviderExtractRequest, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind, SearchMode,
     WebSearchHit, sanitize_error_message,
 };
 
@@ -88,6 +89,71 @@ pub async fn search(
     })
 }
 
+pub async fn extract(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    request: &ProviderExtractRequest,
+) -> Result<ProviderExtractOutput, ProviderError> {
+    let endpoint = build_scrape_endpoint(base_url)?;
+    let body = json!({
+        "url": request.url,
+        "formats": ["markdown"],
+        "onlyMainContent": true,
+        "onlyCleanContent": false,
+        "timeout": request.timeout_ms.clamp(1_000, 300_000),
+        "parsers": ["pdf"],
+        "proxy": if request.hard_page { "auto" } else { "basic" },
+        "storeInCache": false,
+        "blockAds": true,
+        "removeBase64Images": true,
+    });
+    let response = client
+        .post(endpoint)
+        .bearer_auth(api_key)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| {
+            ProviderError::Retryable(sanitize_error_message(
+                &format!("Firecrawl scrape request failed: {error}"),
+                api_key,
+            ))
+        })?;
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|error| {
+        ProviderError::Retryable(sanitize_error_message(
+            &format!("Firecrawl scrape response body error: {error}"),
+            api_key,
+        ))
+    })?;
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(ProviderError::Retryable(format!(
+            "Firecrawl scrape response exceeds {MAX_RESPONSE_BYTES} bytes"
+        )));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    if !status.is_success() {
+        return Err(ProviderError::Retryable(sanitize_error_message(
+            &format!("Firecrawl scrape HTTP {status}: {}", truncate(&text, 320)),
+            api_key,
+        )));
+    }
+    let value: Value = serde_json::from_str(&text).map_err(|error| {
+        ProviderError::Retryable(format!(
+            "Firecrawl scrape returned invalid JSON: {error}; body={}",
+            truncate(&text, 200)
+        ))
+    })?;
+    if value.get("success").and_then(Value::as_bool) == Some(false) {
+        return Err(ProviderError::Retryable(
+            response_error(&value).unwrap_or_else(|| "Firecrawl scrape failed".to_string()),
+        ));
+    }
+    Ok(parse_extract_output(&value, &request.url))
+}
+
 fn build_endpoint(base_url: &str) -> Result<reqwest::Url, ProviderError> {
     let mut endpoint = reqwest::Url::parse(base_url.trim_end_matches('/'))
         .map_err(|error| ProviderError::Fatal(format!("Firecrawl base URL is invalid: {error}")))?;
@@ -105,6 +171,75 @@ fn build_endpoint(base_url: &str) -> Result<reqwest::Url, ProviderError> {
     endpoint.set_query(None);
     endpoint.set_fragment(None);
     Ok(endpoint)
+}
+
+fn build_scrape_endpoint(base_url: &str) -> Result<reqwest::Url, ProviderError> {
+    let mut endpoint = reqwest::Url::parse(base_url.trim_end_matches('/'))
+        .map_err(|error| ProviderError::Fatal(format!("Firecrawl base URL is invalid: {error}")))?;
+    let path = endpoint.path().trim_end_matches('/');
+    let path = if path.ends_with("/scrape") {
+        path.to_string()
+    } else if path.ends_with("/v1") || path.ends_with("/v2") {
+        format!("{path}/scrape")
+    } else if path.is_empty() {
+        "/v2/scrape".to_string()
+    } else {
+        format!("{path}/v2/scrape")
+    };
+    endpoint.set_path(&path);
+    endpoint.set_query(None);
+    endpoint.set_fragment(None);
+    Ok(endpoint)
+}
+
+fn parse_extract_output(value: &Value, requested_url: &str) -> ProviderExtractOutput {
+    let mut output = ProviderExtractOutput::default();
+    let data = value.get("data").unwrap_or(value);
+    let Some(object) = data.as_object() else {
+        output.failures.push(ProviderExtractFailure {
+            requested_url: requested_url.to_string(),
+            message: "Firecrawl returned no scrape document".to_string(),
+        });
+        return output;
+    };
+    let metadata = object.get("metadata").and_then(Value::as_object);
+    let content = string_field(object, &["markdown", "content", "text"])
+        .unwrap_or("")
+        .trim();
+    if content.is_empty() {
+        output.failures.push(ProviderExtractFailure {
+            requested_url: requested_url.to_string(),
+            message: metadata
+                .and_then(|value| string_field(value, &["error"]))
+                .unwrap_or("Firecrawl returned empty markdown")
+                .to_string(),
+        });
+        return output;
+    }
+    let final_url = metadata
+        .and_then(|value| string_field(value, &["url", "sourceURL"]))
+        .unwrap_or(requested_url)
+        .to_string();
+    output.documents.push(ProviderExtractDocument {
+        requested_url: requested_url.to_string(),
+        title: metadata
+            .and_then(|value| string_field(value, &["title"]))
+            .unwrap_or(&final_url)
+            .to_string(),
+        final_url,
+        content: content.to_string(),
+        content_format: "markdown".to_string(),
+        published_at: metadata
+            .and_then(|value| {
+                string_field(
+                    value,
+                    &["publishedTime", "published_at", "publishedDate", "date"],
+                )
+            })
+            .map(ToOwned::to_owned),
+        ai_derived: false,
+    });
+    output
 }
 
 fn build_request_body(request: &ProviderSearchRequest) -> Value {
@@ -509,5 +644,34 @@ mod tests {
             classify_key_status("Firecrawl HTTP 429: Rate limit exceeded"),
             "rate_limited"
         );
+    }
+
+    #[test]
+    fn builds_scrape_endpoint() {
+        assert_eq!(
+            build_scrape_endpoint("https://api.firecrawl.dev/v2")
+                .unwrap()
+                .as_str(),
+            "https://api.firecrawl.dev/v2/scrape"
+        );
+    }
+
+    #[test]
+    fn maps_firecrawl_scrape_json() {
+        let output = parse_extract_output(
+            &json!({
+                "success": true,
+                "data": {
+                    "markdown": "# Heading\n\nFull page",
+                    "metadata": {
+                        "title": "Heading",
+                        "url": "https://example.com/final"
+                    }
+                }
+            }),
+            "https://example.com",
+        );
+        assert_eq!(output.documents.len(), 1);
+        assert_eq!(output.documents[0].title, "Heading");
     }
 }

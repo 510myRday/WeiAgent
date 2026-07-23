@@ -22,7 +22,10 @@ use crate::{
         },
         web_search::{
             WebSearchArgs, describe_web_search_sources,
-            evidence::{WebExtractArgs, execute_web_extract},
+            evidence::{
+                WebExtractArgs, WebSearchProvenanceCache, execute_web_extract_with_status_updates,
+                record_web_search_provenance,
+            },
             execute_web_search_with_status_updates,
         },
     },
@@ -53,6 +56,7 @@ pub struct ToolExecutionContext {
     pub terminal_manager: Arc<TerminalManager>,
     pub approval_manager: Arc<ApprovalManager>,
     pub event_sender: Option<mpsc::Sender<ToolExecutionEvent>>,
+    pub web_search_provenance: WebSearchProvenanceCache,
 }
 
 #[async_trait]
@@ -961,6 +965,7 @@ impl AgentTool for WebSearchTool {
         };
         let execution =
             execute_web_search_with_status_updates(args, &context.tools_config.web_search).await;
+        record_web_search_provenance(&context.web_search_provenance, &execution.result);
         if let Err(error) = context
             .store
             .update_web_search_key_statuses(&execution.status_updates)
@@ -1022,7 +1027,7 @@ impl AgentTool for WebExtractTool {
     fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
         tool_definition(
             "web_extract",
-            "Open one to five public HTTP(S) URLs, follow safe redirects, extract HTML/text/PDF content, store the full evidence document, and return focused excerpts plus the final original URL for citation.",
+            "Open one to five public HTTP(S) URLs. Uses local extraction first, then configured URL-content providers when local content is blocked, dynamic, or low quality. Stores direct evidence, returns focused excerpts, and labels Grok SSO fallback output as AI-derived.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1065,12 +1070,22 @@ impl AgentTool for WebExtractTool {
                 };
             }
         };
-        execute_web_extract(
+        let execution = execute_web_extract_with_status_updates(
             args,
             &context.store.data_dir,
             &context.tools_config.evidence_storage,
+            &context.tools_config.web_search,
+            &context.web_search_provenance,
         )
-        .await
+        .await;
+        if let Err(error) = context
+            .store
+            .update_web_search_key_statuses(&execution.status_updates)
+            .await
+        {
+            tracing::warn!(%error, "failed to persist web extraction key statuses");
+        }
+        execution.result
     }
 }
 fn tool_definition(name: &str, description: &str, parameters: Value) -> ToolDefinition {
@@ -1370,13 +1385,19 @@ mod tests {
         assert!(names.contains(&"execute_terminal"));
         assert!(names.contains(&"terminal_session"));
         assert!(names.contains(&"multi_edit_file"));
-        assert_eq!(names.len(), 3);
+        assert_eq!(names.len(), 6);
 
         config.terminal.enabled = false;
-        assert!(
-            ToolRegistry::with_builtin_tools()
-                .definitions(&config)
-                .is_none()
+        let terminal_disabled = ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .unwrap();
+        let names = terminal_disabled
+            .iter()
+            .map(|definition| definition.function.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["web_extract", "web_search", "web_search_sources"]
         );
     }
 
@@ -1429,7 +1450,14 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["execute_terminal", "multi_edit_file", "terminal_session"]
+            vec![
+                "execute_terminal",
+                "multi_edit_file",
+                "terminal_session",
+                "web_extract",
+                "web_search",
+                "web_search_sources",
+            ]
         );
     }
 

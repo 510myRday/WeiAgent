@@ -31,15 +31,14 @@ async fn main() -> AppResult<()> {
     let addr = config.socket_addr()?;
     let store = Arc::new(JsonStore::new(&config.data_dir).await?);
     let tool_defaults = store.read_tool_defaults().await?;
-    if tool_defaults.evidence_storage.enabled {
-        if let Err(error) = tools::web_search::evidence::cleanup_evidence_store(
+    if tool_defaults.evidence_storage.enabled
+        && let Err(error) = tools::web_search::evidence::cleanup_evidence_store(
             &config.data_dir,
             &tool_defaults.evidence_storage,
         )
         .await
-        {
-            tracing::warn!(error = %error, "failed to clean evidence store during startup");
-        }
+    {
+        tracing::warn!(error = %error, "failed to clean evidence store during startup");
     }
     let llm_logger = Arc::new(LlmLogger::new(
         &config.data_dir,

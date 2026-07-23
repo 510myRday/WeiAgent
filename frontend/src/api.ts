@@ -16,6 +16,10 @@ import type {
   ModelProvider,
   ModelProviderPayload,
   ImageAttachment,
+  IpProxy,
+  IpProxyImportEntry,
+  IpProxyImportResult,
+  IpProxyPayload,
   ThinkingLevel,
   StreamEvent,
   UpdateAgentProfilePayload,
@@ -32,6 +36,7 @@ import {
 import { createAbortSignal } from './utils/abort';
 
 const DEFAULT_TIMEOUT_MS = 30000;
+const CONVERSATION_TITLE_REQUEST_TIMEOUT_MS = 65000;
 
 type RuntimeSchema<T> = {
   parse: (value: unknown) => T;
@@ -261,15 +266,24 @@ export type WebSearchSourceConfig = {
   display_name: string;
   enabled: boolean;
   deep_enabled: boolean;
+  extract_enabled: boolean;
   priority: number;
   independence_group: string;
   roles: WebSearchSourceRole[];
   base_url?: string | null;
+  extract_base_url?: string | null;
   api_keys: string[];
   key_statuses?: Array<WebSearchKeyStatusRecord | null>;
+  extract_key_statuses?: Array<WebSearchKeyStatusRecord | null>;
   flaresolverr_url?: string | null;
   flaresolverr_proxy_url?: string | null;
   proxy_url?: string | null;
+};
+
+export type WebContentExtractionConfig = {
+  remote_enabled: boolean;
+  max_remote_attempts_per_url: number;
+  allow_grok_fallback: boolean;
 };
 
 export type WebSearchToolConfig = {
@@ -277,6 +291,7 @@ export type WebSearchToolConfig = {
   max_results: number;
   timeout_ms: number;
   key_selection: WebSearchKeySelection;
+  extraction: WebContentExtractionConfig;
   sources: WebSearchSourceConfig[];
 };
 
@@ -444,13 +459,21 @@ function normalizeToolDefaults(config: AgentToolsConfig): AgentToolsConfig {
       max_total_mb: config.evidence_storage?.max_total_mb ?? 200,
     },
     web_search: {
-      enabled: config.web_search?.enabled ?? false,
+      enabled: config.web_search?.enabled ?? true,
       max_results: config.web_search?.max_results ?? 5,
       timeout_ms: config.web_search?.timeout_ms ?? 15000,
       key_selection: config.web_search?.key_selection ?? 'sequential',
+      extraction: {
+        remote_enabled: config.web_search?.extraction?.remote_enabled ?? true,
+        max_remote_attempts_per_url: config.web_search?.extraction?.max_remote_attempts_per_url ?? 3,
+        allow_grok_fallback: config.web_search?.extraction?.allow_grok_fallback ?? true,
+      },
       sources: (config.web_search?.sources ?? []).map((source) => ({
         ...source,
+        extract_enabled: source.extract_enabled ?? true,
+        extract_base_url: source.extract_base_url ?? null,
         api_keys: source.api_keys ?? [],
+        extract_key_statuses: source.extract_key_statuses ?? [],
         flaresolverr_url: source.flaresolverr_url ?? null,
         flaresolverr_proxy_url: source.flaresolverr_proxy_url ?? null,
         proxy_url: source.proxy_url ?? null,
@@ -466,6 +489,49 @@ export function updateToolDefaults(config: AgentToolsConfig): Promise<AgentTools
   });
 }
 
+export function listIpProxies(): Promise<IpProxy[]> {
+  return request<IpProxy[]>('/api/ip-proxies');
+}
+
+export function createIpProxy(payload: IpProxyPayload): Promise<IpProxy> {
+  return request<IpProxy>('/api/ip-proxies', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateIpProxy(id: string, payload: Partial<IpProxyPayload>): Promise<IpProxy> {
+  return request<IpProxy>(`/api/ip-proxies/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteIpProxy(id: string): Promise<void> {
+  return request<void>(`/api/ip-proxies/${id}`, { method: 'DELETE' });
+}
+
+export function importIpProxies(
+  entries: IpProxyImportEntry[],
+  enabled: boolean,
+): Promise<IpProxyImportResult> {
+  return request<IpProxyImportResult>('/api/ip-proxies/import', {
+    method: 'POST',
+    body: JSON.stringify({ entries, enabled }),
+  });
+}
+
+export function testIpProxy(id: string): Promise<IpProxy> {
+  return request<IpProxy>(`/api/ip-proxies/${id}/test`, { method: 'POST' }, undefined, 20000);
+}
+
+export function testIpProxies(ids: string[]): Promise<IpProxy[]> {
+  return request<IpProxy[]>('/api/ip-proxies/test', {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+  }, undefined, 600000);
+}
+
 export function generateConversationTitle(
   conversationId: string,
   content: string,
@@ -473,7 +539,7 @@ export function generateConversationTitle(
   return request<Conversation>(`/api/conversations/${conversationId}/title`, {
     method: 'POST',
     body: JSON.stringify({ content }),
-  });
+  }, undefined, CONVERSATION_TITLE_REQUEST_TIMEOUT_MS);
 }
 
 export function checkWebSearchKeys(
@@ -546,11 +612,21 @@ function normalizeAgentToolsSettings(settings: AgentToolsSettings): AgentToolsSe
         max_total_mb: settings.defaults.evidence_storage?.max_total_mb ?? 200,
       },
       web_search: {
-        enabled: settings.defaults.web_search?.enabled ?? false,
+        enabled: settings.defaults.web_search?.enabled ?? true,
         max_results: settings.defaults.web_search?.max_results ?? 5,
         timeout_ms: settings.defaults.web_search?.timeout_ms ?? 15000,
         key_selection: settings.defaults.web_search?.key_selection ?? 'sequential',
-        sources: settings.defaults.web_search?.sources ?? [],
+        extraction: {
+          remote_enabled: settings.defaults.web_search?.extraction?.remote_enabled ?? true,
+          max_remote_attempts_per_url: settings.defaults.web_search?.extraction?.max_remote_attempts_per_url ?? 3,
+          allow_grok_fallback: settings.defaults.web_search?.extraction?.allow_grok_fallback ?? true,
+        },
+        sources: (settings.defaults.web_search?.sources ?? []).map((source) => ({
+          ...source,
+          extract_enabled: source.extract_enabled ?? true,
+          extract_base_url: source.extract_base_url ?? null,
+          extract_key_statuses: source.extract_key_statuses ?? [],
+        })),
       },
     },
     overrides: {
@@ -571,11 +647,21 @@ function normalizeAgentToolsSettings(settings: AgentToolsSettings): AgentToolsSe
         max_total_mb: settings.effective.evidence_storage?.max_total_mb ?? 200,
       },
       web_search: {
-        enabled: settings.effective.web_search?.enabled ?? false,
+        enabled: settings.effective.web_search?.enabled ?? true,
         max_results: settings.effective.web_search?.max_results ?? 5,
         timeout_ms: settings.effective.web_search?.timeout_ms ?? 15000,
         key_selection: settings.effective.web_search?.key_selection ?? 'sequential',
-        sources: settings.effective.web_search?.sources ?? [],
+        extraction: {
+          remote_enabled: settings.effective.web_search?.extraction?.remote_enabled ?? true,
+          max_remote_attempts_per_url: settings.effective.web_search?.extraction?.max_remote_attempts_per_url ?? 3,
+          allow_grok_fallback: settings.effective.web_search?.extraction?.allow_grok_fallback ?? true,
+        },
+        sources: (settings.effective.web_search?.sources ?? []).map((source) => ({
+          ...source,
+          extract_enabled: source.extract_enabled ?? true,
+          extract_base_url: source.extract_base_url ?? null,
+          extract_key_statuses: source.extract_key_statuses ?? [],
+        })),
       },
     },
   };

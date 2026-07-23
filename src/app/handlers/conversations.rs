@@ -28,7 +28,7 @@ use crate::{
 };
 
 const MAX_AGENT_RUN_DURATION: Duration = Duration::from_secs(60 * 60);
-const CONVERSATION_TITLE_TIMEOUT: Duration = Duration::from_secs(12);
+const CONVERSATION_TITLE_TIMEOUT: Duration = Duration::from_secs(60);
 const CONVERSATION_TITLE_CHAR_LIMIT: usize = 15;
 
 struct ProcessCleanupGuard {

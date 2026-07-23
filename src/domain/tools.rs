@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TerminalToolConfig {
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// User-facing permission mode for local terminal execution.
     #[serde(default)]
@@ -58,6 +59,8 @@ pub const MAX_WEB_SEARCH_KEYS_PER_SOURCE: usize = 1_000;
 pub const MAX_WEB_SEARCH_QUERY_CHARS: usize = 500;
 pub const MAX_WEB_SEARCH_QUERIES: usize = 4;
 pub const MAX_WEB_EXTRACT_URLS: usize = 5;
+pub const DEFAULT_WEB_EXTRACT_MAX_REMOTE_ATTEMPTS: u32 = 3;
+pub const MAX_WEB_EXTRACT_REMOTE_ATTEMPTS: u32 = 5;
 pub const DEFAULT_EVIDENCE_RETENTION_DAYS: u32 = 30;
 pub const MAX_EVIDENCE_RETENTION_DAYS: u32 = 3_650;
 pub const DEFAULT_EVIDENCE_MAX_TOTAL_MB: u64 = 200;
@@ -200,6 +203,11 @@ pub struct WebSearchSourceCapabilities {
     pub native_citations: bool,
     pub ai_synthesis: bool,
     pub social_results: bool,
+    pub url_extract: bool,
+    pub batch_extract: bool,
+    pub javascript_rendering: bool,
+    pub pdf_extract: bool,
+    pub ai_derived_extract: bool,
 }
 
 impl WebSearchProviderKind {
@@ -223,6 +231,16 @@ impl WebSearchProviderKind {
         }
     }
 
+    pub fn default_extract_base_url(&self) -> &'static str {
+        match self {
+            Self::Tavily => "https://api.tavily.com",
+            Self::Exa => "https://api.exa.ai",
+            Self::Jina => "https://r.jina.ai",
+            Self::Grok => "https://grok.com",
+            Self::Firecrawl => "https://api.firecrawl.dev/v2",
+        }
+    }
+
     pub fn default_display_name(&self) -> &'static str {
         match self {
             Self::Tavily => "Tavily",
@@ -231,6 +249,14 @@ impl WebSearchProviderKind {
             Self::Grok => "Grok Research",
             Self::Firecrawl => "Firecrawl",
         }
+    }
+
+    pub fn supports_anonymous_search(&self) -> bool {
+        matches!(self, Self::Jina)
+    }
+
+    pub fn supports_anonymous_extract(&self) -> bool {
+        matches!(self, Self::Jina)
     }
 
     pub fn provider_kind(&self) -> &'static str {
@@ -305,6 +331,11 @@ impl WebSearchProviderKind {
                 native_citations: true,
                 ai_synthesis: false,
                 social_results: false,
+                url_extract: true,
+                batch_extract: true,
+                javascript_rendering: true,
+                pdf_extract: true,
+                ai_derived_extract: false,
             },
             Self::Exa => WebSearchSourceCapabilities {
                 domain_filter: true,
@@ -312,6 +343,11 @@ impl WebSearchProviderKind {
                 native_citations: true,
                 ai_synthesis: false,
                 social_results: false,
+                url_extract: true,
+                batch_extract: true,
+                javascript_rendering: true,
+                pdf_extract: true,
+                ai_derived_extract: false,
             },
             Self::Jina => WebSearchSourceCapabilities {
                 domain_filter: true,
@@ -319,6 +355,11 @@ impl WebSearchProviderKind {
                 native_citations: true,
                 ai_synthesis: false,
                 social_results: false,
+                url_extract: true,
+                batch_extract: false,
+                javascript_rendering: true,
+                pdf_extract: true,
+                ai_derived_extract: false,
             },
             Self::Grok => WebSearchSourceCapabilities {
                 domain_filter: false,
@@ -326,6 +367,11 @@ impl WebSearchProviderKind {
                 native_citations: true,
                 ai_synthesis: true,
                 social_results: true,
+                url_extract: true,
+                batch_extract: false,
+                javascript_rendering: true,
+                pdf_extract: false,
+                ai_derived_extract: true,
             },
             Self::Firecrawl => WebSearchSourceCapabilities {
                 domain_filter: true,
@@ -333,6 +379,11 @@ impl WebSearchProviderKind {
                 native_citations: true,
                 ai_synthesis: false,
                 social_results: false,
+                url_extract: true,
+                batch_extract: true,
+                javascript_rendering: true,
+                pdf_extract: true,
+                ai_derived_extract: false,
             },
         }
     }
@@ -417,8 +468,15 @@ pub struct WebSearchKeyStatusRecord {
     pub checked_at: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WebSearchKeyOperation {
+    Search,
+    Extract,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WebSearchKeyStatusUpdate {
+    pub operation: WebSearchKeyOperation,
     pub source_id: String,
     pub key_index: usize,
     pub api_key: String,
@@ -436,6 +494,8 @@ pub struct WebSearchSourceConfig {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub deep_enabled: bool,
+    #[serde(default = "default_true")]
+    pub extract_enabled: bool,
     #[serde(default = "default_web_search_source_priority")]
     pub priority: u16,
     #[serde(default)]
@@ -444,6 +504,8 @@ pub struct WebSearchSourceConfig {
     pub roles: Vec<WebSearchSourceRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extract_base_url: Option<String>,
     #[serde(default)]
     pub api_keys: Vec<String>,
     /// SHA-256 fingerprints of keys confirmed as officially blocked.
@@ -452,6 +514,9 @@ pub struct WebSearchSourceConfig {
     /// Status slots aligned with api_keys. Null means this key has not been checked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key_statuses: Vec<Option<WebSearchKeyStatusRecord>>,
+    /// Extraction status slots aligned with api_keys.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extract_key_statuses: Vec<Option<WebSearchKeyStatusRecord>>,
     /// FlareSolverr base URL, e.g. http://127.0.0.1:8191
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flaresolverr_url: Option<String>,
@@ -461,6 +526,31 @@ pub struct WebSearchSourceConfig {
     /// Upstream proxy for Grok/CF traffic. Supports http:// and socks5://
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WebContentExtractionConfig {
+    #[serde(default = "default_true")]
+    pub remote_enabled: bool,
+    #[serde(default = "default_web_extract_max_remote_attempts")]
+    pub max_remote_attempts_per_url: u32,
+    #[serde(default = "default_true")]
+    pub allow_grok_fallback: bool,
+}
+
+fn default_web_extract_max_remote_attempts() -> u32 {
+    DEFAULT_WEB_EXTRACT_MAX_REMOTE_ATTEMPTS
+}
+
+impl Default for WebContentExtractionConfig {
+    fn default() -> Self {
+        Self {
+            remote_enabled: true,
+            max_remote_attempts_per_url: DEFAULT_WEB_EXTRACT_MAX_REMOTE_ATTEMPTS,
+            allow_grok_fallback: true,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -474,7 +564,7 @@ fn default_web_search_source_priority() -> u16 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct WebSearchToolConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_web_search_max_results")]
     pub max_results: u32,
@@ -482,6 +572,8 @@ pub struct WebSearchToolConfig {
     pub timeout_ms: u64,
     #[serde(default)]
     pub key_selection: WebSearchKeySelection,
+    #[serde(default)]
+    pub extraction: WebContentExtractionConfig,
     #[serde(default = "default_web_search_sources")]
     pub sources: Vec<WebSearchSourceConfig>,
 }
@@ -501,6 +593,7 @@ fn default_web_search_source(
     provider: WebSearchProviderKind,
     priority: u16,
 ) -> WebSearchSourceConfig {
+    let enabled = provider.supports_anonymous_search();
     let roles = provider.default_roles();
     WebSearchSourceConfig {
         id: id.to_string(),
@@ -508,13 +601,16 @@ fn default_web_search_source(
         independence_group: provider.as_str().to_string(),
         roles,
         provider,
-        enabled: true,
+        enabled,
         deep_enabled: true,
+        extract_enabled: true,
         priority,
         base_url: None,
+        extract_base_url: None,
         api_keys: Vec::new(),
         blocked_api_key_hashes: Vec::new(),
         key_statuses: Vec::new(),
+        extract_key_statuses: Vec::new(),
         flaresolverr_url: None,
         flaresolverr_proxy_url: None,
         proxy_url: None,
@@ -524,10 +620,11 @@ fn default_web_search_source(
 impl Default for WebSearchToolConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
             timeout_ms: DEFAULT_WEB_SEARCH_TIMEOUT_MS,
             key_selection: WebSearchKeySelection::Sequential,
+            extraction: WebContentExtractionConfig::default(),
             sources: default_web_search_sources(),
         }
     }
@@ -540,6 +637,12 @@ impl WebSearchToolConfig {
 
     pub fn timeout_ms(&self) -> u64 {
         self.timeout_ms.clamp(1, MAX_WEB_SEARCH_TIMEOUT_MS)
+    }
+
+    pub fn max_remote_extract_attempts(&self) -> usize {
+        self.extraction
+            .max_remote_attempts_per_url
+            .clamp(1, MAX_WEB_EXTRACT_REMOTE_ATTEMPTS) as usize
     }
 
     pub(crate) fn ensure_builtin_sources(&mut self, previous: Option<&Self>) -> bool {
@@ -563,6 +666,17 @@ impl WebSearchToolConfig {
                 .unwrap_or(default_source);
             self.sources.push(source);
             changed = true;
+        }
+        changed
+    }
+
+    pub(crate) fn disable_unavailable_sources(&mut self) -> bool {
+        let mut changed = false;
+        for source in &mut self.sources {
+            if source.enabled && !source.can_search() {
+                source.enabled = false;
+                changed = true;
+            }
         }
         changed
     }
@@ -615,10 +729,9 @@ impl WebSearchToolConfig {
                     if status
                         .as_ref()
                         .is_some_and(|record| record.status == "officially_blocked")
+                        && let Some(api_key) = previous_source.api_keys.get(key_index)
                     {
-                        if let Some(api_key) = previous_source.api_keys.get(key_index) {
-                            source.remember_blocked_api_key(api_key);
-                        }
+                        source.remember_blocked_api_key(api_key);
                     }
                 }
             }
@@ -655,10 +768,10 @@ impl WebSearchToolConfig {
                     continue;
                 }
                 if is_masked_api_key(trimmed) {
-                    if let Some(previous) = previous_keys.get(index) {
-                        if !previous.trim().is_empty() {
-                            next_keys.push(previous.clone());
-                        }
+                    if let Some(previous) = previous_keys.get(index)
+                        && !previous.trim().is_empty()
+                    {
+                        next_keys.push(previous.clone());
                     }
                     continue;
                 }
@@ -704,6 +817,22 @@ impl WebSearchSourceConfig {
         self.api_keys
             .iter()
             .any(|key| !key.trim().is_empty() && !self.is_api_key_blocked(key))
+    }
+
+    pub fn can_search(&self) -> bool {
+        self.provider.supports_anonymous_search() || self.has_available_key()
+    }
+
+    pub fn can_extract(&self) -> bool {
+        self.provider.supports_anonymous_extract() || self.has_available_key()
+    }
+
+    pub fn extract_base_url(&self) -> &str {
+        self.extract_base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| self.provider.default_extract_base_url())
     }
 }
 
@@ -870,6 +999,7 @@ impl AgentToolsOverrides {
                     .unwrap_or(defaults.web_search.max_results),
                 timeout_ms: defaults.web_search.timeout_ms,
                 key_selection: defaults.web_search.key_selection.clone(),
+                extraction: defaults.web_search.extraction.clone(),
                 sources: defaults.web_search.sources.clone(),
             },
             evidence_storage: defaults.evidence_storage.clone(),
@@ -1020,9 +1150,9 @@ mod tests {
     }
 
     #[test]
-    fn web_search_defaults_are_disabled_with_builtin_sources() {
+    fn web_search_defaults_enable_only_anonymous_jina() {
         let config = AgentToolsConfig::default();
-        assert!(!config.web_search.enabled);
+        assert!(config.web_search.enabled);
         assert_eq!(
             config.web_search.max_results,
             DEFAULT_WEB_SEARCH_MAX_RESULTS
@@ -1033,7 +1163,25 @@ mod tests {
         assert_eq!(config.web_search.sources[2].id, "jina");
         assert_eq!(config.web_search.sources[3].id, "grok");
         assert_eq!(config.web_search.sources[4].id, "firecrawl");
+        assert!(!config.web_search.sources[0].enabled);
+        assert!(!config.web_search.sources[1].enabled);
+        assert!(config.web_search.sources[2].enabled);
+        assert!(!config.web_search.sources[3].enabled);
+        assert!(!config.web_search.sources[4].enabled);
         assert!(!config.web_search.sources[0].has_available_key());
+        assert!(config.web_search.sources[2].can_search());
+    }
+
+    #[test]
+    fn terminal_enabled_defaults_to_true_when_omitted() {
+        let terminal: TerminalToolConfig = serde_json::from_value(serde_json::json!({
+            "permission_mode": "request_approval",
+            "approval_grants": [],
+            "default_timeout_ms": 30000,
+            "allowed_cwd_roots": []
+        }))
+        .unwrap();
+        assert!(terminal.enabled);
     }
 
     #[test]
@@ -1092,13 +1240,16 @@ mod tests {
                 display_name: "Tavily".to_string(),
                 enabled: true,
                 deep_enabled: true,
+                extract_enabled: true,
                 priority: 10,
                 independence_group: "tavily".to_string(),
                 roles: WebSearchProviderKind::Tavily.default_roles(),
                 base_url: None,
+                extract_base_url: None,
                 api_keys: vec!["sk-live-secret".to_string()],
                 blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
+                extract_key_statuses: Vec::new(),
                 flaresolverr_url: None,
                 flaresolverr_proxy_url: None,
                 proxy_url: None,
@@ -1114,13 +1265,16 @@ mod tests {
                 display_name: "Tavily".to_string(),
                 enabled: true,
                 deep_enabled: true,
+                extract_enabled: true,
                 priority: 10,
                 independence_group: "tavily".to_string(),
                 roles: WebSearchProviderKind::Tavily.default_roles(),
                 base_url: None,
+                extract_base_url: None,
                 api_keys: vec!["__preserve__".to_string()],
                 blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
+                extract_key_statuses: Vec::new(),
                 flaresolverr_url: None,
                 flaresolverr_proxy_url: None,
                 proxy_url: None,
@@ -1140,13 +1294,16 @@ mod tests {
                 display_name: "Tavily".to_string(),
                 enabled: true,
                 deep_enabled: true,
+                extract_enabled: true,
                 priority: 10,
                 independence_group: "tavily".to_string(),
                 roles: WebSearchProviderKind::Tavily.default_roles(),
                 base_url: None,
+                extract_base_url: None,
                 api_keys: vec![],
                 blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
+                extract_key_statuses: Vec::new(),
                 flaresolverr_url: None,
                 flaresolverr_proxy_url: None,
                 proxy_url: None,
@@ -1163,13 +1320,16 @@ mod tests {
                 display_name: "Tavily".to_string(),
                 enabled: true,
                 deep_enabled: true,
+                extract_enabled: true,
                 priority: 10,
                 independence_group: "tavily".to_string(),
                 roles: WebSearchProviderKind::Tavily.default_roles(),
                 base_url: None,
+                extract_base_url: None,
                 api_keys: vec!["sk-new".to_string(), "sk-blocked".to_string()],
                 blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
+                extract_key_statuses: Vec::new(),
                 flaresolverr_url: None,
                 flaresolverr_proxy_url: None,
                 proxy_url: None,
@@ -1204,7 +1364,7 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(!config.web_search.enabled);
+        assert!(config.web_search.enabled);
         assert_eq!(config.web_search.sources.len(), 5);
         assert_eq!(config.web_search.sources[3].id, "grok");
         assert_eq!(config.web_search.sources[4].id, "firecrawl");

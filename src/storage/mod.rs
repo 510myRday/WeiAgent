@@ -2,6 +2,7 @@ mod agents;
 mod conversations;
 mod db;
 mod files;
+mod ip_proxies;
 mod json_store;
 pub mod llm_logs;
 mod providers;
@@ -73,9 +74,22 @@ mod tests {
         assert!(temp_dir.path().join("weiagent.db").exists());
         assert!(store.list_model_providers().await.unwrap().is_empty());
         assert!(!temp_dir.path().join("tool_defaults.json").exists());
+        let defaults = store.read_tool_defaults().await.unwrap();
         assert_eq!(
-            store.read_tool_defaults().await.unwrap().max_llm_iterations,
+            defaults.max_llm_iterations,
             crate::domain::tools::DEFAULT_MAX_LLM_ITERATIONS
+        );
+        assert!(defaults.terminal.enabled);
+        assert!(defaults.web_search.enabled);
+        assert_eq!(
+            defaults
+                .web_search
+                .sources
+                .iter()
+                .filter(|source| source.enabled)
+                .map(|source| source.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["jina"]
         );
         let conn = db::open_data_dir(temp_dir.path()).unwrap();
         let default_rows: i64 = conn
@@ -138,6 +152,37 @@ mod tests {
         assert_eq!(source.api_keys.len(), 2);
         assert_eq!(source.key_statuses.len(), 2);
         assert_eq!(source.key_statuses[1].as_ref().unwrap().detail, "b");
+    }
+
+    #[tokio::test]
+    async fn source_without_key_is_forced_off_but_jina_stays_available() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let mut defaults = store.read_tool_defaults().await.unwrap();
+        defaults
+            .web_search
+            .sources
+            .iter_mut()
+            .find(|source| source.id == "tavily")
+            .unwrap()
+            .enabled = true;
+
+        let saved = store.update_tool_defaults(defaults).await.unwrap();
+        let tavily = saved
+            .web_search
+            .sources
+            .iter()
+            .find(|source| source.id == "tavily")
+            .unwrap();
+        let jina = saved
+            .web_search
+            .sources
+            .iter()
+            .find(|source| source.id == "jina")
+            .unwrap();
+        assert!(!tavily.enabled);
+        assert!(jina.enabled);
+        assert!(jina.api_keys.is_empty());
     }
 
     #[tokio::test]
@@ -249,6 +294,7 @@ mod tests {
 
         let updates = vec![
             crate::domain::tools::WebSearchKeyStatusUpdate {
+                operation: crate::domain::tools::WebSearchKeyOperation::Search,
                 source_id: "grok".to_string(),
                 key_index: 0,
                 api_key: "grok-b".to_string(),
@@ -259,6 +305,7 @@ mod tests {
                 },
             },
             crate::domain::tools::WebSearchKeyStatusUpdate {
+                operation: crate::domain::tools::WebSearchKeyOperation::Search,
                 source_id: "grok".to_string(),
                 key_index: 0,
                 api_key: "stale-key".to_string(),
@@ -269,6 +316,7 @@ mod tests {
                 },
             },
             crate::domain::tools::WebSearchKeyStatusUpdate {
+                operation: crate::domain::tools::WebSearchKeyOperation::Search,
                 source_id: "grok".to_string(),
                 key_index: 0,
                 api_key: "grok-a".to_string(),
@@ -279,6 +327,7 @@ mod tests {
                 },
             },
             crate::domain::tools::WebSearchKeyStatusUpdate {
+                operation: crate::domain::tools::WebSearchKeyOperation::Extract,
                 source_id: "tavily".to_string(),
                 key_index: 0,
                 api_key: "tvly-a".to_string(),
@@ -323,7 +372,11 @@ mod tests {
             .find(|source| source.id == "tavily")
             .unwrap();
         assert_eq!(tavily.api_keys, vec!["tvly-a".to_string()]);
-        assert_eq!(tavily.key_statuses[0].as_ref().unwrap().status, "normal");
+        assert!(tavily.key_statuses[0].is_none());
+        assert_eq!(
+            tavily.extract_key_statuses[0].as_ref().unwrap().status,
+            "normal"
+        );
 
         let mut client_update = saved.redact_secrets();
         let source = client_update
@@ -343,6 +396,7 @@ mod tests {
             .find(|source| source.id == "grok")
             .unwrap();
         assert!(source.api_keys.is_empty());
+        assert!(!source.enabled);
         assert!(source.is_api_key_blocked("grok-a"));
     }
 
@@ -1179,7 +1233,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(prompt, again);
-        assert!(!prompt.contains("Web Search Policy V1"));
+        assert!(prompt.contains("## Web Search Policy V1"));
+
+        tools_config.web_search.enabled = false;
+        let no_search_prompt = store
+            .build_agent_system_prompt(&stored, &tools_config)
+            .await
+            .unwrap();
+        assert!(!no_search_prompt.contains("Web Search Policy V1"));
 
         tools_config.web_search.enabled = true;
         let search_prompt = store

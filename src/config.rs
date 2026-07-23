@@ -268,8 +268,10 @@ mod tests {
 
     #[test]
     fn settings_reject_invalid_global_context_threshold() {
-        let mut settings = AppSettings::default();
-        settings.context_compress_threshold_percent = 0;
+        let mut settings = AppSettings {
+            context_compress_threshold_percent: 0,
+            ..AppSettings::default()
+        };
         assert!(validate_settings(&settings).is_err());
         settings.context_compress_threshold_percent = 100;
         assert!(validate_settings(&settings).is_err());

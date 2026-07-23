@@ -5,7 +5,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use tokio::fs;
 use uuid::Uuid;
 
-use crate::domain::tools::TerminalToolOverrides;
+use crate::domain::tools::{
+    TerminalToolOverrides, WebContentExtractionConfig, WebSearchKeyOperation,
+};
 use crate::{
     domain::{
         AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, EvidenceStorageConfig,
@@ -43,6 +45,12 @@ CREATE TABLE IF NOT EXISTS tool_settings (
         CHECK (web_search_timeout_ms IS NULL OR web_search_timeout_ms > 0),
     web_search_key_selection TEXT
         CHECK (web_search_key_selection IS NULL OR web_search_key_selection IN ('sequential', 'round_robin', 'random')),
+    web_extract_remote_enabled INTEGER
+        CHECK (web_extract_remote_enabled IS NULL OR web_extract_remote_enabled IN (0, 1)),
+    web_extract_max_remote_attempts INTEGER
+        CHECK (web_extract_max_remote_attempts IS NULL OR web_extract_max_remote_attempts BETWEEN 1 AND 5),
+    web_extract_allow_grok_fallback INTEGER
+        CHECK (web_extract_allow_grok_fallback IS NULL OR web_extract_allow_grok_fallback IN (0, 1)),
     evidence_storage_enabled INTEGER
         CHECK (evidence_storage_enabled IS NULL OR evidence_storage_enabled IN (0, 1)),
     evidence_retention_days INTEGER
@@ -66,6 +74,9 @@ CREATE TABLE IF NOT EXISTS tool_settings (
             AND web_search_max_results IS NOT NULL
             AND web_search_timeout_ms IS NOT NULL
             AND web_search_key_selection IS NOT NULL
+            AND web_extract_remote_enabled IS NOT NULL
+            AND web_extract_max_remote_attempts IS NOT NULL
+            AND web_extract_allow_grok_fallback IS NOT NULL
             AND evidence_storage_enabled IS NOT NULL
             AND evidence_retention_days IS NOT NULL
             AND evidence_max_total_mb IS NOT NULL
@@ -76,6 +87,9 @@ CREATE TABLE IF NOT EXISTS tool_settings (
             AND length(scope_id) = 36
             AND web_search_timeout_ms IS NULL
             AND web_search_key_selection IS NULL
+            AND web_extract_remote_enabled IS NULL
+            AND web_extract_max_remote_attempts IS NULL
+            AND web_extract_allow_grok_fallback IS NULL
             AND evidence_storage_enabled IS NULL
             AND evidence_retention_days IS NULL
             AND evidence_max_total_mb IS NULL
@@ -106,6 +120,7 @@ CREATE TABLE IF NOT EXISTS tool_web_search_sources (
     display_name TEXT NOT NULL,
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
     deep_enabled INTEGER NOT NULL CHECK (deep_enabled IN (0, 1)),
+    extract_enabled INTEGER NOT NULL DEFAULT 1 CHECK (extract_enabled IN (0, 1)),
     priority INTEGER NOT NULL CHECK (priority >= 0),
     independence_group TEXT NOT NULL,
     roles_json TEXT NOT NULL
@@ -113,6 +128,7 @@ CREATE TABLE IF NOT EXISTS tool_web_search_sources (
     blocked_api_key_hashes_json TEXT NOT NULL DEFAULT '[]'
         CHECK (json_valid(blocked_api_key_hashes_json) AND json_type(blocked_api_key_hashes_json) = 'array'),
     base_url TEXT,
+    extract_base_url TEXT,
     flaresolverr_url TEXT,
     flaresolverr_proxy_url TEXT,
     proxy_url TEXT,
@@ -126,6 +142,9 @@ CREATE TABLE IF NOT EXISTS tool_web_search_api_keys (
     key_status TEXT,
     status_detail TEXT,
     checked_at TEXT,
+    extract_key_status TEXT,
+    extract_status_detail TEXT,
+    extract_checked_at TEXT,
     PRIMARY KEY (source_id, position),
     UNIQUE (source_id, api_key),
     FOREIGN KEY (source_id) REFERENCES tool_web_search_sources(source_id) ON DELETE CASCADE
@@ -184,6 +203,7 @@ impl JsonStore {
         config
             .web_search
             .ensure_builtin_sources(Some(&existing.web_search));
+        config.web_search.disable_unavailable_sources();
         normalize_key_status_slots(&mut config);
         validate_tools_config(&config)?;
         self.write_tool_defaults_unlocked(&config)?;
@@ -229,15 +249,18 @@ impl JsonStore {
                 }
                 continue;
             };
-            source
-                .key_statuses
-                .resize_with(source.api_keys.len(), || None);
-            source.key_statuses.truncate(source.api_keys.len());
-            source.key_statuses[key_index] = Some(update.record.clone());
+            let statuses = match update.operation {
+                WebSearchKeyOperation::Search => &mut source.key_statuses,
+                WebSearchKeyOperation::Extract => &mut source.extract_key_statuses,
+            };
+            statuses.resize_with(source.api_keys.len(), || None);
+            statuses.truncate(source.api_keys.len());
+            statuses[key_index] = Some(update.record.clone());
             updated += 1;
         }
 
         if updated > 0 {
+            config.web_search.disable_unavailable_sources();
             validate_tools_config(&config)?;
             self.write_tool_defaults_unlocked(&config)?;
         }
@@ -347,6 +370,7 @@ impl JsonStore {
             AppError::Database("default tool settings row is missing".to_string())
         })?;
         let mut repaired = config.web_search.ensure_builtin_sources(None);
+        repaired |= config.web_search.disable_unavailable_sources();
         repaired |= normalize_key_status_slots(&mut config);
         validate_tools_config(&config)?;
         if repaired {
@@ -408,6 +432,7 @@ impl JsonStore {
         }
         config.terminal.approval_grants.clear();
         config.web_search.ensure_builtin_sources(None);
+        config.web_search.disable_unavailable_sources();
         normalize_key_status_slots(&mut config);
         validate_tools_config(&config)?;
         Ok(config)
@@ -511,6 +536,13 @@ fn normalize_key_status_slots(config: &mut AgentToolsConfig) -> bool {
             source.key_statuses.truncate(source.api_keys.len());
             changed = true;
         }
+        if source.extract_key_statuses.len() != source.api_keys.len() {
+            source
+                .extract_key_statuses
+                .resize_with(source.api_keys.len(), || None);
+            source.extract_key_statuses.truncate(source.api_keys.len());
+            changed = true;
+        }
     }
     changed
 }
@@ -522,6 +554,7 @@ fn ensure_tool_settings_schema(conn: &mut Connection) -> AppResult<()> {
     }
     let columns = table_columns(conn, "tool_settings")?;
     if columns.contains("terminal_allowed_cwd_roots_json") {
+        ensure_content_extraction_columns(conn)?;
         conn.execute_batch(TOOL_SETTINGS_SCHEMA_SQL)?;
         return Ok(());
     }
@@ -532,6 +565,75 @@ fn ensure_tool_settings_schema(conn: &mut Connection) -> AppResult<()> {
     Err(AppError::Database(
         "unsupported tool_settings table layout".to_string(),
     ))
+}
+
+fn ensure_content_extraction_columns(conn: &Connection) -> AppResult<()> {
+    let settings_columns = table_columns(conn, "tool_settings")?;
+    if !settings_columns.contains("web_extract_remote_enabled") {
+        conn.execute(
+            "ALTER TABLE tool_settings ADD COLUMN web_extract_remote_enabled INTEGER",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE tool_settings SET web_extract_remote_enabled = 1 WHERE scope_type = 'default'",
+            [],
+        )?;
+    }
+    if !settings_columns.contains("web_extract_max_remote_attempts") {
+        conn.execute(
+            "ALTER TABLE tool_settings ADD COLUMN web_extract_max_remote_attempts INTEGER",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE tool_settings SET web_extract_max_remote_attempts = 3 WHERE scope_type = 'default'",
+            [],
+        )?;
+    }
+    if !settings_columns.contains("web_extract_allow_grok_fallback") {
+        conn.execute(
+            "ALTER TABLE tool_settings ADD COLUMN web_extract_allow_grok_fallback INTEGER",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE tool_settings SET web_extract_allow_grok_fallback = 1 WHERE scope_type = 'default'",
+            [],
+        )?;
+    }
+
+    let source_columns = table_columns(conn, "tool_web_search_sources")?;
+    if !source_columns.contains("extract_enabled") {
+        conn.execute(
+            "ALTER TABLE tool_web_search_sources ADD COLUMN extract_enabled INTEGER NOT NULL DEFAULT 1",
+            [],
+        )?;
+    }
+    if !source_columns.contains("extract_base_url") {
+        conn.execute(
+            "ALTER TABLE tool_web_search_sources ADD COLUMN extract_base_url TEXT",
+            [],
+        )?;
+    }
+
+    let key_columns = table_columns(conn, "tool_web_search_api_keys")?;
+    if !key_columns.contains("extract_key_status") {
+        conn.execute(
+            "ALTER TABLE tool_web_search_api_keys ADD COLUMN extract_key_status TEXT",
+            [],
+        )?;
+    }
+    if !key_columns.contains("extract_status_detail") {
+        conn.execute(
+            "ALTER TABLE tool_web_search_api_keys ADD COLUMN extract_status_detail TEXT",
+            [],
+        )?;
+    }
+    if !key_columns.contains("extract_checked_at") {
+        conn.execute(
+            "ALTER TABLE tool_web_search_api_keys ADD COLUMN extract_checked_at TEXT",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 fn table_exists(conn: &Connection, name: &str) -> AppResult<bool> {
@@ -619,10 +721,12 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
             scope_type, scope_id, config_version, max_llm_iterations,
             terminal_enabled, terminal_permission_mode, terminal_default_timeout_ms,
             terminal_allowed_cwd_roots_json, web_search_enabled, web_search_max_results,
-            web_search_timeout_ms, web_search_key_selection, evidence_storage_enabled,
-            evidence_retention_days, evidence_max_total_mb, created_at, updated_at
+            web_search_timeout_ms, web_search_key_selection, web_extract_remote_enabled,
+            web_extract_max_remote_attempts, web_extract_allow_grok_fallback,
+            evidence_storage_enabled, evidence_retention_days, evidence_max_total_mb,
+            created_at, updated_at
          ) VALUES (
-            'default', 'default', 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13
+            'default', 'default', 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16
          )
          ON CONFLICT(scope_type, scope_id) DO UPDATE SET
             config_version = 1,
@@ -635,6 +739,9 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
             web_search_max_results = excluded.web_search_max_results,
             web_search_timeout_ms = excluded.web_search_timeout_ms,
             web_search_key_selection = excluded.web_search_key_selection,
+            web_extract_remote_enabled = excluded.web_extract_remote_enabled,
+            web_extract_max_remote_attempts = excluded.web_extract_max_remote_attempts,
+            web_extract_allow_grok_fallback = excluded.web_extract_allow_grok_fallback,
             evidence_storage_enabled = excluded.evidence_storage_enabled,
             evidence_retention_days = excluded.evidence_retention_days,
             evidence_max_total_mb = excluded.evidence_max_total_mb,
@@ -652,6 +759,9 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
             i64::from(config.web_search.max_results),
             u64_to_i64(config.web_search.timeout_ms, "web_search_timeout_ms")?,
             key_selection_as_str(&config.web_search.key_selection),
+            bool_to_i64(config.web_search.extraction.remote_enabled),
+            i64::from(config.web_search.extraction.max_remote_attempts_per_url),
+            bool_to_i64(config.web_search.extraction.allow_grok_fallback),
             bool_to_i64(config.evidence_storage.enabled),
             i64::from(config.evidence_storage.retention_days),
             u64_to_i64(
@@ -669,10 +779,10 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
         conn.execute(
             "INSERT INTO tool_web_search_sources (
                 source_id, scope_id, position, provider, display_name, enabled,
-                deep_enabled, priority, independence_group, roles_json,
-                blocked_api_key_hashes_json, base_url, flaresolverr_url,
+                deep_enabled, extract_enabled, priority, independence_group, roles_json,
+                blocked_api_key_hashes_json, base_url, extract_base_url, flaresolverr_url,
                 flaresolverr_proxy_url, proxy_url
-             ) VALUES (?1, 'default', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+             ) VALUES (?1, 'default', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 source.id,
                 usize_to_i64(position)?,
@@ -680,11 +790,13 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
                 source.display_name,
                 bool_to_i64(source.enabled),
                 bool_to_i64(source.deep_enabled),
+                bool_to_i64(source.extract_enabled),
                 i64::from(source.priority),
                 source.independence_group,
                 roles_json,
                 blocked_json,
                 source.base_url,
+                source.extract_base_url,
                 source.flaresolverr_url,
                 source.flaresolverr_proxy_url,
                 source.proxy_url,
@@ -697,8 +809,9 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
                 .and_then(Option::as_ref);
             conn.execute(
                 "INSERT INTO tool_web_search_api_keys (
-                    source_id, position, api_key, key_status, status_detail, checked_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    source_id, position, api_key, key_status, status_detail, checked_at,
+                    extract_key_status, extract_status_detail, extract_checked_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     source.id,
                     usize_to_i64(key_position)?,
@@ -706,6 +819,21 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
                     status.map(|record| record.status.as_str()),
                     status.map(|record| record.detail.as_str()),
                     status.map(|record| record.checked_at.as_str()),
+                    source
+                        .extract_key_statuses
+                        .get(key_position)
+                        .and_then(Option::as_ref)
+                        .map(|record| record.status.as_str()),
+                    source
+                        .extract_key_statuses
+                        .get(key_position)
+                        .and_then(Option::as_ref)
+                        .map(|record| record.detail.as_str()),
+                    source
+                        .extract_key_statuses
+                        .get(key_position)
+                        .and_then(Option::as_ref)
+                        .map(|record| record.checked_at.as_str()),
                 ],
             )?;
         }
@@ -814,6 +942,9 @@ struct DefaultSettingsRow {
     web_search_max_results: i64,
     web_search_timeout_ms: i64,
     web_search_key_selection: String,
+    web_extract_remote_enabled: i64,
+    web_extract_max_remote_attempts: i64,
+    web_extract_allow_grok_fallback: i64,
     evidence_storage_enabled: i64,
     evidence_retention_days: i64,
     evidence_max_total_mb: i64,
@@ -825,8 +956,9 @@ fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsC
             "SELECT max_llm_iterations, terminal_enabled, terminal_permission_mode,
                     terminal_default_timeout_ms, terminal_allowed_cwd_roots_json,
                     web_search_enabled, web_search_max_results, web_search_timeout_ms,
-                    web_search_key_selection, evidence_storage_enabled,
-                    evidence_retention_days, evidence_max_total_mb
+                    web_search_key_selection, web_extract_remote_enabled,
+                    web_extract_max_remote_attempts, web_extract_allow_grok_fallback,
+                    evidence_storage_enabled, evidence_retention_days, evidence_max_total_mb
              FROM tool_settings
              WHERE scope_type = 'default' AND scope_id = 'default'",
             [],
@@ -841,9 +973,12 @@ fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsC
                     web_search_max_results: row.get(6)?,
                     web_search_timeout_ms: row.get(7)?,
                     web_search_key_selection: row.get(8)?,
-                    evidence_storage_enabled: row.get(9)?,
-                    evidence_retention_days: row.get(10)?,
-                    evidence_max_total_mb: row.get(11)?,
+                    web_extract_remote_enabled: row.get(9)?,
+                    web_extract_max_remote_attempts: row.get(10)?,
+                    web_extract_allow_grok_fallback: row.get(11)?,
+                    evidence_storage_enabled: row.get(12)?,
+                    evidence_retention_days: row.get(13)?,
+                    evidence_max_total_mb: row.get(14)?,
                 })
             },
         )
@@ -869,6 +1004,20 @@ fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsC
             max_results: i64_to_u32(row.web_search_max_results, "web_search_max_results")?,
             timeout_ms: i64_to_u64(row.web_search_timeout_ms, "web_search_timeout_ms")?,
             key_selection: key_selection_from_str(&row.web_search_key_selection)?,
+            extraction: WebContentExtractionConfig {
+                remote_enabled: i64_to_bool(
+                    row.web_extract_remote_enabled,
+                    "web_extract_remote_enabled",
+                )?,
+                max_remote_attempts_per_url: i64_to_u32(
+                    row.web_extract_max_remote_attempts,
+                    "web_extract_max_remote_attempts",
+                )?,
+                allow_grok_fallback: i64_to_bool(
+                    row.web_extract_allow_grok_fallback,
+                    "web_extract_allow_grok_fallback",
+                )?,
+            },
             sources: read_compact_web_search_sources(conn)?,
         },
         evidence_storage: EvidenceStorageConfig {
@@ -997,11 +1146,13 @@ struct CompactSourceRow {
     display_name: String,
     enabled: i64,
     deep_enabled: i64,
+    extract_enabled: i64,
     priority: i64,
     independence_group: String,
     roles_json: String,
     blocked_api_key_hashes_json: String,
     base_url: Option<String>,
+    extract_base_url: Option<String>,
     flaresolverr_url: Option<String>,
     flaresolverr_proxy_url: Option<String>,
     proxy_url: Option<String>,
@@ -1009,9 +1160,9 @@ struct CompactSourceRow {
 
 fn read_compact_web_search_sources(conn: &Connection) -> AppResult<Vec<WebSearchSourceConfig>> {
     let mut stmt = conn.prepare(
-        "SELECT source_id, provider, display_name, enabled, deep_enabled, priority,
-                independence_group, roles_json, blocked_api_key_hashes_json, base_url,
-                flaresolverr_url, flaresolverr_proxy_url, proxy_url
+        "SELECT source_id, provider, display_name, enabled, deep_enabled, extract_enabled,
+                priority, independence_group, roles_json, blocked_api_key_hashes_json,
+                base_url, extract_base_url, flaresolverr_url, flaresolverr_proxy_url, proxy_url
          FROM tool_web_search_sources ORDER BY position ASC",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1021,14 +1172,16 @@ fn read_compact_web_search_sources(conn: &Connection) -> AppResult<Vec<WebSearch
             display_name: row.get(2)?,
             enabled: row.get(3)?,
             deep_enabled: row.get(4)?,
-            priority: row.get(5)?,
-            independence_group: row.get(6)?,
-            roles_json: row.get(7)?,
-            blocked_api_key_hashes_json: row.get(8)?,
-            base_url: row.get(9)?,
-            flaresolverr_url: row.get(10)?,
-            flaresolverr_proxy_url: row.get(11)?,
-            proxy_url: row.get(12)?,
+            extract_enabled: row.get(5)?,
+            priority: row.get(6)?,
+            independence_group: row.get(7)?,
+            roles_json: row.get(8)?,
+            blocked_api_key_hashes_json: row.get(9)?,
+            base_url: row.get(10)?,
+            extract_base_url: row.get(11)?,
+            flaresolverr_url: row.get(12)?,
+            flaresolverr_proxy_url: row.get(13)?,
+            proxy_url: row.get(14)?,
         })
     })?;
     let mut source_rows = Vec::new();
@@ -1039,20 +1192,24 @@ fn read_compact_web_search_sources(conn: &Connection) -> AppResult<Vec<WebSearch
 
     let mut sources = Vec::with_capacity(source_rows.len());
     for row in source_rows {
-        let (api_keys, key_statuses) = read_compact_web_search_keys(conn, &row.source_id)?;
+        let (api_keys, key_statuses, extract_key_statuses) =
+            read_compact_web_search_keys(conn, &row.source_id)?;
         sources.push(WebSearchSourceConfig {
             id: row.source_id,
             provider: source_provider_from_str(&row.provider)?,
             display_name: row.display_name,
             enabled: i64_to_bool(row.enabled, "web search source enabled")?,
             deep_enabled: i64_to_bool(row.deep_enabled, "web search source deep_enabled")?,
+            extract_enabled: i64_to_bool(row.extract_enabled, "web search source extract_enabled")?,
             priority: i64_to_u16(row.priority, "web search source priority")?,
             independence_group: row.independence_group,
             roles: serde_json::from_str(&row.roles_json)?,
             base_url: row.base_url,
+            extract_base_url: row.extract_base_url,
             api_keys,
             blocked_api_key_hashes: serde_json::from_str(&row.blocked_api_key_hashes_json)?,
             key_statuses,
+            extract_key_statuses,
             flaresolverr_url: row.flaresolverr_url,
             flaresolverr_proxy_url: row.flaresolverr_proxy_url,
             proxy_url: row.proxy_url,
@@ -1061,12 +1218,19 @@ fn read_compact_web_search_sources(conn: &Connection) -> AppResult<Vec<WebSearch
     Ok(sources)
 }
 
+type CompactWebSearchKeys = (
+    Vec<String>,
+    Vec<Option<WebSearchKeyStatusRecord>>,
+    Vec<Option<WebSearchKeyStatusRecord>>,
+);
+
 fn read_compact_web_search_keys(
     conn: &Connection,
     source_id: &str,
-) -> AppResult<(Vec<String>, Vec<Option<WebSearchKeyStatusRecord>>)> {
+) -> AppResult<CompactWebSearchKeys> {
     let mut stmt = conn.prepare(
-        "SELECT api_key, key_status, status_detail, checked_at
+        "SELECT api_key, key_status, status_detail, checked_at,
+                extract_key_status, extract_status_detail, extract_checked_at
          FROM tool_web_search_api_keys WHERE source_id = ?1 ORDER BY position ASC",
     )?;
     let rows = stmt.query_map([source_id], |row| {
@@ -1075,20 +1239,37 @@ fn read_compact_web_search_keys(
             row.get::<_, Option<String>>(1)?,
             row.get::<_, Option<String>>(2)?,
             row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
         ))
     })?;
     let mut api_keys = Vec::new();
     let mut statuses = Vec::new();
+    let mut extract_statuses = Vec::new();
     for row in rows {
-        let (api_key, status, detail, checked_at) = row?;
+        let (
+            api_key,
+            status,
+            detail,
+            checked_at,
+            extract_status,
+            extract_detail,
+            extract_checked_at,
+        ) = row?;
         api_keys.push(api_key);
         statuses.push(status.map(|status| WebSearchKeyStatusRecord {
             status,
             detail: detail.unwrap_or_default(),
             checked_at: checked_at.unwrap_or_default(),
         }));
+        extract_statuses.push(extract_status.map(|status| WebSearchKeyStatusRecord {
+            status,
+            detail: extract_detail.unwrap_or_default(),
+            checked_at: extract_checked_at.unwrap_or_default(),
+        }));
     }
-    Ok((api_keys, statuses))
+    Ok((api_keys, statuses, extract_statuses))
 }
 
 struct NormalizedDefaultRow {
@@ -1153,6 +1334,7 @@ fn read_normalized_default_settings(conn: &Connection) -> AppResult<Option<Agent
             max_results: i64_to_u32(row.web_search_max_results, "web_search_max_results")?,
             timeout_ms: i64_to_u64(row.web_search_timeout_ms, "web_search_timeout_ms")?,
             key_selection: key_selection_from_str(&row.web_search_key_selection)?,
+            extraction: WebContentExtractionConfig::default(),
             sources: read_normalized_web_search_sources(conn, row.settings_id)?,
         },
         evidence_storage: EvidenceStorageConfig {
@@ -1347,13 +1529,16 @@ fn read_normalized_web_search_sources(
             display_name: row.display_name,
             enabled: i64_to_bool(row.enabled, "web search source enabled")?,
             deep_enabled: i64_to_bool(row.deep_enabled, "web search source deep_enabled")?,
+            extract_enabled: true,
             priority: i64_to_u16(row.priority, "web search source priority")?,
             independence_group: row.independence_group,
             roles: read_normalized_web_search_roles(conn, row.source_row_id)?,
             base_url: row.base_url,
+            extract_base_url: None,
             api_keys,
             blocked_api_key_hashes: read_normalized_blocked_hashes(conn, row.source_row_id)?,
             key_statuses,
+            extract_key_statuses: Vec::new(),
             flaresolverr_url: row.flaresolverr_url,
             flaresolverr_proxy_url: row.flaresolverr_proxy_url,
             proxy_url: row.proxy_url,
@@ -1623,6 +1808,15 @@ fn validate_tools_config(config: &AgentToolsConfig) -> AppResult<()> {
             crate::domain::tools::MAX_WEB_SEARCH_TIMEOUT_MS
         )));
     }
+    if config.web_search.extraction.max_remote_attempts_per_url == 0
+        || config.web_search.extraction.max_remote_attempts_per_url
+            > crate::domain::tools::MAX_WEB_EXTRACT_REMOTE_ATTEMPTS
+    {
+        return Err(AppError::BadRequest(format!(
+            "web_extract max_remote_attempts_per_url must be between 1 and {}",
+            crate::domain::tools::MAX_WEB_EXTRACT_REMOTE_ATTEMPTS
+        )));
+    }
     if config.evidence_storage.retention_days == 0
         || config.evidence_storage.retention_days
             > crate::domain::tools::MAX_EVIDENCE_RETENTION_DAYS
@@ -1665,6 +1859,11 @@ fn validate_tools_config(config: &AgentToolsConfig) -> AppResult<()> {
                 crate::domain::tools::MAX_WEB_SEARCH_KEYS_PER_SOURCE
             )));
         }
+        if source.enabled && !source.can_search() {
+            return Err(AppError::BadRequest(format!(
+                "web_search source '{id}' requires an available API key before it can be enabled"
+            )));
+        }
         let mut api_keys = HashSet::new();
         for api_key in &source.api_keys {
             let api_key = api_key.trim();
@@ -1699,6 +1898,7 @@ fn validate_tools_config(config: &AgentToolsConfig) -> AppResult<()> {
             )));
         }
         validate_optional_http_url(id, "base_url", source.base_url.as_deref())?;
+        validate_optional_http_url(id, "extract_base_url", source.extract_base_url.as_deref())?;
         validate_optional_http_url(id, "flaresolverr_url", source.flaresolverr_url.as_deref())?;
         validate_optional_proxy_url(id, "proxy_url", source.proxy_url.as_deref())?;
         validate_optional_proxy_url(
@@ -1799,4 +1999,69 @@ fn validate_tools_overrides(
         }
     }
     validate_tools_config(&overrides.apply_to(defaults))
+}
+
+#[cfg(test)]
+mod extraction_schema_tests {
+    use super::*;
+
+    #[test]
+    fn compact_schema_adds_content_extraction_columns_in_place() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tool_settings (
+                scope_type TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                terminal_allowed_cwd_roots_json TEXT
+             );
+             CREATE TABLE tool_web_search_sources (
+                source_id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL,
+                deep_enabled INTEGER NOT NULL
+             );
+             CREATE TABLE tool_web_search_api_keys (
+                source_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                api_key TEXT NOT NULL
+             );
+             INSERT INTO tool_settings VALUES ('default', 'default', '[]');
+             INSERT INTO tool_settings VALUES ('agent', 'agent-id', NULL);",
+        )
+        .unwrap();
+
+        ensure_tool_settings_schema(&mut conn).unwrap();
+
+        let settings = table_columns(&conn, "tool_settings").unwrap();
+        assert!(settings.contains("web_extract_remote_enabled"));
+        assert!(settings.contains("web_extract_max_remote_attempts"));
+        assert!(settings.contains("web_extract_allow_grok_fallback"));
+        let default_values: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT web_extract_remote_enabled, web_extract_max_remote_attempts,
+                        web_extract_allow_grok_fallback
+                 FROM tool_settings WHERE scope_type = 'default'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(default_values, (1, 3, 1));
+        let agent_values: (Option<i64>, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT web_extract_remote_enabled, web_extract_max_remote_attempts,
+                        web_extract_allow_grok_fallback
+                 FROM tool_settings WHERE scope_type = 'agent'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(agent_values, (None, None, None));
+
+        let source_columns = table_columns(&conn, "tool_web_search_sources").unwrap();
+        assert!(source_columns.contains("extract_enabled"));
+        assert!(source_columns.contains("extract_base_url"));
+        let key_columns = table_columns(&conn, "tool_web_search_api_keys").unwrap();
+        assert!(key_columns.contains("extract_key_status"));
+        assert!(key_columns.contains("extract_status_detail"));
+        assert!(key_columns.contains("extract_checked_at"));
+    }
 }

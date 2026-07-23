@@ -209,6 +209,46 @@ export type CreateAgentPayload = {
   avatar_color: string;
 };
 
+export type IpProxyProtocol = 'http' | 'https' | 'socks5';
+export type IpProxyStatus = 'unchecked' | 'available' | 'unavailable';
+
+export type IpProxy = {
+  id: string;
+  name: string;
+  url: string;
+  protocol: IpProxyProtocol;
+  enabled: boolean;
+  status: IpProxyStatus;
+  latency_ms: number | null;
+  last_checked_at: string | null;
+  last_error: string | null;
+  ip_address: string | null;
+  country: string | null;
+  country_code: string | null;
+  region: string | null;
+  city: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type IpProxyPayload = {
+  name: string;
+  url: string;
+  enabled: boolean;
+};
+
+export type IpProxyImportEntry = {
+  name?: string;
+  url: string;
+};
+
+export type IpProxyImportResult = {
+  imported_count: number;
+  duplicate_count: number;
+  invalid_count: number;
+  proxies: IpProxy[];
+};
+
 export type UpdateAgentPayload = Partial<CreateAgentPayload>;
 
 export type UpdateAgentWorkspacePayload = Pick<AgentWorkspace, 'personality' | 'memory' | 'instructions'>;

@@ -57,6 +57,8 @@ projects.
 
 - OpenAI mark representation: Lobe Icons, Copyright (c) 2023 LobeHub, MIT
   License
+- Model provider marks: `@lobehub/icons-static-svg` 1.94.0, Copyright (c)
+  2023 LobeHub, MIT License
 - Node.js mark: official Node.js branding asset
 - Python mark: official Python community logo asset
 - uv mark: official Astral uv documentation asset
@@ -65,3 +67,6 @@ projects.
 OpenAI, Node.js, Python, uv, Git, and their respective marks are trademarks or
 project identifiers of their respective owners. Their inclusion does not imply
 endorsement of WeiAgent.
+
+The complete Lobe Icons MIT License is distributed with the provider assets at
+`frontend/public/model-providers/LICENSE.txt`.

@@ -185,6 +185,100 @@
     "agentDescription": "Chat timeout/retry policy, global context compaction, and model request logging.",
     "agentRetryHint": "When waiting for a model reply, timed-out or failed requests are retried automatically. Default timeout is 60 seconds and default attempts is 5."
   },
+  "ipProxy": {
+    "title": "IP Proxies",
+    "description": "Manage HTTP, HTTPS, and SOCKS proxy addresses and connection status.",
+    "configuredCount": "{count} proxies",
+    "overview": "Proxy overview",
+    "total": "All proxies",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "available": "Available",
+    "averageLatency": "Average latency",
+    "loadFailed": "Proxy list failed to load",
+    "search": "Search name or proxy address",
+    "protocolFilter": "Filter by proxy protocol",
+    "statusFilter": "Filter by test status",
+    "allProtocols": "All protocols",
+    "allStatuses": "All statuses",
+    "testing": "Testing...",
+    "testAll": "Test all",
+    "testSelectedCount": "Test selected ({count})",
+    "batchImport": "Batch import",
+    "add": "Add proxy",
+    "selected": "{count} selected",
+    "clearSelection": "Clear selection",
+    "deleteSelected": "Delete selected",
+    "noEnabled": "No enabled proxies are configured",
+    "testSummary": "Test complete: {available}/{count} proxies available",
+    "testFailed": "Proxy test failed",
+    "emptyTitle": "No proxy addresses yet",
+    "emptyDescription": "Add one proxy or import a list with one address per line.",
+    "addFirst": "Add first proxy",
+    "noResults": "No matching proxies",
+    "noResultsDescription": "Adjust the search term or filters.",
+    "selectAll": "Select all visible proxies",
+    "selectProxy": "Select proxy {name}",
+    "proxy": "Name and address",
+    "protocol": "Protocol",
+    "location": "IP location",
+    "locationPending": "Available after test",
+    "statusLabel": "Status",
+    "latency": "Latency",
+    "lastChecked": "Last tested",
+    "actions": "Actions",
+    "neverChecked": "Not tested",
+    "toggleProxy": "Toggle proxy {name}",
+    "testOne": "Test this proxy",
+    "edit": "Edit proxy",
+    "delete": "Delete proxy",
+    "createTitle": "Add IP proxy",
+    "editTitle": "Edit IP proxy",
+    "formDescription": "Proxy addresses are stored in the local weiagent.db and can be reused by other features.",
+    "name": "Name",
+    "namePlaceholder": "Example: Hong Kong route 01",
+    "nameConflict": "That proxy name already exists. Use a different name.",
+    "address": "Proxy address",
+    "addressHint": "Supports http://, https://, socks5://, and socks5h://. Addresses without a scheme use HTTP.",
+    "enableOnCreate": "Enable now",
+    "enableOnCreateHint": "Enabled proxies join the global proxy pool.",
+    "create": "Create proxy",
+    "save": "Save proxy",
+    "created": "Proxy created",
+    "saved": "Proxy saved",
+    "saveFailed": "Proxy failed to save",
+    "toggleFailed": "Proxy status failed to update",
+    "importTitle": "Batch import proxies",
+    "importDescription": "Enter one proxy address per line on the left; matching names appear on the right.",
+    "importAddresses": "Proxy addresses (one per line)",
+    "importHint": "Supports HTTP, HTTPS, SOCKS5, and SOCKS5H. Duplicate or invalid addresses are flagged.",
+    "importAddressIssueCount": "{count} conflicting or invalid addresses",
+    "importNames": "Proxy names",
+    "importNamesCount": "{count} items",
+    "importNameConflictCount": "{count} name conflicts",
+    "importNamesHint": "Names default to the IP or domain. Duplicates receive _1, _2, and so on; each name remains editable.",
+    "importNamesEmpty": "Enter proxy addresses on the left to generate matching names.",
+    "importNameAria": "Name for proxy {index}",
+    "importAction": "Import proxies",
+    "importActionCount": "Import {count} proxies",
+    "enableImported": "Enable after import",
+    "enableImportedHint": "Set the enabled state for every proxy added in this import.",
+    "importSummary": "Imported {imported} proxies",
+    "importFailed": "Proxy import failed",
+    "deleteTitle": "Delete proxy?",
+    "deleteConfirm": "Delete \"{name}\"?",
+    "deleted": "Proxy deleted",
+    "deleteFailed": "Proxy failed to delete",
+    "deleteSelectedTitle": "Delete selected proxies?",
+    "deleteSelectedConfirm": "This deletes the selected {count} proxies.",
+    "deletedSelected": "Deleted {count} proxies",
+    "deletePartial": "Deleted {deleted}; {failed} failed",
+    "status": {
+      "unchecked": "Untested",
+      "available": "Available",
+      "unavailable": "Issue"
+    }
+  },
   "provider": {
     "title": "Model Providers",
     "newTitle": "New Provider",
@@ -238,6 +332,76 @@
     "description": "Manage model connections, native API protocols, and available models.",
     "selectHint": "Select a provider on the left, or create a new one.",
     "deleteConfirm": "Delete \"{name}\"?",
+    "template": {
+      "title": "Choose a provider template",
+      "description": "Start with an official service configuration or configure a custom provider.",
+      "searchPlaceholder": "Search providers, protocols, or service URLs",
+      "searchEmpty": "No matching providers",
+      "searchEmptyDescription": "Try a brand name, API protocol, or service URL.",
+      "clearSearch": "Clear search",
+      "locked": "Connection fixed by template",
+      "customMode": "Flexible setup",
+      "openai": {
+        "name": "OpenAI Official API",
+        "description": "Use OpenAI's official Chat Completions endpoint."
+      },
+      "deepseek": {
+        "name": "DeepSeek Official API",
+        "description": "Connect to the official DeepSeek platform."
+      },
+      "google": {
+        "name": "Google Gemini API",
+        "description": "Use Google's native Gemini generateContent API."
+      },
+      "anthropic": {
+        "name": "Anthropic Official API",
+        "description": "Use Anthropic's native Messages API."
+      },
+      "kimi": {
+        "name": "Kimi Open Platform",
+        "description": "Connect to Kimi's official Moonshot AI service."
+      },
+      "zhipu": {
+        "name": "Zhipu AI Open Platform",
+        "description": "Connect to the official Zhipu BigModel API."
+      },
+      "nvidia": {
+        "name": "NVIDIA NIM",
+        "description": "Connect to hosted inference from the NVIDIA API Catalog."
+      },
+      "bailian": {
+        "name": "Alibaba Cloud Model Studio",
+        "description": "Connect to Alibaba Cloud's OpenAI-compatible model service."
+      },
+      "openrouter": {
+        "name": "OpenRouter",
+        "description": "Access models from multiple providers through one API."
+      },
+      "siliconflow": {
+        "name": "SiliconFlow",
+        "description": "Connect to the multi-model inference service on SiliconCloud."
+      },
+      "stepfun": {
+        "name": "StepFun",
+        "description": "Connect to official models on the StepFun platform."
+      },
+      "grok": {
+        "name": "xAI Grok",
+        "description": "Connect to the official Grok model service from xAI."
+      },
+      "minimax": {
+        "name": "MiniMax",
+        "description": "Connect to official models on the MiniMax platform."
+      },
+      "opencode": {
+        "name": "OpenCode Zen",
+        "description": "Connect to the curated model service provided by OpenCode Zen."
+      },
+      "custom": {
+        "name": "Custom Connection",
+        "description": "For private deployments, API gateways, and other compatible model services."
+      }
+    },
     "protocol": {
       "openaiChat": "OpenAI Chat Completions",
       "openaiChatShort": "OpenAI Chat",
@@ -405,6 +569,12 @@
       "keySelectionSequential": "Sequential",
       "keySelectionRoundRobin": "Round robin",
       "keySelectionRandom": "Random",
+      "remoteExtractionEnabled": "Enable remote content extraction fallback",
+      "remoteExtractionEnabledDesc": "Use configured URL-content providers when local extraction fails or produces low-quality content.",
+      "maxRemoteExtractAttempts": "Maximum remote attempts per URL",
+      "maxRemoteExtractAttemptsDesc": "Try providers in order and stop after high-quality content is found. Range: 1–5.",
+      "allowGrokExtractFallback": "Allow final Grok fallback",
+      "allowGrokExtractFallbackDesc": "Use the Grok SSO session for focused excerpts after page-content providers fail. Results are labeled as AI-generated.",
       "evidenceStorageTitle": "Evidence storage",
       "evidenceStorageDesc": "Store complete extracted page text and clean it automatically by age and total size.",
       "evidenceStorageEnabled": "Enable evidence storage",
@@ -416,6 +586,7 @@
       "sourcesTitle": "Sources and keys",
       "sourcesDesc": "Set search preferences and deep-research scope for each tool source (sources listed earlier have higher priority).",
       "sourcePriority": "Priority {index}",
+      "keyRequiredToEnable": "Configure an available key before enabling this source",
       "noKeys": "No API keys configured",
       "keyPlaceholder": "Paste an API key and add it",
       "keyLimitReached": "Each search source supports up to {count} keys",
@@ -439,6 +610,8 @@
       "sourceProfileDesc": "Mark the search scenarios this source handles best by discovery style, content focus, and task intent.",
       "deepEnabled": "Include in deep research",
       "deepEnabledDesc": "Allow this source to participate in multi-source parallel research when deep mode is used",
+      "extractEnabled": "Use for content extraction",
+      "extractEnabledDesc": "Allow web_extract to use this source when the local result is blocked or low quality.",
       "sourcePreferenceGroup": {
         "discovery": "Discovery style",
         "content": "Content focus",
@@ -517,7 +690,16 @@
       "addKeysHint": "Use one per line; press Ctrl/⌘ + Enter to add",
       "addGrokKeysHint": "Use one per line; previously blocked keys are skipped automatically",
       "advancedSettings": "Connection and proxy settings",
-      "advancedSettingsDesc": "FlareSolverr, browser proxy, and Grok traffic proxy",
+      "advancedSettingsDesc": "Configure the content extraction endpoint; Grok also supports FlareSolverr and proxy settings.",
+      "extractBaseUrl": "Content extraction Base URL",
+      "extractBaseUrlDesc": "Leave blank to use the provider default. Search and extraction endpoints may use different hosts.",
+      "extractBaseUrlPlaceholder": {
+        "tavily": "https://api.tavily.com",
+        "exa": "https://api.exa.ai",
+        "jina": "https://r.jina.ai",
+        "grok": "https://grok.com",
+        "firecrawl": "https://api.firecrawl.dev/v2"
+      },
       "checkFailed": "Key check failed",
       "keyImportSummary": "Imported {imported}, skipped {duplicates} duplicate(s)",
       "grokKeyImportSummary": "Imported {imported}, skipped {duplicates} duplicate(s) and {blocked} previously blocked key(s)",

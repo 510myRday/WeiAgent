@@ -191,10 +191,10 @@ pub fn apply_openai_fields(
     if let Some(key) = context.cache_key.as_ref() {
         body.insert("prompt_cache_key".to_string(), json!(key));
     }
-    if capabilities.supports_cache_retention {
-        if let Some(retention) = config.retention.as_ref() {
-            body.insert("prompt_cache_retention".to_string(), json!(retention));
-        }
+    if capabilities.supports_cache_retention
+        && let Some(retention) = config.retention.as_ref()
+    {
+        body.insert("prompt_cache_retention".to_string(), json!(retention));
     }
     if capabilities.supports_prompt_cache_options {
         let mut options = Map::new();

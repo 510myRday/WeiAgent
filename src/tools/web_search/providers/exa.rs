@@ -3,9 +3,13 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::tools::web_search::types::{
-    ProviderError, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind, WebSearchHit,
-    sanitize_error_message,
+    ProviderError, ProviderExtractDocument, ProviderExtractFailure, ProviderExtractOutput,
+    ProviderExtractRequest, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind,
+    WebSearchHit, sanitize_error_message,
 };
+
+const MAX_EXTRACT_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_CONTENT_EXCERPT_CHARS: usize = 4_000;
 
 #[derive(Debug, Deserialize)]
 struct ExaResponse {
@@ -106,12 +110,18 @@ pub async fn search(
         .into_iter()
         .filter_map(|item| {
             let url = item.url.filter(|value| !value.trim().is_empty())?;
+            let content_excerpt = item
+                .text
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| truncate(value, MAX_CONTENT_EXCERPT_CHARS));
             let snippet = item
                 .highlights
                 .as_ref()
                 .map(|parts| parts.join(" … "))
                 .filter(|value| !value.trim().is_empty())
-                .or(item.text)
+                .or_else(|| content_excerpt.as_deref().map(|value| truncate(value, 500)))
                 .unwrap_or_default();
             Some(WebSearchHit {
                 title: item
@@ -120,7 +130,7 @@ pub async fn search(
                     .unwrap_or_else(|| url.clone()),
                 url,
                 snippet,
-                content_excerpt: None,
+                content_excerpt,
                 kind: SearchHitKind::WebPage,
                 published_at: None,
                 score: item.score,
@@ -131,6 +141,151 @@ pub async fn search(
         results,
         ai_syntheses: Vec::new(),
     })
+}
+
+pub async fn extract(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    request: &ProviderExtractRequest,
+) -> Result<ProviderExtractOutput, ProviderError> {
+    let endpoint = format!("{}/contents", base_url.trim_end_matches('/'));
+    let body = json!({
+        "urls": [request.url],
+        "text": true,
+        "maxAgeHours": if request.hard_page { 0 } else { 24 },
+        "livecrawlTimeout": request.timeout_ms.clamp(1_000, 90_000),
+    });
+    let response = client
+        .post(&endpoint)
+        .header("x-api-key", api_key)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| {
+            ProviderError::Retryable(sanitize_error_message(
+                &format!("Exa contents request failed: {error}"),
+                api_key,
+            ))
+        })?;
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|error| {
+        ProviderError::Retryable(sanitize_error_message(
+            &format!("Exa contents response body error: {error}"),
+            api_key,
+        ))
+    })?;
+    if bytes.len() > MAX_EXTRACT_RESPONSE_BYTES {
+        return Err(ProviderError::Retryable(format!(
+            "Exa contents response exceeds {MAX_EXTRACT_RESPONSE_BYTES} bytes"
+        )));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    if !status.is_success() {
+        return Err(ProviderError::Retryable(sanitize_error_message(
+            &format!("Exa contents HTTP {status}: {}", truncate(&text, 240)),
+            api_key,
+        )));
+    }
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+        ProviderError::Retryable(format!(
+            "Exa contents returned invalid JSON: {error}; body={}",
+            truncate(&text, 160)
+        ))
+    })?;
+    Ok(parse_extract_output(&value, &request.url))
+}
+
+fn parse_extract_output(value: &serde_json::Value, requested_url: &str) -> ProviderExtractOutput {
+    let mut output = ProviderExtractOutput::default();
+    if let Some(results) = value.get("results").and_then(serde_json::Value::as_array) {
+        for result in results {
+            let Some(object) = result.as_object() else {
+                continue;
+            };
+            let content = object
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    object
+                        .get("highlights")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|parts| {
+                            parts
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join("\n\n")
+                        })
+                        .filter(|value| !value.trim().is_empty())
+                });
+            let Some(content) = content else {
+                continue;
+            };
+            let final_url = object
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(requested_url)
+                .to_string();
+            output.documents.push(ProviderExtractDocument {
+                requested_url: object
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(requested_url)
+                    .to_string(),
+                title: object
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(&final_url)
+                    .to_string(),
+                final_url,
+                content,
+                content_format: "text".to_string(),
+                published_at: object
+                    .get("publishedDate")
+                    .or_else(|| object.get("published_at"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
+                ai_derived: false,
+            });
+        }
+    }
+    if let Some(statuses) = value.get("statuses").and_then(serde_json::Value::as_array) {
+        for status in statuses {
+            let Some(object) = status.as_object() else {
+                continue;
+            };
+            let state = object
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if state.eq_ignore_ascii_case("success") {
+                continue;
+            }
+            output.failures.push(ProviderExtractFailure {
+                requested_url: object
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(requested_url)
+                    .to_string(),
+                message: object
+                    .get("error")
+                    .or_else(|| object.get("message"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Exa content extraction failed")
+                    .to_string(),
+            });
+        }
+    }
+    output
 }
 
 pub fn classify_key_status(message: &str) -> &'static str {
@@ -231,5 +386,24 @@ mod tests {
             classify_key_status("Exa HTTP 429: rate limit exceeded"),
             "rate_limited"
         );
+    }
+
+    #[test]
+    fn maps_exa_contents_json() {
+        let output = parse_extract_output(
+            &serde_json::json!({
+                "results": [{
+                    "id": "https://example.com",
+                    "title": "Example",
+                    "url": "https://example.com/final",
+                    "text": "Full extracted article"
+                }],
+                "statuses": [{"id":"https://example.com","status":"success"}]
+            }),
+            "https://example.com",
+        );
+        assert_eq!(output.documents.len(), 1);
+        assert_eq!(output.documents[0].title, "Example");
+        assert!(output.failures.is_empty());
     }
 }

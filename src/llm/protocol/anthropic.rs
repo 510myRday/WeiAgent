@@ -177,6 +177,7 @@ impl ProtocolAdapter for AnthropicAdapter {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_anthropic_request(
     agent: &Agent,
     provider: &ModelProvider,
@@ -352,13 +353,13 @@ fn build_anthropic_request(
             ),
         );
     }
-    if cache_enabled && context.explicit_breakpoints {
-        if let Some(last) = body["tools"]
+    if cache_enabled
+        && context.explicit_breakpoints
+        && let Some(last) = body["tools"]
             .as_array_mut()
             .and_then(|tools| tools.last_mut())
-        {
-            last["cache_control"] = json!({"type": "ephemeral"});
-        }
+    {
+        last["cache_control"] = json!({"type": "ephemeral"});
     }
     apply_provider_extra(&mut body, &context);
     merge_extra_body(

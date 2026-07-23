@@ -9,7 +9,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::app::{
     AppState,
-    handlers::{agents, assets, conversations, llm_logs, providers, settings, tools},
+    handlers::{agents, assets, conversations, ip_proxies, llm_logs, providers, settings, tools},
     static_assets::serve_frontend,
 };
 
@@ -56,6 +56,23 @@ fn api_router() -> Router<AppState> {
         .route(
             "/api/model-providers/{provider_id}/models",
             get(providers::list_provider_models),
+        )
+        .route(
+            "/api/ip-proxies",
+            get(ip_proxies::list_ip_proxies).post(ip_proxies::create_ip_proxy),
+        )
+        .route(
+            "/api/ip-proxies/import",
+            post(ip_proxies::import_ip_proxies),
+        )
+        .route("/api/ip-proxies/test", post(ip_proxies::test_ip_proxies))
+        .route(
+            "/api/ip-proxies/{proxy_id}",
+            put(ip_proxies::update_ip_proxy).delete(ip_proxies::delete_ip_proxy),
+        )
+        .route(
+            "/api/ip-proxies/{proxy_id}/test",
+            post(ip_proxies::test_ip_proxy),
         )
         .route(
             "/api/agents",

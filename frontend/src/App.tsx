@@ -14,7 +14,7 @@ const ToolsPanel = lazy(() => import('./features/tools/ToolsPanel').then((module
 const SettingsPanel = lazy(() => import('./features/settings/SettingsPanel').then((module) => ({ default: module.SettingsPanel })));
 const MonitorPanel = lazy(() => import('./features/monitor/MonitorPanel').then((module) => ({ default: module.MonitorPanel })));
 
-type SettingsSection = 'runtime' | 'agent' | 'providers';
+type SettingsSection = 'runtime' | 'agent' | 'providers' | 'proxies';
 
 export function App() {
   const { t, locale, setLocaleStateOnly } = useI18n();

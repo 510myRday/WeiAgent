@@ -100,17 +100,21 @@ pub struct SearchSourceDescriptor {
     pub cost_tier: WebSearchCostTier,
     pub priority: u16,
     pub deep_enabled: bool,
+    pub extract_enabled: bool,
     pub independence_group: String,
     pub enabled: bool,
     pub configured: bool,
     pub health: String,
+    pub extract_configured: bool,
+    pub extract_health: String,
 }
 
 impl SearchSourceDescriptor {
     pub fn from_config(source: &WebSearchSourceConfig) -> Self {
+        let can_search = source.can_search();
         let health = if !source.enabled {
             "disabled"
-        } else if !source.has_available_key() {
+        } else if !can_search {
             "missing_credentials"
         } else if source
             .key_statuses
@@ -120,6 +124,28 @@ impl SearchSourceDescriptor {
         {
             "healthy"
         } else if source.key_statuses.iter().flatten().any(|status| {
+            matches!(
+                status.status.as_str(),
+                "officially_blocked" | "invalid_key" | "unauthorized" | "quota_exhausted"
+            )
+        }) {
+            "degraded"
+        } else {
+            "unknown"
+        };
+        let can_extract = source.can_extract();
+        let extract_health = if !source.extract_enabled {
+            "disabled"
+        } else if !can_extract {
+            "missing_credentials"
+        } else if source
+            .extract_key_statuses
+            .iter()
+            .flatten()
+            .any(|status| status.status == "normal")
+        {
+            "healthy"
+        } else if source.extract_key_statuses.iter().flatten().any(|status| {
             matches!(
                 status.status.as_str(),
                 "officially_blocked" | "invalid_key" | "unauthorized" | "quota_exhausted"
@@ -153,12 +179,46 @@ impl SearchSourceDescriptor {
             cost_tier: source.provider.cost_tier(),
             priority: source.priority,
             deep_enabled: source.deep_enabled,
+            extract_enabled: source.extract_enabled,
             independence_group: source.independence_group().to_string(),
             enabled: source.enabled,
-            configured: source.has_available_key(),
+            configured: can_search,
             health: health.to_string(),
+            extract_configured: can_extract,
+            extract_health: extract_health.to_string(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderExtractRequest {
+    pub url: String,
+    pub query: String,
+    pub hard_page: bool,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderExtractDocument {
+    pub requested_url: String,
+    pub final_url: String,
+    pub title: String,
+    pub content: String,
+    pub content_format: String,
+    pub published_at: Option<String>,
+    pub ai_derived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderExtractFailure {
+    pub requested_url: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProviderExtractOutput {
+    pub documents: Vec<ProviderExtractDocument>,
+    pub failures: Vec<ProviderExtractFailure>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

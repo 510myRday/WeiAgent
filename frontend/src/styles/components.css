@@ -2856,6 +2856,15 @@
   background: var(--color-primary-strong);
 }
 
+.toggle-switch.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.toggle-switch.is-disabled:hover .toggle-slider {
+  background: var(--border-strong);
+}
+
 .timeout-input {
   display: flex;
   align-items: center;

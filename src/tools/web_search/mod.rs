@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::tools::{
     MAX_WEB_SEARCH_QUERIES, MAX_WEB_SEARCH_QUERY_CHARS, MAX_WEB_SEARCH_RESULTS,
-    WebSearchKeyStatusUpdate,
+    WebSearchKeyOperation, WebSearchKeyStatusUpdate,
 };
 use crate::domain::{
     ToolResult, WebSearchKeyStatusRecord, WebSearchProviderKind, WebSearchSourceConfig,
@@ -259,7 +259,12 @@ async fn execute_source_batch(
 ) -> Vec<SourceExecution> {
     let selected_keys = sources
         .iter()
-        .map(|source| (source.id.clone(), select_source_key(source, config)))
+        .map(|source| {
+            (
+                source.id.clone(),
+                select_source_key(source, config, WebSearchKeyOperation::Search),
+            )
+        })
         .collect::<HashMap<_, _>>();
     let requests = queries
         .iter()
@@ -335,9 +340,10 @@ async fn execute_source_query_with_timeout(
     }
 }
 
-fn select_source_key(
+pub(crate) fn select_source_key(
     source: &WebSearchSourceConfig,
     config: &WebSearchToolConfig,
+    operation: WebSearchKeyOperation,
 ) -> Option<(usize, String)> {
     let keys = source
         .api_keys
@@ -348,7 +354,7 @@ fn select_source_key(
         .collect::<Vec<_>>();
     let index = key_attempt_order(&source.id, keys.len(), &config.key_selection)
         .into_iter()
-        .min_by_key(|index| key_health_rank(source, keys[*index].0))?;
+        .min_by_key(|index| key_health_rank(source, keys[*index].0, operation))?;
     keys.get(index).cloned()
 }
 
@@ -445,7 +451,7 @@ fn select_sources(
     let mut candidates = config
         .sources
         .iter()
-        .filter(|source| source.enabled)
+        .filter(|source| source.enabled && source.can_search())
         .filter(|source| {
             requested_ids.is_empty() || requested_ids.contains(&source.id.trim().to_lowercase())
         })
@@ -496,7 +502,6 @@ fn select_sources(
         return Ok(candidates);
     }
 
-    candidates.retain(WebSearchSourceConfig::has_available_key);
     let limit = match mode {
         SearchMode::Fast => 3,
         SearchMode::Balanced | SearchMode::Auto => 3,
@@ -735,15 +740,19 @@ async fn execute_source_query(
     let started = Instant::now();
     let provider = source.provider.as_str().to_string();
     let query = request.query.clone();
-    let Some((key_index, api_key)) = selected_key else {
-        return source_failure(
-            source,
-            query,
-            started,
-            "unavailable",
-            "source has no usable credential".to_string(),
-            Vec::new(),
-        );
+    let (key_index, api_key) = match selected_key {
+        Some((key_index, api_key)) => (Some(key_index), api_key),
+        None if source.provider.supports_anonymous_search() => (None, String::new()),
+        None => {
+            return source_failure(
+                source,
+                query,
+                started,
+                "unavailable",
+                "source has no usable credential".to_string(),
+                Vec::new(),
+            );
+        }
     };
     let timeout = Duration::from_millis(config.timeout_ms());
     let control_client = match reqwest::Client::builder().timeout(timeout).build() {
@@ -814,13 +823,17 @@ async fn execute_source_query(
             } else {
                 "success"
             };
-            let update = key_status_update(
-                &source.id,
-                key_index,
-                &api_key,
-                "normal".to_string(),
-                "request succeeded".to_string(),
-            );
+            let status_updates = key_index
+                .map(|key_index| {
+                    vec![key_status_update(
+                        &source.id,
+                        key_index,
+                        &api_key,
+                        "normal".to_string(),
+                        "request succeeded".to_string(),
+                    )]
+                })
+                .unwrap_or_default();
             SourceExecution {
                 summary: SourceRunSummary {
                     source_id: source.id.clone(),
@@ -834,22 +847,38 @@ async fn execute_source_query(
                 source,
                 query,
                 output: Some(output),
-                status_updates: vec![update],
+                status_updates,
             }
         }
         Err(error) => {
             let message = sanitize_error_message(error.message(), &api_key);
-            let status = classify_key_status(source.provider.clone(), &message);
-            let update =
-                key_status_update(&source.id, key_index, &api_key, status, message.clone());
-            source_failure(source, query, started, "failed", message, vec![update])
+            let status_updates = key_index
+                .map(|key_index| {
+                    let status = classify_key_status(source.provider.clone(), &message);
+                    vec![key_status_update(
+                        &source.id,
+                        key_index,
+                        &api_key,
+                        status,
+                        message.clone(),
+                    )]
+                })
+                .unwrap_or_default();
+            source_failure(source, query, started, "failed", message, status_updates)
         }
     }
 }
 
-fn key_health_rank(source: &WebSearchSourceConfig, original_key_index: usize) -> u8 {
-    match source
-        .key_statuses
+fn key_health_rank(
+    source: &WebSearchSourceConfig,
+    original_key_index: usize,
+    operation: WebSearchKeyOperation,
+) -> u8 {
+    let statuses = match operation {
+        WebSearchKeyOperation::Search => &source.key_statuses,
+        WebSearchKeyOperation::Extract => &source.extract_key_statuses,
+    };
+    match statuses
         .get(original_key_index)
         .and_then(Option::as_ref)
         .map(|record| record.status.as_str())
@@ -1023,7 +1052,7 @@ fn evidence_priority(kind: &SearchHitKind) -> u8 {
     }
 }
 
-fn canonicalize_url(raw: &str) -> Option<String> {
+pub(crate) fn canonicalize_url(raw: &str) -> Option<String> {
     let mut url = reqwest::Url::parse(raw.trim()).ok()?;
     if !matches!(url.scheme(), "http" | "https") {
         return None;
@@ -1100,6 +1129,7 @@ fn key_status_update(
     detail: String,
 ) -> WebSearchKeyStatusUpdate {
     WebSearchKeyStatusUpdate {
+        operation: WebSearchKeyOperation::Search,
         source_id: source_id.to_string(),
         key_index,
         api_key: api_key.to_string(),
@@ -1182,6 +1212,20 @@ mod tests {
     }
 
     #[test]
+    fn fresh_defaults_route_search_to_anonymous_jina() {
+        let config = WebSearchToolConfig::default();
+        let selected = select_sources(&config, &args("rust"), &SearchMode::Fast).unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|source| source.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["jina"]
+        );
+        assert!(selected[0].api_keys.is_empty());
+    }
+
+    #[test]
     fn balanced_selection_uses_independent_groups() {
         let mut config = WebSearchToolConfig {
             enabled: true,
@@ -1189,6 +1233,7 @@ mod tests {
         };
         for source in &mut config.sources {
             source.api_keys = vec!["key".to_string()];
+            source.enabled = true;
         }
         config.sources[1].independence_group = config.sources[0].independence_group.clone();
         let selected = select_sources(&config, &args("rust"), &SearchMode::Balanced).unwrap();
@@ -1258,6 +1303,7 @@ mod tests {
         };
         for source in &mut config.sources {
             source.api_keys = vec!["key".to_string()];
+            source.enabled = true;
         }
         let selected = select_sources(
             &config,

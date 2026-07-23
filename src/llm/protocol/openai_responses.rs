@@ -145,6 +145,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_openai_responses_request(
     agent: &Agent,
     provider: &ModelProvider,

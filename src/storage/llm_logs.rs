@@ -934,15 +934,15 @@ fn aggregate_openai_chat(payloads: &[Value]) -> Option<Value> {
         std::collections::BTreeMap::new();
 
     for payload in chat_payloads {
-        if id.is_null() {
-            if let Some(value) = payload.get("id") {
-                id = value.clone();
-            }
+        if id.is_null()
+            && let Some(value) = payload.get("id")
+        {
+            id = value.clone();
         }
-        if model.is_null() {
-            if let Some(value) = payload.get("model") {
-                model = value.clone();
-            }
+        if model.is_null()
+            && let Some(value) = payload.get("model")
+        {
+            model = value.clone();
         }
         if let Some(value) = payload.get("usage") {
             usage = value.clone();
@@ -951,16 +951,16 @@ fn aggregate_openai_chat(payloads: &[Value]) -> Option<Value> {
             continue;
         };
         for choice in choices {
-            if let Some(reason) = choice.get("finish_reason") {
-                if !reason.is_null() {
-                    finish_reason = reason.clone();
-                }
+            if let Some(reason) = choice.get("finish_reason")
+                && !reason.is_null()
+            {
+                finish_reason = reason.clone();
             }
             let Some(delta) = choice.get("delta") else {
-                if let Some(message) = choice.get("message") {
-                    if let Some(text) = message.get("content").and_then(Value::as_str) {
-                        content.push_str(text);
-                    }
+                if let Some(message) = choice.get("message")
+                    && let Some(text) = message.get("content").and_then(Value::as_str)
+                {
+                    content.push_str(text);
                 }
                 continue;
             };
@@ -993,15 +993,15 @@ fn aggregate_openai_chat(payloads: &[Value]) -> Option<Value> {
                             String::new(),
                         )
                     });
-                    if let Some(call_id) = call.get("id").and_then(Value::as_str) {
-                        if !call_id.is_empty() {
-                            entry.0 = call_id.to_string();
-                        }
+                    if let Some(call_id) = call.get("id").and_then(Value::as_str)
+                        && !call_id.is_empty()
+                    {
+                        entry.0 = call_id.to_string();
                     }
-                    if let Some(name) = call.pointer("/function/name").and_then(Value::as_str) {
-                        if !name.is_empty() {
-                            entry.1 = name.to_string();
-                        }
+                    if let Some(name) = call.pointer("/function/name").and_then(Value::as_str)
+                        && !name.is_empty()
+                    {
+                        entry.1 = name.to_string();
                     }
                     if let Some(args) = call.pointer("/function/arguments").and_then(Value::as_str)
                     {
@@ -1135,10 +1135,10 @@ fn aggregate_gemini(payloads: &[Value]) -> Option<Value> {
         if let Some(value) = payload.get("usageMetadata") {
             usage = value.clone();
         }
-        if model.is_null() {
-            if let Some(value) = payload.get("modelVersion").or_else(|| payload.get("model")) {
-                model = value.clone();
-            }
+        if model.is_null()
+            && let Some(value) = payload.get("modelVersion").or_else(|| payload.get("model"))
+        {
+            model = value.clone();
         }
         if let Some(candidates) = payload.get("candidates").and_then(Value::as_array) {
             for candidate in candidates {

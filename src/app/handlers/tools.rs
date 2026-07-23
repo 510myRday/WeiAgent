@@ -17,7 +17,7 @@ use crate::{
     tools::approval::ApprovalResolution,
 };
 
-use crate::domain::tools::{WebSearchKeyStatusUpdate, mask_api_key};
+use crate::domain::tools::{WebSearchKeyOperation, WebSearchKeyStatusUpdate, mask_api_key};
 use crate::tools::web_search::providers::{exa, firecrawl, grok, grok_support, jina, tavily};
 use crate::tools::web_search::types::{ProviderSearchRequest, SearchMode};
 
@@ -161,15 +161,14 @@ pub async fn update_tool_defaults(
     Json(config): Json<AgentToolsConfig>,
 ) -> AppResult<Json<AgentToolsConfig>> {
     let config = state.store.update_tool_defaults(config).await?;
-    if config.evidence_storage.enabled {
-        if let Err(error) = crate::tools::web_search::evidence::cleanup_evidence_store(
+    if config.evidence_storage.enabled
+        && let Err(error) = crate::tools::web_search::evidence::cleanup_evidence_store(
             &state.store.data_dir,
             &config.evidence_storage,
         )
         .await
-        {
-            tracing::warn!(error = %error, "failed to clean evidence store after settings update");
-        }
+    {
+        tracing::warn!(error = %error, "failed to clean evidence store after settings update");
     }
     Ok(Json(config.redact_secrets()))
 }
@@ -501,6 +500,7 @@ pub async fn check_web_search_keys(
         .filter_map(|result| {
             let api_key = api_keys.get(result.key_index)?;
             Some(WebSearchKeyStatusUpdate {
+                operation: WebSearchKeyOperation::Search,
                 source_id: source_id.clone(),
                 key_index: result.key_index,
                 api_key: api_key.clone(),

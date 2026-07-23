@@ -1165,10 +1165,15 @@ function mergeToolsConfig(defaults: AgentToolsConfig, overrides: AgentToolsOverr
       allowed_cwd_roots: overrides.terminal.allowed_cwd_roots ?? defaults.terminal.allowed_cwd_roots,
     },
     web_search: {
-      enabled: overrides.web_search?.enabled ?? defaults.web_search?.enabled ?? false,
+      enabled: overrides.web_search?.enabled ?? defaults.web_search?.enabled ?? true,
       max_results: overrides.web_search?.max_results ?? defaults.web_search?.max_results ?? 5,
       timeout_ms: defaults.web_search?.timeout_ms ?? 15000,
       key_selection: defaults.web_search?.key_selection ?? 'sequential',
+      extraction: defaults.web_search?.extraction ?? {
+        remote_enabled: true,
+        max_remote_attempts_per_url: 3,
+        allow_grok_fallback: true,
+      },
       sources: defaults.web_search?.sources ?? [],
     },
   };

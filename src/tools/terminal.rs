@@ -648,9 +648,7 @@ impl AnsiStripper {
                     };
                 }
                 AnsiState::Csi => {
-                    if (0x40..=0x7e).contains(&byte) {
-                        self.state = AnsiState::Ground;
-                    } else if !((0x20..=0x3f).contains(&byte)) {
+                    if !(0x20..=0x3f).contains(&byte) {
                         self.state = AnsiState::Ground;
                     }
                 }

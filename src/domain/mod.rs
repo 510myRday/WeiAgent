@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod chat;
 pub mod conversations;
+pub mod ip_proxies;
 pub mod providers;
 pub mod runtime;
 pub mod settings;
@@ -23,6 +24,10 @@ pub use chat::{
 pub use conversations::{
     ContextCheckpoint, Conversation, ConversationMessagePage, CreateConversationRequest,
     UpdateConversationRequest,
+};
+pub use ip_proxies::{
+    CreateIpProxyRequest, ImportIpProxiesRequest, ImportIpProxiesResponse, IpProxy,
+    IpProxyProtocol, IpProxyStatus, IpProxyTestUpdate, TestIpProxiesRequest, UpdateIpProxyRequest,
 };
 pub use providers::{
     CreateModelProviderRequest, FetchProviderModelsRequest, ModelConfig, ModelProvider,

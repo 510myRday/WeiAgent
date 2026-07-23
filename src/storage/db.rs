@@ -1,12 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use chrono::Utc;
 use rusqlite::{Connection, params};
 use uuid::Uuid;
 
 use crate::{
-    domain::{ModelConfig, ModelProvider, ProviderType},
-    error::AppResult,
+    domain::{IpProxy, IpProxyProtocol, IpProxyStatus, ModelConfig, ModelProvider, ProviderType},
+    error::{AppError, AppResult},
 };
 
 pub const DB_FILE_NAME: &str = "weiagent.db";
@@ -63,6 +66,28 @@ CREATE TABLE IF NOT EXISTS model_providers (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS ip_proxies (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL UNIQUE,
+    protocol TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'unchecked',
+    latency_ms INTEGER,
+    last_checked_at TEXT,
+    last_error TEXT,
+    ip_address TEXT,
+    country TEXT,
+    country_code TEXT,
+    region TEXT,
+    city TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ip_proxies_enabled_status
+    ON ip_proxies(enabled, status);
 ";
 
 pub fn db_path(data_dir: &Path) -> PathBuf {
@@ -87,6 +112,21 @@ pub fn open_connection(db_path: &Path) -> AppResult<Connection> {
         "ALTER TABLE model_providers ADD COLUMN cache_capabilities_json TEXT NOT NULL DEFAULT 'null'",
         [],
     );
+    for column in [
+        "ip_address TEXT",
+        "country TEXT",
+        "country_code TEXT",
+        "region TEXT",
+        "city TEXT",
+    ] {
+        let _ = conn.execute(&format!("ALTER TABLE ip_proxies ADD COLUMN {column}"), []);
+    }
+    repair_ip_proxy_names(&conn)?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_proxies_name_unique
+         ON ip_proxies(name COLLATE NOCASE)",
+        [],
+    )?;
     Ok(conn)
 }
 
@@ -110,6 +150,22 @@ pub fn write_providers(data_dir: &Path, providers: &[ModelProvider]) -> AppResul
     tx.execute("DELETE FROM model_providers", [])?;
     for provider in providers {
         insert_provider_conn(&tx, provider)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn read_ip_proxies(data_dir: &Path) -> AppResult<Vec<IpProxy>> {
+    let conn = open_data_dir(data_dir)?;
+    read_ip_proxies_conn(&conn)
+}
+
+pub fn write_ip_proxies(data_dir: &Path, proxies: &[IpProxy]) -> AppResult<()> {
+    let mut conn = open_data_dir(data_dir)?;
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM ip_proxies", [])?;
+    for proxy in proxies {
+        insert_ip_proxy_conn(&tx, proxy)?;
     }
     tx.commit()?;
     Ok(())
@@ -223,4 +279,175 @@ fn row_to_provider(row: ProviderRow) -> AppResult<ModelProvider> {
         created_at,
         updated_at,
     })
+}
+
+pub fn read_ip_proxies_conn(conn: &Connection) -> AppResult<Vec<IpProxy>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, url, protocol, enabled, status, latency_ms,
+                last_checked_at, last_error, ip_address, country, country_code,
+                region, city, created_at, updated_at
+         FROM ip_proxies
+         ORDER BY created_at ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(IpProxyRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            url: row.get(2)?,
+            protocol: row.get(3)?,
+            enabled: row.get(4)?,
+            status: row.get(5)?,
+            latency_ms: row.get(6)?,
+            last_checked_at: row.get(7)?,
+            last_error: row.get(8)?,
+            ip_address: row.get(9)?,
+            country: row.get(10)?,
+            country_code: row.get(11)?,
+            region: row.get(12)?,
+            city: row.get(13)?,
+            created_at: row.get(14)?,
+            updated_at: row.get(15)?,
+        })
+    })?;
+
+    let mut proxies = Vec::new();
+    for row in rows {
+        proxies.push(row_to_ip_proxy(row?)?);
+    }
+    Ok(proxies)
+}
+
+fn insert_ip_proxy_conn(conn: &Connection, proxy: &IpProxy) -> AppResult<()> {
+    let protocol = enum_value(&proxy.protocol, "http")?;
+    let status = enum_value(&proxy.status, "unchecked")?;
+    let latency_ms = proxy
+        .latency_ms
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    conn.execute(
+        "INSERT INTO ip_proxies (
+            id, name, url, protocol, enabled, status, latency_ms,
+            last_checked_at, last_error, ip_address, country, country_code,
+            region, city, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        params![
+            proxy.id.to_string(),
+            proxy.name,
+            proxy.url,
+            protocol,
+            i64::from(proxy.enabled),
+            status,
+            latency_ms,
+            proxy.last_checked_at.map(|value| value.to_rfc3339()),
+            proxy.last_error,
+            proxy.ip_address,
+            proxy.country,
+            proxy.country_code,
+            proxy.region,
+            proxy.city,
+            proxy.created_at.to_rfc3339(),
+            proxy.updated_at.to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+struct IpProxyRow {
+    id: String,
+    name: String,
+    url: String,
+    protocol: String,
+    enabled: i64,
+    status: String,
+    latency_ms: Option<i64>,
+    last_checked_at: Option<String>,
+    last_error: Option<String>,
+    ip_address: Option<String>,
+    country: Option<String>,
+    country_code: Option<String>,
+    region: Option<String>,
+    city: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+fn row_to_ip_proxy(row: IpProxyRow) -> AppResult<IpProxy> {
+    let protocol: IpProxyProtocol =
+        serde_json::from_value(serde_json::Value::String(row.protocol))?;
+    let status: IpProxyStatus = serde_json::from_value(serde_json::Value::String(row.status))?;
+    let latency_ms = row
+        .latency_ms
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    Ok(IpProxy {
+        id: Uuid::parse_str(&row.id).map_err(|error| AppError::Database(error.to_string()))?,
+        name: row.name,
+        url: row.url,
+        protocol,
+        enabled: row.enabled != 0,
+        status,
+        latency_ms,
+        last_checked_at: parse_optional_datetime(row.last_checked_at)?,
+        last_error: row.last_error,
+        ip_address: row.ip_address,
+        country: row.country,
+        country_code: row.country_code,
+        region: row.region,
+        city: row.city,
+        created_at: parse_datetime(&row.created_at)?,
+        updated_at: parse_datetime(&row.updated_at)?,
+    })
+}
+
+fn enum_value<T: serde::Serialize>(value: &T, fallback: &str) -> AppResult<String> {
+    Ok(serde_json::to_value(value)?
+        .as_str()
+        .unwrap_or(fallback)
+        .to_string())
+}
+
+fn parse_datetime(value: &str) -> AppResult<chrono::DateTime<Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|value| value.with_timezone(&Utc))
+        .map_err(|error| AppError::Database(error.to_string()))
+}
+
+fn parse_optional_datetime(value: Option<String>) -> AppResult<Option<chrono::DateTime<Utc>>> {
+    value.as_deref().map(parse_datetime).transpose()
+}
+
+fn repair_ip_proxy_names(conn: &Connection) -> AppResult<()> {
+    let rows = {
+        let mut statement =
+            conn.prepare("SELECT id, name FROM ip_proxies ORDER BY created_at ASC, id ASC")?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut used = HashSet::new();
+
+    for (id, original_name) in rows {
+        let base_name = if original_name.trim().is_empty() {
+            "proxy".to_string()
+        } else {
+            original_name.trim().to_string()
+        };
+        let mut name = base_name.clone();
+        let mut index = 1_u64;
+        while !used.insert(name.to_lowercase()) {
+            name = format!("{base_name}_{index}");
+            index += 1;
+        }
+        if name != original_name {
+            conn.execute(
+                "UPDATE ip_proxies SET name = ?1, updated_at = ?2 WHERE id = ?3",
+                params![name, Utc::now().to_rfc3339(), id],
+            )?;
+        }
+    }
+    Ok(())
 }

@@ -291,6 +291,12 @@
       "keySelectionSequential": "按顺序",
       "keySelectionRoundRobin": "轮询",
       "keySelectionRandom": "随机",
+      "remoteExtractionEnabled": "启用远程内容提取回退",
+      "remoteExtractionEnabledDesc": "本机抽取失败或质量较低时，按页面特征调用已配置的内容提取源。",
+      "maxRemoteExtractAttempts": "每个网址最大远程尝试数",
+      "maxRemoteExtractAttemptsDesc": "按顺序尝试来源并在获得高质量正文后停止，范围 1–5。",
+      "allowGrokExtractFallback": "允许 Grok 最终兜底",
+      "allowGrokExtractFallbackDesc": "正文型来源均未成功时，通过 Grok SSO 会话提取相关片段；结果会标记为 AI 生成。",
       "evidenceStorageTitle": "证据存储",
       "evidenceStorageDesc": "保存网页抽取的完整正文，并按保留时间和容量上限自动清理。",
       "evidenceStorageEnabled": "启用证据存储",
@@ -302,6 +308,7 @@
       "sourcesTitle": "搜索源与密钥",
       "sourcesDesc": "按工具来源设置搜索偏好和深度调研范围（顺序越靠前，搜索优先级越高）。",
       "sourcePriority": "优先级 {index}",
+      "keyRequiredToEnable": "请先配置可用 Key，再启用此搜索源",
       "noKeys": "尚未配置 API Key",
       "keyPlaceholder": "输入 API Key 后添加",
       "keyLimitReached": "单个搜索源最多配置 {count} 个 Key",
@@ -325,6 +332,8 @@
       "sourceProfileDesc": "按检索方式、内容方向和任务目标标记这个来源更擅长的搜索场景。",
       "deepEnabled": "纳入深度调研",
       "deepEnabledDesc": "深度模式下允许使用这个来源进行多来源并行调研",
+      "extractEnabled": "用于内容提取",
+      "extractEnabledDesc": "允许 web_extract 在本机结果较差时调用这个来源读取指定网址。",
       "sourcePreferenceGroup": {
         "discovery": "检索方式",
         "content": "内容方向",
@@ -403,7 +412,16 @@
       "addKeysHint": "支持每行一个；按 Ctrl/⌘ + Enter 快速添加",
       "addGrokKeysHint": "支持每行一个；历史封禁 Key 会自动跳过",
       "advancedSettings": "连接与代理设置",
-      "advancedSettingsDesc": "FlareSolverr、浏览器代理与 Grok 访问代理",
+      "advancedSettingsDesc": "配置内容提取端点；Grok 还可配置 FlareSolverr 与代理。",
+      "extractBaseUrl": "内容提取 Base URL",
+      "extractBaseUrlDesc": "留空使用该来源的默认内容提取端点。搜索地址与提取地址可以不同。",
+      "extractBaseUrlPlaceholder": {
+        "tavily": "https://api.tavily.com",
+        "exa": "https://api.exa.ai",
+        "jina": "https://r.jina.ai",
+        "grok": "https://grok.com",
+        "firecrawl": "https://api.firecrawl.dev/v2"
+      },
       "checkFailed": "Key 检测失败",
       "keyImportSummary": "已导入 {imported} 个，跳过重复 {duplicates} 个",
       "grokKeyImportSummary": "已导入 {imported} 个，跳过重复 {duplicates} 个、历史封禁 {blocked} 个",
@@ -448,6 +466,100 @@
     "agentTitle": "模型与智能体",
     "agentDescription": "对话超时重试、全局上下文压缩与模型请求记录等运行参数。",
     "agentRetryHint": "发送消息等待模型回复时，若超时或网络失败会按此次数自动重试。时间默认 60 秒，次数默认 5 次。"
+  },
+  "ipProxy": {
+    "title": "IP代理",
+    "description": "集中管理 HTTP、HTTPS 与 SOCKS 代理地址及连接状态。",
+    "configuredCount": "{count} 个代理",
+    "overview": "代理概览",
+    "total": "全部代理",
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "available": "连接可用",
+    "averageLatency": "平均延迟",
+    "loadFailed": "代理列表加载失败",
+    "search": "搜索名称或代理地址",
+    "protocolFilter": "按代理协议筛选",
+    "statusFilter": "按测速状态筛选",
+    "allProtocols": "全部协议",
+    "allStatuses": "全部状态",
+    "testing": "测速中...",
+    "testAll": "测速全部",
+    "testSelectedCount": "测速所选（{count}）",
+    "batchImport": "批量导入",
+    "add": "添加代理",
+    "selected": "已选择 {count} 项",
+    "clearSelection": "清除选择",
+    "deleteSelected": "删除所选",
+    "noEnabled": "当前没有已启用的代理",
+    "testSummary": "测速完成：{available}/{count} 个代理连接可用",
+    "testFailed": "代理测速失败",
+    "emptyTitle": "还没有代理地址",
+    "emptyDescription": "添加单条代理，或按每行一个地址批量导入。",
+    "addFirst": "添加第一个代理",
+    "noResults": "没有匹配的代理",
+    "noResultsDescription": "调整搜索词或筛选条件后查看。",
+    "selectAll": "选择当前列表全部代理",
+    "selectProxy": "选择代理 {name}",
+    "proxy": "名称与地址",
+    "protocol": "协议",
+    "location": "IP归属地",
+    "locationPending": "测速后获取",
+    "statusLabel": "状态",
+    "latency": "延迟",
+    "lastChecked": "最近测速",
+    "actions": "操作",
+    "neverChecked": "尚未测速",
+    "toggleProxy": "切换代理 {name} 的启用状态",
+    "testOne": "测试这个代理",
+    "edit": "编辑代理",
+    "delete": "删除代理",
+    "createTitle": "添加 IP 代理",
+    "editTitle": "编辑 IP 代理",
+    "formDescription": "代理地址会保存到本地 weiagent.db，并可供其他功能复用。",
+    "name": "名称",
+    "namePlaceholder": "例如：香港线路 01",
+    "nameConflict": "代理名称已存在，请换一个名称。",
+    "address": "代理地址",
+    "addressHint": "支持 http://、https://、socks5:// 与 socks5h://；省略协议时按 HTTP 处理。",
+    "enableOnCreate": "立即启用",
+    "enableOnCreateHint": "启用后会加入全局可用代理池。",
+    "create": "创建代理",
+    "save": "保存代理",
+    "created": "代理已创建",
+    "saved": "代理已保存",
+    "saveFailed": "代理保存失败",
+    "toggleFailed": "代理状态更新失败",
+    "importTitle": "批量导入代理",
+    "importDescription": "左侧每行填写一个代理地址，右侧会按顺序生成对应名称。",
+    "importAddresses": "代理地址（每行一个）",
+    "importHint": "支持 HTTP、HTTPS、SOCKS5 与 SOCKS5H；重复或格式异常的地址会标记出来。",
+    "importAddressIssueCount": "{count} 行地址冲突或格式异常",
+    "importNames": "代理名称",
+    "importNamesCount": "{count} 项",
+    "importNameConflictCount": "{count} 项名称冲突",
+    "importNamesHint": "默认使用 IP 或域名；重名会自动追加 _1、_2，也可以逐条修改。",
+    "importNamesEmpty": "先在左侧输入代理地址，这里会生成对应名称。",
+    "importNameAria": "第 {index} 个代理的名称",
+    "importAction": "导入代理",
+    "importActionCount": "导入 {count} 个代理",
+    "enableImported": "导入后启用",
+    "enableImportedHint": "统一设置本次新增代理的启用状态。",
+    "importSummary": "已导入 {imported} 个代理",
+    "importFailed": "代理导入失败",
+    "deleteTitle": "删除代理？",
+    "deleteConfirm": "确定删除「{name}」吗？",
+    "deleted": "代理已删除",
+    "deleteFailed": "代理删除失败",
+    "deleteSelectedTitle": "删除所选代理？",
+    "deleteSelectedConfirm": "将删除选中的 {count} 个代理。",
+    "deletedSelected": "已删除 {count} 个代理",
+    "deletePartial": "已删除 {deleted} 个，另有 {failed} 个处理失败",
+    "status": {
+      "unchecked": "待测速",
+      "available": "可用",
+      "unavailable": "异常"
+    }
   },
   "provider": {
     "title": "模型提供商",
@@ -502,6 +614,76 @@
     "description": "管理模型连接、原生 API 协议与可用模型。",
     "selectHint": "选择左侧提供商，或新建一个模型提供商。",
     "deleteConfirm": "确定删除「{name}」吗？",
+    "template": {
+      "title": "选择提供商模板",
+      "description": "选择官方服务快速填充连接信息，或从自定义配置开始。",
+      "searchPlaceholder": "搜索提供商、接口或服务地址",
+      "searchEmpty": "没有匹配的提供商",
+      "searchEmptyDescription": "尝试搜索品牌名称、接口类型或服务地址。",
+      "clearSearch": "清除搜索",
+      "locked": "模板已固定连接方式",
+      "customMode": "灵活配置",
+      "openai": {
+        "name": "OpenAI 官方 API",
+        "description": "使用 OpenAI 官方 Chat Completions 接口。"
+      },
+      "deepseek": {
+        "name": "DeepSeek 官方 API",
+        "description": "连接 DeepSeek 开放平台的官方服务。"
+      },
+      "google": {
+        "name": "Google Gemini API",
+        "description": "使用 Google 原生 Gemini generateContent 接口。"
+      },
+      "anthropic": {
+        "name": "Anthropic 官方 API",
+        "description": "使用 Anthropic 原生 Messages API。"
+      },
+      "kimi": {
+        "name": "Kimi 开放平台",
+        "description": "连接 Moonshot AI 提供的 Kimi 官方服务。"
+      },
+      "zhipu": {
+        "name": "智谱 AI 开放平台",
+        "description": "连接智谱 BigModel 官方开放接口。"
+      },
+      "nvidia": {
+        "name": "NVIDIA NIM",
+        "description": "连接 NVIDIA API Catalog 提供的托管推理服务。"
+      },
+      "bailian": {
+        "name": "阿里云百炼",
+        "description": "连接阿里云百炼的 OpenAI 兼容模型服务。"
+      },
+      "openrouter": {
+        "name": "OpenRouter",
+        "description": "通过统一接口访问 OpenRouter 聚合的多家模型。"
+      },
+      "siliconflow": {
+        "name": "硅基流动",
+        "description": "连接 SiliconCloud 提供的多模型推理服务。"
+      },
+      "stepfun": {
+        "name": "阶跃星辰",
+        "description": "连接阶跃星辰开放平台的官方模型服务。"
+      },
+      "grok": {
+        "name": "xAI Grok",
+        "description": "连接 xAI 官方 Grok 模型服务。"
+      },
+      "minimax": {
+        "name": "MiniMax",
+        "description": "连接 MiniMax 开放平台的官方模型服务。"
+      },
+      "opencode": {
+        "name": "OpenCode Zen",
+        "description": "连接 OpenCode Zen 提供的精选模型服务。"
+      },
+      "custom": {
+        "name": "自定义连接",
+        "description": "适用于私有部署、代理网关及其他兼容模型服务。"
+      }
+    },
     "protocol": {
       "openaiChat": "OpenAI Chat Completions",
       "openaiChatShort": "OpenAI Chat",

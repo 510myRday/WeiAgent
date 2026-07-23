@@ -120,10 +120,8 @@ pub async fn resolve_clearance(
         "{flaresolverr_url}\0{target_url}\0{}",
         fs_proxy.as_deref().unwrap_or("")
     );
-    if !force_refresh {
-        if let Some(cached) = get_cached_clearance(&cache_key) {
-            return Ok(cached);
-        }
+    if !force_refresh && let Some(cached) = get_cached_clearance(&cache_key) {
+        return Ok(cached);
     }
 
     let endpoint = if flaresolverr_url.ends_with("/v1") {

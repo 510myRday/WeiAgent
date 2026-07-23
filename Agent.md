@@ -480,6 +480,11 @@ User Message
 - 源数组顺序 = 跨源失败降级优先级
 - 内置 provider：`tavily`、`exa`、`jina`、`grok`、`firecrawl`；可选 `base_url` 覆盖默认端点
 - Firecrawl 使用 `/v2/search`：普通模式返回 Highlights；时效查询可合并 web/news；Deep 模式为最多 5 条结果请求 Markdown 正文
+- `web_extract` 采用本机优先的分层提取：本机 HTTP/PDF + Readability 质量评分，通过后直接返回；低质量、动态空壳或反爬页面按能力路由到已启用的 Tavily Extract、Exa Contents、Jina Reader 或 Firecrawl Scrape
+- 每个搜索源通过 `extract_enabled` 独立控制是否参与内容提取，`extract_base_url` 可覆盖提取端点；Jina 默认搜索端点为 `s.jina.ai`、提取端点为 `r.jina.ai`
+- 提取回退为顺序执行并在高质量正文处停止；全局配置控制远程回退、每 URL 最大尝试次数与 Grok SSO 最终兜底
+- Grok 提取必须在网页会话原生引用中精确命中目标 URL，结果以 `ai_derived` 返回且不作为可直接引用的原网页证据
+- 搜索与提取分别维护 Key 健康状态；一次 Agent run 内会记录搜索结果 URL 的 `source_ids`，提取时优先复用命中该 URL 的来源
 - 读 API 返回脱敏 Key（`****` + 后 4 位）；写更新：`["__preserve__"]` 保留、`[]` 清空、明文列表替换
 
 Agent 覆盖的 API 结构仅允许：
@@ -504,6 +509,7 @@ Agent 覆盖的 API 结构仅允许：
   - `content_excerpt` 目前用于 Firecrawl Deep 模式抓取的正文摘录；完整输出最多 4000 字符，写入模型历史前再压缩到 2000 字符
 - 失败旋转：同源内按策略换 Key；`401/403/429`/网络错误可旋转；同源耗尽后切下一源；全部失败返回 `ToolResult::Error`
 - 无审批、无沙箱、无进程管理（与终端工具不同）
+- `web_extract` 输出包含 `extractor`、`evidence_class`、`citation_eligible`、`quality_score` 与逐次 `attempts`；正文型结果可写入 evidence，Grok 生成式片段单列在 `ai_extractions`
 
 ### 前端
 
