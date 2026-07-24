@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-use base64::Engine;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use wreq_util::Emulation;
 
 const DEFAULT_FLARESOLVERR_TIMEOUT_MS: u64 = 90_000;
@@ -439,29 +437,6 @@ fn format_flaresolverr_http_error(status: reqwest::StatusCode, text: &str) -> St
     )
 }
 
-#[allow(dead_code)]
-pub fn local_dynamic_statsig(method: &str, path: &str, meta_content: &str) -> String {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_millis())
-        .unwrap_or(0);
-    let method = method.trim().to_ascii_uppercase();
-    let path = if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{path}")
-    };
-    let material = format!("{method}\n{path}\n{meta_content}\n{ts}");
-    let mut hasher = Sha256::new();
-    hasher.update(material.as_bytes());
-    hasher.update(b"|");
-    hasher.update(meta_content.as_bytes());
-    let digest = hasher.finalize();
-    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
-    // Compact browser-like token: version.ts.signature
-    format!("4.{ts}.{signature}")
-}
-
 fn get_cached_clearance(key: &str) -> Option<ClearanceBundle> {
     let guard = clearance_cache().lock().ok()?;
     let entry = guard.get(key)?;
@@ -497,16 +472,6 @@ fn truncate_for_error(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn local_statsig_is_stable_shape() {
-        let token = local_dynamic_statsig("POST", "/rest/app-chat/conversations/new", "meta");
-        let parts: Vec<_> = token.split('.').collect();
-        assert_eq!(parts.len(), 3);
-        assert_eq!(parts[0], "4");
-        assert!(!parts[1].is_empty());
-        assert!(!parts[2].is_empty());
-    }
 
     #[test]
     fn normalize_optional_url_trims() {

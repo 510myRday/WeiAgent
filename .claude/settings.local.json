@@ -10,7 +10,11 @@
       "Bash(sed -n \"900,1200p\" frontend/src/styles/components.css)",
       "Bash(sed -n \"1200,1500p\" frontend/src/styles/components.css)",
       "Bash(sed -n \"1500,2003p\" frontend/src/styles/components.css)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(xargs wc -l)",
+      "Bash(awk -F: '{print $1}')",
+      "Bash(python3 -)",
+      "Bash(python -)"
     ]
   }
 }

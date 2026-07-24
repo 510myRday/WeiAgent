@@ -156,7 +156,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
       next.push({ key: 'waiting', kind: 'waiting' });
     }
     return next;
-  }, [activeAgent, hasOlderMessages, isSending, messages, runPhase, retryStatus]);
+  }, [activeAgent, hasOlderMessages, isSending, messages, runPhase]);
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -371,7 +371,10 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
       if (timelineIndexSet.has(messageIndex)) observer.observe(anchor);
     });
     return () => observer.disconnect();
-  }, [onActiveTimelineMessageChange, rows, timelineIndexSet]);
+    // Depend on rows.length instead of rows: anchor positions only change when
+    // rows are added/removed, so stream flushes (which replace the rows array
+    // every ~32ms) must not rebuild the observer.
+  }, [onActiveTimelineMessageChange, rows.length, timelineIndexSet]);
 
   useLayoutEffect(() => {
     const anchorKey = pendingAnchorKeyRef.current;

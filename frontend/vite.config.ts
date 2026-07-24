@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import { readFileSync } from 'node:fs';
 
 export default defineConfig(({ command }) => ({
-  plugins: [react],
+  plugins: [react()],
   build: {
     rollupOptions: {
       output: {

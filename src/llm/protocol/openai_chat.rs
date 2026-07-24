@@ -10,8 +10,9 @@ use crate::{
         cache::{apply_openai_fields, apply_provider_extra, build_context},
         client::{ChatClient, ChatStream, RequestOptions},
         http::{
-            LlmHttp, MAX_SSE_LINE_BUFFER_BYTES, capture_log_line, decode_remaining_sse_line,
-            drain_sse_line, format_stream_log, read_response_body_limited, spawn_log,
+            LlmHttp, MAX_LLM_LOG_BYTES, MAX_SSE_LINE_BUFFER_BYTES, capture_log_line,
+            decode_remaining_sse_line, drain_sse_line, format_stream_log,
+            read_response_body_limited, spawn_log,
             stream_metrics,
         },
         protocol::common::request_json_for_log,
@@ -95,12 +96,16 @@ impl ChatClient for OpenAiChatClient {
             apply_provider_extra(&mut extra, &context);
             request.extra_body = serde_json::Value::Object(extra);
         }
-        let request_json = serde_json::to_value(&request)
-            .map(|value| request_json_for_log(&value))
-            .unwrap_or_else(|_| format!("{request:?}"));
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let chat_url = self.chat_url(provider);
         let log_enabled = self.http.log_enabled();
+        let request_json = if log_enabled {
+            serde_json::to_value(&request)
+                .map(|value| request_json_for_log(&value))
+                .unwrap_or_else(|_| format!("{request:?}"))
+        } else {
+            String::new()
+        };
         let started = Instant::now();
         let agent_id = agent.id.to_string();
         let conversation_id = messages
@@ -307,12 +312,16 @@ impl ChatClient for OpenAiChatClient {
             apply_provider_extra(&mut extra, &context);
             request.extra_body = serde_json::Value::Object(extra);
         }
-        let request_json = serde_json::to_value(&request)
-            .map(|value| request_json_for_log(&value))
-            .unwrap_or_else(|_| format!("{request:?}"));
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let chat_url = self.chat_url(provider);
         let log_enabled = self.http.log_enabled();
+        let request_json = if log_enabled {
+            serde_json::to_value(&request)
+                .map(|value| request_json_for_log(&value))
+                .unwrap_or_else(|_| format!("{request:?}"))
+        } else {
+            String::new()
+        };
         let started = Instant::now();
         let agent_id = agent.id.to_string();
         let conversation_id = messages
@@ -528,6 +537,7 @@ impl ChatClient for OpenAiChatClient {
                                 &mut guard.raw_lines,
                                 &mut guard.raw_bytes,
                                 &mut guard.raw_truncated,
+                                MAX_LLM_LOG_BYTES,
                             );
                             for item in parse_sse_line(&line) {
                                 match item {
@@ -617,6 +627,7 @@ impl ChatClient for OpenAiChatClient {
                     &mut guard.raw_lines,
                     &mut guard.raw_bytes,
                     &mut guard.raw_truncated,
+                    MAX_LLM_LOG_BYTES,
                 );
                 for item in parse_sse_line(&line) {
                     match item {

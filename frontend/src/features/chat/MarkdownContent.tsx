@@ -20,21 +20,22 @@ type MarkdownContentProps = {
   content: string;
 };
 
-function markdownComponents(): Components {
-  return {
-    a: ({ node: _node, ...props }) => <MarkdownLink {...props} />,
-    pre: MarkdownCodeBlock,
-    img: ({ node: _node, ...props }) => <MarkdownImage {...props} />,
-    table: ({ node: _node, ...props }) => <MarkdownTable {...props} />,
-  };
-}
+const MARKDOWN_COMPONENTS: Components = {
+  a: ({ node: _node, ...props }) => <MarkdownLink {...props} />,
+  pre: MarkdownCodeBlock,
+  img: ({ node: _node, ...props }) => <MarkdownImage {...props} />,
+  table: ({ node: _node, ...props }) => <MarkdownTable {...props} />,
+};
+
+const REMARK_PLUGINS = [remarkGfm, remarkCjkFriendly];
+const REHYPE_PLUGINS = [rehypeHighlight];
 
 function PlainMarkdownContent({ content }: MarkdownContentProps) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkCjkFriendly]}
-      rehypePlugins={[rehypeHighlight]}
-      components={markdownComponents()}
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
+      components={MARKDOWN_COMPONENTS}
       urlTransform={markdownUrlTransform}
     >
       {content}

@@ -21,6 +21,9 @@ use crate::{
 
 pub const MAX_LLM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_LLM_LOG_BYTES: usize = 1024 * 1024;
+/// Capture budget when payload logging is disabled: only the stream tail is
+/// kept so usage metrics can still be extracted from the final SSE lines.
+pub const METRICS_ONLY_LOG_BYTES: usize = 16 * 1024;
 pub const MAX_SSE_LINE_BUFFER_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_LOG_TRUNCATION_MARKER: &str = "[LLM stream log middle truncated]";
@@ -256,27 +259,34 @@ pub fn capture_log_line(
     raw_lines: &mut Vec<String>,
     raw_bytes: &mut usize,
     raw_truncated: &mut bool,
+    max_bytes: usize,
 ) {
-    if !*raw_truncated && raw_bytes.saturating_add(line.len()) <= MAX_LLM_LOG_BYTES {
+    if !*raw_truncated && raw_bytes.saturating_add(line.len()) <= max_bytes {
         *raw_bytes += line.len();
         raw_lines.push(line.to_string());
         return;
     }
 
-    let available = MAX_LLM_LOG_BYTES.saturating_sub(STREAM_LOG_TRUNCATION_MARKER.len() + 2);
+    let available = max_bytes.saturating_sub(STREAM_LOG_TRUNCATION_MARKER.len() + 2);
     let head_bytes = available / 2;
     let tail_bytes = available.saturating_sub(head_bytes);
 
     if *raw_truncated {
-        let head = raw_lines.first().cloned().unwrap_or_default();
-        let previous_tail = raw_lines.get(1).map(String::as_str).unwrap_or_default();
-        let combined_tail = if previous_tail.is_empty() {
-            line.to_string()
-        } else {
-            format!("{previous_tail}\n{line}")
-        };
-        let tail = suffix_at_most(&combined_tail, tail_bytes).to_string();
-        *raw_lines = vec![head, tail];
+        // Amortized bounded tail: append and only trim the front once the tail
+        // doubles its budget, so each retained byte moves at most once instead
+        // of re-copying ~tail_bytes for every incoming SSE line.
+        if raw_lines.len() < 2 {
+            raw_lines.resize(2, String::new());
+        }
+        let tail = &mut raw_lines[1];
+        if !tail.is_empty() {
+            tail.push('\n');
+        }
+        tail.push_str(line);
+        if tail.len() > tail_bytes.saturating_mul(2) {
+            let cut = tail.len() - suffix_at_most(tail, tail_bytes).len();
+            tail.drain(..cut);
+        }
     } else {
         // Keep both ends of a long stream: the beginning is useful for context,
         // while the end usually contains usage, finish, and cache metadata.
@@ -342,6 +352,31 @@ fn decode_sse_line(line: &[u8]) -> AppResult<String> {
         .map_err(|error| AppError::Llm(format!("invalid SSE UTF-8: {error}")))
 }
 
+/// Persist one stream-log record (metrics always; payload when enabled).
+fn log_stream_result(
+    context: &StreamLogContext,
+    raw_lines: &[String],
+    raw_truncated: bool,
+    first_token_ms: Option<u64>,
+    usage: Option<&TokenUsage>,
+    error: Option<&str>,
+) {
+    spawn_log(
+        &context.logger,
+        context.enabled,
+        &context.agent_name,
+        context.agent_id.as_deref(),
+        context.conversation_id.as_deref(),
+        &context.model_id,
+        &context.provider_name,
+        &context.request_json,
+        Some(&format_stream_log(raw_lines, raw_truncated)),
+        Some(context.status),
+        error,
+        stream_metrics(context.started, first_token_ms, usage),
+    );
+}
+
 pub fn stream_response(
     response: Response,
     mut parser: Box<dyn StreamLineParser>,
@@ -349,13 +384,20 @@ pub fn stream_response(
     context: StreamLogContext,
 ) -> ChatStream {
     let mut bytes = response.bytes_stream();
+    // Without payload logging only a small tail is kept so token usage can
+    // still be recovered from the closing SSE lines.
+    let capture_budget = if context.enabled {
+        MAX_LLM_LOG_BYTES
+    } else {
+        METRICS_ONLY_LOG_BYTES
+    };
     let stream = async_stream::stream! {
         let mut buffer: Vec<u8> = Vec::new();
         let mut raw_lines = Vec::new();
         let mut raw_bytes = 0_usize;
         let mut raw_truncated = false;
         let mut first_token_ms = None;
-        let mut usage = None;
+        let mut usage: Option<TokenUsage> = None;
 
         loop {
             let next = match tokio::time::timeout(options.timeout, bytes.next()).await {
@@ -365,19 +407,13 @@ pub fn stream_response(
                         "LLM stream idle timeout after {}s",
                         options.timeout.as_secs()
                     ));
-                    spawn_log(
-                        &context.logger,
-                        context.enabled,
-                        &context.agent_name,
-                        context.agent_id.as_deref(),
-                        context.conversation_id.as_deref(),
-                        &context.model_id,
-                        &context.provider_name,
-                        &context.request_json,
-                        Some(&format_stream_log(&raw_lines, raw_truncated)),
-                        Some(context.status),
+                    log_stream_result(
+                        &context,
+                        &raw_lines,
+                        raw_truncated,
+                        first_token_ms,
+                        usage.as_ref(),
                         Some(&error.to_string()),
-                        stream_metrics(context.started, first_token_ms, usage.as_ref()),
                     );
                     yield Err(error);
                     return;
@@ -393,19 +429,13 @@ pub fn stream_response(
                         let line = match line {
                             Ok(line) => line,
                             Err(error) => {
-                                spawn_log(
-                                    &context.logger,
-                                    context.enabled,
-                                    &context.agent_name,
-                        context.agent_id.as_deref(),
-                        context.conversation_id.as_deref(),
-                                    &context.model_id,
-                                    &context.provider_name,
-                                    &context.request_json,
-                                    Some(&format_stream_log(&raw_lines, raw_truncated)),
-                                    Some(context.status),
+                                log_stream_result(
+                                    &context,
+                                    &raw_lines,
+                                    raw_truncated,
+                                    first_token_ms,
+                                    usage.as_ref(),
                                     Some(&error.to_string()),
-                                    stream_metrics(context.started, first_token_ms, usage.as_ref()),
                                 );
                                 yield Err(error);
                                 return;
@@ -416,6 +446,7 @@ pub fn stream_response(
                             &mut raw_lines,
                             &mut raw_bytes,
                             &mut raw_truncated,
+                            capture_budget,
                         );
                         for event in parser.parse_line(&line) {
                             match event {
@@ -429,19 +460,13 @@ pub fn stream_response(
                                     yield Ok(event);
                                 }
                                 Err(error) => {
-                                    spawn_log(
-                                        &context.logger,
-                                        context.enabled,
-                                        &context.agent_name,
-                        context.agent_id.as_deref(),
-                        context.conversation_id.as_deref(),
-                                        &context.model_id,
-                                        &context.provider_name,
-                                        &context.request_json,
-                                        Some(&format_stream_log(&raw_lines, raw_truncated)),
-                                        Some(context.status),
+                                    log_stream_result(
+                                        &context,
+                                        &raw_lines,
+                                        raw_truncated,
+                                        first_token_ms,
+                                        usage.as_ref(),
                                         Some(&error.to_string()),
-                                        stream_metrics(context.started, first_token_ms, usage.as_ref()),
                                     );
                                     yield Err(error);
                                     return;
@@ -458,19 +483,13 @@ pub fn stream_response(
                 }
                 Err(error) => {
                     let error = AppError::Llm(error.to_string());
-                    spawn_log(
-                        &context.logger,
-                        context.enabled,
-                        &context.agent_name,
-                        context.agent_id.as_deref(),
-                        context.conversation_id.as_deref(),
-                        &context.model_id,
-                        &context.provider_name,
-                        &context.request_json,
-                        Some(&format_stream_log(&raw_lines, raw_truncated)),
-                        Some(context.status),
+                    log_stream_result(
+                        &context,
+                        &raw_lines,
+                        raw_truncated,
+                        first_token_ms,
+                        usage.as_ref(),
                         Some(&error.to_string()),
-                        stream_metrics(context.started, first_token_ms, usage.as_ref()),
                     );
                     yield Err(error);
                     return;
@@ -480,19 +499,13 @@ pub fn stream_response(
         if let Some(line) = match decode_remaining_sse_line(&buffer) {
             Ok(line) => line,
             Err(error) => {
-                spawn_log(
-                    &context.logger,
-                    context.enabled,
-                    &context.agent_name,
-                        context.agent_id.as_deref(),
-                        context.conversation_id.as_deref(),
-                    &context.model_id,
-                    &context.provider_name,
-                    &context.request_json,
-                    Some(&format_stream_log(&raw_lines, raw_truncated)),
-                    Some(context.status),
+                log_stream_result(
+                    &context,
+                    &raw_lines,
+                    raw_truncated,
+                    first_token_ms,
+                    usage.as_ref(),
                     Some(&error.to_string()),
-                    stream_metrics(context.started, first_token_ms, usage.as_ref()),
                 );
                 yield Err(error);
                 return;
@@ -503,32 +516,27 @@ pub fn stream_response(
                 &mut raw_lines,
                 &mut raw_bytes,
                 &mut raw_truncated,
+                capture_budget,
             );
             for event in parser.parse_line(&line) {
                 match event {
-                        Ok(event) => {
-                            if let StreamEvent::Usage(value) = &event {
-                                usage = Some(value.clone());
-                            }
-                            if first_token_ms.is_none() && is_first_token_event(&event) {
+                    Ok(event) => {
+                        if let StreamEvent::Usage(value) = &event {
+                            usage = Some(value.clone());
+                        }
+                        if first_token_ms.is_none() && is_first_token_event(&event) {
                             first_token_ms = Some(elapsed_ms(context.started));
                         }
                         yield Ok(event);
                     }
                     Err(error) => {
-                        spawn_log(
-                            &context.logger,
-                            context.enabled,
-                            &context.agent_name,
-                        context.agent_id.as_deref(),
-                        context.conversation_id.as_deref(),
-                            &context.model_id,
-                            &context.provider_name,
-                            &context.request_json,
-                            Some(&format_stream_log(&raw_lines, raw_truncated)),
-                            Some(context.status),
+                        log_stream_result(
+                            &context,
+                            &raw_lines,
+                            raw_truncated,
+                            first_token_ms,
+                            usage.as_ref(),
                             Some(&error.to_string()),
-                            stream_metrics(context.started, first_token_ms, usage.as_ref()),
                         );
                         yield Err(error);
                         return;
@@ -536,19 +544,13 @@ pub fn stream_response(
                 }
             }
         }
-        spawn_log(
-            &context.logger,
-            context.enabled,
-            &context.agent_name,
-                        context.agent_id.as_deref(),
-                        context.conversation_id.as_deref(),
-            &context.model_id,
-            &context.provider_name,
-            &context.request_json,
-            Some(&format_stream_log(&raw_lines, raw_truncated)),
-            Some(context.status),
+        log_stream_result(
+            &context,
+            &raw_lines,
+            raw_truncated,
+            first_token_ms,
+            usage.as_ref(),
             None,
-            stream_metrics(context.started, first_token_ms, usage.as_ref()),
         );
     };
     Box::pin(stream)
@@ -610,14 +612,15 @@ mod tests {
         let mut lines = Vec::new();
         let mut bytes = 0;
         let mut truncated = false;
-        capture_log_line("HEAD", &mut lines, &mut bytes, &mut truncated);
+        capture_log_line("HEAD", &mut lines, &mut bytes, &mut truncated, MAX_LLM_LOG_BYTES);
         capture_log_line(
             &"M".repeat(MAX_LLM_LOG_BYTES),
             &mut lines,
             &mut bytes,
             &mut truncated,
+            MAX_LLM_LOG_BYTES,
         );
-        capture_log_line("TAIL", &mut lines, &mut bytes, &mut truncated);
+        capture_log_line("TAIL", &mut lines, &mut bytes, &mut truncated, MAX_LLM_LOG_BYTES);
 
         let formatted = format_stream_log(&lines, truncated);
         assert!(truncated);

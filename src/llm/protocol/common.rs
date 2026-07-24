@@ -103,10 +103,16 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
             tools,
             options.thinking_level,
         )?;
-        let request_json = request_json_for_log(&request);
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let url = self.adapter.completion_url(provider, agent, false);
         let log_enabled = self.http.log_enabled();
+        // Redacting + pretty-printing the full request (which can embed large
+        // base64 images) is only worth it when payload logging is on.
+        let request_json = if log_enabled {
+            request_json_for_log(&request)
+        } else {
+            String::new()
+        };
         let started = Instant::now();
         let agent_id = agent.id.to_string();
         let conversation_id = messages
@@ -236,10 +242,14 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
             tools,
             options.thinking_level,
         )?;
-        let request_json = request_json_for_log(&request);
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let url = self.adapter.completion_url(provider, agent, true);
         let log_enabled = self.http.log_enabled();
+        let request_json = if log_enabled {
+            request_json_for_log(&request)
+        } else {
+            String::new()
+        };
         let started = Instant::now();
         let agent_id = agent.id.to_string();
         let conversation_id = messages

@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+import { useRef, useEffect, useCallback, useMemo, useState, memo } from 'react';
 import {
   ArrowLeft,
   LoaderCircle,
@@ -173,9 +173,12 @@ export function ChatPanel({
   const activeConversation = activeAgent
     ? conversations.find((conversation) => conversation.id === activeConversationId)
     : undefined;
-  const filteredConversations = conversations.filter((conversation) =>
-    conversation.title.toLowerCase().includes(conversationFilter.trim().toLowerCase()),
-  );
+  const filteredConversations = useMemo(() => {
+    const query = conversationFilter.trim().toLowerCase();
+    return conversations.filter((conversation) =>
+      conversation.title.toLowerCase().includes(query),
+    );
+  }, [conversations, conversationFilter]);
   const dateFormatters = useMemo(() => {
     const formatLocale = locale === 'zh' ? 'zh-CN' : 'en-US';
     return {
@@ -200,6 +203,7 @@ export function ChatPanel({
       }),
     };
   }, [locale]);
+  const timelineItemsRef = useRef<MessageTimelineItem[]>([]);
   const timelineItems = useMemo<MessageTimelineItem[]>(() => {
     const result: MessageTimelineItem[] = [];
     let previousTimelineTimestamp: number | undefined;
@@ -216,8 +220,20 @@ export function ChatPanel({
         preview: item.content.trim().replace(/\s+/g, ' ').slice(0, 48),
       });
     });
+    // Keep the previous array identity when nothing changed so MessageTimeline
+    // does not re-render on every stream flush.
+    const previous = timelineItemsRef.current;
+    const unchanged = previous.length === result.length && previous.every((item, index) => {
+      const next = result[index];
+      return item.messageIndex === next.messageIndex
+        && item.dateLabel === next.dateLabel
+        && item.timeLabel === next.timeLabel
+        && item.preview === next.preview;
+    });
+    if (unchanged) return previous;
+    timelineItemsRef.current = result;
     return result;
-  }, [activeConversationId, dateFormatters, visibleMessages.length]);
+  }, [dateFormatters, visibleMessages]);
   const timelineMessageIndexes = useMemo(
     () => timelineItems.map((item) => item.messageIndex),
     [timelineItems],
@@ -317,11 +333,18 @@ export function ChatPanel({
     onAgentChange('');
   }
 
-  function handleConversationSelect(conversationId: string) {
+  const conversationActionError = useCallback((cause: unknown) => {
+    return userErrorMessage(cause, {
+      summary: t('error.conversationActionFailed'),
+      recovery: t('error.retryConnection'),
+    });
+  }, [t]);
+
+  const handleConversationSelect = useCallback((conversationId: string) => {
     if (isSending) detachActiveRun();
     if (conversationId !== activeConversationId) selectConversation(conversationId);
     onOpenMain();
-  }
+  }, [activeConversationId, detachActiveRun, isSending, onOpenMain, selectConversation]);
 
   const handleRestartMessage = useCallback((
     messageId: string,
@@ -416,14 +439,7 @@ export function ChatPanel({
       });
   }
 
-  function conversationActionError(cause: unknown) {
-    return userErrorMessage(cause, {
-      summary: t('error.conversationActionFailed'),
-      recovery: t('error.retryConnection'),
-    });
-  }
-
-  async function handleDeleteConversation(conversationId: string) {
+  const handleDeleteConversation = useCallback(async (conversationId: string) => {
     if (!activeAgent) return;
     const confirmed = await confirm({
       title: t('conversation.delete'),
@@ -439,9 +455,19 @@ export function ChatPanel({
     } catch (cause) {
       toast.error(conversationActionError(cause));
     }
-  }
+  }, [
+    activeAgent,
+    activeConversationId,
+    cancelActiveSend,
+    confirm,
+    conversationActionError,
+    isSending,
+    removeConversation,
+    t,
+    toast,
+  ]);
 
-  async function handlePinConversation(conversation: Conversation) {
+  const handlePinConversation = useCallback(async (conversation: Conversation) => {
     setPinningConversationIds((current) => new Set(current).add(conversation.id));
     try {
       await setConversationPinned(conversation.id, !conversation.is_pinned);
@@ -457,7 +483,7 @@ export function ChatPanel({
         return next;
       });
     }
-  }
+  }, [conversationActionError, setConversationPinned, t, toast]);
 
   const handleSendMessage = useCallback((
     content: string,
@@ -481,6 +507,10 @@ export function ChatPanel({
     supportsThinking,
     thinkingLevel,
   ]);
+
+  const handleUnsupportedImage = useCallback(() => {
+    toast.warning(t('chat.imageUnsupportedModel'));
+  }, [t, toast]);
 
   const handleLoadOlderMessages = useCallback(async () => {
     if (!activeConversationId || isLoadingOlderMessages) return false;
@@ -623,9 +653,9 @@ export function ChatPanel({
                   deleteLabel={t('conversation.delete')}
                   pinLabel={conversation.is_pinned ? t('conversation.unpin') : t('conversation.pin')}
                   isPinning={pinningConversationIds.has(conversation.id)}
-                  onSelect={() => handleConversationSelect(conversation.id)}
-                  onTogglePin={() => handlePinConversation(conversation)}
-                  onDelete={() => handleDeleteConversation(conversation.id)}
+                  onSelect={handleConversationSelect}
+                  onTogglePin={handlePinConversation}
+                  onDelete={handleDeleteConversation}
                 />
               ))}
             </div>
@@ -716,7 +746,7 @@ export function ChatPanel({
           onThinkingLevelChange={setThinkingLevel}
           usage={conversationUsage}
           contextSize={activeModelConfig?.context_size ?? 128000}
-          onUnsupportedImage={() => toast.warning(t('chat.imageUnsupportedModel'))}
+          onUnsupportedImage={handleUnsupportedImage}
           onSend={handleSendMessage}
           onStop={cancelActiveSend}
         />
@@ -724,7 +754,7 @@ export function ChatPanel({
     </>
   );
 }
-function ConversationRow({
+function ConversationRowImpl({
   conversation,
   active,
   isRunning,
@@ -745,9 +775,9 @@ function ConversationRow({
   deleteLabel: string;
   pinLabel: string;
   isPinning: boolean;
-  onSelect: () => void;
-  onTogglePin: () => void;
-  onDelete: () => void;
+  onSelect: (conversationId: string) => void;
+  onTogglePin: (conversation: Conversation) => void;
+  onDelete: (conversationId: string) => void;
 }) {
   return (
     <div className={[
@@ -765,7 +795,7 @@ function ConversationRow({
             <span>{isRunning ? runStatusLabel : formatDate(conversation.updated_at)}</span>
           </span>
         )}
-        onClick={onSelect}
+        onClick={() => onSelect(conversation.id)}
       />
       <IconButton
         className="conversation-action conversation-pin-action"
@@ -774,7 +804,7 @@ function ConversationRow({
         active={conversation.is_pinned}
         disabled={isPinning}
         aria-pressed={conversation.is_pinned}
-        onClick={onTogglePin}
+        onClick={() => onTogglePin(conversation)}
         label={pinLabel}
       >
         <Pin size={14} fill={conversation.is_pinned ? 'currentColor' : 'none'} />
@@ -783,7 +813,7 @@ function ConversationRow({
         className="conversation-action conversation-delete-action"
         variant="ghost"
         type="button"
-        onClick={onDelete}
+        onClick={() => onDelete(conversation.id)}
         label={deleteLabel}
       >
         <Trash2 size={14} />
@@ -791,3 +821,5 @@ function ConversationRow({
     </div>
   );
 }
+
+const ConversationRow = memo(ConversationRowImpl);

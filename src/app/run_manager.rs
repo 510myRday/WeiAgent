@@ -299,10 +299,7 @@ fn run_event_size(event: &AgentRunEvent) -> usize {
     match event {
         AgentRunEvent::User(message) | AgentRunEvent::Assistant(message) => {
             message.content.len()
-                + message
-                    .tool_calls
-                    .as_ref()
-                    .map_or(0, |calls| calls.to_string().len())
+                + message.tool_calls.as_ref().map_or(0, estimate_json_bytes)
         }
         AgentRunEvent::Delta(delta)
         | AgentRunEvent::ReasoningDelta(delta)
@@ -312,11 +309,11 @@ fn run_event_size(event: &AgentRunEvent) -> usize {
             name,
             arguments,
             ..
-        } => call_id.len() + name.len() + arguments.to_string().len(),
+        } => call_id.len() + name.len() + estimate_json_bytes(arguments),
         AgentRunEvent::ToolCallStarted { call_id, name, .. } => call_id.len() + name.len(),
         AgentRunEvent::ToolCallArgsDelta { call_id, arguments } => call_id.len() + arguments.len(),
         AgentRunEvent::ToolResult { call_id, result } => {
-            call_id.len() + serde_json::to_string(result).map_or(0, |value| value.len())
+            call_id.len() + tool_result_size(result)
         }
         AgentRunEvent::ApprovalRequired {
             call_id,
@@ -336,6 +333,56 @@ fn run_event_size(event: &AgentRunEvent) -> usize {
         AgentRunEvent::Retry { reason, .. } => reason.len(),
         AgentRunEvent::Done | AgentRunEvent::Cancelled => 0,
     }
+}
+
+/// Approximate serialized size without allocating; the replay budget only
+/// needs a rough byte count, not the exact JSON length.
+fn estimate_json_bytes(value: &serde_json::Value) -> usize {
+    use serde_json::Value;
+    match value {
+        Value::Null => 4,
+        Value::Bool(_) => 5,
+        Value::Number(_) => 12,
+        Value::String(text) => text.len() + 2,
+        Value::Array(values) => 2 + values.iter().map(estimate_json_bytes).sum::<usize>(),
+        Value::Object(map) => {
+            2 + map
+                .iter()
+                .map(|(key, value)| key.len() + 4 + estimate_json_bytes(value))
+                .sum::<usize>()
+        }
+    }
+}
+
+fn tool_result_size(result: &crate::domain::ToolResult) -> usize {
+    use crate::domain::ToolResult;
+    const FIXED_OVERHEAD: usize = 64;
+    FIXED_OVERHEAD
+        + match result {
+            ToolResult::Completed { stdout, stderr, runtime, .. } => {
+                stdout.len() + stderr.len() + runtime.as_deref().map_or(0, str::len)
+            }
+            ToolResult::Running {
+                process_id,
+                message,
+                stdout,
+                stderr,
+                runtime,
+                ..
+            } => {
+                process_id.len()
+                    + message.len()
+                    + stdout.len()
+                    + stderr.len()
+                    + runtime.as_deref().map_or(0, str::len)
+            }
+            ToolResult::Blocked { reason } | ToolResult::Rejected { reason } => reason.len(),
+            ToolResult::PendingApproval {
+                command,
+                approval_id,
+            } => command.len() + approval_id.len(),
+            ToolResult::Error { message } => message.len(),
+        }
 }
 
 fn phase_name(phase: AgentRunPhase) -> &'static str {

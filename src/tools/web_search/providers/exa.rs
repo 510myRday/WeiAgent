@@ -1,4 +1,3 @@
-use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -81,16 +80,6 @@ pub async fn search(
         ))
     })?;
 
-    if status == StatusCode::UNAUTHORIZED
-        || status == StatusCode::FORBIDDEN
-        || status == StatusCode::TOO_MANY_REQUESTS
-        || status.is_server_error()
-    {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!("Exa HTTP {status}: {}", truncate(&text, 240)),
-            api_key,
-        )));
-    }
     if !status.is_success() {
         return Err(ProviderError::Retryable(sanitize_error_message(
             &format!("Exa HTTP {status}: {}", truncate(&text, 240)),

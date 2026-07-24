@@ -519,6 +519,10 @@ export function useConversations({
   const deltaTimerRef = useRef<number | undefined>(undefined);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  // Read via ref inside callbacks (e.g. `send`) so they keep a stable identity
+  // while messages update every stream flush.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
 
   const selectConversation = useCallback((conversationId: string) => {
     ++loadChatIdRef.current;
@@ -626,7 +630,13 @@ export function useConversations({
     try {
       const activeRuns = await listActiveAgentRuns(agentId);
       if (requestId !== runningRequestIdRef.current) return;
-      setRunningConversationIds(new Set(activeRuns.map((run) => run.conversation_id)));
+      const next = new Set(activeRuns.map((run) => run.conversation_id));
+      setRunningConversationIds((current) => {
+        if (current.size === next.size && [...next].every((id) => current.has(id))) {
+          return current;
+        }
+        return next;
+      });
     } catch {
       // The next refresh will retry while the chat view is active.
     }
@@ -1095,7 +1105,7 @@ export function useConversations({
     ) => {
       const requestId = ++sendRequestIdRef.current;
       const controller = new AbortController();
-      const firstUserMessage = messages.find(isUserMessage);
+      const firstUserMessage = messagesRef.current.find(isUserMessage);
       const isFirstUserMessage = !firstUserMessage
         || (restartFromMessageId !== undefined && firstUserMessage.id === restartFromMessageId);
       const optimisticUserClientId = genClientId();
@@ -1215,7 +1225,6 @@ export function useConversations({
       followRun,
       imageAttachmentTitleNote,
       imageOnlyConversationTitle,
-      messages,
       newConversationTitle,
       runInterruptedMessage,
     ],

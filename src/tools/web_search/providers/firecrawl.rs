@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
 use chrono::Datelike;
-use reqwest::StatusCode;
 use serde_json::{Map, Value, json};
 
 use crate::tools::web_search::types::{
@@ -51,17 +50,6 @@ pub async fn search(
     }
     let text = String::from_utf8_lossy(&bytes);
 
-    if status == StatusCode::UNAUTHORIZED
-        || status == StatusCode::PAYMENT_REQUIRED
-        || status == StatusCode::FORBIDDEN
-        || status == StatusCode::TOO_MANY_REQUESTS
-        || status.is_server_error()
-    {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!("Firecrawl HTTP {status}: {}", truncate(&text, 320)),
-            api_key,
-        )));
-    }
     if !status.is_success() {
         return Err(ProviderError::Retryable(sanitize_error_message(
             &format!("Firecrawl HTTP {status}: {}", truncate(&text, 320)),
