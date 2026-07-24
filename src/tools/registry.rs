@@ -595,7 +595,7 @@ struct MultiEditFileTool;
 impl AgentTool for MultiEditFileTool {
     fn definition(&self, config: &AgentToolsConfig) -> ToolDefinition {
         let description = format!(
-            "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated by the server; failure leaves files unchanged. In-workspace edits may require approval under request_approval. Paths outside the configured workspace roots must set sandbox_permissions=require_escalated with a short justification so the user can approve; do not bypass multi_edit_file via shell when an outside-root edit is needed. Exact edits compare LF-normalized text; use replace_all or startLine only when needed.{}",
+            "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated by the server; failure leaves files unchanged. Prefer one input mode: operations (preferred), path+edits, or files. For an edit, read the current file first when it is not already in context, copy old_string exactly including indentation, keep it short and unique, and put all replacements for one path in one operation. operations, files, and edits must be JSON arrays, never quoted JSON text. Do not include line-number prefixes in old_string. In-workspace edits may require approval under request_approval. Paths outside the configured workspace roots must set sandbox_permissions=require_escalated with a short justification so the user can approve; do not bypass multi_edit_file via shell when an outside-root edit is needed. Exact edits compare LF-normalized text; use replace_all or startLine only when needed.{}",
             configured_working_directories_guidance(config)
         );
         tool_definition(
@@ -605,11 +605,64 @@ impl AgentTool for MultiEditFileTool {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
+                    "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096,
+                        "description": "Legacy single-file edit path, relative to cwd unless absolute. Use with top-level edits."
+                    },
+                    "edits": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 64,
+                        "description": "Legacy ordered exact replacements for path. Do not pass this array as a quoted JSON string.",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["old_string", "new_string"],
+                            "properties": {
+                                "old_string": {"type": "string", "maxLength": 200000, "description": "Exact current text to replace, including indentation."},
+                                "new_string": {"type": "string", "maxLength": 2097152},
+                                "replace_all": {"type": "boolean", "description": "Replace every occurrence. Defaults to false."},
+                                "startLine": {"type": "integer", "minimum": 1, "description": "1-based hint for resolving an ambiguous match."}
+                            }
+                        }
+                    },
+                    "files": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 32,
+                        "description": "Multiple existing files. Each item has path and edits. Do not combine with path or operations.",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["path", "edits"],
+                            "properties": {
+                                "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+                                "edits": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "maxItems": 64,
+                                    "items": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": ["old_string", "new_string"],
+                                        "properties": {
+                                            "old_string": {"type": "string", "maxLength": 200000},
+                                            "new_string": {"type": "string", "maxLength": 2097152},
+                                            "replace_all": {"type": "boolean"},
+                                            "startLine": {"type": "integer", "minimum": 1}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
                     "operations": {
                         "type": "array",
                         "minItems": 1,
                         "maxItems": 32,
-                        "description": "Ordered file operations. A path may appear only once per call.",
+                        "description": "Preferred ordered file operations. A path may appear only once per call. Pass a JSON array, not a quoted JSON string.",
                         "items": {
                             "oneOf": [
                                 {
@@ -686,7 +739,7 @@ impl AgentTool for MultiEditFileTool {
                         "description": "Short reason for elevated write access. Include it when sandbox_permissions is require_escalated. Max 2000 bytes. Skip it for use_default."
                     }
                 },
-                "required": ["operations"]
+                "required": []
             }),
         )
     }
@@ -1504,17 +1557,18 @@ mod tests {
         assert!(
             multi.function.parameters["properties"]
                 .get("path")
-                .is_none()
+                .is_some()
         );
         assert!(
             multi.function.parameters["properties"]
                 .get("edits")
-                .is_none()
+                .is_some()
         );
         assert!(
             multi.function.parameters["properties"]
                 .get("files")
-                .is_none()
+                .is_some()
         );
+        assert_eq!(multi.function.parameters["required"], serde_json::json!([]));
     }
 }

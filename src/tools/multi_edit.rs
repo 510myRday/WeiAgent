@@ -4,7 +4,10 @@ use std::{
     time::Instant,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Serialize,
+    de::{self, DeserializeOwned, Deserializer},
+};
 use uuid::Uuid;
 
 use crate::{
@@ -28,11 +31,11 @@ const MAX_OLD_STRING_BYTES: usize = 200_000;
 pub struct MultiEditFileArgs {
     #[serde(default)]
     pub path: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec_or_json_string")]
     pub edits: Vec<MultiEditFileEdit>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec_or_json_string")]
     pub files: Vec<MultiEditFileSpec>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec_or_json_string")]
     pub operations: Vec<MultiEditFileOperation>,
     #[serde(default)]
     pub cwd: Option<String>,
@@ -46,6 +49,7 @@ pub struct MultiEditFileArgs {
 #[serde(deny_unknown_fields)]
 pub struct MultiEditFileSpec {
     pub path: String,
+    #[serde(deserialize_with = "deserialize_vec_or_json_string")]
     pub edits: Vec<MultiEditFileEdit>,
 }
 
@@ -68,6 +72,7 @@ pub enum MultiEditFileOperation {
     #[serde(alias = "update")]
     Edit {
         path: String,
+        #[serde(deserialize_with = "deserialize_vec_or_json_string")]
         edits: Vec<MultiEditFileEdit>,
     },
     Create {
@@ -88,6 +93,52 @@ pub enum MultiEditFileOperation {
         #[serde(default)]
         overwrite: bool,
     },
+}
+
+/// Tool-call adapters occasionally stringify array-valued arguments before
+/// handing them to the application. Accept the normal JSON array as well as
+/// that representation, while keeping the internal model strongly typed.
+fn deserialize_vec_or_json_string<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let value = match value {
+        serde_json::Value::String(raw) => {
+            let mut parsed = serde_json::from_str::<serde_json::Value>(&raw).map_err(|error| {
+                de::Error::custom(format!("expected a JSON array string: {error}"))
+            })?;
+            for _ in 0..2 {
+                let serde_json::Value::String(nested) = parsed else {
+                    break;
+                };
+                parsed = serde_json::from_str(&nested).map_err(|error| {
+                    de::Error::custom(format!("expected a JSON array string: {error}"))
+                })?;
+            }
+            parsed
+        }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => value,
+        serde_json::Value::Null => return Ok(Vec::new()),
+        other => {
+            return Err(de::Error::custom(format!(
+                "expected an array or JSON array string, got {other}"
+            )));
+        }
+    };
+
+    match value {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<Result<Vec<T>, _>>()
+            .map_err(de::Error::custom),
+        serde_json::Value::Object(item) => serde_json::from_value(serde_json::Value::Object(item))
+            .map(|item| vec![item])
+            .map_err(de::Error::custom),
+        _ => unreachable!("validated array-like JSON value"),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1054,6 +1105,33 @@ fn balance(value: &str, open: char, close: char) -> i32 {
 mod tests {
     use super::*;
     use crate::domain::TerminalToolConfig;
+
+    #[test]
+    fn accepts_stringified_array_arguments_from_tool_adapters() {
+        let args: MultiEditFileArgs = serde_json::from_value(serde_json::json!({
+            "operations": "[{\"type\":\"edit\",\"path\":\"a.txt\",\"edits\":[{\"old_string\":\"old\",\"new_string\":\"new\"}]}]"
+        }))
+        .expect("stringified operations should deserialize");
+
+        assert_eq!(args.operations.len(), 1);
+        assert!(matches!(
+            args.operations[0],
+            MultiEditFileOperation::Edit { .. }
+        ));
+    }
+
+    #[test]
+    fn accepts_legacy_single_file_arguments() {
+        let args: MultiEditFileArgs = serde_json::from_value(serde_json::json!({
+            "path": "a.txt",
+            "edits": "[{\"oldString\":\"old\",\"newString\":\"new\",\"replaceAll\":true}]"
+        }))
+        .expect("legacy arguments should deserialize");
+
+        assert_eq!(args.path.as_deref(), Some("a.txt"));
+        assert_eq!(args.edits.len(), 1);
+        assert!(args.edits[0].replace_all);
+    }
 
     fn temp_workspace() -> (tempfile::TempDir, TerminalToolConfig) {
         let dir = tempfile::tempdir().unwrap();
