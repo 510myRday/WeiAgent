@@ -39,6 +39,37 @@ const EMPTY_USAGE: ConversationUsage = {
   cost_usd: 0,
 };
 
+const TOOL_START_STORAGE_PREFIX = 'weiagent:tool-start:';
+
+function toolStartStorageKey(callId: string): string {
+  return `${TOOL_START_STORAGE_PREFIX}${callId}`;
+}
+
+function readToolStartTime(callId: string): number | undefined {
+  try {
+    const value = Number(window.localStorage.getItem(toolStartStorageKey(callId)));
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeToolStartTime(callId: string, startedAtMs: number): void {
+  try {
+    window.localStorage.setItem(toolStartStorageKey(callId), String(startedAtMs));
+  } catch {
+    // Storage may be unavailable in privacy-restricted browser contexts.
+  }
+}
+
+function clearToolStartTime(callId: string): void {
+  try {
+    window.localStorage.removeItem(toolStartStorageKey(callId));
+  } catch {
+    // Storage may be unavailable in privacy-restricted browser contexts.
+  }
+}
+
 function genClientId(): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -289,6 +320,7 @@ function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
         call_id: call.id,
         name: call.function.name,
         arguments: parseJsonObject(call.function.arguments),
+        started_at_ms: call.started_at_ms ?? readToolStartTime(call.id),
         permission_mode: call.permission_mode,
         status: 'running' as const,
       }));
@@ -872,13 +904,15 @@ export function useConversations({
       if (evt.event === 'tool_call_started') {
         setRunPhase('executing_tool');
         const d = evt.data;
+        const startedAtMs = readToolStartTime(d.call_id) ?? Date.now();
+        writeToolStartTime(d.call_id, startedAtMs);
         const tool: ToolCallState = {
           call_id: d.call_id,
           name: d.name,
           arguments: {},
           arguments_text: '',
           phase: 'generating_arguments',
-          started_at_ms: Date.now(),
+          started_at_ms: startedAtMs,
           permission_mode: d.permission_mode,
           status: 'running',
         };
@@ -906,12 +940,15 @@ export function useConversations({
       if (evt.event === 'tool_call') {
         setRunPhase('executing_tool');
         const d = evt.data;
+        const startedAtMs = readToolStartTime(d.call_id) ?? Date.now();
+        writeToolStartTime(d.call_id, startedAtMs);
         const tool: ToolCallState = {
           call_id: d.call_id,
           name: d.name,
           arguments: d.arguments,
           arguments_text: JSON.stringify(d.arguments),
           phase: 'executing',
+          started_at_ms: startedAtMs,
           permission_mode: d.permission_mode,
           status: 'running',
         };
@@ -925,6 +962,7 @@ export function useConversations({
       }
       if (evt.event === 'tool_result') {
         const d = evt.data;
+        clearToolStartTime(d.call_id);
         setMessages((current) => patchToolOnMessages(current, d.call_id, {
           status: d.result.status,
           result: d.result,

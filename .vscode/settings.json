@@ -1,0 +1,49 @@
+{
+  // === rust-analyzer 优化配置 ===
+  // 目标：将 rust-analyzer 内存占用从 ~2GB 降到 ~800-1200MB
+
+  // 关闭自动探测 workspace，只索引当前项目（避免索引无关包）
+  "rust-analyzer.cargo.autoDiscover": false,
+
+  // 关闭 build scripts 执行（不影响 LSP 功能，省大量时间和内存）
+  "rust-analyzer.cargo.buildScripts.enable": false,
+
+  // 关闭 proc macro 展开（省最多内存！不影响基础代码补全和跳转）
+  // 需要调试宏时再手动打开
+  "rust-analyzer.procMacro.enable": false,
+
+  // 让 rust-analyzer 用 cargo locate-project 自己找到项目根
+  "rust-analyzer.procMacro.cargoLocateProject": true,
+
+  // === 内联提示优化 ===
+  // 关闭冗长的 lifetime 提示（跳过简单的）
+  "rust-analyzer.inlayHints.lifetimeElisionHints.enable": "skip_trivial",
+
+  // 关闭类型内联提示（类型可以从 hover 查看，省视觉噪音）
+  "rust-analyzer.inlayHints.typeHints": false,
+
+  // 只显示参数的类型提示
+  "rust-analyzer.inlayHints.parameterHints": true,
+
+  // === 内存限制 ===
+  // 限制 rust-analyzer 的最大内存使用（1600MB，留有余量）
+  "rust-analyzer.server.maxMemory": "1600m",
+
+  // === 文件排除 ===
+  // 不索引 target/ 等目录，避免扫描编译产物
+  "rust-analyzer.files.excludeDirs": ["target", ".cargo", "data", "node_modules"],
+
+  // 也排除 VS Code 自身不需要的文件
+  "files.exclude": {
+    "**/target": true,
+    "**/.cargo": true
+  },
+
+  // === 其他性能优化 ===
+  // 关闭自动检查（避免每次编辑都触发 cargo check）
+  "rust-analyzer.checkOnSave": true,
+  "rust-analyzer.cargo.runBuildScripts": false,
+
+  // 减少索引时的线程争用（对 10 核机器够用）
+  "rust-analyzer.lsp.handles": "all"
+}

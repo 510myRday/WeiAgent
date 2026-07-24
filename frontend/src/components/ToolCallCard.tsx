@@ -32,6 +32,8 @@ interface ToolCallCardProps {
   result?: ToolResultData;
   /** Hide the status/title header when nested under a disclosure summary. */
   hideHeader?: boolean;
+  /** Render the running-process action in the parent disclosure summary instead. */
+  hideProcessActions?: boolean;
   onApprove?: (decision: 'approve' | 'reject' | 'always_approve') => Promise<void> | void;
 }
 
@@ -276,6 +278,7 @@ export function ToolCallCard({
   status,
   result,
   hideHeader = false,
+  hideProcessActions = false,
   onApprove,
 }: ToolCallCardProps) {
   const { t } = useI18n();
@@ -370,7 +373,9 @@ export function ToolCallCard({
     const failed = effectiveStatus === 'failed' || (process?.exit_code !== undefined && process.exit_code !== 0);
     const title = missing
       ? t('toolCard.processStatus.notFound')
-      : running || loading
+      : loading
+        ? t('toolCard.processStatus.checking')
+        : running
         ? t('toolCard.backgroundRunning')
         : t(`toolCard.processStatus.${effectiveStatus}`);
     const cardTone = running || loading
@@ -381,7 +386,7 @@ export function ToolCallCard({
     return (
       <div className={`tool-card ${cardTone}${hideHeader ? ' tool-card--embedded' : ''}`}>
         {hideHeader ? (
-          running ? (
+          running && !hideProcessActions ? (
             <div className="tool-card__embedded-actions">
               <button type="button" className="tool-process-action" onClick={handleStop} disabled={isStopping}>
                 <Square size={14} /> {isStopping ? t('toolCard.stopping') : t('toolCard.stop')}

@@ -95,6 +95,7 @@ const INITIAL_POSITION_MAX_FRAMES = 12;
 const INITIAL_POSITION_STABLE_FRAMES = 2;
 const BOTTOM_POSITION_TOLERANCE = 1;
 const WAITING_SCROLL_PADDING = 48;
+const STREAM_SCROLL_THROTTLE_MS = 800;
 const MAX_EDIT_IMAGE_COUNT = 8;
 const MAX_EDIT_IMAGE_BYTES = 10 * 1024 * 1024;
 const EDIT_IMAGE_TYPES = new Set<ImageAttachment['media_type']>([
@@ -128,8 +129,13 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialPositionFrameRef = useRef<number | undefined>(undefined);
   const scrollFrameRef = useRef<number | undefined>(undefined);
-  const pendingBottomFrameRef = useRef<number | undefined>(undefined);
+  const pendingStreamScrollTimerRef = useRef<number | undefined>(undefined);
+  const hasStreamScrolledRef = useRef(false);
+  const lastStreamScrollAtRef = useRef(0);
   const pendingAnchorKeyRef = useRef('');
+  const followOutputRef = useRef(true);
+  const wasSendingRef = useRef(isSending);
+  const followConversationRef = useRef(conversationId);
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
   const [positionedConversationId, setPositionedConversationId] = useState('');
   const timelineIndexSet = useMemo(() => new Set(timelineMessageIndexes), [timelineMessageIndexes]);
@@ -201,6 +207,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
 
   const scrollToBottom = useCallback((force = false, behavior: ScrollBehavior = 'auto') => {
     if (!force && !isMessagesNearBottom()) return;
+    followOutputRef.current = true;
     virtualizer.scrollToEnd({ behavior });
     const element = scrollRef.current;
     if (element) {
@@ -213,6 +220,34 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     }
     setIsAwayFromBottom(false);
   }, [isMessagesNearBottom, virtualizer]);
+
+  const scheduleStreamScroll = useCallback((immediate = false) => {
+    if (!followOutputRef.current) return;
+
+    const now = Date.now();
+    const elapsed = hasStreamScrolledRef.current
+      ? now - lastStreamScrollAtRef.current
+      : STREAM_SCROLL_THROTTLE_MS;
+    if (immediate || elapsed >= STREAM_SCROLL_THROTTLE_MS) {
+      if (pendingStreamScrollTimerRef.current !== undefined) {
+        window.clearTimeout(pendingStreamScrollTimerRef.current);
+        pendingStreamScrollTimerRef.current = undefined;
+      }
+      hasStreamScrolledRef.current = true;
+      lastStreamScrollAtRef.current = now;
+      scrollToBottom(true);
+      return;
+    }
+
+    if (pendingStreamScrollTimerRef.current !== undefined) return;
+    pendingStreamScrollTimerRef.current = window.setTimeout(() => {
+      pendingStreamScrollTimerRef.current = undefined;
+      if (!followOutputRef.current) return;
+      hasStreamScrolledRef.current = true;
+      lastStreamScrollAtRef.current = Date.now();
+      scrollToBottom(true);
+    }, STREAM_SCROLL_THROTTLE_MS - elapsed);
+  }, [scrollToBottom]);
 
   useImperativeHandle(ref, () => ({
     scrollToMessage(messageIndex, behavior = 'smooth') {
@@ -281,25 +316,27 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   }, [conversationId, isInitialPositioning, virtualizer]);
 
   useLayoutEffect(() => {
-    if (messages.length === 0 || (!isSending && !isMessagesNearBottom())) return;
+    const conversationChanged = followConversationRef.current !== conversationId;
+    const sendJustStarted = isSending && !wasSendingRef.current;
+    followConversationRef.current = conversationId;
+    wasSendingRef.current = isSending;
 
-    // Re-align after virtual rows and streamed content have their real height.
-    scrollToBottom(true);
+    if (conversationChanged || sendJustStarted) {
+      followOutputRef.current = true;
+    }
 
-    pendingBottomFrameRef.current = window.requestAnimationFrame(() => {
-      pendingBottomFrameRef.current = window.requestAnimationFrame(() => {
-        pendingBottomFrameRef.current = undefined;
-        scrollToBottom(true);
-      });
-    });
+    if (messages.length === 0 || !followOutputRef.current) return;
 
-    return () => {
-      if (pendingBottomFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(pendingBottomFrameRef.current);
-        pendingBottomFrameRef.current = undefined;
-      }
-    };
-  }, [isMessagesNearBottom, isSending, messages, scrollToBottom]);
+    // Keep the live response pinned without scrolling once per stream chunk.
+    scheduleStreamScroll(!isSending || conversationChanged || sendJustStarted);
+  }, [conversationId, isSending, messages, scheduleStreamScroll]);
+
+  useEffect(() => () => {
+    if (pendingStreamScrollTimerRef.current !== undefined) {
+      window.clearTimeout(pendingStreamScrollTimerRef.current);
+      pendingStreamScrollTimerRef.current = undefined;
+    }
+  }, []);
 
   useEffect(() => {
     scheduleScrollButtonUpdate();
@@ -356,8 +393,9 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   }, [isLoadingOlderMessages, onLoadOlder, rows, virtualizer]);
 
   const handleScroll = useCallback(() => {
+    followOutputRef.current = isMessagesNearBottom();
     scheduleScrollButtonUpdate();
-  }, [scheduleScrollButtonUpdate]);
+  }, [isMessagesNearBottom, scheduleScrollButtonUpdate]);
 
   if (isLoading || messages.length === 0) {
     return (

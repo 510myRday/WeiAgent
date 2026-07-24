@@ -16,7 +16,7 @@ import {
 } from '../../api';
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
-import { useBeforeUnloadGuard, usePageVisibility } from '../../hooks';
+import { updateToolProcessCache, useBeforeUnloadGuard, usePageVisibility } from '../../hooks';
 import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../components/ui';
 import { PermissionModeControl, type PermissionMode } from './PermissionModeControl';
 import { WebSearchToolSettings } from './WebSearchToolSettings';
@@ -421,6 +421,7 @@ export function TerminalToolSettings({
     setIsStoppingProcess(process.process_id);
     try {
       const stopped = await stopToolProcess(process.process_id, process.agent_id);
+      updateToolProcessCache(stopped);
       setProcesses((current) => current.map((item) => item.process_id === process.process_id ? stopped : item));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('tools.terminal.processStopFailed'));

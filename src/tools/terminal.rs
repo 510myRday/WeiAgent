@@ -28,7 +28,7 @@ use crate::{
 };
 
 pub const MAX_TERMINAL_TIMEOUT_MS: u64 = 120_000;
-pub const MAX_SESSION_WAIT_MS: u64 = 30_000;
+pub const MAX_SESSION_WAIT_MS: u64 = 60_000;
 const MAX_OUTPUT_BYTES: usize = 1_000_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 const MAX_LLM_TOOL_OUTPUT_TOKENS: usize = 10_000;
@@ -975,10 +975,10 @@ impl TerminalManager {
         if record.state.lock().await.status != ProcessStatus::Running {
             return Ok(snapshot(&record).await);
         }
+        record.stop_requested.store(true, Ordering::SeqCst);
         if record.metadata.tty {
             self.backend.write(id, &[3], false).await?;
         } else {
-            record.stop_requested.store(true, Ordering::SeqCst);
             self.backend.terminate(id).await?;
         }
         Ok(snapshot(&record).await)

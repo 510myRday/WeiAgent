@@ -5,13 +5,16 @@ import {
   ChevronDown,
   Hand,
   Loader2,
+  Square,
   Wrench,
   XCircle,
 } from 'lucide-react';
 
+import { stopToolProcess } from '../../api';
 import { ToolCallCard } from '../../components/ToolCallCard';
 import { useI18n } from '../../i18n';
 import type { ToolCallState } from '../../types';
+import { updateToolProcessCache, useToolProcess } from '../../hooks';
 
 type ToolDisclosureProps = {
   agentId: string;
@@ -83,11 +86,51 @@ export function ToolDisclosure({
   onApprove,
 }: ToolDisclosureProps) {
   const { t } = useI18n();
-  const isActive = tool.status === 'running' || tool.status === 'pending_approval';
+  const processId = tool.result?.process_id;
+  const processSnapshot = useToolProcess(processId, agentId);
+  const process = processSnapshot.process;
+  let displayStatus = tool.status;
+  let displayResult = tool.result;
+  if (tool.status === 'running' && processId) {
+    if (process?.status === 'completed' || process?.status === 'failed') {
+      displayStatus = 'completed';
+      displayResult = {
+        ...tool.result,
+        stdout: process.stdout,
+        stderr: process.stderr,
+        exit_code: process.exit_code ?? (process.status === 'completed' ? 0 : -1),
+        duration_ms: process.duration_ms,
+        runtime: process.runtime,
+      };
+    } else if (process?.status === 'stopped') {
+      displayStatus = 'rejected';
+      displayResult = {
+        ...tool.result,
+        reason: t('toolCard.processStatus.stopped'),
+      };
+    } else if (processSnapshot.notFound) {
+      displayStatus = 'error';
+      displayResult = {
+        ...tool.result,
+        message: t('toolCard.processUnavailable'),
+      };
+    }
+  }
+  const displayTool = { ...tool, status: displayStatus, result: displayResult };
+  const checkingProcess = Boolean(
+    tool.status === 'running'
+      && processId
+      && !process
+      && !processSnapshot.error
+      && !processSnapshot.notFound,
+  );
+  const stoppedProcess = process?.status === 'stopped';
+  const isActive = displayStatus === 'running' || displayStatus === 'pending_approval';
   const [isOpen, setIsOpen] = useState(isActive);
   const [userToggled, setUserToggled] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [approvalDecision, setApprovalDecision] = useState<'approve' | 'reject' | 'always_approve' | null>(null);
+  const [isStopping, setIsStopping] = useState(false);
 
   useEffect(() => {
     setUserToggled(false);
@@ -111,21 +154,41 @@ export function ToolDisclosure({
   }, [tool.status, tool.arguments.approval_id]);
 
   useEffect(() => {
+    setIsStopping(false);
+  }, [tool.call_id, processId, process?.status]);
+
+  useEffect(() => {
     if (userToggled) return;
     setIsOpen(isActive);
   }, [isActive, userToggled]);
 
-  const label = tool.phase === 'generating_arguments' && tool.status === 'running'
+  const label = checkingProcess
+    ? t('toolCard.processStatus.checking')
+    : stoppedProcess
+    ? t('toolCard.processStatus.stopped')
+    : tool.phase === 'generating_arguments' && displayStatus === 'running'
     ? t('toolCard.generatingArguments')
-    : statusLabel(tool, t);
-  const tone = statusTone(tool);
+    : statusLabel(displayTool, t);
+  const tone = statusTone(displayTool);
   const toneClass = tone === 'default' ? '' : ` is-${tone}`;
+  const canStopProcess = tool.status === 'running' && process?.status === 'running' && Boolean(processId);
+
+  async function handleStopProcess() {
+    if (!processId || isStopping) return;
+    setIsStopping(true);
+    try {
+      const stopped = await stopToolProcess(processId, agentId);
+      updateToolProcessCache(stopped);
+    } finally {
+      setIsStopping(false);
+    }
+  }
 
   return (
     <section
       className={`message-tool${isOpen ? ' is-open' : ''}${isActive ? ' is-active' : ''}${toneClass}`}
     >
-      <div className="message-tool__summary">
+      <div className={`message-tool__summary${canStopProcess ? ' message-tool__summary--has-stop' : ''}`}>
         <button
           className="message-tool__toggle"
           type="button"
@@ -136,16 +199,32 @@ export function ToolDisclosure({
           }}
         >
           <span className="message-tool__identity">
-            <StatusIcon tool={tool} />
+            <StatusIcon tool={displayTool} />
             <span className="message-tool__title">{label}</span>
             <code className="message-tool__name">{tool.name}</code>
             {isActive && elapsedSeconds > 0 ? (
               <span className="message-tool__elapsed">{t('toolCard.elapsed', { seconds: elapsedSeconds })}</span>
             ) : null}
-            {tool.status === 'running' ? <span className="message-tool__pulse" aria-hidden="true" /> : null}
+            {displayStatus === 'running' ? <span className="message-tool__pulse" aria-hidden="true" /> : null}
           </span>
           <ChevronDown className="message-tool__chevron" size={15} aria-hidden="true" />
         </button>
+        {canStopProcess ? (
+          <div className="message-tool__inline-actions message-tool__inline-actions--stop">
+            <button
+              type="button"
+              className="message-tool__action message-tool__action--stop"
+              disabled={isStopping}
+              onClick={(event) => {
+                event.stopPropagation();
+                void handleStopProcess();
+              }}
+            >
+              <Square size={13} />
+              {isStopping ? t('toolCard.stopping') : t('toolCard.stop')}
+            </button>
+          </div>
+        ) : null}
         {tool.status === 'pending_approval' && onApprove ? (
           <div className="message-tool__inline-actions">
             <button
@@ -198,11 +277,12 @@ export function ToolDisclosure({
             callId={tool.call_id}
             name={tool.name}
             arguments={tool.arguments}
-            status={tool.status}
-            result={tool.result}
+            status={displayStatus}
+            result={displayResult}
             argumentsText={tool.arguments_text}
             phase={tool.phase}
             hideHeader
+            hideProcessActions
             onApprove={onApprove}
           />
         </div>

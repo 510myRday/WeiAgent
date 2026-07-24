@@ -919,6 +919,7 @@
       "failed": "Background process failed",
       "stopped": "Background process stopped",
       "running": "Background process is running",
+      "checking": "Checking background process status",
       "notFound": "Background process not found",
       "notFoundBadge": "Not found"
     },

@@ -919,6 +919,7 @@
       "failed": "后台进程执行失败",
       "stopped": "后台进程已停止",
       "running": "后台进程运行中",
+      "checking": "正在确认后台进程状态",
       "notFound": "后台进程未找到",
       "notFoundBadge": "未找到"
     },

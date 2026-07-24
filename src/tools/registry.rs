@@ -444,7 +444,7 @@ impl AgentTool for TerminalSessionTool {
                     "wait_ms": {
                         "type": "integer",
                         "minimum": 0,
-                        "maximum": 30000,
+                        "maximum": MAX_SESSION_WAIT_MS,
                         "description": "Long-poll wait for new output or process completion. Default 5000 for poll and 250 after input/control actions."
                     },
                     "rows": {
@@ -1216,6 +1216,7 @@ mod tests {
         unsupported_host_shell_syntax,
     };
     use crate::domain::AgentToolsConfig;
+    use crate::tools::terminal::MAX_SESSION_WAIT_MS;
 
     #[test]
     fn blank_cwd_uses_the_default_workspace() {
@@ -1304,6 +1305,10 @@ mod tests {
             .find(|definition| definition.function.name == "terminal_session")
             .unwrap();
         assert!(session_tool.function.description.contains("output_cursor"));
+        assert_eq!(
+            session_tool.function.parameters["properties"]["wait_ms"]["maximum"],
+            serde_json::json!(MAX_SESSION_WAIT_MS)
+        );
         assert!(
             terminal.function.parameters["properties"]["tty"]["description"]
                 .as_str()

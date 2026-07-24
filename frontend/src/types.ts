@@ -166,6 +166,7 @@ export type ChatToolCall = {
   id: string;
   type: 'function';
   permission_mode?: 'request_approval' | 'full_access';
+  started_at_ms?: number;
   function: {
     name: string;
     arguments: string;
