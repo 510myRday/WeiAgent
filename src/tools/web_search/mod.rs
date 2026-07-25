@@ -525,6 +525,178 @@ fn select_sources(
     Ok(selected)
 }
 
+/// Query markers → source roles they imply. Data only; the loop below applies it.
+const ROLE_MARKERS: &[(&[&str], &[WebSearchSourceRole])] = &[
+    (
+        &[
+            "latest", "current", "today", "news", "breaking", "最新", "当前", "今天", "新闻",
+            "近期",
+        ],
+        &[WebSearchSourceRole::CurrentNews],
+    ),
+    (
+        &[
+            "twitter", "x.com", "social", "reddit", "推特", "社交", "舆情", "帖子",
+        ],
+        &[WebSearchSourceRole::SocialSearch],
+    ),
+    (
+        &[
+            "verify",
+            "fact check",
+            "true or false",
+            "rumor",
+            "misinformation",
+            "核实",
+            "核验",
+            "事实核查",
+            "真假",
+            "谣言",
+            "是否属实",
+        ],
+        &[WebSearchSourceRole::FactChecking],
+    ),
+    (
+        &[
+            "docs",
+            "documentation",
+            "api",
+            "sdk",
+            "github",
+            "official",
+            "文档",
+            "官方",
+            "源码",
+        ],
+        &[
+            WebSearchSourceRole::OfficialDocs,
+            WebSearchSourceRole::TechnicalResearch,
+            WebSearchSourceRole::SemanticResearch,
+        ],
+    ),
+    (
+        &[
+            "developer",
+            "programming",
+            "software",
+            "source code",
+            "bug",
+            "error",
+            "技术",
+            "开发",
+            "编程",
+            "代码",
+            "源码",
+            "报错",
+        ],
+        &[
+            WebSearchSourceRole::TechnicalResearch,
+            WebSearchSourceRole::SemanticResearch,
+        ],
+    ),
+    (
+        &[
+            "paper",
+            "academic",
+            "journal",
+            "doi",
+            "arxiv",
+            "literature",
+            "论文",
+            "学术",
+            "期刊",
+            "文献",
+        ],
+        &[
+            WebSearchSourceRole::AcademicResearch,
+            WebSearchSourceRole::SemanticResearch,
+        ],
+    ),
+    (
+        &[
+            "market",
+            "industry",
+            "business",
+            "company",
+            "financial",
+            "revenue",
+            "market share",
+            "市场",
+            "行业",
+            "商业",
+            "公司",
+            "财报",
+            "营收",
+            "份额",
+        ],
+        &[WebSearchSourceRole::MarketResearch],
+    ),
+    (
+        &[
+            "compare",
+            "comparison",
+            "review",
+            "recommend",
+            "versus",
+            " vs ",
+            "price",
+            "buy",
+            "对比",
+            "比较",
+            "评测",
+            "推荐",
+            "价格",
+            "购买",
+            "哪个好",
+        ],
+        &[WebSearchSourceRole::ProductResearch],
+    ),
+    (
+        &[
+            "multilingual",
+            "cross-language",
+            "non-english",
+            "多语言",
+            "跨语言",
+            "外文",
+            "日文",
+            "韩文",
+            "德文",
+            "法文",
+            "西班牙文",
+        ],
+        &[WebSearchSourceRole::MultilingualSearch],
+    ),
+    (
+        &[
+            "related",
+            "similar",
+            "concept",
+            "background",
+            "discover",
+            "相关",
+            "相似",
+            "概念",
+            "背景",
+            "探索",
+            "综述",
+        ],
+        &[WebSearchSourceRole::SemanticResearch],
+    ),
+    (
+        &[
+            "synthesize",
+            "research brief",
+            "executive summary",
+            "综合分析",
+            "综合调研",
+            "调研报告",
+            "汇总分析",
+        ],
+        &[WebSearchSourceRole::AiResearch],
+    ),
+];
+
 fn infer_source_roles(args: &WebSearchArgs) -> HashSet<WebSearchSourceRole> {
     let query = std::iter::once(args.query.as_str())
         .chain(args.additional_queries.iter().map(String::as_str))
@@ -532,191 +704,13 @@ fn infer_source_roles(args: &WebSearchArgs) -> HashSet<WebSearchSourceRole> {
         .join(" ")
         .to_lowercase();
     let mut roles = HashSet::new();
-    if [
-        "latest", "current", "today", "news", "breaking", "最新", "当前", "今天", "新闻", "近期",
-    ]
-    .iter()
-    .any(|marker| query.contains(marker))
-    {
-        roles.insert(WebSearchSourceRole::CurrentNews);
+    for (markers, implied_roles) in ROLE_MARKERS {
+        if markers.iter().any(|marker| query.contains(marker)) {
+            roles.extend(implied_roles.iter().cloned());
+        }
     }
     if args.recency_days.is_some() {
         roles.insert(WebSearchSourceRole::CurrentNews);
-    }
-    if [
-        "twitter", "x.com", "social", "reddit", "推特", "社交", "舆情", "帖子",
-    ]
-    .iter()
-    .any(|marker| query.contains(marker))
-    {
-        roles.insert(WebSearchSourceRole::SocialSearch);
-    }
-    if [
-        "verify",
-        "fact check",
-        "true or false",
-        "rumor",
-        "misinformation",
-        "核实",
-        "核验",
-        "事实核查",
-        "真假",
-        "谣言",
-        "是否属实",
-    ]
-    .iter()
-    .any(|marker| query.contains(marker))
-    {
-        roles.insert(WebSearchSourceRole::FactChecking);
-    }
-    if [
-        "docs",
-        "documentation",
-        "api",
-        "sdk",
-        "github",
-        "official",
-        "文档",
-        "官方",
-        "源码",
-    ]
-    .iter()
-    .any(|marker| query.contains(marker))
-    {
-        roles.insert(WebSearchSourceRole::OfficialDocs);
-        roles.insert(WebSearchSourceRole::TechnicalResearch);
-        roles.insert(WebSearchSourceRole::SemanticResearch);
-    }
-    if [
-        "developer",
-        "programming",
-        "software",
-        "source code",
-        "bug",
-        "error",
-        "技术",
-        "开发",
-        "编程",
-        "代码",
-        "源码",
-        "报错",
-    ]
-    .iter()
-    .any(|marker| query.contains(marker))
-    {
-        roles.insert(WebSearchSourceRole::TechnicalResearch);
-        roles.insert(WebSearchSourceRole::SemanticResearch);
-    }
-    if [
-        "paper",
-        "academic",
-        "journal",
-        "doi",
-        "arxiv",
-        "literature",
-        "论文",
-        "学术",
-        "期刊",
-        "文献",
-    ]
-    .iter()
-    .any(|marker| query.contains(marker))
-    {
-        roles.insert(WebSearchSourceRole::AcademicResearch);
-        roles.insert(WebSearchSourceRole::SemanticResearch);
-    }
-    if [
-        "market",
-        "industry",
-        "business",
-        "company",
-        "financial",
-        "revenue",
-        "market share",
-        "市场",
-        "行业",
-        "商业",
-        "公司",
-        "财报",
-        "营收",
-        "份额",
-    ]
-    .iter()
-    .any(|marker| query.contains(marker))
-    {
-        roles.insert(WebSearchSourceRole::MarketResearch);
-    }
-    if [
-        "compare",
-        "comparison",
-        "review",
-        "recommend",
-        "versus",
-        " vs ",
-        "price",
-        "buy",
-        "对比",
-        "比较",
-        "评测",
-        "推荐",
-        "价格",
-        "购买",
-        "哪个好",
-    ]
-    .iter()
-    .any(|marker| query.contains(marker))
-    {
-        roles.insert(WebSearchSourceRole::ProductResearch);
-    }
-    if [
-        "multilingual",
-        "cross-language",
-        "non-english",
-        "多语言",
-        "跨语言",
-        "外文",
-        "日文",
-        "韩文",
-        "德文",
-        "法文",
-        "西班牙文",
-    ]
-    .iter()
-    .any(|marker| query.contains(marker))
-    {
-        roles.insert(WebSearchSourceRole::MultilingualSearch);
-    }
-    if [
-        "related",
-        "similar",
-        "concept",
-        "background",
-        "discover",
-        "相关",
-        "相似",
-        "概念",
-        "背景",
-        "探索",
-        "综述",
-    ]
-    .iter()
-    .any(|marker| query.contains(marker))
-    {
-        roles.insert(WebSearchSourceRole::SemanticResearch);
-    }
-    if [
-        "synthesize",
-        "research brief",
-        "executive summary",
-        "综合分析",
-        "综合调研",
-        "调研报告",
-        "汇总分析",
-    ]
-    .iter()
-    .any(|marker| query.contains(marker))
-    {
-        roles.insert(WebSearchSourceRole::AiResearch);
     }
     if roles.is_empty() {
         roles.insert(WebSearchSourceRole::GeneralSearch);

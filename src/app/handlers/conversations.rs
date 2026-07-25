@@ -335,38 +335,28 @@ pub async fn create_message_run(
     let forwarding = tokio::spawn(async move {
         let mut pending_delta = String::new();
         let mut pending_reasoning_delta = String::new();
+        let flush_pending = |pending_delta: &mut String, pending_reasoning_delta: &mut String| {
+            if !pending_reasoning_delta.is_empty() {
+                event_manager.record_event(
+                    run_id,
+                    AgentRunEvent::ReasoningDelta(std::mem::take(pending_reasoning_delta)),
+                );
+            }
+            if !pending_delta.is_empty() {
+                event_manager
+                    .record_event(run_id, AgentRunEvent::Delta(std::mem::take(pending_delta)));
+            }
+        };
         let mut flush_interval = tokio::time::interval(Duration::from_millis(32));
         flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = flush_interval.tick(), if !pending_delta.is_empty() || !pending_reasoning_delta.is_empty() => {
-                    if !pending_reasoning_delta.is_empty() {
-                        event_manager.record_event(
-                            run_id,
-                            AgentRunEvent::ReasoningDelta(std::mem::take(&mut pending_reasoning_delta)),
-                        );
-                    }
-                    if !pending_delta.is_empty() {
-                        event_manager.record_event(
-                            run_id,
-                            AgentRunEvent::Delta(std::mem::take(&mut pending_delta)),
-                        );
-                    }
+                    flush_pending(&mut pending_delta, &mut pending_reasoning_delta);
                 }
                 event = event_receiver.recv() => {
                     let Some(event) = event else {
-                        if !pending_reasoning_delta.is_empty() {
-                            event_manager.record_event(
-                                run_id,
-                                AgentRunEvent::ReasoningDelta(std::mem::take(&mut pending_reasoning_delta)),
-                            );
-                        }
-                        if !pending_delta.is_empty() {
-                            event_manager.record_event(
-                                run_id,
-                                AgentRunEvent::Delta(std::mem::take(&mut pending_delta)),
-                            );
-                        }
+                        flush_pending(&mut pending_delta, &mut pending_reasoning_delta);
                         break;
                     };
                     match event {
@@ -389,18 +379,7 @@ pub async fn create_message_run(
                             }
                         }
                         event => {
-                            if !pending_reasoning_delta.is_empty() {
-                                event_manager.record_event(
-                                    run_id,
-                                    AgentRunEvent::ReasoningDelta(std::mem::take(&mut pending_reasoning_delta)),
-                                );
-                            }
-                            if !pending_delta.is_empty() {
-                                event_manager.record_event(
-                                    run_id,
-                                    AgentRunEvent::Delta(std::mem::take(&mut pending_delta)),
-                                );
-                            }
+                            flush_pending(&mut pending_delta, &mut pending_reasoning_delta);
                             event_manager.record_event(run_id, event);
                         }
                     }

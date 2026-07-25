@@ -3,10 +3,11 @@ use std::collections::HashSet;
 use chrono::Datelike;
 use serde_json::{Map, Value, json};
 
+use super::support::{classify_common_status, send_checked, string_field, truncate_with};
 use crate::tools::web_search::types::{
     ProviderError, ProviderExtractDocument, ProviderExtractFailure, ProviderExtractOutput,
     ProviderExtractRequest, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind, SearchMode,
-    WebSearchHit, sanitize_error_message,
+    WebSearchHit,
 };
 
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -22,40 +23,20 @@ pub async fn search(
 ) -> Result<ProviderSearchOutput, ProviderError> {
     let endpoint = build_endpoint(base_url)?;
     let body = build_request_body(request);
-    let response = client
+    let builder = client
         .post(endpoint)
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| {
-            ProviderError::Retryable(sanitize_error_message(
-                &format!("Firecrawl request failed: {error}"),
-                api_key,
-            ))
-        })?;
-
-    let status = response.status();
-    let bytes = response.bytes().await.map_err(|error| {
-        ProviderError::Retryable(sanitize_error_message(
-            &format!("Firecrawl response body error: {error}"),
-            api_key,
-        ))
-    })?;
-    if bytes.len() > MAX_RESPONSE_BYTES {
-        return Err(ProviderError::Retryable(format!(
-            "Firecrawl response exceeds {MAX_RESPONSE_BYTES} bytes"
-        )));
-    }
-    let text = String::from_utf8_lossy(&bytes);
-
-    if !status.is_success() {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!("Firecrawl HTTP {status}: {}", truncate(&text, 320)),
-            api_key,
-        )));
-    }
+        .json(&body);
+    let text = send_checked(
+        builder,
+        "Firecrawl",
+        api_key,
+        Some(MAX_RESPONSE_BYTES),
+        320,
+        "...",
+    )
+    .await?;
 
     let parsed: Value = serde_json::from_str(&text).map_err(|error| {
         ProviderError::Retryable(format!(
@@ -96,38 +77,20 @@ pub async fn extract(
         "blockAds": true,
         "removeBase64Images": true,
     });
-    let response = client
+    let builder = client
         .post(endpoint)
         .bearer_auth(api_key)
         .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| {
-            ProviderError::Retryable(sanitize_error_message(
-                &format!("Firecrawl scrape request failed: {error}"),
-                api_key,
-            ))
-        })?;
-    let status = response.status();
-    let bytes = response.bytes().await.map_err(|error| {
-        ProviderError::Retryable(sanitize_error_message(
-            &format!("Firecrawl scrape response body error: {error}"),
-            api_key,
-        ))
-    })?;
-    if bytes.len() > MAX_RESPONSE_BYTES {
-        return Err(ProviderError::Retryable(format!(
-            "Firecrawl scrape response exceeds {MAX_RESPONSE_BYTES} bytes"
-        )));
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    if !status.is_success() {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!("Firecrawl scrape HTTP {status}: {}", truncate(&text, 320)),
-            api_key,
-        )));
-    }
+        .json(&body);
+    let text = send_checked(
+        builder,
+        "Firecrawl scrape",
+        api_key,
+        Some(MAX_RESPONSE_BYTES),
+        320,
+        "...",
+    )
+    .await?;
     let value: Value = serde_json::from_str(&text).map_err(|error| {
         ProviderError::Retryable(format!(
             "Firecrawl scrape returned invalid JSON: {error}; body={}",
@@ -421,16 +384,6 @@ fn highlight_text(object: &Map<String, Value>) -> Option<String> {
     }
 }
 
-fn string_field<'a>(object: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
-    keys.iter().find_map(|key| {
-        object
-            .get(*key)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-    })
-}
-
 fn response_error(value: &Value) -> Option<String> {
     for key in ["error", "message", "warning"] {
         let Some(value) = value.get(key) else {
@@ -481,37 +434,17 @@ pub fn classify_key_status(message: &str) -> &'static str {
     {
         return "configuration_error";
     }
-    if lower.contains("http 5")
-        || lower.contains("service unavailable")
-        || lower.contains("internal server error")
-        || lower.contains("bad gateway")
-    {
-        return "service_error";
-    }
-    if lower.contains("request failed")
-        || lower.contains("response body error")
-        || lower.contains("timed out")
-        || lower.contains("timeout")
-        || lower.contains("connect")
-        || lower.contains("dns")
-    {
-        return "network_error";
-    }
-    "error"
+    classify_common_status(&lower)
 }
 
 fn normalize_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Firecrawl historically truncates with an ASCII `...` suffix (asserted by
+/// tests and surfaced in error messages), unlike the other providers' `…`.
 fn truncate(value: &str, max: usize) -> String {
-    let mut chars = value.chars();
-    let head = chars.by_ref().take(max).collect::<String>();
-    if chars.next().is_some() {
-        format!("{head}...")
-    } else {
-        head
-    }
+    truncate_with(value, max, "...")
 }
 
 #[cfg(test)]

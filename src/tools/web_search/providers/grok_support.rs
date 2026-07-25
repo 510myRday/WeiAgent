@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use wreq_util::Emulation;
 
+use super::support::truncate as truncate_for_error;
+
 const DEFAULT_FLARESOLVERR_TIMEOUT_MS: u64 = 90_000;
 const FLARESOLVERR_CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
 const CLEARANCE_CACHE_TTL: Duration = Duration::from_secs(45 * 60);
@@ -487,16 +489,6 @@ fn put_cached_clearance(key: &str, bundle: &ClearanceBundle) {
                 expires_at: Instant::now() + CLEARANCE_CACHE_TTL,
             },
         );
-    }
-}
-
-fn truncate_for_error(value: &str, max: usize) -> String {
-    let mut chars = value.chars();
-    let head: String = chars.by_ref().take(max).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
     }
 }
 

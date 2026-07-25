@@ -350,16 +350,6 @@ pub struct StreamFunctionDelta {
     pub arguments: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ModelsListResponse {
-    pub data: Vec<ModelEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ModelEntry {
-    pub id: String,
-}
-
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct OpenAiUsage {
     #[serde(default, alias = "input_tokens")]

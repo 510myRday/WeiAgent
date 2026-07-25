@@ -1,13 +1,13 @@
 use serde::Deserialize;
 use serde_json::json;
 
+use super::support::{MAX_EXTRACT_RESPONSE_BYTES, classify_common_status, send_checked, truncate};
 use crate::tools::web_search::types::{
     ProviderError, ProviderExtractDocument, ProviderExtractFailure, ProviderExtractOutput,
     ProviderExtractRequest, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind,
-    WebSearchHit, sanitize_error_message,
+    WebSearchHit,
 };
 
-const MAX_EXTRACT_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CONTENT_EXCERPT_CHARS: usize = 4_000;
 
 #[derive(Debug, Deserialize)]
@@ -58,34 +58,12 @@ pub async fn search(
         }
     }
 
-    let response = client
+    let builder = client
         .post(&endpoint)
         .header("x-api-key", api_key)
         .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| {
-            ProviderError::Retryable(sanitize_error_message(
-                &format!("Exa request failed: {error}"),
-                api_key,
-            ))
-        })?;
-
-    let status = response.status();
-    let text = response.text().await.map_err(|error| {
-        ProviderError::Retryable(sanitize_error_message(
-            &format!("Exa response body error: {error}"),
-            api_key,
-        ))
-    })?;
-
-    if !status.is_success() {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!("Exa HTTP {status}: {}", truncate(&text, 240)),
-            api_key,
-        )));
-    }
+        .json(&body);
+    let text = send_checked(builder, "Exa", api_key, None, 240, "…").await?;
 
     let parsed: ExaResponse = serde_json::from_str(&text).map_err(|error| {
         ProviderError::Retryable(format!(
@@ -145,38 +123,20 @@ pub async fn extract(
         "maxAgeHours": if request.hard_page { 0 } else { 24 },
         "livecrawlTimeout": request.timeout_ms.clamp(1_000, 90_000),
     });
-    let response = client
+    let builder = client
         .post(&endpoint)
         .header("x-api-key", api_key)
         .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| {
-            ProviderError::Retryable(sanitize_error_message(
-                &format!("Exa contents request failed: {error}"),
-                api_key,
-            ))
-        })?;
-    let status = response.status();
-    let bytes = response.bytes().await.map_err(|error| {
-        ProviderError::Retryable(sanitize_error_message(
-            &format!("Exa contents response body error: {error}"),
-            api_key,
-        ))
-    })?;
-    if bytes.len() > MAX_EXTRACT_RESPONSE_BYTES {
-        return Err(ProviderError::Retryable(format!(
-            "Exa contents response exceeds {MAX_EXTRACT_RESPONSE_BYTES} bytes"
-        )));
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    if !status.is_success() {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!("Exa contents HTTP {status}: {}", truncate(&text, 240)),
-            api_key,
-        )));
-    }
+        .json(&body);
+    let text = send_checked(
+        builder,
+        "Exa contents",
+        api_key,
+        Some(MAX_EXTRACT_RESPONSE_BYTES),
+        240,
+        "…",
+    )
+    .await?;
     let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
         ProviderError::Retryable(format!(
             "Exa contents returned invalid JSON: {error}; body={}",
@@ -307,36 +267,7 @@ pub fn classify_key_status(message: &str) -> &'static str {
     {
         return "permission_denied";
     }
-    if lower.contains("http 400") || lower.contains("invalid request") {
-        return "configuration_error";
-    }
-    if lower.contains("http 5")
-        || lower.contains("service unavailable")
-        || lower.contains("internal server error")
-        || lower.contains("bad gateway")
-    {
-        return "service_error";
-    }
-    if lower.contains("request failed")
-        || lower.contains("response body error")
-        || lower.contains("timed out")
-        || lower.contains("timeout")
-        || lower.contains("connect")
-        || lower.contains("dns")
-    {
-        return "network_error";
-    }
-    "error"
-}
-
-fn truncate(value: &str, max: usize) -> String {
-    let mut chars = value.chars();
-    let head: String = chars.by_ref().take(max).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
-    }
+    classify_common_status(&lower)
 }
 
 #[cfg(test)]

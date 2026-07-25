@@ -170,7 +170,11 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
             .map_err(|error| AppError::Llm(format!("invalid upstream JSON: {error}")))
             .and_then(|value| self.adapter.parse_response(&value));
         match parsed {
-            Ok(output) if !output.content.is_empty() || !output.tool_calls.is_empty() => {
+            Ok(output)
+                if !output.content.is_empty()
+                    || !output.reasoning_content.is_empty()
+                    || !output.tool_calls.is_empty() =>
+            {
                 self.http.spawn_log(
                     log_enabled,
                     &agent.name,

@@ -368,6 +368,9 @@ pub fn projected_request_tokens_with_fixed(messages: &[ChatMessage], fixed_token
     }
 }
 
+// Production callers use `needs_compaction_with_fixed`; this wrapper is kept
+// for tests and external readability.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn needs_compaction(
     messages: &[ChatMessage],
     config: &CompactionConfig,

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use wreq::StatusCode;
 use wreq::header::{HeaderMap, HeaderName, HeaderValue};
 
+use super::support::truncate;
 use crate::tools::web_search::canonicalize_url;
 use crate::tools::web_search::types::{
     AiSynthesis, ProviderError, ProviderExtractDocument, ProviderExtractFailure,
@@ -2042,16 +2043,6 @@ fn error_message(value: &Value) -> Option<String> {
             None
         }
         _ => None,
-    }
-}
-
-fn truncate(value: &str, max: usize) -> String {
-    let mut chars = value.chars();
-    let head: String = chars.by_ref().take(max).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
     }
 }
 

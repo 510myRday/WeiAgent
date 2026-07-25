@@ -14,7 +14,23 @@
       "Bash(xargs wc -l)",
       "Bash(awk -F: '{print $1}')",
       "Bash(python3 -)",
-      "Bash(python -)"
+      "Bash(python -)",
+      "Bash(git worktree *)",
+      "Bash(cp src/llm/http.rs src/llm/protocol/common.rs src/llm/protocol/openai_chat.rs ../WeiAgent_llm_check/tmp_hold)",
+      "Bash(mkdir -p ../WeiAgent_llm_check)",
+      "Bash(cp src/llm/http.rs ../WeiAgent_llm_check/src/llm/http.rs)",
+      "Bash(cp src/llm/protocol/common.rs ../WeiAgent_llm_check/src/llm/protocol/common.rs)",
+      "Bash(cp src/llm/protocol/openai_chat.rs ../WeiAgent_llm_check/src/llm/protocol/openai_chat.rs)",
+      "Read(//d/Code_Save/rust/WeiAgent_llm_check/**)",
+      "Bash(CARGO_TARGET_DIR=D:/Code_Save/rust/WeiAgent/target cargo test)",
+      "Bash(git -C D:/Code_Save/rust/WeiAgent stash)",
+      "Bash(git -C D:/Code_Save/rust/WeiAgent stash pop)",
+      "Bash(CARGO_TARGET_DIR=D:/Code_Save/rust/WeiAgent/target cargo check)",
+      "Bash(sed -i '692s/copied\\(\\)/cloned\\(\\)/' src/tools/web_search/mod.rs)",
+      "Bash(cp src/llm/types.rs ../WeiAgent_llm_check/src/llm/types.rs)",
+      "Bash(cargo clippy *)",
+      "Bash(git stash *)",
+      "Bash(cargo fmt *)"
     ]
   }
 }

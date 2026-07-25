@@ -1,16 +1,16 @@
 use reqwest::RequestBuilder;
 use serde::Deserialize;
 
+use super::support::{MAX_EXTRACT_RESPONSE_BYTES, classify_common_status, send_checked, truncate};
 use crate::tools::web_search::types::{
     ProviderError, ProviderExtractDocument, ProviderExtractFailure, ProviderExtractOutput,
     ProviderExtractRequest, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind,
-    WebSearchHit, sanitize_error_message,
+    WebSearchHit,
 };
 
 /// Browser-like UA helps when the provider sits behind Cloudflare bot filters.
 const JINA_USER_AGENT: &str =
     "Mozilla/5.0 (compatible; WeiAgent/1.0; +https://github.com/weiagent)";
-const MAX_EXTRACT_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CONTENT_EXCERPT_CHARS: usize = 4_000;
 
 #[derive(Debug, Deserialize)]
@@ -41,30 +41,8 @@ pub async fn search(
 ) -> Result<ProviderSearchOutput, ProviderError> {
     let endpoint = build_endpoint(base_url, &request.query, request.max_results)?;
 
-    let response = build_request(client, endpoint, api_key)
-        .send()
-        .await
-        .map_err(|error| {
-            ProviderError::Retryable(sanitize_error_message(
-                &format!("Jina request failed: {error}"),
-                api_key,
-            ))
-        })?;
-
-    let status = response.status();
-    let text = response.text().await.map_err(|error| {
-        ProviderError::Retryable(sanitize_error_message(
-            &format!("Jina response body error: {error}"),
-            api_key,
-        ))
-    })?;
-
-    if !status.is_success() {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!("Jina HTTP {status}: {}", truncate(&text, 240)),
-            api_key,
-        )));
-    }
+    let builder = build_request(client, endpoint, api_key);
+    let text = send_checked(builder, "Jina", api_key, None, 240, "…").await?;
 
     let parsed: JinaResponse = serde_json::from_str(&text).map_err(|error| {
         ProviderError::Retryable(format!(
@@ -135,31 +113,15 @@ pub async fn extract(
     if !api_key.trim().is_empty() {
         builder = builder.bearer_auth(api_key.trim());
     }
-    let response = builder.send().await.map_err(|error| {
-        ProviderError::Retryable(sanitize_error_message(
-            &format!("Jina Reader request failed: {error}"),
-            api_key,
-        ))
-    })?;
-    let status = response.status();
-    let bytes = response.bytes().await.map_err(|error| {
-        ProviderError::Retryable(sanitize_error_message(
-            &format!("Jina Reader response body error: {error}"),
-            api_key,
-        ))
-    })?;
-    if bytes.len() > MAX_EXTRACT_RESPONSE_BYTES {
-        return Err(ProviderError::Retryable(format!(
-            "Jina Reader response exceeds {MAX_EXTRACT_RESPONSE_BYTES} bytes"
-        )));
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    if !status.is_success() {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!("Jina Reader HTTP {status}: {}", truncate(&text, 240)),
-            api_key,
-        )));
-    }
+    let text = send_checked(
+        builder,
+        "Jina Reader",
+        api_key,
+        Some(MAX_EXTRACT_RESPONSE_BYTES),
+        240,
+        "…",
+    )
+    .await?;
     let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
         ProviderError::Retryable(format!(
             "Jina Reader returned invalid JSON: {error}; body={}",
@@ -308,16 +270,9 @@ pub fn classify_key_status(message: &str) -> &'static str {
     {
         return "service_error";
     }
-    if lower.contains("request failed")
-        || lower.contains("response body error")
-        || lower.contains("timed out")
-        || lower.contains("timeout")
-        || lower.contains("connect")
-        || lower.contains("dns")
-    {
-        return "network_error";
-    }
-    "error"
+    // Jina-specific 400/5xx tokens are handled above; the shared tail covers
+    // the generic network-error phrases and the final fallback.
+    classify_common_status(&lower)
 }
 
 fn build_endpoint(
@@ -333,16 +288,6 @@ fn build_endpoint(
         .append_pair("num", &max_results.to_string())
         .append_pair("type", "web");
     Ok(endpoint)
-}
-
-fn truncate(value: &str, max: usize) -> String {
-    let mut chars = value.chars();
-    let head: String = chars.by_ref().take(max).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
-    }
 }
 
 #[cfg(test)]

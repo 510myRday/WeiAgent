@@ -1,13 +1,14 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::support::{
+    MAX_EXTRACT_RESPONSE_BYTES, classify_common_status, send_checked, string_field, truncate,
+};
 use crate::tools::web_search::types::{
     ProviderError, ProviderExtractDocument, ProviderExtractFailure, ProviderExtractOutput,
     ProviderExtractRequest, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind,
-    WebSearchHit, sanitize_error_message,
+    WebSearchHit,
 };
-
-const MAX_EXTRACT_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct TavilyResponse {
@@ -57,34 +58,12 @@ pub async fn search(
         }
     }
 
-    let response = client
+    let builder = client
         .post(&endpoint)
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| {
-            ProviderError::Retryable(sanitize_error_message(
-                &format!("Tavily request failed: {error}"),
-                api_key,
-            ))
-        })?;
-
-    let status = response.status();
-    let text = response.text().await.map_err(|error| {
-        ProviderError::Retryable(sanitize_error_message(
-            &format!("Tavily response body error: {error}"),
-            api_key,
-        ))
-    })?;
-
-    if !status.is_success() {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!("Tavily HTTP {status}: {}", truncate(&text, 240)),
-            api_key,
-        )));
-    }
+        .json(&body);
+    let text = send_checked(builder, "Tavily", api_key, None, 240, "…").await?;
 
     let parsed: TavilyResponse = serde_json::from_str(&text).map_err(|error| {
         ProviderError::Retryable(format!(
@@ -126,38 +105,20 @@ pub async fn extract(
 ) -> Result<ProviderExtractOutput, ProviderError> {
     let endpoint = format!("{}/extract", base_url.trim_end_matches('/'));
     let body = build_extract_body(request);
-    let response = client
+    let builder = client
         .post(&endpoint)
         .bearer_auth(api_key)
         .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| {
-            ProviderError::Retryable(sanitize_error_message(
-                &format!("Tavily extract request failed: {error}"),
-                api_key,
-            ))
-        })?;
-    let status = response.status();
-    let bytes = response.bytes().await.map_err(|error| {
-        ProviderError::Retryable(sanitize_error_message(
-            &format!("Tavily extract response body error: {error}"),
-            api_key,
-        ))
-    })?;
-    if bytes.len() > MAX_EXTRACT_RESPONSE_BYTES {
-        return Err(ProviderError::Retryable(format!(
-            "Tavily extract response exceeds {MAX_EXTRACT_RESPONSE_BYTES} bytes"
-        )));
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    if !status.is_success() {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!("Tavily extract HTTP {status}: {}", truncate(&text, 240)),
-            api_key,
-        )));
-    }
+        .json(&body);
+    let text = send_checked(
+        builder,
+        "Tavily extract",
+        api_key,
+        Some(MAX_EXTRACT_RESPONSE_BYTES),
+        240,
+        "…",
+    )
+    .await?;
     let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
         ProviderError::Retryable(format!(
             "Tavily extract returned invalid JSON: {error}; body={}",
@@ -248,19 +209,6 @@ fn parse_extract_output(value: &serde_json::Value, requested_url: &str) -> Provi
     output
 }
 
-fn string_field<'a>(
-    object: &'a serde_json::Map<String, serde_json::Value>,
-    keys: &[&str],
-) -> Option<&'a str> {
-    keys.iter().find_map(|key| {
-        object
-            .get(*key)
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-    })
-}
-
 pub fn classify_key_status(message: &str) -> &'static str {
     let lower = message.to_ascii_lowercase();
     if lower.contains("http 401")
@@ -287,42 +235,6 @@ pub fn classify_key_status(message: &str) -> &'static str {
         return "rate_limited";
     }
     classify_common_status(&lower)
-}
-
-fn classify_common_status(lower: &str) -> &'static str {
-    if lower.contains("http 403") || lower.contains("forbidden") {
-        return "permission_denied";
-    }
-    if lower.contains("http 400") || lower.contains("invalid request") {
-        return "configuration_error";
-    }
-    if lower.contains("http 5")
-        || lower.contains("service unavailable")
-        || lower.contains("internal server error")
-        || lower.contains("bad gateway")
-    {
-        return "service_error";
-    }
-    if lower.contains("request failed")
-        || lower.contains("response body error")
-        || lower.contains("timed out")
-        || lower.contains("timeout")
-        || lower.contains("connect")
-        || lower.contains("dns")
-    {
-        return "network_error";
-    }
-    "error"
-}
-
-fn truncate(value: &str, max: usize) -> String {
-    let mut chars = value.chars();
-    let head: String = chars.by_ref().take(max).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
-    }
 }
 
 #[cfg(test)]

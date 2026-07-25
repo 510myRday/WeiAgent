@@ -298,8 +298,7 @@ fn trim_replay_events(state: &mut RunState) {
 fn run_event_size(event: &AgentRunEvent) -> usize {
     match event {
         AgentRunEvent::User(message) | AgentRunEvent::Assistant(message) => {
-            message.content.len()
-                + message.tool_calls.as_ref().map_or(0, estimate_json_bytes)
+            message.content.len() + message.tool_calls.as_ref().map_or(0, estimate_json_bytes)
         }
         AgentRunEvent::Delta(delta)
         | AgentRunEvent::ReasoningDelta(delta)
@@ -312,9 +311,7 @@ fn run_event_size(event: &AgentRunEvent) -> usize {
         } => call_id.len() + name.len() + estimate_json_bytes(arguments),
         AgentRunEvent::ToolCallStarted { call_id, name, .. } => call_id.len() + name.len(),
         AgentRunEvent::ToolCallArgsDelta { call_id, arguments } => call_id.len() + arguments.len(),
-        AgentRunEvent::ToolResult { call_id, result } => {
-            call_id.len() + tool_result_size(result)
-        }
+        AgentRunEvent::ToolResult { call_id, result } => call_id.len() + tool_result_size(result),
         AgentRunEvent::ApprovalRequired {
             call_id,
             command,
@@ -359,9 +356,12 @@ fn tool_result_size(result: &crate::domain::ToolResult) -> usize {
     const FIXED_OVERHEAD: usize = 64;
     FIXED_OVERHEAD
         + match result {
-            ToolResult::Completed { stdout, stderr, runtime, .. } => {
-                stdout.len() + stderr.len() + runtime.as_deref().map_or(0, str::len)
-            }
+            ToolResult::Completed {
+                stdout,
+                stderr,
+                runtime,
+                ..
+            } => stdout.len() + stderr.len() + runtime.as_deref().map_or(0, str::len),
             ToolResult::Running {
                 process_id,
                 message,

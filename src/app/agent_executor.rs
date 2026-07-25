@@ -344,20 +344,16 @@ pub async fn run_agent(
         }
     }
 
-    let summary = match finalize_after_budget(
-        &runtime,
-        &mut messages,
-        max_llm_iterations,
-        &mut compaction,
-    )
-    .await
-    {
-        Ok(summary) => summary,
-        Err(error) => {
-            persist_run_failure(&runtime, &error).await;
-            return Err(error);
-        }
-    };
+    let summary =
+        match finalize_after_budget(&runtime, &mut messages, max_llm_iterations, &mut compaction)
+            .await
+        {
+            Ok(summary) => summary,
+            Err(error) => {
+                persist_run_failure(&runtime, &error).await;
+                return Err(error);
+            }
+        };
     emit(&events, AgentRunEvent::Assistant(summary.clone())).await?;
     emit(&events, AgentRunEvent::Done).await?;
     Ok(SendMessageResponse {
@@ -869,18 +865,116 @@ async fn run_llm_iteration(
     }
 }
 
+/// Mutable state of one streamed assistant message.
+struct StreamAccumulator {
+    message_id: Uuid,
+    created_at: chrono::DateTime<Utc>,
+    content: String,
+    reasoning_content: String,
+    persisted: bool,
+    persisted_bytes: usize,
+    last_save: Instant,
+}
+
+#[derive(Clone, Copy)]
+enum StreamDeltaKind {
+    Text,
+    Reasoning,
+}
+
+/// Persist the partial message as failed, then hand back the error.
+async fn fail_stream(
+    runtime: &AgentRuntime<'_>,
+    acc: &StreamAccumulator,
+    error: AppError,
+) -> AppError {
+    mark_interrupted(
+        runtime.state,
+        runtime.prepared,
+        acc.message_id,
+        acc.created_at,
+        &acc.content,
+        &acc.reasoning_content,
+        acc.persisted,
+    )
+    .await;
+    error
+}
+
+async fn append_delta_and_persist(
+    runtime: &AgentRuntime<'_>,
+    acc: &mut StreamAccumulator,
+    delta: String,
+    kind: StreamDeltaKind,
+) -> AppResult<()> {
+    let (buffer_len, overflow_label) = match kind {
+        StreamDeltaKind::Text => (acc.content.len(), "response"),
+        StreamDeltaKind::Reasoning => (acc.reasoning_content.len(), "reasoning"),
+    };
+    if buffer_len.saturating_add(delta.len()) > MAX_STREAM_CONTENT_BYTES {
+        let error = AppError::Llm(format!(
+            "streamed {overflow_label} exceeded {MAX_STREAM_CONTENT_BYTES} bytes"
+        ));
+        return Err(fail_stream(runtime, acc, error).await);
+    }
+    let event = match kind {
+        StreamDeltaKind::Text => {
+            acc.content.push_str(&delta);
+            AgentRunEvent::Delta(delta)
+        }
+        StreamDeltaKind::Reasoning => {
+            acc.reasoning_content.push_str(&delta);
+            AgentRunEvent::ReasoningDelta(delta)
+        }
+    };
+    if emit(runtime.events, event).await.is_err() {
+        let error = AppError::Llm("stream client disconnected".to_string());
+        return Err(fail_stream(runtime, acc, error).await);
+    }
+    let streamed_bytes = acc
+        .content
+        .len()
+        .saturating_add(acc.reasoning_content.len());
+    if !acc.persisted
+        || streamed_bytes.saturating_sub(acc.persisted_bytes) >= STREAM_SAVE_BYTES
+        || acc.last_save.elapsed() >= STREAM_SAVE_INTERVAL
+    {
+        let message = partial_assistant(
+            runtime.prepared,
+            acc.message_id,
+            acc.created_at,
+            &acc.content,
+            &acc.reasoning_content,
+        );
+        if let Err(error) = runtime
+            .state
+            .store
+            .upsert_conversation_message(message.conversation_id, message)
+            .await
+        {
+            return Err(fail_stream(runtime, acc, error).await);
+        }
+        acc.persisted = true;
+        acc.persisted_bytes = streamed_bytes;
+        acc.last_save = Instant::now();
+    }
+    Ok(())
+}
+
 async fn stream_llm_iteration(
     runtime: &AgentRuntime<'_>,
     messages: &[ChatMessage],
     tools: Option<Vec<ToolDefinition>>,
 ) -> AppResult<IterationOutput> {
-    let message_id = Uuid::new_v4();
-    let created_at = Utc::now();
-    let mut content = String::new();
-    let mut reasoning_content = String::new();
-    let mut persisted = false;
-    let mut persisted_bytes = 0_usize;
-    let mut last_save = Instant::now();
+    let mut acc = StreamAccumulator {
+        message_id: Uuid::new_v4(),
+        created_at: Utc::now(),
+        content: String::new(),
+        reasoning_content: String::new(),
+        persisted: false,
+        persisted_bytes: 0,
+        last_save: Instant::now(),
+    };
     let mut calls: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
     let mut finished_with_tool_calls = None;
     let mut usage = TokenUsage::default();
@@ -901,17 +995,8 @@ async fn stream_llm_iteration(
             tokio::select! {
                 event = stream.next() => event,
                 _ = sender.closed() => {
-                    mark_interrupted(
-                        runtime.state,
-                        runtime.prepared,
-                        message_id,
-                        created_at,
-                        &content,
-                        &reasoning_content,
-                        persisted,
-                    )
-                        .await;
-                    return Err(AppError::Llm("stream client disconnected".to_string()));
+                    let error = AppError::Llm("stream client disconnected".to_string());
+                    return Err(fail_stream(runtime, &acc, error).await);
                 }
             }
         } else {
@@ -922,151 +1007,15 @@ async fn stream_llm_iteration(
         };
         let event = match event {
             Ok(event) => event,
-            Err(error) => {
-                return Err(fail_stream_iteration(
-                    runtime,
-                    message_id,
-                    created_at,
-                    &content,
-                    &reasoning_content,
-                    persisted,
-                    error,
-                )
-                .await);
-            }
+            Err(error) => return Err(fail_stream(runtime, &acc, error).await),
         };
         match event {
             StreamEvent::TextDelta(delta) => {
-                if content.len().saturating_add(delta.len()) > MAX_STREAM_CONTENT_BYTES {
-                    return Err(fail_stream_iteration(
-                        runtime,
-                        message_id,
-                        created_at,
-                        &content,
-                        &reasoning_content,
-                        persisted,
-                        AppError::Llm(format!(
-                            "streamed response exceeded {MAX_STREAM_CONTENT_BYTES} bytes"
-                        )),
-                    )
-                    .await);
-                }
-                content.push_str(&delta);
-                if emit(runtime.events, AgentRunEvent::Delta(delta))
-                    .await
-                    .is_err()
-                {
-                    mark_interrupted(
-                        runtime.state,
-                        runtime.prepared,
-                        message_id,
-                        created_at,
-                        &content,
-                        &reasoning_content,
-                        persisted,
-                    )
-                    .await;
-                    return Err(AppError::Llm("stream client disconnected".to_string()));
-                }
-                let streamed_bytes = content.len().saturating_add(reasoning_content.len());
-                if !persisted
-                    || streamed_bytes.saturating_sub(persisted_bytes) >= STREAM_SAVE_BYTES
-                    || last_save.elapsed() >= STREAM_SAVE_INTERVAL
-                {
-                    let message = partial_assistant(
-                        runtime.prepared,
-                        message_id,
-                        created_at,
-                        &content,
-                        &reasoning_content,
-                    );
-                    if let Err(error) = runtime
-                        .state
-                        .store
-                        .upsert_conversation_message(message.conversation_id, message)
-                        .await
-                    {
-                        return Err(fail_stream_iteration(
-                            runtime,
-                            message_id,
-                            created_at,
-                            &content,
-                            &reasoning_content,
-                            persisted,
-                            error,
-                        )
-                        .await);
-                    }
-                    persisted = true;
-                    persisted_bytes = streamed_bytes;
-                    last_save = Instant::now();
-                }
+                append_delta_and_persist(runtime, &mut acc, delta, StreamDeltaKind::Text).await?;
             }
             StreamEvent::ReasoningDelta(delta) => {
-                if reasoning_content.len().saturating_add(delta.len()) > MAX_STREAM_CONTENT_BYTES {
-                    return Err(fail_stream_iteration(
-                        runtime,
-                        message_id,
-                        created_at,
-                        &content,
-                        &reasoning_content,
-                        persisted,
-                        AppError::Llm(format!(
-                            "streamed reasoning exceeded {MAX_STREAM_CONTENT_BYTES} bytes"
-                        )),
-                    )
-                    .await);
-                }
-                reasoning_content.push_str(&delta);
-                if emit(runtime.events, AgentRunEvent::ReasoningDelta(delta))
-                    .await
-                    .is_err()
-                {
-                    mark_interrupted(
-                        runtime.state,
-                        runtime.prepared,
-                        message_id,
-                        created_at,
-                        &content,
-                        &reasoning_content,
-                        persisted,
-                    )
-                    .await;
-                    return Err(AppError::Llm("stream client disconnected".to_string()));
-                }
-                let streamed_bytes = content.len().saturating_add(reasoning_content.len());
-                if !persisted
-                    || streamed_bytes.saturating_sub(persisted_bytes) >= STREAM_SAVE_BYTES
-                    || last_save.elapsed() >= STREAM_SAVE_INTERVAL
-                {
-                    let message = partial_assistant(
-                        runtime.prepared,
-                        message_id,
-                        created_at,
-                        &content,
-                        &reasoning_content,
-                    );
-                    if let Err(error) = runtime
-                        .state
-                        .store
-                        .upsert_conversation_message(message.conversation_id, message)
-                        .await
-                    {
-                        return Err(fail_stream_iteration(
-                            runtime,
-                            message_id,
-                            created_at,
-                            &content,
-                            &reasoning_content,
-                            persisted,
-                            error,
-                        )
-                        .await);
-                    }
-                    persisted = true;
-                    persisted_bytes = streamed_bytes;
-                    last_save = Instant::now();
-                }
+                append_delta_and_persist(runtime, &mut acc, delta, StreamDeltaKind::Reasoning)
+                    .await?;
             }
             StreamEvent::ToolCallStart { index, id, name } => {
                 let builder = calls.entry(index).or_default();
@@ -1098,18 +1047,10 @@ async fn stream_llm_iteration(
                 let builder = calls.entry(index).or_default();
                 if builder.arguments.len().saturating_add(arguments.len()) > MAX_TOOL_ARGUMENT_BYTES
                 {
-                    return Err(fail_stream_iteration(
-                        runtime,
-                        message_id,
-                        created_at,
-                        &content,
-                        &reasoning_content,
-                        persisted,
-                        AppError::Llm(format!(
-                            "tool arguments exceeded {MAX_TOOL_ARGUMENT_BYTES} bytes"
-                        )),
-                    )
-                    .await);
+                    let error = AppError::Llm(format!(
+                        "tool arguments exceeded {MAX_TOOL_ARGUMENT_BYTES} bytes"
+                    ));
+                    return Err(fail_stream(runtime, &acc, error).await);
                 }
                 builder.arguments.push_str(&arguments);
                 if !builder.id.is_empty() {
@@ -1136,19 +1077,8 @@ async fn stream_llm_iteration(
     }
 
     let Some(finished_with_tool_calls) = finished_with_tool_calls else {
-        mark_interrupted(
-            runtime.state,
-            runtime.prepared,
-            message_id,
-            created_at,
-            &content,
-            &reasoning_content,
-            persisted,
-        )
-        .await;
-        return Err(AppError::Llm(
-            "LLM stream ended before a completion event".to_string(),
-        ));
+        let error = AppError::Llm("LLM stream ended before a completion event".to_string());
+        return Err(fail_stream(runtime, &acc, error).await);
     };
     let tool_calls = calls
         .into_values()
@@ -1170,40 +1100,21 @@ async fn stream_llm_iteration(
         .collect::<AppResult<Vec<_>>>();
     let tool_calls = match tool_calls {
         Ok(tool_calls) => tool_calls,
-        Err(error) => {
-            return Err(fail_stream_iteration(
-                runtime,
-                message_id,
-                created_at,
-                &content,
-                &reasoning_content,
-                persisted,
-                error,
-            )
-            .await);
-        }
+        Err(error) => return Err(fail_stream(runtime, &acc, error).await),
     };
     if finished_with_tool_calls && tool_calls.is_empty() {
-        return Err(fail_stream_iteration(
-            runtime,
-            message_id,
-            created_at,
-            &content,
-            &reasoning_content,
-            persisted,
-            AppError::Llm(
-                "LLM reported tool calls but did not provide a complete tool call".to_string(),
-            ),
-        )
-        .await);
+        let error = AppError::Llm(
+            "LLM reported tool calls but did not provide a complete tool call".to_string(),
+        );
+        return Err(fail_stream(runtime, &acc, error).await);
     }
 
     Ok(IterationOutput {
-        message_id,
-        created_at,
+        message_id: acc.message_id,
+        created_at: acc.created_at,
         output: ChatCompletionOutput {
-            content,
-            reasoning_content,
+            content: acc.content,
+            reasoning_content: acc.reasoning_content,
             tool_calls,
             usage,
         },
@@ -1400,28 +1311,6 @@ async fn mark_interrupted(
         .store
         .upsert_conversation_message(message.conversation_id, message)
         .await;
-}
-
-async fn fail_stream_iteration(
-    runtime: &AgentRuntime<'_>,
-    message_id: Uuid,
-    created_at: chrono::DateTime<Utc>,
-    content: &str,
-    reasoning_content: &str,
-    persisted: bool,
-    error: AppError,
-) -> AppError {
-    mark_interrupted(
-        runtime.state,
-        runtime.prepared,
-        message_id,
-        created_at,
-        content,
-        reasoning_content,
-        persisted,
-    )
-    .await;
-    error
 }
 
 async fn emit(events: &Option<mpsc::Sender<AgentRunEvent>>, event: AgentRunEvent) -> AppResult<()> {
