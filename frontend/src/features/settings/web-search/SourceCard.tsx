@@ -98,7 +98,7 @@ export const SourceCard = memo(function SourceCard({
   onAddKey,
   onOpenProxyPicker,
 }: SourceCardProps) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const keyCount = source.api_keys.length;
   const selected = selectedKeyIndices
     .filter((keyIndex) => keyIndex >= 0 && keyIndex < keyCount);
@@ -485,7 +485,7 @@ export const SourceCard = memo(function SourceCard({
                             </div>
                             {status ? (
                               <small className="web-search-key-card__status-detail" title={status.detail}>
-                                <time dateTime={status.checked_at}>{formatCheckedAt(status.checked_at)}</time>
+                                <time dateTime={status.checked_at}>{formatCheckedAt(status.checked_at, locale)}</time>
                                 <span aria-hidden="true">·</span>
                                 <span>{status.detail}</span>
                               </small>
@@ -547,27 +547,6 @@ export const SourceCard = memo(function SourceCard({
                   id={connectionBodyId}
                 >
                   {renderProxySelector('proxy_url', 'tools.webSearch.proxyUrl', 'tools.webSearch.proxyUrlDesc')}
-                  {source.provider === 'grok' ? (
-                    <>
-                  <div className="web-search-extra-field">
-                    <div className="web-search-extra-field__label">
-                      <label htmlFor={`grok-flaresolverr-${source.id}`}>{t('tools.webSearch.flaresolverrUrl')}</label>
-                      <p className="setting-desc">{t('tools.webSearch.flaresolverrUrlDesc')}</p>
-                    </div>
-                    <input
-                      id={`grok-flaresolverr-${source.id}`}
-                      type="text"
-                      className="pattern-input web-search-extra-input"
-                      value={source.flaresolverr_url ?? ''}
-                      placeholder={t('tools.webSearch.flaresolverrUrlPlaceholder')}
-                      onChange={(e) => onUpdateSource(index, {
-                        flaresolverr_url: e.target.value.trim() ? e.target.value.trim() : null,
-                      })}
-                    />
-                  </div>
-                  {renderProxySelector('flaresolverr_proxy_url', 'tools.webSearch.flaresolverrProxyUrl', 'tools.webSearch.flaresolverrProxyUrlDesc')}
-                    </>
-                  ) : null}
                 </div>
               ) : null}
           </section>

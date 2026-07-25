@@ -33,8 +33,7 @@ use {
 
 #[derive(Debug, Deserialize)]
 pub struct CheckWebSearchKeysRequest {
-    #[serde(default)]
-    pub source_id: Option<String>,
+    pub source_id: String,
     #[serde(default)]
     pub key_indices: Vec<usize>,
 }
@@ -57,8 +56,7 @@ pub struct WebSearchKeyCheckResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct ImportWebSearchKeysRequest {
-    #[serde(default)]
-    pub source_id: Option<String>,
+    pub source_id: String,
     #[serde(default)]
     pub api_keys: Vec<String>,
 }
@@ -74,8 +72,7 @@ pub struct ImportWebSearchKeysResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteWebSearchKeyRequest {
-    #[serde(default)]
-    pub source_id: Option<String>,
+    pub source_id: String,
     pub key_index: usize,
     /// Masked key returned to the client. It lets the server resolve the
     /// intended key when a stale UI index no longer points at the same slot.
@@ -211,13 +208,7 @@ pub async fn import_web_search_keys(
         .web_search
         .sources
         .iter()
-        .position(|source| {
-            request
-                .source_id
-                .as_deref()
-                .map(|id| id == source.id)
-                .unwrap_or(source.provider == WebSearchProviderKind::Grok)
-        })
+        .position(|source| source.id == request.source_id)
         .ok_or_else(|| AppError::BadRequest("web search source not found".to_string()))?;
 
     let source_id = config.web_search.sources[source_index].id.clone();
@@ -286,13 +277,7 @@ pub async fn delete_web_search_key(
         .web_search
         .sources
         .iter()
-        .position(|source| {
-            request
-                .source_id
-                .as_deref()
-                .map(|id| id == source.id)
-                .unwrap_or(source.provider == WebSearchProviderKind::Grok)
-        })
+        .position(|source| source.id == request.source_id)
         .ok_or_else(|| AppError::BadRequest("web search source not found".to_string()))?;
     let source = &mut config.web_search.sources[source_index];
     let key_index = request
@@ -368,13 +353,7 @@ pub async fn check_web_search_keys(
         .web_search
         .sources
         .iter()
-        .find(|source| {
-            request
-                .source_id
-                .as_deref()
-                .map(|id| id == source.id)
-                .unwrap_or(source.provider == WebSearchProviderKind::Grok)
-        })
+        .find(|source| source.id == request.source_id)
         .ok_or_else(|| {
             crate::error::AppError::BadRequest("web search source not found".to_string())
         })?;
@@ -382,8 +361,6 @@ pub async fn check_web_search_keys(
     let api_keys = source.api_keys.clone();
     let provider = source.provider.clone();
     let source_proxy_url = source.proxy_url.clone();
-    let source_flaresolverr_url = source.flaresolverr_url.clone();
-    let source_flaresolverr_proxy_url = source.flaresolverr_proxy_url.clone();
 
     let indices: Vec<usize> = if request.key_indices.is_empty() {
         (0..api_keys.len()).collect()
@@ -396,16 +373,14 @@ pub async fn check_web_search_keys(
     let timeout = std::time::Duration::from_millis(config.web_search.timeout_ms());
     let base_url = provider.default_base_url().to_string();
     let proxy_url = source_proxy_url.as_deref();
-    let flaresolverr_url = source_flaresolverr_url.as_deref();
-    let flaresolverr_proxy_url = source_flaresolverr_proxy_url.as_deref();
     let mut control_client_builder =
         reqwest::Client::builder().timeout(timeout.max(std::time::Duration::from_secs(90)));
-    if provider != WebSearchProviderKind::Grok {
-        if let Some(proxy_url) = proxy_url.filter(|value| !value.trim().is_empty()) {
-            let proxy = reqwest::Proxy::all(proxy_url)
-                .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
-            control_client_builder = control_client_builder.proxy(proxy);
-        }
+    if provider != WebSearchProviderKind::Grok
+        && let Some(proxy_url) = proxy_url.filter(|value| !value.trim().is_empty())
+    {
+        let proxy = reqwest::Proxy::all(proxy_url)
+            .map_err(|error| crate::error::AppError::BadRequest(error.to_string()))?;
+        control_client_builder = control_client_builder.proxy(proxy);
     }
     let control_client = control_client_builder
         .build()
@@ -469,8 +444,6 @@ pub async fn check_web_search_keys(
                     &check_request,
                     grok::GrokSearchOptions {
                         source_id: &source_id,
-                        flaresolverr_url,
-                        flaresolverr_proxy_url,
                         proxy_url,
                     },
                 )
@@ -527,23 +500,6 @@ pub async fn read_codex_runtime(
     State(state): State<AppState>,
 ) -> AppResult<Json<CodexRuntimeStatus>> {
     Ok(Json(state.codex_runtime.status().await))
-}
-
-pub async fn refresh_codex_runtime(
-    State(state): State<AppState>,
-) -> AppResult<Json<CodexRuntimeStatus>> {
-    Ok(Json(state.codex_runtime.refresh().await?))
-}
-
-pub async fn install_codex_runtime(
-    State(state): State<AppState>,
-) -> AppResult<Json<CodexRuntimeStatus>> {
-    Ok(Json(
-        state
-            .codex_runtime
-            .start_install(RuntimeComponentKind::Codex)
-            .await?,
-    ))
 }
 
 pub async fn install_runtime_component(

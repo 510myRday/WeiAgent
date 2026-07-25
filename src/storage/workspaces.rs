@@ -3,25 +3,24 @@ use tokio::fs;
 use uuid::Uuid;
 
 use crate::{
-    domain::{Agent, AgentWorkspace, UpdateAgentWorkspaceRequest},
+    domain::{Agent, AgentWorkspace},
     error::AppResult,
     storage::{
         BUILTIN_CEO_COLOR, BUILTIN_CEO_ICON, WORKSPACE_INSTRUCTIONS, WORKSPACE_MEMORY,
-        WORKSPACE_PERSONALITY, files::ensure_text_file, json_store::JsonStore,
+        WORKSPACE_PERSONALITY, files::ensure_text_file, store::Store,
     },
 };
 
 const BUILTIN_MASTER_NAME: &str = "Master";
 const BUILTIN_MASTER_DESCRIPTION: &str =
     "Coordinates tasks, delegates work, and drives complex jobs to completion.";
-const LEGACY_AGENT_DESCRIPTION: &str = "Custom AI agent";
 const WEB_SEARCH_POLICY_V1: &str = "## Web Search Policy V1\n\
 Use web search when the user requests browsing, current information, source links, precise attribution, or information likely to have changed.\n\n\
 Use fast for simple lookups, balanced for current facts and comparisons, and deep for comprehensive research, conflicting claims, or explicit deep investigation. For research, issue complementary query rewrites in one call, retry empty searches with materially different wording, and use multiple independent source groups.\n\n\
 Use web_search_sources before custom source selection. Search APIs return evidence candidates. AI research syntheses are useful hypotheses and query directions, but are unverified and never count as independent evidence.\n\n\
 Open the most relevant original pages with web_extract, prefer primary sources, and verify important or disputed claims with independent evidence. Cite the original page using a Markdown link placed next to the supported claim.";
 
-impl JsonStore {
+impl Store {
     pub async fn read_agent_workspace(&self, id: Uuid) -> AppResult<AgentWorkspace> {
         let _guard = self.lock.lock().await;
         if !self
@@ -32,29 +31,6 @@ impl JsonStore {
         {
             return Err(crate::error::AppError::NotFound);
         }
-        self.read_agent_workspace_unlocked(id).await
-    }
-
-    pub async fn update_agent_workspace(
-        &self,
-        id: Uuid,
-        request: UpdateAgentWorkspaceRequest,
-    ) -> AppResult<AgentWorkspace> {
-        let _guard = self.lock.lock().await;
-        if !self
-            .read_agents_unlocked()
-            .await?
-            .iter()
-            .any(|agent| agent.id == id)
-        {
-            return Err(crate::error::AppError::NotFound);
-        }
-        let workspace = AgentWorkspace {
-            personality: request.personality,
-            memory: request.memory,
-            instructions: request.instructions,
-        };
-        self.write_agent_workspace_unlocked(id, &workspace).await?;
         self.read_agent_workspace_unlocked(id).await
     }
 
@@ -114,16 +90,6 @@ impl JsonStore {
         let _guard = self.lock.lock().await;
         let mut agents = self.read_agents_unlocked().await?;
         let now = Utc::now();
-
-        for agent in &mut agents {
-            if agent.description.trim().is_empty() {
-                agent.description = if agent.is_builtin {
-                    BUILTIN_MASTER_DESCRIPTION.to_string()
-                } else {
-                    LEGACY_AGENT_DESCRIPTION.to_string()
-                };
-            }
-        }
 
         let existing_builtin = agents.iter().position(|agent| agent.is_builtin);
 

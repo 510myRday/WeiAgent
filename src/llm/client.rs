@@ -23,17 +23,6 @@ pub struct RequestOptions {
     pub on_retry: Option<RetryHook>,
 }
 
-impl std::fmt::Debug for RequestOptions {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RequestOptions")
-            .field("timeout", &self.timeout)
-            .field("retry_attempts", &self.retry_attempts)
-            .field("thinking_level", &self.thinking_level)
-            .field("on_retry", &self.on_retry.as_ref().map(|_| "Some(..)"))
-            .finish()
-    }
-}
-
 #[async_trait]
 pub trait ChatClient: Send + Sync {
     async fn complete(

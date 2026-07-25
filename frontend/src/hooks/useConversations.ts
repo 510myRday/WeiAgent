@@ -40,9 +40,37 @@ const EMPTY_USAGE: ConversationUsage = {
 };
 
 const TOOL_START_STORAGE_PREFIX = 'weiagent:tool-start:';
+/** Entries persist the tool start timestamp; interrupted runs never clear them. */
+const TOOL_START_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function toolStartStorageKey(callId: string): string {
   return `${TOOL_START_STORAGE_PREFIX}${callId}`;
+}
+
+/**
+ * Startup sweep: drop tool-start markers leaked by interrupted runs. The stored
+ * value is the start timestamp in ms, so anything older than 7 days (or not
+ * parseable as a timestamp) is stale.
+ */
+function sweepStaleToolStartTimes(): void {
+  try {
+    const staleKeys: string[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key || !key.startsWith(TOOL_START_STORAGE_PREFIX)) continue;
+      const startedAtMs = Number(window.localStorage.getItem(key));
+      if (
+        !Number.isFinite(startedAtMs)
+        || startedAtMs <= 0
+        || Date.now() - startedAtMs > TOOL_START_MAX_AGE_MS
+      ) {
+        staleKeys.push(key);
+      }
+    }
+    staleKeys.forEach((key) => window.localStorage.removeItem(key));
+  } catch {
+    // Storage may be unavailable in privacy-restricted browser contexts.
+  }
 }
 
 function readToolStartTime(callId: string): number | undefined {
@@ -462,7 +490,7 @@ function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
 }
 
 function isEmptyConversation(conversation: Conversation): boolean {
-  return (conversation.message_count ?? 0) === 0;
+  return conversation.message_count === 0;
 }
 
 function sortConversationList(conversations: Conversation[]): Conversation[] {
@@ -523,6 +551,10 @@ export function useConversations({
   // while messages update every stream flush.
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+
+  useEffect(() => {
+    sweepStaleToolStartTimes();
+  }, []);
 
   const selectConversation = useCallback((conversationId: string) => {
     ++loadChatIdRef.current;
@@ -1034,7 +1066,8 @@ export function useConversations({
       try {
         setConversationUsage(await readConversationUsage(run.conversation_id));
       } catch {
-        // Message history remains usable when an older backend lacks usage data.
+        // Usage refresh is best-effort: a failed request here must not break
+        // the finished run, so keep the previous usage snapshot.
       }
       if (requestId === sendRequestIdRef.current) {
         setRunningConversationIds((current) => {
@@ -1287,11 +1320,9 @@ export function useConversations({
 
   return {
     conversations,
-    setConversations,
     activeConversationId,
     selectConversation,
     messages,
-    setMessages,
     conversationUsage,
     hasOlderMessages,
     isLoadingOlderMessages,

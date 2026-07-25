@@ -21,7 +21,7 @@ pub async fn search(
     api_key: &str,
     request: &ProviderSearchRequest,
 ) -> Result<ProviderSearchOutput, ProviderError> {
-    let endpoint = build_endpoint(base_url)?;
+    let endpoint = build_api_endpoint(base_url, "search")?;
     let body = build_request_body(request);
     let builder = client
         .post(endpoint)
@@ -64,7 +64,7 @@ pub async fn extract(
     api_key: &str,
     request: &ProviderExtractRequest,
 ) -> Result<ProviderExtractOutput, ProviderError> {
-    let endpoint = build_scrape_endpoint(base_url)?;
+    let endpoint = build_api_endpoint(base_url, "scrape")?;
     let body = json!({
         "url": request.url,
         "formats": ["markdown"],
@@ -105,37 +105,21 @@ pub async fn extract(
     Ok(parse_extract_output(&value, &request.url))
 }
 
-fn build_endpoint(base_url: &str) -> Result<reqwest::Url, ProviderError> {
-    let mut endpoint = reqwest::Url::parse(base_url.trim_end_matches('/'))
-        .map_err(|error| ProviderError::Fatal(format!("Firecrawl base URL is invalid: {error}")))?;
+/// Builds `{base}/{suffix}` tolerating bare hosts, `/v1`-or-`/v2`-suffixed
+/// bases, and custom paths that already end with the suffix.
+fn build_api_endpoint(base_url: &str, suffix: &str) -> Result<reqwest::Url, ProviderError> {
+    let mut endpoint = reqwest::Url::parse(base_url.trim_end_matches('/')).map_err(|error| {
+        ProviderError::Retryable(format!("Firecrawl base URL is invalid: {error}"))
+    })?;
     let path = endpoint.path().trim_end_matches('/');
-    let path = if path.ends_with("/search") {
+    let path = if path.ends_with(&format!("/{suffix}")) {
         path.to_string()
     } else if path.ends_with("/v1") || path.ends_with("/v2") {
-        format!("{path}/search")
+        format!("{path}/{suffix}")
     } else if path.is_empty() {
-        "/v2/search".to_string()
+        format!("/v2/{suffix}")
     } else {
-        format!("{path}/v2/search")
-    };
-    endpoint.set_path(&path);
-    endpoint.set_query(None);
-    endpoint.set_fragment(None);
-    Ok(endpoint)
-}
-
-fn build_scrape_endpoint(base_url: &str) -> Result<reqwest::Url, ProviderError> {
-    let mut endpoint = reqwest::Url::parse(base_url.trim_end_matches('/'))
-        .map_err(|error| ProviderError::Fatal(format!("Firecrawl base URL is invalid: {error}")))?;
-    let path = endpoint.path().trim_end_matches('/');
-    let path = if path.ends_with("/scrape") {
-        path.to_string()
-    } else if path.ends_with("/v1") || path.ends_with("/v2") {
-        format!("{path}/scrape")
-    } else if path.is_empty() {
-        "/v2/scrape".to_string()
-    } else {
-        format!("{path}/v2/scrape")
+        format!("{path}/v2/{suffix}")
     };
     endpoint.set_path(&path);
     endpoint.set_query(None);
@@ -465,17 +449,19 @@ mod tests {
     #[test]
     fn builds_v2_search_endpoint() {
         assert_eq!(
-            build_endpoint("https://api.firecrawl.dev/v2")
+            build_api_endpoint("https://api.firecrawl.dev/v2", "search")
                 .unwrap()
                 .as_str(),
             "https://api.firecrawl.dev/v2/search"
         );
         assert_eq!(
-            build_endpoint("https://example.com").unwrap().as_str(),
+            build_api_endpoint("https://example.com", "search")
+                .unwrap()
+                .as_str(),
             "https://example.com/v2/search"
         );
         assert_eq!(
-            build_endpoint("https://example.com/custom/v1/search")
+            build_api_endpoint("https://example.com/custom/v1/search", "search")
                 .unwrap()
                 .as_str(),
             "https://example.com/custom/v1/search"
@@ -570,7 +556,7 @@ mod tests {
     #[test]
     fn builds_scrape_endpoint() {
         assert_eq!(
-            build_scrape_endpoint("https://api.firecrawl.dev/v2")
+            build_api_endpoint("https://api.firecrawl.dev/v2", "scrape")
                 .unwrap()
                 .as_str(),
             "https://api.firecrawl.dev/v2/scrape"

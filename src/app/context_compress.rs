@@ -191,7 +191,7 @@ fn summary_anchor_message(covered: &[ChatMessage], checkpoint: &ContextCheckpoin
     }
 }
 
-pub fn estimate_messages_tokens(messages: &[ChatMessage]) -> u64 {
+fn estimate_messages_tokens(messages: &[ChatMessage]) -> u64 {
     messages.iter().map(estimate_message_tokens).sum::<u64>()
 }
 
@@ -273,7 +273,7 @@ fn latest_usage_context_tokens(messages: &[ChatMessage]) -> Option<(usize, u64)>
         .find_map(|(index, message)| usage_context_tokens(message).map(|tokens| (index, tokens)))
 }
 
-pub fn projected_context_tokens(messages: &[ChatMessage]) -> u64 {
+fn projected_context_tokens(messages: &[ChatMessage]) -> u64 {
     let estimate = estimate_messages_tokens(messages);
     match latest_usage_context_tokens(messages) {
         Some((index, usage)) => usage
@@ -366,18 +366,6 @@ pub fn projected_request_tokens_with_fixed(messages: &[ChatMessage], fixed_token
             .max(full_estimate),
         None => full_estimate,
     }
-}
-
-// Production callers use `needs_compaction_with_fixed`; this wrapper is kept
-// for tests and external readability.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn needs_compaction(
-    messages: &[ChatMessage],
-    config: &CompactionConfig,
-    system_prompt: &str,
-    tools: Option<&[ToolDefinition]>,
-) -> bool {
-    projected_request_tokens(messages, system_prompt, tools) >= config.soft_limit_tokens()
 }
 
 pub fn needs_compaction_with_fixed(
@@ -1145,9 +1133,17 @@ mod tests {
     fn needs_compaction_uses_soft_limit() {
         let messages = vec![msg(ChatRole::User, &"a".repeat(20_000))];
         let config = test_config(1_000, 50, 100);
-        assert!(needs_compaction(&messages, &config, "", None));
+        assert!(needs_compaction_with_fixed(
+            &messages,
+            &config,
+            fixed_request_tokens("", None),
+        ));
         let tiny = vec![msg(ChatRole::User, "hi")];
-        assert!(!needs_compaction(&tiny, &config, "", None));
+        assert!(!needs_compaction_with_fixed(
+            &tiny,
+            &config,
+            fixed_request_tokens("", None),
+        ));
     }
 
     #[test]
@@ -1163,11 +1159,10 @@ mod tests {
         }];
         let config = test_config(1_000, 90, 100);
 
-        assert!(needs_compaction(
+        assert!(needs_compaction_with_fixed(
             &messages,
             &config,
-            &"s".repeat(1_000),
-            Some(&tools),
+            fixed_request_tokens(&"s".repeat(1_000), Some(&tools)),
         ));
     }
 

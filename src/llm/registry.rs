@@ -6,8 +6,8 @@ use crate::{
     llm::{
         client::DynChatClient,
         protocol::{
-            anthropic::AnthropicMessagesClient, gemini::GeminiClient,
-            openai_chat::OpenAiChatClient, openai_responses::OpenAiResponsesClient,
+            anthropic::AnthropicAdapter, common::ProtocolClient, gemini::GeminiAdapter,
+            openai_chat::OpenAiChatAdapter, openai_responses::OpenAiResponsesAdapter,
         },
     },
     storage::LlmLogger,
@@ -29,14 +29,16 @@ pub struct DefaultLlmRegistry {
 impl DefaultLlmRegistry {
     pub fn new(llm_logger: Arc<LlmLogger>) -> Self {
         Self {
-            openai_compatible: Arc::new(OpenAiChatClient::new().with_logger(llm_logger.clone())),
+            openai_compatible: Arc::new(
+                ProtocolClient::new(OpenAiChatAdapter).with_logger(llm_logger.clone()),
+            ),
             openai_responses: Arc::new(
-                OpenAiResponsesClient::new().with_logger(llm_logger.clone()),
+                ProtocolClient::new(OpenAiResponsesAdapter).with_logger(llm_logger.clone()),
             ),
             anthropic_messages: Arc::new(
-                AnthropicMessagesClient::new().with_logger(llm_logger.clone()),
+                ProtocolClient::new(AnthropicAdapter).with_logger(llm_logger.clone()),
             ),
-            google_gemini: Arc::new(GeminiClient::new().with_logger(llm_logger)),
+            google_gemini: Arc::new(ProtocolClient::new(GeminiAdapter).with_logger(llm_logger)),
         }
     }
 }

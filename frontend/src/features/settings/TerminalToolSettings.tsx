@@ -20,6 +20,7 @@ import { updateToolProcessCache, useBeforeUnloadGuard, usePageVisibility } from 
 import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../components/ui';
 import { PermissionModeControl, type PermissionMode } from './PermissionModeControl';
 import { WebSearchToolSettings } from './WebSearchToolSettings';
+import { mergeToolsConfig } from './web-search/utils';
 
 interface TerminalToolSettingsProps {
   scope: 'defaults' | 'agent';
@@ -1155,32 +1156,6 @@ function InheritanceControl({ inherited, onChange, t }: {
       <span>{t('tools.terminal.inheritDefault')}</span>
     </label>
   );
-}
-
-function mergeToolsConfig(defaults: AgentToolsConfig, overrides: AgentToolsOverrides): AgentToolsConfig {
-  return {
-    max_llm_iterations: overrides.max_llm_iterations ?? defaults.max_llm_iterations,
-    evidence_storage: defaults.evidence_storage,
-    terminal: {
-      enabled: overrides.terminal.enabled ?? defaults.terminal.enabled,
-      permission_mode: overrides.terminal.permission_mode ?? defaults.terminal.permission_mode,
-      approval_grants: overrides.terminal.approval_grants,
-      default_timeout_ms: overrides.terminal.default_timeout_ms ?? defaults.terminal.default_timeout_ms,
-      allowed_cwd_roots: overrides.terminal.allowed_cwd_roots ?? defaults.terminal.allowed_cwd_roots,
-    },
-    web_search: {
-      enabled: overrides.web_search?.enabled ?? defaults.web_search?.enabled ?? true,
-      max_results: overrides.web_search?.max_results ?? defaults.web_search?.max_results ?? 5,
-      timeout_ms: defaults.web_search?.timeout_ms ?? 15000,
-      key_selection: defaults.web_search?.key_selection ?? 'sequential',
-      extraction: defaults.web_search?.extraction ?? {
-        remote_enabled: true,
-        max_remote_attempts_per_url: 3,
-        allow_grok_fallback: true,
-      },
-      sources: defaults.web_search?.sources ?? [],
-    },
-  };
 }
 
 function agentName(agentId: string, agents: Agent[], t: (path: string) => string): string {

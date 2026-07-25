@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     domain::{AgentToolsConfig, ApprovalDecision, PendingApproval, ToolResult},
     llm::types::{FunctionDefinition, ToolDefinition},
-    storage::JsonStore,
+    storage::Store,
     tools::{
         approval::ApprovalManager,
         multi_edit::{
@@ -52,7 +52,7 @@ pub struct ToolExecutionContext {
     pub conversation_id: Uuid,
     pub call_id: String,
     pub tools_config: AgentToolsConfig,
-    pub store: Arc<JsonStore>,
+    pub store: Arc<Store>,
     pub terminal_manager: Arc<TerminalManager>,
     pub approval_manager: Arc<ApprovalManager>,
     pub event_sender: Option<mpsc::Sender<ToolExecutionEvent>>,
@@ -265,7 +265,7 @@ impl AgentTool for ExecuteTerminalTool {
                         .to_string(),
             };
         }
-        let mut result = execute_terminal(
+        let result = execute_terminal(
             &ExecuteTerminalRequest {
                 command: command.clone(),
                 cwd: cwd.clone(),
@@ -288,110 +288,44 @@ impl AgentTool for ExecuteTerminalTool {
             return result;
         };
         let approval_id = approval_id.clone();
-        let Some(event_sender) = context.event_sender.clone() else {
-            return ToolResult::Rejected {
-                reason: "This command requires interactive approval; use the SSE message endpoint"
-                    .to_string(),
-            };
-        };
         let approval_cwd = cwd
             .clone()
             .or_else(|| Some(context.store.terminal_workspace_dir.display().to_string()));
-        let decision_rx = context.approval_manager.register(PendingApproval {
-            approval_id: approval_id.clone(),
-            agent_id: context.agent_id,
-            conversation_id: context.conversation_id,
-            tool_call_id: context.call_id.clone(),
-            command: command.clone(),
-            cwd: approval_cwd.clone(),
-            runtime: "codex_full_access".to_string(),
-            permission: "full_access".to_string(),
-            justification: justification.clone(),
-            background: background.unwrap_or(false),
-        });
-        let _approval_guard = ApprovalRegistrationGuard {
-            manager: context.approval_manager.clone(),
-            approval_id: approval_id.clone(),
-        };
-        if event_sender
-            .send(ToolExecutionEvent::ApprovalRequired {
-                call_id: context.call_id.clone(),
-                agent_id: context.agent_id,
-                command: command.clone(),
-                approval_id: approval_id.clone(),
-                cwd: approval_cwd,
-                runtime: "codex_full_access".to_string(),
-                permission: "full_access".to_string(),
-                justification: justification.clone(),
-                background: background.unwrap_or(false),
-            })
-            .await
-            .is_err()
-        {
-            return ToolResult::Rejected {
-                reason: "Approval client disconnected".to_string(),
-            };
-        }
-
-        let decision = wait_for_approval_decision(
+        run_with_approval(
             &context,
-            &approval_id,
-            decision_rx,
-            &event_sender,
-            |tools_config| {
-                tools_config.terminal.permission_mode
-                    == crate::domain::TerminalPermissionMode::FullAccess
+            approval_id,
+            command.clone(),
+            approval_cwd,
+            "codex_full_access",
+            "full_access",
+            justification,
+            background.unwrap_or(false),
+            "This command requires interactive approval; use the SSE message endpoint",
+            "Command rejected by user or approval expired",
+            &command,
+            cwd.as_deref(),
+            async |terminal_config| {
+                execute_terminal(
+                    &ExecuteTerminalRequest {
+                        command: command.clone(),
+                        cwd: cwd.clone(),
+                        timeout_ms,
+                        background,
+                        tty,
+                        sandbox_permissions,
+                        approved: true,
+                        agent_id: context.agent_id,
+                        conversation_id: context.conversation_id,
+                        tool_call_id: context.call_id.clone(),
+                    },
+                    &terminal_config,
+                    &context.store.terminal_workspace_dir,
+                    &context.terminal_manager,
+                )
+                .await
             },
         )
-        .await;
-        match decision {
-            Some(ApprovalDecision::Approve) => {}
-            Some(ApprovalDecision::AlwaysApprove) => {
-                if let Err(error) = context
-                    .store
-                    .always_allow_terminal_command(context.agent_id, &command, cwd.as_deref())
-                    .await
-                {
-                    return ToolResult::Error {
-                        message: format!("Failed to persist always-allow rule: {error}"),
-                    };
-                }
-            }
-            Some(ApprovalDecision::Reject) => {
-                return ToolResult::Rejected {
-                    reason: "Command rejected by user or approval expired".to_string(),
-                };
-            }
-            None => {
-                return ToolResult::Rejected {
-                    reason: "Approval client disconnected".to_string(),
-                };
-            }
-        }
-
-        let terminal_config = match live_terminal_config(&context).await {
-            Ok(config) => config,
-            Err(message) => return ToolResult::Error { message },
-        };
-        result = execute_terminal(
-            &ExecuteTerminalRequest {
-                command,
-                cwd,
-                timeout_ms,
-                background,
-                tty,
-                sandbox_permissions,
-                approved: true,
-                agent_id: context.agent_id,
-                conversation_id: context.conversation_id,
-                tool_call_id: context.call_id,
-            },
-            &terminal_config,
-            &context.store.terminal_workspace_dir,
-            &context.terminal_manager,
-        )
-        .await;
-        result
+        .await
     }
 }
 
@@ -595,7 +529,7 @@ struct MultiEditFileTool;
 impl AgentTool for MultiEditFileTool {
     fn definition(&self, config: &AgentToolsConfig) -> ToolDefinition {
         let description = format!(
-            "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated by the server; failure leaves files unchanged. Prefer one input mode: operations (preferred), path+edits, or files. For an edit, read the current file first when it is not already in context, copy old_string exactly including indentation, keep it short and unique, and put all replacements for one path in one operation. operations, files, and edits must be JSON arrays, never quoted JSON text. Do not include line-number prefixes in old_string. In-workspace edits may require approval under request_approval. Paths outside the configured workspace roots must set sandbox_permissions=require_escalated with a short justification so the user can approve; do not bypass multi_edit_file via shell when an outside-root edit is needed. Exact edits compare LF-normalized text; use replace_all or startLine only when needed.{}",
+            "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated by the server; failure leaves files unchanged. For an edit, read the current file first when it is not already in context, copy old_string exactly including indentation, keep it short and unique, and put all replacements for one path in one operation. operations must be a JSON array, never quoted JSON text. Do not include line-number prefixes in old_string. In-workspace edits may require approval under request_approval. Paths outside the configured workspace roots must set sandbox_permissions=require_escalated with a short justification so the user can approve; do not bypass multi_edit_file via shell when an outside-root edit is needed. Exact edits compare LF-normalized text; use replace_all or startLine only when needed.{}",
             configured_working_directories_guidance(config)
         );
         tool_definition(
@@ -605,59 +539,6 @@ impl AgentTool for MultiEditFileTool {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 4096,
-                        "description": "Legacy single-file edit path, relative to cwd unless absolute. Use with top-level edits."
-                    },
-                    "edits": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 64,
-                        "description": "Legacy ordered exact replacements for path. Do not pass this array as a quoted JSON string.",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "required": ["old_string", "new_string"],
-                            "properties": {
-                                "old_string": {"type": "string", "maxLength": 200000, "description": "Exact current text to replace, including indentation."},
-                                "new_string": {"type": "string", "maxLength": 2097152},
-                                "replace_all": {"type": "boolean", "description": "Replace every occurrence. Defaults to false."},
-                                "startLine": {"type": "integer", "minimum": 1, "description": "1-based hint for resolving an ambiguous match."}
-                            }
-                        }
-                    },
-                    "files": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 32,
-                        "description": "Multiple existing files. Each item has path and edits. Do not combine with path or operations.",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "required": ["path", "edits"],
-                            "properties": {
-                                "path": {"type": "string", "minLength": 1, "maxLength": 4096},
-                                "edits": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "maxItems": 64,
-                                    "items": {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "required": ["old_string", "new_string"],
-                                        "properties": {
-                                            "old_string": {"type": "string", "maxLength": 200000},
-                                            "new_string": {"type": "string", "maxLength": 2097152},
-                                            "replace_all": {"type": "boolean"},
-                                            "startLine": {"type": "integer", "minimum": 1}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
                     "operations": {
                         "type": "array",
                         "minItems": 1,
@@ -739,7 +620,7 @@ impl AgentTool for MultiEditFileTool {
                         "description": "Short reason for elevated write access. Include it when sandbox_permissions is require_escalated. Max 2000 bytes. Skip it for use_default."
                     }
                 },
-                "required": []
+                "required": ["operations"]
             }),
         )
     }
@@ -786,7 +667,7 @@ impl AgentTool for MultiEditFileTool {
             ..args
         };
 
-        let mut result = execute_multi_edit(
+        let result = execute_multi_edit(
             &MultiEditRequest {
                 args: args.clone(),
                 approved: false,
@@ -805,112 +686,38 @@ impl AgentTool for MultiEditFileTool {
         };
         let approval_id = approval_id.clone();
         let command = command.clone();
-        let Some(event_sender) = context.event_sender.clone() else {
-            return ToolResult::Rejected {
-                reason: "This edit requires interactive approval; use the SSE message endpoint"
-                    .to_string(),
-            };
-        };
-
         let approval_cwd = cwd
             .clone()
             .or_else(|| Some(context.store.terminal_workspace_dir.display().to_string()));
-        let decision_rx = context.approval_manager.register(PendingApproval {
-            approval_id: approval_id.clone(),
-            agent_id: context.agent_id,
-            conversation_id: context.conversation_id,
-            tool_call_id: context.call_id.clone(),
-            command: command.clone(),
-            cwd: approval_cwd.clone(),
-            runtime: "builtin_multi_edit".to_string(),
-            permission: "file_write".to_string(),
-            justification: justification
-                .clone()
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| Some("Apply multi_edit_file changes".to_string())),
-            background: false,
-        });
-        let _approval_guard = ApprovalRegistrationGuard {
-            manager: context.approval_manager.clone(),
-            approval_id: approval_id.clone(),
-        };
-        if event_sender
-            .send(ToolExecutionEvent::ApprovalRequired {
-                call_id: context.call_id.clone(),
-                agent_id: context.agent_id,
-                command: command.clone(),
-                approval_id: approval_id.clone(),
-                cwd: approval_cwd.clone(),
-                runtime: "builtin_multi_edit".to_string(),
-                permission: "file_write".to_string(),
-                justification: justification
-                    .clone()
-                    .filter(|value| !value.trim().is_empty())
-                    .or_else(|| Some("Apply multi_edit_file changes".to_string())),
-                background: false,
-            })
-            .await
-            .is_err()
-        {
-            return ToolResult::Rejected {
-                reason: "Approval client disconnected".to_string(),
-            };
-        }
-
-        let decision = wait_for_approval_decision(
+        let justification = justification
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| Some("Apply multi_edit_file changes".to_string()));
+        run_with_approval(
             &context,
-            &approval_id,
-            decision_rx,
-            &event_sender,
-            |tools_config| {
-                tools_config.terminal.permission_mode
-                    == crate::domain::TerminalPermissionMode::FullAccess
+            approval_id,
+            command,
+            approval_cwd.clone(),
+            "builtin_multi_edit",
+            "file_write",
+            justification,
+            false,
+            "This edit requires interactive approval; use the SSE message endpoint",
+            "Edit rejected by user or approval expired",
+            MULTI_EDIT_GRANT_COMMAND,
+            approval_cwd.as_deref(),
+            async |terminal_config| {
+                execute_multi_edit(
+                    &MultiEditRequest {
+                        args,
+                        approved: true,
+                    },
+                    &terminal_config,
+                    &context.store.terminal_workspace_dir,
+                )
+                .await
             },
         )
-        .await;
-        match decision {
-            Some(ApprovalDecision::Approve) => {}
-            Some(ApprovalDecision::AlwaysApprove) => {
-                if let Err(error) = context
-                    .store
-                    .always_allow_terminal_command(
-                        context.agent_id,
-                        MULTI_EDIT_GRANT_COMMAND,
-                        approval_cwd.as_deref(),
-                    )
-                    .await
-                {
-                    return ToolResult::Error {
-                        message: format!("Failed to persist always-allow rule: {error}"),
-                    };
-                }
-            }
-            Some(ApprovalDecision::Reject) => {
-                return ToolResult::Rejected {
-                    reason: "Edit rejected by user or approval expired".to_string(),
-                };
-            }
-            None => {
-                return ToolResult::Rejected {
-                    reason: "Approval client disconnected".to_string(),
-                };
-            }
-        }
-
-        let terminal_config = match live_terminal_config(&context).await {
-            Ok(config) => config,
-            Err(message) => return ToolResult::Error { message },
-        };
-        result = execute_multi_edit(
-            &MultiEditRequest {
-                args,
-                approved: true,
-            },
-            &terminal_config,
-            &context.store.terminal_workspace_dir,
-        )
-        .await;
-        result
+        .await
     }
 }
 
@@ -1251,6 +1058,110 @@ async fn wait_for_approval_decision(
     }
 }
 
+/// Shared interactive-approval flow: register the pending approval, notify the
+/// SSE client, wait for a decision (auto-approving if the agent is switched to
+/// full access), persist an always-allow grant when requested, then re-execute
+/// with `approved = true` under a freshly reloaded terminal config.
+#[allow(clippy::too_many_arguments)]
+async fn run_with_approval(
+    context: &ToolExecutionContext,
+    approval_id: String,
+    command: String,
+    approval_cwd: Option<String>,
+    runtime: &str,
+    permission: &str,
+    justification: Option<String>,
+    background: bool,
+    interactive_required_reason: &str,
+    reject_reason: &str,
+    grant_command: &str,
+    grant_cwd: Option<&str>,
+    re_execute: impl AsyncFnOnce(crate::domain::TerminalToolConfig) -> ToolResult,
+) -> ToolResult {
+    let Some(event_sender) = context.event_sender.clone() else {
+        return ToolResult::Rejected {
+            reason: interactive_required_reason.to_string(),
+        };
+    };
+    let decision_rx = context.approval_manager.register(PendingApproval {
+        approval_id: approval_id.clone(),
+        agent_id: context.agent_id,
+        conversation_id: context.conversation_id,
+        tool_call_id: context.call_id.clone(),
+        command: command.clone(),
+        cwd: approval_cwd.clone(),
+        runtime: runtime.to_string(),
+        permission: permission.to_string(),
+        justification: justification.clone(),
+        background,
+    });
+    let _approval_guard = ApprovalRegistrationGuard {
+        manager: context.approval_manager.clone(),
+        approval_id: approval_id.clone(),
+    };
+    if event_sender
+        .send(ToolExecutionEvent::ApprovalRequired {
+            call_id: context.call_id.clone(),
+            agent_id: context.agent_id,
+            command,
+            approval_id: approval_id.clone(),
+            cwd: approval_cwd,
+            runtime: runtime.to_string(),
+            permission: permission.to_string(),
+            justification,
+            background,
+        })
+        .await
+        .is_err()
+    {
+        return ToolResult::Rejected {
+            reason: "Approval client disconnected".to_string(),
+        };
+    }
+
+    let decision = wait_for_approval_decision(
+        context,
+        &approval_id,
+        decision_rx,
+        &event_sender,
+        |tools_config| {
+            tools_config.terminal.permission_mode
+                == crate::domain::TerminalPermissionMode::FullAccess
+        },
+    )
+    .await;
+    match decision {
+        Some(ApprovalDecision::Approve) => {}
+        Some(ApprovalDecision::AlwaysApprove) => {
+            if let Err(error) = context
+                .store
+                .always_allow_terminal_command(context.agent_id, grant_command, grant_cwd)
+                .await
+            {
+                return ToolResult::Error {
+                    message: format!("Failed to persist always-allow rule: {error}"),
+                };
+            }
+        }
+        Some(ApprovalDecision::Reject) => {
+            return ToolResult::Rejected {
+                reason: reject_reason.to_string(),
+            };
+        }
+        None => {
+            return ToolResult::Rejected {
+                reason: "Approval client disconnected".to_string(),
+            };
+        }
+    }
+
+    let terminal_config = match live_terminal_config(context).await {
+        Ok(config) => config,
+        Err(message) => return ToolResult::Error { message },
+    };
+    re_execute(terminal_config).await
+}
+
 struct ApprovalRegistrationGuard {
     manager: Arc<ApprovalManager>,
     approval_id: String,
@@ -1557,18 +1468,11 @@ mod tests {
         assert!(
             multi.function.parameters["properties"]
                 .get("path")
-                .is_some()
+                .is_none()
         );
-        assert!(
-            multi.function.parameters["properties"]
-                .get("edits")
-                .is_some()
+        assert_eq!(
+            multi.function.parameters["required"],
+            serde_json::json!(["operations"])
         );
-        assert!(
-            multi.function.parameters["properties"]
-                .get("files")
-                .is_some()
-        );
-        assert_eq!(multi.function.parameters["required"], serde_json::json!([]));
     }
 }

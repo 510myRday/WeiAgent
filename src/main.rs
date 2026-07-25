@@ -13,7 +13,7 @@ use app::{ApiSecurity, AppState, build_router, build_router_dev};
 use config::{AppConfig, log_level_filter};
 use error::{AppError, AppResult};
 use llm::registry::DefaultLlmRegistry;
-use storage::{JsonStore, LlmLogger};
+use storage::{LlmLogger, Store};
 use tokio::{
     net::TcpListener,
     process::{Child, Command},
@@ -30,7 +30,7 @@ async fn main() -> AppResult<()> {
 
     let addr = config.socket_addr()?;
     let api_security = Arc::new(ApiSecurity::new(addr, is_dev));
-    let store = Arc::new(JsonStore::new(&config.data_dir).await?);
+    let store = Arc::new(Store::new(&config.data_dir).await?);
     let database = store.database();
     let tool_defaults = store.read_tool_defaults().await?;
     if tool_defaults.evidence_storage.enabled

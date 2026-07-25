@@ -29,8 +29,8 @@ use crate::{
 
 use super::supporting_runtime;
 
-pub const FALLBACK_CODEX_VERSION: &str = "0.137.0";
 pub const MIN_SUPPORTED_CODEX_VERSION: &str = "0.137.0";
+pub const FALLBACK_CODEX_VERSION: &str = MIN_SUPPORTED_CODEX_VERSION;
 const MAX_RUNTIME_DOWNLOAD_BYTES: u64 = 600 * 1024 * 1024;
 const RUNTIME_MANIFEST_FILE: &str = "weiagent-runtime.json";
 const LATEST_VERSION_CACHE_FILE: &str = "latest-version.json";

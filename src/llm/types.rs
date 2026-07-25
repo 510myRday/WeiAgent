@@ -67,7 +67,7 @@ pub enum StreamEvent {
 
 // ─── Request / Response Types ───
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<OpenAiMessage>,
@@ -79,11 +79,9 @@ pub struct ChatCompletionRequest {
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<serde_json::Value>,
-    #[serde(flatten)]
-    pub extra_body: serde_json::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize)]
 pub struct OpenAiMessage {
     pub role: String,
     pub content: serde_json::Value,
@@ -98,7 +96,6 @@ pub fn build_chat_request(
     messages: &[ChatMessage],
     stream: bool,
     system_prompt: &str,
-    extra_body: &serde_json::Value,
     tools: Option<Vec<ToolDefinition>>,
     thinking_level: Option<ThinkingLevel>,
 ) -> ChatCompletionRequest {
@@ -127,33 +124,22 @@ pub fn build_chat_request(
         messages: request_messages,
         stream,
         tools,
-        reasoning_effort: thinking_level.and_then(|level| match level {
-            ThinkingLevel::Off => None,
-            ThinkingLevel::Low => Some("low".to_string()),
-            ThinkingLevel::Medium => Some("medium".to_string()),
-            ThinkingLevel::High => Some("high".to_string()),
-            ThinkingLevel::XHigh => Some("xhigh".to_string()),
-        }),
+        reasoning_effort: thinking_level
+            .and_then(thinking_effort_str)
+            .map(ToString::to_string),
         stream_options: stream.then(|| serde_json::json!({"include_usage": true})),
-        extra_body: sanitized_openai_extra_body(extra_body),
     }
 }
 
-fn sanitized_openai_extra_body(extra_body: &serde_json::Value) -> serde_json::Value {
-    let serde_json::Value::Object(mut extra) = extra_body.clone() else {
-        return extra_body.clone();
-    };
-    for key in [
-        "model",
-        "messages",
-        "stream",
-        "tools",
-        "reasoning_effort",
-        "stream_options",
-    ] {
-        extra.remove(key);
+/// OpenAI-style reasoning `effort` string; `None` when thinking is off.
+pub(crate) fn thinking_effort_str(level: ThinkingLevel) -> Option<&'static str> {
+    match level {
+        ThinkingLevel::Off => None,
+        ThinkingLevel::Low => Some("low"),
+        ThinkingLevel::Medium => Some("medium"),
+        ThinkingLevel::High => Some("high"),
+        ThinkingLevel::XHigh => Some("xhigh"),
     }
-    serde_json::Value::Object(extra)
 }
 
 /// Strip UI-only fields (e.g. permission_mode) before sending tool_calls to the model.
@@ -338,9 +324,6 @@ pub struct StreamDelta {
 pub struct StreamToolCallDelta {
     pub index: usize,
     pub id: Option<String>,
-    #[allow(dead_code)] // Deserialized from OpenAI response but not directly inspected
-    #[serde(rename = "type")]
-    pub kind: Option<String>,
     pub function: Option<StreamFunctionDelta>,
 }
 
@@ -524,7 +507,6 @@ mod tests {
             &[user, assistant, tool],
             false,
             "system",
-            &serde_json::Value::Null,
             None,
             None,
         );

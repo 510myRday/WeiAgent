@@ -21,7 +21,7 @@ use crate::{
     domain::{
         AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, Conversation,
         ConversationMessagePage, ConversationUsage, CreateConversationRequest, SendMessageRequest,
-        SendMessageResponse, UpdateConversationRequest,
+        UpdateConversationRequest,
     },
     error::{AppError, AppResult},
     llm::client::RequestOptions,
@@ -30,46 +30,6 @@ use crate::{
 const MAX_AGENT_RUN_DURATION: Duration = Duration::from_secs(60 * 60);
 const CONVERSATION_TITLE_TIMEOUT: Duration = Duration::from_secs(60);
 const CONVERSATION_TITLE_CHAR_LIMIT: usize = 15;
-
-struct ProcessCleanupGuard {
-    terminal_manager: std::sync::Arc<crate::tools::terminal::TerminalManager>,
-    conversation_id: Uuid,
-    armed: bool,
-}
-
-impl ProcessCleanupGuard {
-    fn new(
-        terminal_manager: std::sync::Arc<crate::tools::terminal::TerminalManager>,
-        conversation_id: Uuid,
-    ) -> Self {
-        Self {
-            terminal_manager,
-            conversation_id,
-            armed: true,
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for ProcessCleanupGuard {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let terminal_manager = self.terminal_manager.clone();
-        let conversation_id = self.conversation_id;
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                terminal_manager
-                    .stop_for_conversation(conversation_id)
-                    .await;
-            });
-        }
-    }
-}
 
 fn request_options(
     settings: &crate::domain::AppSettings,
@@ -242,18 +202,6 @@ fn normalize_generated_title(content: &str) -> Option<String> {
         .take(CONVERSATION_TITLE_CHAR_LIMIT)
         .collect::<String>();
     (!title.is_empty()).then_some(title)
-}
-
-pub async fn read_conversation_messages(
-    State(state): State<AppState>,
-    Path(conversation_id): Path<Uuid>,
-) -> AppResult<Json<Vec<ChatMessage>>> {
-    Ok(Json(
-        state
-            .store
-            .read_conversation_messages(conversation_id)
-            .await?,
-    ))
 }
 
 pub async fn read_conversation_message_page(
@@ -501,108 +449,6 @@ pub async fn stream_run_events(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
-        }
-    };
-    Ok(Sse::new(stream).keep_alive(
-        axum::response::sse::KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("keep-alive"),
-    ))
-}
-
-pub async fn send_message_complete(
-    State(state): State<AppState>,
-    Path(conversation_id): Path<Uuid>,
-    Json(request): Json<SendMessageRequest>,
-) -> AppResult<Json<SendMessageResponse>> {
-    let _run_guard = state.run_manager.try_start(conversation_id)?;
-    let prepared = prepare_chat(
-        &state,
-        conversation_id,
-        &request.content,
-        &request.attachments,
-        request.thinking_level,
-        request.restart_from_message_id,
-    )
-    .await?;
-    let settings = state.store.read_settings().await?;
-    let terminal_manager = state.terminal_manager.clone();
-    let mut cleanup_guard = ProcessCleanupGuard::new(terminal_manager.clone(), conversation_id);
-    let options = request_options(&settings, prepared.thinking_level);
-    let result = tokio::time::timeout(
-        MAX_AGENT_RUN_DURATION,
-        run_agent(state, prepared, options, false, None),
-    )
-    .await;
-    match result {
-        Ok(Ok(result)) => {
-            cleanup_guard.disarm();
-            Ok(Json(result))
-        }
-        Ok(Err(error)) => Err(error),
-        Err(_) => {
-            terminal_manager
-                .stop_for_conversation(conversation_id)
-                .await;
-            cleanup_guard.disarm();
-            Err(crate::error::AppError::Llm(
-                "agent run exceeded the 60 minute deadline".to_string(),
-            ))
-        }
-    }
-}
-
-pub async fn send_message_stream(
-    State(state): State<AppState>,
-    Path(conversation_id): Path<Uuid>,
-    Json(request): Json<SendMessageRequest>,
-) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
-    let run_guard = state.run_manager.try_start(conversation_id)?;
-    let prepared = prepare_chat(
-        &state,
-        conversation_id,
-        &request.content,
-        &request.attachments,
-        request.thinking_level,
-        request.restart_from_message_id,
-    )
-    .await?;
-    let settings = state.store.read_settings().await?;
-    let options = request_options(&settings, prepared.thinking_level);
-    let use_streaming_llm = request.stream;
-    let (sender, mut receiver) = mpsc::channel(256);
-    let error_sender = sender.clone();
-    let terminal_manager = state.terminal_manager.clone();
-    tokio::spawn(async move {
-        let _run_guard = run_guard;
-        match tokio::time::timeout(
-            MAX_AGENT_RUN_DURATION,
-            run_agent(state, prepared, options, use_streaming_llm, Some(sender)),
-        )
-        .await
-        {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => {
-                let _ = error_sender
-                    .send(AgentRunEvent::Error(error.to_string()))
-                    .await;
-            }
-            Err(_) => {
-                terminal_manager
-                    .stop_for_conversation(conversation_id)
-                    .await;
-                let _ = error_sender
-                    .send(AgentRunEvent::Error(
-                        "agent run exceeded the 60 minute deadline".to_string(),
-                    ))
-                    .await;
-            }
-        }
-    });
-
-    let stream = async_stream::stream! {
-        while let Some(event) = receiver.recv().await {
-            yield Ok(agent_event_to_sse(event));
         }
     };
     Ok(Sse::new(stream).keep_alive(

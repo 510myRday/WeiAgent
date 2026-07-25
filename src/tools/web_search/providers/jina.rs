@@ -99,20 +99,15 @@ pub async fn extract(
     request: &ProviderExtractRequest,
 ) -> Result<ProviderExtractOutput, ProviderError> {
     let endpoint = format!("{}/{}", base_url.trim_end_matches('/'), request.url);
-    let endpoint = reqwest::Url::parse(&endpoint)
-        .map_err(|error| ProviderError::Fatal(format!("Jina Reader URL is invalid: {error}")))?;
-    let mut builder = client
-        .get(endpoint)
-        .header("Accept", "application/json")
-        .header("User-Agent", JINA_USER_AGENT)
+    let endpoint = reqwest::Url::parse(&endpoint).map_err(|error| {
+        ProviderError::Retryable(format!("Jina Reader URL is invalid: {error}"))
+    })?;
+    let builder = build_request(client, endpoint, api_key)
         .header("X-Return-Format", "markdown")
         .header(
             "X-Timeout",
             (request.timeout_ms / 1_000).clamp(1, 180).to_string(),
         );
-    if !api_key.trim().is_empty() {
-        builder = builder.bearer_auth(api_key.trim());
-    }
     let text = send_checked(
         builder,
         "Jina Reader",
@@ -281,7 +276,7 @@ fn build_endpoint(
     max_results: u32,
 ) -> Result<reqwest::Url, ProviderError> {
     let mut endpoint = reqwest::Url::parse(base_url.trim_end_matches('/'))
-        .map_err(|error| ProviderError::Fatal(format!("Jina base URL is invalid: {error}")))?;
+        .map_err(|error| ProviderError::Retryable(format!("Jina base URL is invalid: {error}")))?;
     endpoint
         .query_pairs_mut()
         .append_pair("q", query)

@@ -13,14 +13,6 @@ pub fn build_environment_prefix(
     terminal_workspace_dir: &Path,
     attachments_dir: &Path,
 ) -> String {
-    build_environment_section(data_dir, terminal_workspace_dir, attachments_dir)
-}
-
-fn build_environment_section(
-    data_dir: &Path,
-    terminal_workspace_dir: &Path,
-    attachments_dir: &Path,
-) -> String {
     let os = host_os_label();
     let arch = std::env::consts::ARCH;
     let shell = crate::tools::shell::selected_host_shell().environment_label();

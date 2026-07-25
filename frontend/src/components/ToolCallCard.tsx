@@ -1,51 +1,33 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle,
   Check,
-  CheckCircle,
-  Clock3,
   Copy,
-  Loader2,
   Maximize2,
   RefreshCw,
-  Square,
   Terminal,
-  Wrench,
-  X,
-  XCircle,
 } from 'lucide-react';
 
-import { stopToolProcess } from '../api';
 import type { ToolArguments, ToolCallStatus, ToolResultData } from '../types';
 import { useI18n } from '../i18n';
-import { updateToolProcessCache, useClipboard, useToolProcess } from '../hooks';
+import { useClipboard, useToolProcess } from '../hooks';
 import { Dialog, IconButton } from './ui';
 
+/**
+ * Embedded body of a tool call, always rendered inside ToolDisclosure which
+ * owns the header, approval buttons, and process stop actions.
+ */
 interface ToolCallCardProps {
   agentId: string;
-  callId: string;
-  name: string;
   arguments: ToolArguments;
   argumentsText?: string;
   phase?: 'generating_arguments' | 'executing';
   status: ToolCallStatus;
   result?: ToolResultData;
-  /** Hide the status/title header when nested under a disclosure summary. */
-  hideHeader?: boolean;
-  /** Render the running-process action in the parent disclosure summary instead. */
-  hideProcessActions?: boolean;
   onApprove?: (decision: 'approve' | 'reject' | 'always_approve') => Promise<void> | void;
 }
 
 function hasText(value?: string | null): boolean {
   return Boolean(value && value.trim().length > 0);
-}
-
-function isTerminalTool(name: string): boolean {
-  return (
-    name === 'execute_terminal' ||
-    name === 'terminal_session'
-  );
 }
 
 function formatToolArguments(args: ToolArguments): string | null {
@@ -103,30 +85,6 @@ function prettyJsonValue(value: string): string | null {
   } catch {
     return null;
   }
-}
-
-function ToolNameBadge({ name }: { name: string }) {
-  return (
-    <span className="tool-card__tool-badge" title={name}>
-      <Wrench size={12} aria-hidden />
-      <code>{name}</code>
-    </span>
-  );
-}
-
-function HeaderMeta({
-  name,
-  children,
-}: {
-  name: string;
-  children?: ReactNode;
-}) {
-  return (
-    <div className="tool-card__meta">
-      <ToolNameBadge name={name} />
-      {children}
-    </div>
-  );
 }
 
 function TerminalContent({
@@ -210,13 +168,11 @@ function TerminalContent({
 }
 
 function ToolPayload({
-  name,
   args,
   argumentsText,
   phase,
   t,
 }: {
-  name: string;
   args: ToolArguments;
   argumentsText?: string;
   phase?: 'generating_arguments' | 'executing';
@@ -228,10 +184,9 @@ function ToolPayload({
   if (typeof args.command === 'string' && args.command.trim()) {
     return <TerminalContent content={args.command} tone="command" t={t} />;
   }
+  // For non-execute tools, show structured args so the bubble is still useful.
   const formatted = formatToolArguments(args);
   if (!formatted) return null;
-  // For non-execute tools, show structured args so the bubble is still useful.
-  void name;
   return <TerminalContent content={formatted} tone="args" t={t} />;
 }
 
@@ -271,80 +226,26 @@ function TerminalOutputs({
 
 export function ToolCallCard({
   agentId,
-  name,
   arguments: args,
   argumentsText,
   phase,
   status,
   result,
-  hideHeader = false,
-  hideProcessActions = false,
   onApprove,
 }: ToolCallCardProps) {
   const { t } = useI18n();
   const processId = result?.process_id;
   const processSnapshot = useToolProcess(processId, agentId);
   const process = processSnapshot.process;
-  const [processActionError, setProcessActionError] = useState('');
-  const [isStopping, setIsStopping] = useState(false);
-  const [approvalDecision, setApprovalDecision] = useState<'approve' | 'reject' | 'always_approve' | null>(null);
 
-  useEffect(() => {
-    setApprovalDecision(null);
-  }, [args.approval_id, status]);
-
-  useEffect(() => {
-    setProcessActionError('');
-  }, [processId]);
-
-  const processError = processActionError
-    || (processSnapshot.notFound
-      ? t('toolCard.processUnavailable')
-      : processSnapshot.error || '');
-
-  async function handleStop() {
-    if (!processId) return;
-    setIsStopping(true);
-    try {
-      const stopped = await stopToolProcess(processId, agentId);
-      updateToolProcessCache(stopped);
-      setProcessActionError('');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '';
-      if (/not found/i.test(message)) {
-        setProcessActionError(t('toolCard.processUnavailable'));
-      } else {
-        setProcessActionError(message || t('toolCard.stopFailed'));
-      }
-    } finally {
-      setIsStopping(false);
-    }
-  }
-
-  async function handleApproval(decision: 'approve' | 'reject' | 'always_approve') {
-    if (!onApprove || approvalDecision) return;
-    setApprovalDecision(decision);
-    try {
-      await onApprove(decision);
-    } catch {
-      setApprovalDecision(null);
-    }
-  }
+  const processError = processSnapshot.notFound
+    ? t('toolCard.processUnavailable')
+    : processSnapshot.error || '';
 
   if (status === 'pending_approval' && onApprove) {
     return (
-      <div className={`tool-card tool-card--approval${hideHeader ? ' tool-card--embedded' : ''}`}>
-        {hideHeader ? null : (
-          <div className="tool-card__header">
-            <span className="tool-card__status-icon tool-card__status-icon--approval"><Terminal size={19} /></span>
-            <div className="tool-card__title">
-              <strong>{t('toolCard.approvalTitle')}</strong>
-              <small>{t('toolCard.approvalSubtitle')}</small>
-            </div>
-            <HeaderMeta name={name} />
-          </div>
-        )}
-        <ToolPayload name={name} args={args} argumentsText={argumentsText} phase={phase} t={t} />
+      <div className="tool-card tool-card--approval tool-card--embedded">
+        <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
         <dl className="tool-card__approval-context">
           <div><dt>{t('toolCard.cwd')}</dt><dd>{String(args.cwd || t('toolCard.defaultCwd'))}</dd></div>
           <div><dt>{t('toolCard.runtime')}</dt><dd>{String(args.runtime || t('toolCard.runtimeUnknown'))}</dd></div>
@@ -352,13 +253,6 @@ export function ToolCallCard({
           <div><dt>{t('toolCard.background')}</dt><dd>{args.background ? t('toolCard.enabled') : t('toolCard.disabled')}</dd></div>
           {args.justification ? <div><dt>{t('toolCard.justification')}</dt><dd>{String(args.justification)}</dd></div> : null}
         </dl>
-        {hideHeader ? null : (
-          <div className="tool-card__actions">
-            <button type="button" onClick={() => handleApproval('approve')} className="btn-approve" disabled={approvalDecision !== null}><Check size={15} />{approvalDecision === 'approve' ? t('toolCard.approvalSubmitting') : t('toolCard.allow')}</button>
-            <button type="button" onClick={() => handleApproval('always_approve')} className="btn-always" disabled={approvalDecision !== null}><Clock3 size={15} />{approvalDecision === 'always_approve' ? t('toolCard.approvalSubmitting') : t('toolCard.alwaysAllow')}</button>
-            <button type="button" onClick={() => handleApproval('reject')} className="btn-reject" disabled={approvalDecision !== null}><X size={15} />{approvalDecision === 'reject' ? t('toolCard.approvalSubmitting') : t('toolCard.reject')}</button>
-          </div>
-        )}
       </div>
     );
   }
@@ -384,45 +278,13 @@ export function ToolCallCard({
         ? 'tool-card--done'
         : 'tool-card--error';
     return (
-      <div className={`tool-card ${cardTone}${hideHeader ? ' tool-card--embedded' : ''}`}>
-        {hideHeader ? (
-          running && !hideProcessActions ? (
-            <div className="tool-card__embedded-actions">
-              <button type="button" className="tool-process-action" onClick={handleStop} disabled={isStopping}>
-                <Square size={14} /> {isStopping ? t('toolCard.stopping') : t('toolCard.stop')}
-              </button>
-            </div>
-          ) : missing ? (
-            <p className="tool-card__reason" title={processError || title}>
-              {t('toolCard.processStatus.notFoundBadge')}
-            </p>
-          ) : null
-        ) : (
-          <div className="tool-card__header">
-            <span className="tool-card__status-icon">
-              {running || loading
-                ? <Loader2 size={18} className="animate-spin" />
-                : effectiveStatus === 'completed'
-                  ? <CheckCircle size={18} />
-                  : <AlertTriangle size={18} />}
-            </span>
-            <div className="tool-card__title">
-              <strong>{title}</strong>
-            </div>
-            <HeaderMeta name={name}>
-              {running ? (
-                <button type="button" className="tool-process-action" onClick={handleStop} disabled={isStopping}>
-                  <Square size={14} /> {isStopping ? t('toolCard.stopping') : t('toolCard.stop')}
-                </button>
-              ) : missing ? (
-                <span className="tool-card__status-badge tool-card__status-badge--missing" title={processError || title}>
-                  {t('toolCard.processStatus.notFoundBadge')}
-                </span>
-              ) : null}
-            </HeaderMeta>
-          </div>
-        )}
-        <ToolPayload name={name} args={args} argumentsText={argumentsText} phase={phase} t={t} />
+      <div className={`tool-card ${cardTone} tool-card--embedded`}>
+        {missing ? (
+          <p className="tool-card__reason" title={processError || title}>
+            {t('toolCard.processStatus.notFoundBadge')}
+          </p>
+        ) : null}
+        <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
         {process ? (
           running && !hasText(process.stdout) && !hasText(process.stderr) ? null : (
             <TerminalOutputs
@@ -441,38 +303,17 @@ export function ToolCallCard({
 
   if (status === 'running') {
     return (
-      <div className={`tool-card tool-card--running${hideHeader ? ' tool-card--embedded' : ''}`}>
-        {hideHeader ? null : (
-          <div className="tool-card__header">
-            <span className="tool-card__status-icon"><Loader2 size={18} className="animate-spin" /></span>
-            <div className="tool-card__title">
-              <strong>{isTerminalTool(name) ? t('toolCard.executingTitle') : t('toolCard.executingGeneric')}</strong>
-            </div>
-            <HeaderMeta name={name} />
-          </div>
-        )}
-        <ToolPayload name={name} args={args} argumentsText={argumentsText} phase={phase} t={t} />
+      <div className="tool-card tool-card--running tool-card--embedded">
+        <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
       </div>
     );
   }
 
   if (status === 'completed' && result) {
     const failed = (result.exit_code ?? 0) !== 0;
-    const title = result.exit_code !== undefined && result.exit_code !== null
-      ? t('toolCard.completed', { code: result.exit_code })
-      : t('toolCard.completedGeneric');
     return (
-      <div className={`tool-card ${failed ? 'tool-card--error' : 'tool-card--done'}${hideHeader ? ' tool-card--embedded' : ''}`}>
-        {hideHeader ? null : (
-          <div className="tool-card__header">
-            <span className={`tool-card__status-icon ${failed ? '' : 'tool-card__status-icon--success'}`}>
-              {failed ? <AlertTriangle size={18} /> : <CheckCircle size={18} />}
-            </span>
-            <div className="tool-card__title"><strong>{title}</strong></div>
-            <HeaderMeta name={name} />
-          </div>
-        )}
-        <ToolPayload name={name} args={args} argumentsText={argumentsText} phase={phase} t={t} />
+      <div className={`tool-card ${failed ? 'tool-card--error' : 'tool-card--done'} tool-card--embedded`}>
+        <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
         <TerminalOutputs
           stdout={result.stdout}
           stderr={result.stderr}
@@ -485,17 +326,8 @@ export function ToolCallCard({
 
   if (status === 'blocked' || status === 'rejected') {
     return (
-      <div className={`tool-card tool-card--blocked${hideHeader ? ' tool-card--embedded' : ''}`}>
-        {hideHeader ? null : (
-          <div className="tool-card__header">
-            <span className="tool-card__status-icon"><XCircle size={18} /></span>
-            <div className="tool-card__title">
-              <strong>{status === 'blocked' ? t('toolCard.blocked') : t('toolCard.rejected')}</strong>
-            </div>
-            <HeaderMeta name={name} />
-          </div>
-        )}
-        <ToolPayload name={name} args={args} argumentsText={argumentsText} phase={phase} t={t} />
+      <div className="tool-card tool-card--blocked tool-card--embedded">
+        <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
         {result?.reason ? <p className="tool-card__reason">{result.reason}</p> : null}
       </div>
     );
@@ -503,15 +335,8 @@ export function ToolCallCard({
 
   if (status === 'error') {
     return (
-      <div className={`tool-card tool-card--error${hideHeader ? ' tool-card--embedded' : ''}`}>
-        {hideHeader ? null : (
-          <div className="tool-card__header">
-            <span className="tool-card__status-icon"><AlertTriangle size={18} /></span>
-            <div className="tool-card__title"><strong>{t('toolCard.executionError')}</strong></div>
-            <HeaderMeta name={name} />
-          </div>
-        )}
-        <ToolPayload name={name} args={args} argumentsText={argumentsText} phase={phase} t={t} />
+      <div className="tool-card tool-card--error tool-card--embedded">
+        <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
         {result?.message ? <p className="tool-card__reason">{result.message}</p> : null}
       </div>
     );
@@ -519,4 +344,3 @@ export function ToolCallCard({
 
   return null;
 }
-

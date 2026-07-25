@@ -7,10 +7,10 @@ use crate::{
         CreateConversationRequest, UpdateConversationRequest,
     },
     error::{AppError, AppResult},
-    storage::{conversation_db, json_store::JsonStore},
+    storage::{conversation_db, store::Store},
 };
 
-impl JsonStore {
+impl Store {
     async fn ensure_agent_exists(&self, agent_id: Uuid) -> AppResult<()> {
         let agents = self.read_agents().await?;
         if !agents.iter().any(|agent| agent.id == agent_id) {
@@ -172,9 +172,7 @@ impl JsonStore {
         message: ChatMessage,
     ) -> AppResult<()> {
         self.database
-            .call(move |conn| {
-                conversation_db::upsert_message_conn(conn, conversation_id, &message)
-            })
+            .call(move |conn| conversation_db::upsert_message_conn(conn, conversation_id, &message))
             .await
     }
 
@@ -201,7 +199,9 @@ impl JsonStore {
     ) -> AppResult<ContextCheckpoint> {
         let stored = checkpoint.clone();
         self.database
-            .call(move |conn| conversation_db::write_checkpoint_conn(conn, conversation_id, &stored))
+            .call(move |conn| {
+                conversation_db::write_checkpoint_conn(conn, conversation_id, &stored)
+            })
             .await?;
         Ok(checkpoint)
     }

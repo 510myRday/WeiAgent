@@ -9,12 +9,13 @@ use crate::{
     },
     error::{AppError, AppResult},
     storage::{
-        json_store::JsonStore,
+        db,
+        store::Store,
         validation::{normalize_models, validate_non_empty},
     },
 };
 
-impl JsonStore {
+impl Store {
     pub async fn list_model_providers(&self) -> AppResult<Vec<ModelProviderResponse>> {
         let providers = self.read_providers().await?;
         Ok(providers
@@ -51,7 +52,10 @@ impl JsonStore {
             created_at: now,
             updated_at: now,
         };
-        self.upsert_provider_unlocked(provider.clone()).await?;
+        let stored = provider.clone();
+        self.database
+            .call(move |connection| db::upsert_provider_conn(connection, &stored))
+            .await?;
         Ok(ModelProviderResponse::from(&provider))
     }
 
@@ -61,7 +65,10 @@ impl JsonStore {
         request: UpdateModelProviderRequest,
     ) -> AppResult<ModelProviderResponse> {
         let _guard = self.lock.lock().await;
-        let mut providers = self.read_providers_unlocked().await?;
+        let mut providers = self
+            .database
+            .call(|connection| db::read_providers_conn(connection))
+            .await?;
         let mut agents = self.read_agents_unlocked().await?;
         let original_agents = agents.clone();
         let mut agents_changed = false;
@@ -119,7 +126,12 @@ impl JsonStore {
         if agents_changed {
             self.write_agents_unlocked(&agents).await?;
         }
-        if let Err(error) = self.upsert_provider_unlocked(updated.clone()).await {
+        let stored = updated.clone();
+        if let Err(error) = self
+            .database
+            .call(move |connection| db::upsert_provider_conn(connection, &stored))
+            .await
+        {
             if agents_changed {
                 let _ = self.write_agents_unlocked(&original_agents).await;
             }
@@ -138,7 +150,11 @@ impl JsonStore {
             )));
         }
 
-        if !self.delete_provider_unlocked(id).await? {
+        if !self
+            .database
+            .call(move |connection| db::delete_provider_conn(connection, id))
+            .await?
+        {
             return Err(AppError::NotFound);
         }
         Ok(())

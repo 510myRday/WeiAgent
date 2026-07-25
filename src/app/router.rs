@@ -91,7 +91,7 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
         )
         .route(
             "/api/agents/{agent_id}/workspace",
-            get(agents::read_agent_workspace).put(agents::update_agent_workspace),
+            get(agents::read_agent_workspace),
         )
         .route(
             "/api/agents/{agent_id}/profile",
@@ -114,11 +114,6 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             post(conversations::generate_conversation_title),
         )
         .route(
-            "/api/conversations/{conversation_id}/messages",
-            get(conversations::read_conversation_messages)
-                .post(conversations::send_message_complete),
-        )
-        .route(
             "/api/conversations/{conversation_id}/messages/page",
             get(conversations::read_conversation_message_page),
         )
@@ -127,10 +122,6 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             get(conversations::read_conversation_usage),
         )
         .route("/api/assets/local", get(assets::read_local_asset))
-        .route(
-            "/api/conversations/{conversation_id}/messages/stream",
-            post(conversations::send_message_stream),
-        )
         .route(
             "/api/conversations/{conversation_id}/runs",
             post(conversations::create_message_run),
@@ -168,26 +159,7 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             "/api/tools/web-search-keys/delete",
             post(tools::delete_web_search_key),
         )
-        .route(
-            "/api/tools/grok-keys/check",
-            post(tools::check_web_search_keys),
-        )
-        .route(
-            "/api/tools/grok-keys/import",
-            post(tools::import_web_search_keys),
-        )
-        .route(
-            "/api/tools/grok-keys/delete",
-            post(tools::delete_web_search_key),
-        )
-        .route(
-            "/api/tools/codex-runtime",
-            get(tools::read_codex_runtime).post(tools::install_codex_runtime),
-        )
-        .route(
-            "/api/tools/codex-runtime/refresh",
-            post(tools::refresh_codex_runtime),
-        )
+        .route("/api/tools/codex-runtime", get(tools::read_codex_runtime))
         .route(
             "/api/tools/runtime/{component}",
             post(tools::install_runtime_component),
@@ -203,10 +175,7 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             get(tools::get_tool_process).delete(tools::stop_tool_process),
         )
         .route("/api/llm-logs", get(llm_logs::list_llm_logs))
-        .route(
-            "/api/llm-logs/{log_id}",
-            get(llm_logs::get_llm_log).delete(llm_logs::delete_llm_log),
-        )
+        .route("/api/llm-logs/{log_id}", get(llm_logs::get_llm_log))
         .layer(no_store())
         .layer(middleware::from_fn_with_state(
             security,

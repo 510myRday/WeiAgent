@@ -11,10 +11,10 @@ use crate::{
         IpProxyTestUpdate, UpdateIpProxyRequest,
     },
     error::{AppError, AppResult},
-    storage::{db, json_store::JsonStore, validation::validate_non_empty},
+    storage::{db, store::Store, validation::validate_non_empty},
 };
 
-impl JsonStore {
+impl Store {
     pub async fn list_ip_proxies(&self) -> AppResult<Vec<IpProxy>> {
         let _guard = self.lock.lock().await;
         self.read_ip_proxies_unlocked().await
@@ -453,7 +453,7 @@ mod tests {
     #[tokio::test]
     async fn imports_valid_unique_proxies_and_persists_them() {
         let root = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(root.path()).await.unwrap();
+        let store = Store::new(root.path()).await.unwrap();
         let result = store
             .import_ip_proxies(ImportIpProxiesRequest {
                 entries: vec![
@@ -510,7 +510,7 @@ mod tests {
     #[tokio::test]
     async fn quality_results_persist_with_the_proxy() {
         let root = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(root.path()).await.unwrap();
+        let store = Store::new(root.path()).await.unwrap();
         let proxy = store
             .create_ip_proxy(CreateIpProxyRequest {
                 name: "Quality test".to_string(),

@@ -63,12 +63,10 @@ test('streamRunEvents preserves blank lines in JSON encoded text deltas', async 
   });
 });
 
-test('streamRunEvents still accepts legacy multiline text deltas', async () => {
+test('streamRunEvents keeps blank lines inside a JSON text delta', async () => {
   const payload = [
     'event: delta',
-    'data: first line',
-    'data: ',
-    'data: third line',
+    `data: ${JSON.stringify({ text: 'a\n\nb' })}`,
     '',
     'event: done',
     'data: ok',
@@ -92,6 +90,35 @@ test('streamRunEvents still accepts legacy multiline text deltas', async () => {
 
   expect(events[0]).toMatchObject({
     event: 'delta',
-    data: 'first line\n\nthird line',
+    data: 'a\n\nb',
+  });
+});
+
+test('streamRunEvents reports malformed text deltas as stream errors', async () => {
+  const payload = [
+    'event: delta',
+    'data: not json',
+    '',
+    '',
+  ].join('\n');
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(payload));
+      controller.close();
+    },
+  });
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    ok: true,
+    body,
+    statusText: 'OK',
+  } as Response)));
+  const events: StreamEvent[] = [];
+
+  await streamRunEvents('run-1', 0, (event) => events.push(event));
+
+  expect(events).toHaveLength(1);
+  expect(events[0]).toMatchObject({
+    event: 'error',
+    data: 'Invalid delta stream event',
   });
 });

@@ -17,7 +17,7 @@ const MonitorPanel = lazy(() => import('./features/monitor/MonitorPanel').then((
 type SettingsSection = 'runtime' | 'agent' | 'providers' | 'proxies';
 
 export function App() {
-  const { t, locale, setLocaleStateOnly } = useI18n();
+  const { t, locale, setLocale } = useI18n();
   const { toast } = useFeedback();
   const [activeNav, setActiveNav] = useState<NavKey>('chat');
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('runtime');
@@ -79,7 +79,7 @@ export function App() {
       refreshAgents(),
     ]);
     if (settingsResult.status === 'fulfilled' && isLocale(settingsResult.value.language)) {
-      setLocaleStateOnly(settingsResult.value.language);
+      setLocale(settingsResult.value.language);
     }
     const errors = [settingsResult, providersResult, agentsResult]
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
@@ -99,7 +99,7 @@ export function App() {
     const next = { ...payload, language: isLocale(payload.language) ? payload.language : locale };
     const updated = await saveSettings(next);
     if (isLocale(updated.language)) {
-      setLocaleStateOnly(updated.language);
+      setLocale(updated.language);
     }
     return updated;
   }

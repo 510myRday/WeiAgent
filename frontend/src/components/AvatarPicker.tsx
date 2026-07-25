@@ -8,8 +8,8 @@ import {
   Sparkles,
   Star,
   Zap,
+  type LucideIcon,
 } from 'lucide-react';
-import type { ComponentType } from 'react';
 import type { AvatarIcon } from '../types';
 import {
   AVATAR_COLORS,
@@ -19,7 +19,7 @@ import {
   getPresetByIcon,
 } from '../avatarPresets';
 
-const ICON_MAP: Record<AvatarIcon, ComponentType<{ size?: number; color?: string }>> = {
+const ICON_MAP: Record<AvatarIcon, LucideIcon> = {
   bot: Bot,
   sparkles: Sparkles,
   zap: Zap,

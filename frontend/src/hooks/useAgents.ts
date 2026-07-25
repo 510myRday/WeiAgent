@@ -68,7 +68,6 @@ export function useAgents() {
 
   return {
     agents,
-    setAgents,
     activeAgentId,
     setActiveAgentId,
     isLoadingAgents,

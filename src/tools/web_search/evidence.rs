@@ -23,6 +23,7 @@ use crate::domain::{
 use super::providers::{self, exa, firecrawl, grok, jina, tavily};
 use super::types::{
     ProviderError, ProviderExtractDocument, ProviderExtractOutput, ProviderExtractRequest,
+    merge_status_update,
 };
 use super::{canonicalize_url, classify_key_status, select_source_key};
 
@@ -333,7 +334,6 @@ struct ExtractCandidate {
     extractor: String,
     evidence_class: WebExtractEvidenceClass,
     quality: QualityAssessment,
-    route_hint: RouteHint,
 }
 
 #[derive(Debug, Clone)]
@@ -421,11 +421,6 @@ async fn extract_one_routed(
             published_at: cached.published_at,
             extractor: "web_search_cache".to_string(),
             evidence_class: WebExtractEvidenceClass::ProviderExtracted,
-            route_hint: if quality.hard_page {
-                RouteHint::DynamicOrBlocked
-            } else {
-                RouteHint::General
-            },
             quality,
         };
         let high_quality = candidate.quality.score >= HIGH_QUALITY_THRESHOLD;
@@ -464,8 +459,8 @@ async fn extract_one_routed(
     let route_hint;
 
     match extract_local(&local_client, &requested_url, &query).await {
-        Ok(candidate) => {
-            route_hint = candidate.route_hint;
+        Ok((candidate, local_hint)) => {
+            route_hint = local_hint;
             let high_quality = candidate.quality.score >= HIGH_QUALITY_THRESHOLD;
             attempts.push(WebExtractAttempt {
                 extractor: "local".to_string(),
@@ -796,8 +791,6 @@ async fn execute_provider_extract(
                 request,
                 grok::GrokSearchOptions {
                     source_id: &source.id,
-                    flaresolverr_url: source.flaresolverr_url.as_deref(),
-                    flaresolverr_proxy_url: source.flaresolverr_proxy_url.as_deref(),
                     proxy_url: source.proxy_url.as_deref(),
                 },
             )
@@ -898,7 +891,6 @@ fn provider_candidate(
             WebExtractEvidenceClass::ProviderExtracted
         },
         quality,
-        route_hint: RouteHint::General,
     }
 }
 
@@ -969,7 +961,7 @@ async fn extract_local(
     client: &reqwest::Client,
     requested_url: &str,
     query: &str,
-) -> Result<ExtractCandidate, ExtractAttemptError> {
+) -> Result<(ExtractCandidate, RouteHint), ExtractAttemptError> {
     let mut current = reqwest::Url::parse(requested_url).map_err(|error| ExtractAttemptError {
         message: format!("invalid URL: {error}"),
         route_hint: RouteHint::General,
@@ -1090,19 +1082,21 @@ async fn extract_local(
     } else {
         RouteHint::General
     };
-    Ok(ExtractCandidate {
-        requested_url: requested_url.to_string(),
-        final_url,
-        title: meaningful_title(&extracted.title, &content),
-        content_type,
-        content_format: extracted.content_format,
-        content,
-        published_at: extracted.published_at,
-        extractor: "local".to_string(),
-        evidence_class: WebExtractEvidenceClass::LocalDirect,
-        quality,
+    Ok((
+        ExtractCandidate {
+            requested_url: requested_url.to_string(),
+            final_url,
+            title: meaningful_title(&extracted.title, &content),
+            content_type,
+            content_format: extracted.content_format,
+            content,
+            published_at: extracted.published_at,
+            extractor: "local".to_string(),
+            evidence_class: WebExtractEvidenceClass::LocalDirect,
+            quality,
+        },
         route_hint,
-    })
+    ))
 }
 
 async fn validate_public_target(url: &reqwest::Url) -> Result<(), ExtractAttemptError> {
@@ -1605,39 +1599,6 @@ fn extract_key_status_update(
     }
 }
 
-fn merge_status_update(
-    updates: &mut BTreeMap<(String, usize, String), WebSearchKeyStatusUpdate>,
-    update: WebSearchKeyStatusUpdate,
-) {
-    let key = (
-        update.source_id.clone(),
-        update.key_index,
-        update.api_key.clone(),
-    );
-    match updates.get(&key) {
-        Some(existing)
-            if status_severity(&existing.record.status)
-                >= status_severity(&update.record.status) => {}
-        _ => {
-            updates.insert(key, update);
-        }
-    }
-}
-
-fn status_severity(status: &str) -> u8 {
-    match status {
-        "officially_blocked" => 9,
-        "invalid_key" | "unauthorized" => 8,
-        "quota_exhausted" | "permission_denied" | "configuration_error" => 7,
-        "quota_limited" | "rate_limited" => 6,
-        "anti_bot" => 5,
-        "network_error" | "service_error" => 4,
-        "error" => 3,
-        "normal" => 0,
-        _ => 2,
-    }
-}
-
 #[derive(Debug)]
 struct EvidenceFile {
     path: PathBuf,
@@ -1859,7 +1820,6 @@ mod tests {
                 "Please sign in to continue reading this article.",
                 "",
             ),
-            route_hint: RouteHint::DynamicOrBlocked,
         };
         let document = finalize_candidate(
             candidate,

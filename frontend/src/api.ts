@@ -237,12 +237,6 @@ export function getLlmLog(logId: string): Promise<LlmLogDetail> {
   return request<LlmLogDetail>(`/api/llm-logs/${logId}`);
 }
 
-export function deleteLlmLog(logId: string): Promise<void> {
-  return request<void>(`/api/llm-logs/${logId}`, {
-    method: 'DELETE',
-  });
-}
-
 
 export type WebSearchProviderKind = 'tavily' | 'exa' | 'jina' | 'grok' | 'firecrawl';
 export const MAX_WEB_SEARCH_KEYS_PER_SOURCE = 1_000;
@@ -272,10 +266,10 @@ export type WebSearchSourceConfig = {
   independence_group: string;
   roles: WebSearchSourceRole[];
   api_keys: string[];
+  /** SHA-256 fingerprints of keys confirmed as officially blocked (omitted when empty). */
+  blocked_api_key_hashes?: string[];
   key_statuses?: Array<WebSearchKeyStatusRecord | null>;
   extract_key_statuses?: Array<WebSearchKeyStatusRecord | null>;
-  flaresolverr_url?: string | null;
-  flaresolverr_proxy_url?: string | null;
   proxy_url?: string | null;
 };
 
@@ -315,7 +309,7 @@ export type WebSearchKeyStatus =
   | 'permission_denied'
   | 'configuration_error'
   | 'service_error'
-  // Legacy persisted values retained for backward-compatible display.
+  // Grok-classifier vocabulary, actively produced by the backend key checker.
   | 'quota_limited'
   | 'unauthorized'
   | 'anti_bot'
@@ -446,38 +440,7 @@ export type PickDirectoryResponse = {
 };
 
 export function readToolDefaults(): Promise<AgentToolsConfig> {
-  return request<AgentToolsConfig>('/api/tools/defaults').then(normalizeToolDefaults);
-}
-
-function normalizeToolDefaults(config: AgentToolsConfig): AgentToolsConfig {
-  return {
-    ...config,
-    evidence_storage: {
-      enabled: config.evidence_storage?.enabled ?? true,
-      retention_days: config.evidence_storage?.retention_days ?? 30,
-      max_total_mb: config.evidence_storage?.max_total_mb ?? 200,
-    },
-    web_search: {
-      enabled: config.web_search?.enabled ?? true,
-      max_results: config.web_search?.max_results ?? 5,
-      timeout_ms: config.web_search?.timeout_ms ?? 15000,
-      key_selection: config.web_search?.key_selection ?? 'sequential',
-      extraction: {
-        remote_enabled: config.web_search?.extraction?.remote_enabled ?? true,
-        max_remote_attempts_per_url: config.web_search?.extraction?.max_remote_attempts_per_url ?? 3,
-        allow_grok_fallback: config.web_search?.extraction?.allow_grok_fallback ?? true,
-      },
-      sources: (config.web_search?.sources ?? []).map((source) => ({
-        ...source,
-        extract_enabled: source.extract_enabled ?? true,
-        api_keys: source.api_keys ?? [],
-        extract_key_statuses: source.extract_key_statuses ?? [],
-        flaresolverr_url: source.flaresolverr_url ?? null,
-        flaresolverr_proxy_url: source.flaresolverr_proxy_url ?? null,
-        proxy_url: source.proxy_url ?? null,
-      })),
-    },
-  };
+  return request<AgentToolsConfig>('/api/tools/defaults');
 }
 
 export function updateToolDefaults(config: AgentToolsConfig): Promise<AgentToolsConfig> {
@@ -585,8 +548,7 @@ export function deleteWebSearchKey(
 }
 
 export function readAgentToolsConfig(agentId: string): Promise<AgentToolsSettings> {
-  return request<AgentToolsSettings>(`/api/agents/${agentId}/tools-config`)
-    .then(normalizeAgentToolsSettings);
+  return request<AgentToolsSettings>(`/api/agents/${agentId}/tools-config`);
 }
 
 export function updateAgentToolsConfig(
@@ -596,71 +558,7 @@ export function updateAgentToolsConfig(
   return request<AgentToolsSettings>(`/api/agents/${agentId}/tools-config`, {
     method: 'PUT',
     body: JSON.stringify(config),
-  }).then(normalizeAgentToolsSettings);
-}
-
-function normalizeAgentToolsSettings(settings: AgentToolsSettings): AgentToolsSettings {
-  return {
-    ...settings,
-    defaults: {
-      ...settings.defaults,
-      evidence_storage: {
-        enabled: settings.defaults.evidence_storage?.enabled ?? true,
-        retention_days: settings.defaults.evidence_storage?.retention_days ?? 30,
-        max_total_mb: settings.defaults.evidence_storage?.max_total_mb ?? 200,
-      },
-      web_search: {
-        enabled: settings.defaults.web_search?.enabled ?? true,
-        max_results: settings.defaults.web_search?.max_results ?? 5,
-        timeout_ms: settings.defaults.web_search?.timeout_ms ?? 15000,
-        key_selection: settings.defaults.web_search?.key_selection ?? 'sequential',
-        extraction: {
-          remote_enabled: settings.defaults.web_search?.extraction?.remote_enabled ?? true,
-          max_remote_attempts_per_url: settings.defaults.web_search?.extraction?.max_remote_attempts_per_url ?? 3,
-          allow_grok_fallback: settings.defaults.web_search?.extraction?.allow_grok_fallback ?? true,
-        },
-        sources: (settings.defaults.web_search?.sources ?? []).map((source) => ({
-          ...source,
-          extract_enabled: source.extract_enabled ?? true,
-          extract_key_statuses: source.extract_key_statuses ?? [],
-        })),
-      },
-    },
-    overrides: {
-      ...settings.overrides,
-      terminal: {
-        ...settings.overrides.terminal,
-        approval_grants: settings.overrides.terminal.approval_grants ?? [],
-      },
-      web_search: {
-        ...settings.overrides.web_search,
-      },
-    },
-    effective: {
-      ...settings.effective,
-      evidence_storage: {
-        enabled: settings.effective.evidence_storage?.enabled ?? true,
-        retention_days: settings.effective.evidence_storage?.retention_days ?? 30,
-        max_total_mb: settings.effective.evidence_storage?.max_total_mb ?? 200,
-      },
-      web_search: {
-        enabled: settings.effective.web_search?.enabled ?? true,
-        max_results: settings.effective.web_search?.max_results ?? 5,
-        timeout_ms: settings.effective.web_search?.timeout_ms ?? 15000,
-        key_selection: settings.effective.web_search?.key_selection ?? 'sequential',
-        extraction: {
-          remote_enabled: settings.effective.web_search?.extraction?.remote_enabled ?? true,
-          max_remote_attempts_per_url: settings.effective.web_search?.extraction?.max_remote_attempts_per_url ?? 3,
-          allow_grok_fallback: settings.effective.web_search?.extraction?.allow_grok_fallback ?? true,
-        },
-        sources: (settings.effective.web_search?.sources ?? []).map((source) => ({
-          ...source,
-          extract_enabled: source.extract_enabled ?? true,
-          extract_key_statuses: source.extract_key_statuses ?? [],
-        })),
-      },
-    },
-  };
+  });
 }
 
 export function readCodexRuntime(): Promise<CodexRuntimeStatus> {
@@ -877,12 +775,22 @@ function dispatchStreamEvent(
   }
 
   if (event === 'delta') {
-    onEvent({ event: 'delta', data: decodeTextStreamData(data), sequence });
+    try {
+      onEvent({ event: 'delta', data: decodeTextStreamData(data), sequence });
+    } catch {
+      state.sawError = true;
+      onEvent({ event: 'error', data: 'Invalid delta stream event', sequence });
+    }
     return;
   }
 
   if (event === 'reasoning_delta') {
-    onEvent({ event: 'reasoning_delta', data: decodeTextStreamData(data), sequence });
+    try {
+      onEvent({ event: 'reasoning_delta', data: decodeTextStreamData(data), sequence });
+    } catch {
+      state.sawError = true;
+      onEvent({ event: 'error', data: 'Invalid reasoning_delta stream event', sequence });
+    }
     return;
   }
 
@@ -906,21 +814,17 @@ function dispatchStreamEvent(
   }
 }
 
+/** Text deltas are always `{"text": "..."}` JSON; anything else is malformed. */
 function decodeTextStreamData(data: string): string {
-  try {
-    const decoded: unknown = JSON.parse(data);
-    if (
-      decoded
-      && typeof decoded === 'object'
-      && !Array.isArray(decoded)
-      && typeof (decoded as { text?: unknown }).text === 'string'
-    ) {
-      return (decoded as { text: string }).text;
-    }
-    return data;
-  } catch {
-    return data;
+  const decoded: unknown = JSON.parse(data);
+  if (
+    decoded
+    && typeof decoded === 'object'
+    && typeof (decoded as { text?: unknown }).text === 'string'
+  ) {
+    return (decoded as { text: string }).text;
   }
+  throw new Error('Malformed text delta payload');
 }
 
 function findEventBoundary(buffer: string): { index: number; length: number } | null {

@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
     WebSearchCostTier, WebSearchLatencyTier, WebSearchSourceCapabilities, WebSearchSourceConfig,
-    WebSearchSourceRole,
+    WebSearchSourceRole, tools::WebSearchKeyStatusUpdate,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -246,17 +248,55 @@ pub struct WebSearchOutput {
     pub citation_instruction: String,
 }
 
+/// A provider call failure. All failures are treated uniformly by the
+/// search/extract flows (each source is attempted once, then the flow falls
+/// through to the next source); key health is tracked separately via
+/// `classify_key_status` on the message text.
 #[derive(Debug, Clone)]
 pub enum ProviderError {
     Retryable(String),
-    Fatal(String),
 }
 
 impl ProviderError {
     pub fn message(&self) -> &str {
         match self {
-            Self::Retryable(message) | Self::Fatal(message) => message,
+            Self::Retryable(message) => message,
         }
+    }
+}
+
+/// Keep the worst-severity status per (source, key index, key) when parallel
+/// provider calls report the same key multiple times.
+pub(crate) fn merge_status_update(
+    updates: &mut BTreeMap<(String, usize, String), WebSearchKeyStatusUpdate>,
+    update: WebSearchKeyStatusUpdate,
+) {
+    let key = (
+        update.source_id.clone(),
+        update.key_index,
+        update.api_key.clone(),
+    );
+    match updates.get(&key) {
+        Some(existing)
+            if key_status_severity(&existing.record.status)
+                >= key_status_severity(&update.record.status) => {}
+        _ => {
+            updates.insert(key, update);
+        }
+    }
+}
+
+fn key_status_severity(status: &str) -> u8 {
+    match status {
+        "officially_blocked" => 9,
+        "invalid_key" | "unauthorized" => 8,
+        "quota_exhausted" | "permission_denied" | "configuration_error" => 7,
+        "quota_limited" | "rate_limited" => 6,
+        "anti_bot" => 5,
+        "network_error" | "service_error" => 4,
+        "error" => 3,
+        "normal" => 0,
+        _ => 2,
     }
 }
 

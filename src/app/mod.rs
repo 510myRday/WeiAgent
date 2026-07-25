@@ -40,7 +40,7 @@ mod tests {
             registry::LlmRegistry,
             types::{ChatCompletionOutput, StreamEvent, ToolDefinition},
         },
-        storage::{JsonStore, LlmLogger},
+        storage::{LlmLogger, Store},
         tools::{
             approval::ApprovalManager, registry::ToolRegistry, runtime::CodexRuntimeManager,
             terminal::TerminalManager,
@@ -105,7 +105,7 @@ mod tests {
 
     async fn test_app() -> (Router, Uuid, Uuid, Uuid) {
         let temp_dir = tempfile::tempdir().unwrap().keep();
-        let store = Arc::new(JsonStore::new(&temp_dir).await.unwrap());
+        let store = Arc::new(Store::new(&temp_dir).await.unwrap());
         let provider = store
             .create_model_provider(CreateModelProviderRequest {
                 provider_type: ProviderType::OpenAiCompatible,
@@ -153,24 +153,130 @@ mod tests {
         (app, agent.id, provider.id, conversation.id)
     }
 
-    #[tokio::test]
-    async fn sends_non_streaming_message_and_persists_chat() {
-        let (app, _, _, conversation_id) = test_app().await;
-        let response = app
+    async fn post_message_run(
+        app: &Router,
+        conversation_id: Uuid,
+        body: serde_json::Value,
+    ) -> axum::http::Response<Body> {
+        app.clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/conversations/{conversation_id}/messages"))
+                    .uri(format!("/api/conversations/{conversation_id}/runs"))
                     .header("content-type", "application/json")
-                    .body(Body::from(json!({ "content": "hello" }).to_string()))
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn started_run_id(response: axum::http::Response<Body>) -> String {
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let run: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        run["id"].as_str().expect("run id").to_string()
+    }
+
+    async fn wait_run_terminal(app: &Router, run_id: &str) -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/runs/{run_id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let run: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let status = run["status"].as_str().unwrap_or_default().to_string();
+            if matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "run {run_id} did not reach a terminal status in time (last status: {status})"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn run_events_text(app: &Router, run_id: &str) -> String {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{run_id}/events?after=0"))
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    fn sse_event_payloads(text: &str, event: &str) -> Vec<serde_json::Value> {
+        let mut payloads = Vec::new();
+        for block in text.split("\n\n") {
+            let mut is_match = false;
+            let mut data = None;
+            for line in block.lines() {
+                if let Some(name) = line.strip_prefix("event: ") {
+                    is_match = name.trim() == event;
+                } else if let Some(payload) = line.strip_prefix("data: ") {
+                    data = Some(payload.to_string());
+                }
+            }
+            if !is_match {
+                continue;
+            }
+            if let Some(data) = data
+                && let Ok(value) = serde_json::from_str(&data)
+            {
+                payloads.push(value);
+            }
+        }
+        payloads
+    }
+
+    /// Posts a message run, waits for it to complete, and rebuilds the
+    /// `{"user": ..., "assistant": ...}` JSON shape the old synchronous
+    /// complete endpoint returned (last user/assistant event payloads).
+    async fn run_message(
+        app: &Router,
+        conversation_id: Uuid,
+        body: serde_json::Value,
+    ) -> serde_json::Value {
+        let response = post_message_run(app, conversation_id, body).await;
+        let run_id = started_run_id(response).await;
+        let status = wait_run_terminal(app, &run_id).await;
+        assert_eq!(status, "completed", "run {run_id} finished as {status}");
+        let text = run_events_text(app, &run_id).await;
+        let user = sse_event_payloads(&text, "user")
+            .pop()
+            .expect("run replay should contain a user event");
+        let assistant = sse_event_payloads(&text, "assistant")
+            .pop()
+            .expect("run replay should contain an assistant event");
+        json!({ "user": user, "assistant": assistant })
+    }
+
+    #[tokio::test]
+    async fn sends_non_streaming_message_and_persists_chat() {
+        let (app, _, _, conversation_id) = test_app().await;
+        let value = run_message(
+            &app,
+            conversation_id,
+            json!({ "content": "hello", "stream": false }),
+        )
+        .await;
         assert_eq!(
             value["assistant"]["content"],
             "test-model via Test Provider"
@@ -184,71 +290,42 @@ mod tests {
     #[tokio::test]
     async fn restarting_from_user_message_replaces_it_and_following_history() {
         let (app, _, _, conversation_id) = test_app().await;
-        let kept_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/conversations/{conversation_id}/messages"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(json!({ "content": "keep this" }).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(kept_response.status(), StatusCode::OK);
-        let kept_body = to_bytes(kept_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let kept: serde_json::Value = serde_json::from_slice(&kept_body).unwrap();
+        let kept = run_message(
+            &app,
+            conversation_id,
+            json!({ "content": "keep this", "stream": false }),
+        )
+        .await;
         let kept_user_id = kept["user"]["id"].as_str().unwrap();
         let kept_assistant_id = kept["assistant"]["id"].as_str().unwrap();
 
-        let first_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/conversations/{conversation_id}/messages"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(json!({ "content": "original" }).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(first_response.status(), StatusCode::OK);
-        let first_body = to_bytes(first_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let first: serde_json::Value = serde_json::from_slice(&first_body).unwrap();
+        let first = run_message(
+            &app,
+            conversation_id,
+            json!({ "content": "original", "stream": false }),
+        )
+        .await;
         let original_user_id = first["user"]["id"].as_str().unwrap();
         let original_assistant_id = first["assistant"]["id"].as_str().unwrap();
 
-        let restart_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/conversations/{conversation_id}/messages"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "content": "edited",
-                            "restart_from_message_id": original_user_id,
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(restart_response.status(), StatusCode::OK);
+        run_message(
+            &app,
+            conversation_id,
+            json!({
+                "content": "edited",
+                "stream": false,
+                "restart_from_message_id": original_user_id,
+            }),
+        )
+        .await;
 
         let history_response = app
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/api/conversations/{conversation_id}/messages"))
+                    .uri(format!(
+                        "/api/conversations/{conversation_id}/messages/page?limit=200"
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -258,7 +335,8 @@ mod tests {
         let history_body = to_bytes(history_response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let history: Vec<serde_json::Value> = serde_json::from_slice(&history_body).unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&history_body).unwrap();
+        let history = page["messages"].as_array().unwrap();
 
         assert_eq!(history.len(), 4);
         assert_eq!(history[0]["role"], "user");
@@ -360,23 +438,11 @@ mod tests {
     #[tokio::test]
     async fn streams_message_chunks_as_sse() {
         let (app, _, _, conversation_id) = test_app().await;
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!(
-                        "/api/conversations/{conversation_id}/messages/stream"
-                    ))
-                    .header("content-type", "application/json")
-                    .body(Body::from(json!({ "content": "hello" }).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = post_message_run(&app, conversation_id, json!({ "content": "hello" })).await;
+        let run_id = started_run_id(response).await;
+        assert_eq!(wait_run_terminal(&app, &run_id).await, "completed");
 
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let text = String::from_utf8(body.to_vec()).unwrap();
+        let text = run_events_text(&app, &run_id).await;
         assert!(text.contains("event: assistant"));
         assert!(text.contains(r#"data: {"text":"mock\n\n"}"#));
         assert!(text.contains(r#""content":"mock\n\nstream""#));
@@ -386,58 +452,16 @@ mod tests {
     #[tokio::test]
     async fn message_run_completes_and_replays_events_without_an_initial_subscriber() {
         let (app, _, _, conversation_id) = test_app().await;
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/conversations/{conversation_id}/runs"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({ "content": "keep running", "stream": true }).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let run: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let run_id = run["id"].as_str().unwrap();
+        let response = post_message_run(
+            &app,
+            conversation_id,
+            json!({ "content": "keep running", "stream": true }),
+        )
+        .await;
+        let run_id = started_run_id(response).await;
+        assert_eq!(wait_run_terminal(&app, &run_id).await, "completed");
 
-        let mut status = String::new();
-        for _ in 0..50 {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri(format!("/api/runs/{run_id}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-            let run: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            status = run["status"].as_str().unwrap_or_default().to_string();
-            if status == "completed" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert_eq!(status, "completed");
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/runs/{run_id}/events?after=0"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let text = String::from_utf8(body.to_vec()).unwrap();
+        let text = run_events_text(&app, &run_id).await;
         assert!(text.contains("event: delta"));
         assert!(text.contains(r#"data: {"text":"mock\n\n"}"#));
         assert!(text.contains(r#""content":"mock\n\nstream""#));
@@ -525,7 +549,7 @@ mod tests {
         Arc<ScriptedChatClient>,
     ) {
         let root = tempfile::tempdir().unwrap().keep();
-        let store = Arc::new(JsonStore::new(&root).await.unwrap());
+        let store = Arc::new(Store::new(&root).await.unwrap());
         let provider = store
             .create_model_provider(CreateModelProviderRequest {
                 provider_type: ProviderType::OpenAiCompatible,
@@ -626,20 +650,12 @@ mod tests {
             },
         ];
         let (app, state, conversation_id, _, client) = scripted_test_app(outputs).await;
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/conversations/{conversation_id}/messages"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(json!({"content": "run tools"}).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = run_message(
+            &app,
+            conversation_id,
+            json!({"content": "run tools", "stream": false}),
+        )
+        .await;
         assert_eq!(value["assistant"]["content"], "all tool rounds completed");
         assert_eq!(
             client
@@ -676,24 +692,15 @@ mod tests {
         }];
         let (app, state, conversation_id, _, _) = scripted_test_app(outputs).await;
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!(
-                        "/api/conversations/{conversation_id}/messages/stream"
-                    ))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"content": "run then fail", "stream": false}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let text = String::from_utf8(body.to_vec()).unwrap();
+        let response = post_message_run(
+            &app,
+            conversation_id,
+            json!({"content": "run then fail", "stream": false}),
+        )
+        .await;
+        let run_id = started_run_id(response).await;
+        assert_eq!(wait_run_terminal(&app, &run_id).await, "failed");
+        let text = run_events_text(&app, &run_id).await;
         assert!(text.contains("event: assistant"));
         assert!(text.contains("\"status\":\"failed\""));
         assert!(text.contains("Agent run stopped"));
@@ -734,23 +741,15 @@ mod tests {
             },
         ];
         let (app, _, conversation_id, _, _) = scripted_test_app(outputs).await;
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!(
-                        "/api/conversations/{conversation_id}/messages/stream"
-                    ))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"content": "run invalid tool", "stream": false}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let text = String::from_utf8(body.to_vec()).unwrap();
+        let response = post_message_run(
+            &app,
+            conversation_id,
+            json!({"content": "run invalid tool", "stream": false}),
+        )
+        .await;
+        let run_id = started_run_id(response).await;
+        assert_eq!(wait_run_terminal(&app, &run_id).await, "completed");
+        let text = run_events_text(&app, &run_id).await;
         assert!(text.contains("event: tool_call"));
         assert!(text.contains("invalid-args-call"));
         assert!(text.contains("event: tool_result"));
@@ -779,21 +778,12 @@ mod tests {
             },
         ];
         let (app, state, conversation_id, _, _) = scripted_test_app(outputs).await;
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/conversations/{conversation_id}/messages"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"content": "start background"}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        run_message(
+            &app,
+            conversation_id,
+            json!({"content": "start background", "stream": false}),
+        )
+        .await;
         let messages = state
             .store
             .read_conversation_messages(conversation_id)
@@ -910,25 +900,14 @@ mod tests {
             .await
             .unwrap();
 
-        let stream_app = app.clone();
-        let first_request = tokio::spawn(async move {
-            stream_app
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri(format!(
-                            "/api/conversations/{conversation_id}/messages/stream"
-                        ))
-                        .header("content-type", "application/json")
-                        .body(Body::from(
-                            json!({"content": "approve", "stream": false}).to_string(),
-                        ))
-                        .unwrap(),
-                )
-                .await
-                .unwrap()
-        });
-        for _ in 0..100 {
+        let first_run = post_message_run(
+            &app,
+            conversation_id,
+            json!({"content": "approve", "stream": false}),
+        )
+        .await;
+        let first_run_id = started_run_id(first_run).await;
+        for _ in 0..3000 {
             if state.approval_manager.pending_count() == 1 {
                 break;
             }
@@ -985,11 +964,8 @@ mod tests {
             .unwrap();
         let duplicate_value: serde_json::Value = serde_json::from_slice(&duplicate_body).unwrap();
         assert_eq!(duplicate_value["status"], "always_approved");
-        let first_response = first_request.await.unwrap();
-        let first_body = to_bytes(first_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let first_text = String::from_utf8(first_body.to_vec()).unwrap();
+        assert_eq!(wait_run_terminal(&app, &first_run_id).await, "completed");
+        let first_text = run_events_text(&app, &first_run_id).await;
         assert!(first_text.contains("event: approval_required"));
         assert!(first_text.contains("event: done"));
 
@@ -999,25 +975,15 @@ mod tests {
                 && grant.permission_mode == crate::domain::TerminalPermissionMode::RequestApproval
         }));
 
-        let second_response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!(
-                        "/api/conversations/{conversation_id}/messages/stream"
-                    ))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"content": "again", "stream": false}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let second_body = to_bytes(second_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let second_text = String::from_utf8(second_body.to_vec()).unwrap();
+        let second_run = post_message_run(
+            &app,
+            conversation_id,
+            json!({"content": "again", "stream": false}),
+        )
+        .await;
+        let second_run_id = started_run_id(second_run).await;
+        assert_eq!(wait_run_terminal(&app, &second_run_id).await, "completed");
+        let second_text = run_events_text(&app, &second_run_id).await;
         assert!(!second_text.contains("event: approval_required"));
         assert!(second_text.contains("event: done"));
     }
@@ -1076,26 +1042,15 @@ mod tests {
             .await
             .unwrap();
 
-        let stream_app = app.clone();
-        let stream_request = tokio::spawn(async move {
-            stream_app
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri(format!(
-                            "/api/conversations/{conversation_id}/messages/stream"
-                        ))
-                        .header("content-type", "application/json")
-                        .body(Body::from(
-                            json!({"content": "hot reload", "stream": false}).to_string(),
-                        ))
-                        .unwrap(),
-                )
-                .await
-                .unwrap()
-        });
+        let run_response = post_message_run(
+            &app,
+            conversation_id,
+            json!({"content": "hot reload", "stream": false}),
+        )
+        .await;
+        let run_id = started_run_id(run_response).await;
 
-        for _ in 0..100 {
+        for _ in 0..3000 {
             if state.approval_manager.pending_count() == 1 {
                 break;
             }
@@ -1111,9 +1066,8 @@ mod tests {
             .await
             .unwrap();
 
-        let response = stream_request.await.unwrap();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert_eq!(wait_run_terminal(&app, &run_id).await, "completed");
+        let text = run_events_text(&app, &run_id).await;
         assert!(text.contains("event: approval_required"));
         assert!(text.contains("event: done"));
         assert!(text.contains("hot reload applied"));
@@ -1165,23 +1119,15 @@ mod tests {
             .update_agent_tools_config(agent_id, config)
             .await
             .unwrap();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!(
-                        "/api/conversations/{conversation_id}/messages/stream"
-                    ))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"content": "unsafe", "stream": false}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let text = String::from_utf8(body.to_vec()).unwrap();
+        let response = post_message_run(
+            &app,
+            conversation_id,
+            json!({"content": "unsafe", "stream": false}),
+        )
+        .await;
+        let run_id = started_run_id(response).await;
+        assert_eq!(wait_run_terminal(&app, &run_id).await, "completed");
+        let text = run_events_text(&app, &run_id).await;
         assert!(text.contains("event: tool_result"));
         assert!(text.contains("justification is required"));
         assert!(state.terminal_manager.list(None).await.is_empty());
@@ -1213,19 +1159,12 @@ mod tests {
             },
         ];
         let (app, state, conversation_id, _, _) = scripted_test_app(outputs).await;
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/conversations/{conversation_id}/messages"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(json!({"content": "start service"}).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        run_message(
+            &app,
+            conversation_id,
+            json!({"content": "start service", "stream": false}),
+        )
+        .await;
         let messages = state
             .store
             .read_conversation_messages(conversation_id)
@@ -1307,9 +1246,9 @@ mod tests {
         }
     }
 
-    async fn streaming_test_app(streams: Vec<Vec<StreamEvent>>) -> (Router, Arc<JsonStore>, Uuid) {
+    async fn streaming_test_app(streams: Vec<Vec<StreamEvent>>) -> (Router, Arc<Store>, Uuid) {
         let root = tempfile::tempdir().unwrap().keep();
-        let store = Arc::new(JsonStore::new(&root).await.unwrap());
+        let store = Arc::new(Store::new(&root).await.unwrap());
         let provider = store
             .create_model_provider(CreateModelProviderRequest {
                 provider_type: ProviderType::OpenAiCompatible,
@@ -1409,20 +1348,12 @@ mod tests {
             .await
             .unwrap();
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/conversations/{conversation_id}/messages"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(json!({"content": "hit budget"}).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = run_message(
+            &app,
+            conversation_id,
+            json!({"content": "hit budget", "stream": false}),
+        )
+        .await;
         assert_eq!(value["assistant"]["content"], "budget summary ready");
         assert_eq!(
             client
@@ -1468,24 +1399,15 @@ mod tests {
             ],
         ])
         .await;
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!(
-                        "/api/conversations/{}/messages/stream",
-                        conversation_id
-                    ))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"content": "stream a tool", "stream": true}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let text = String::from_utf8(body.to_vec()).unwrap();
+        let response = post_message_run(
+            &app,
+            conversation_id,
+            json!({"content": "stream a tool", "stream": true}),
+        )
+        .await;
+        let run_id = started_run_id(response).await;
+        assert_eq!(wait_run_terminal(&app, &run_id).await, "completed");
+        let text = run_events_text(&app, &run_id).await;
         assert!(text.contains("event: phase"));
         assert!(text.contains("\"phase\":\"waiting_for_model\""));
         assert!(text.contains("\"phase\":\"executing_tool\""));
@@ -1513,23 +1435,15 @@ mod tests {
             "partial response".to_string(),
         )]])
         .await;
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!(
-                        "/api/conversations/{conversation_id}/messages/stream"
-                    ))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"content": "drop the stream", "stream": true}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let text = String::from_utf8(body.to_vec()).unwrap();
+        let response = post_message_run(
+            &app,
+            conversation_id,
+            json!({"content": "drop the stream", "stream": true}),
+        )
+        .await;
+        let run_id = started_run_id(response).await;
+        assert_eq!(wait_run_terminal(&app, &run_id).await, "failed");
+        let text = run_events_text(&app, &run_id).await;
         assert!(text.contains("partial response"));
         assert!(text.contains("event: error"));
         assert!(text.contains("ended before a completion event"));

@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     thread,
@@ -8,6 +7,8 @@ use std::{
 
 use chrono::Utc;
 use rusqlite::{Connection, params};
+
+use super::sql_util::{parse_datetime, parse_optional_datetime};
 use uuid::Uuid;
 
 use crate::{
@@ -212,6 +213,8 @@ CREATE TABLE IF NOT EXISTS ip_proxies (
 
 CREATE INDEX IF NOT EXISTS idx_ip_proxies_enabled_status
     ON ip_proxies(enabled, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_proxies_name_unique
+    ON ip_proxies(name COLLATE NOCASE);
 ";
 
 pub fn db_path(data_dir: &Path) -> PathBuf {
@@ -232,8 +235,7 @@ fn open_initialized_connection(db_path: &Path) -> AppResult<Connection> {
     let mut conn = Connection::open(db_path)?;
     configure_connection(&conn)?;
     migrate_base_schema(&mut conn)?;
-    let data_dir = db_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-    super::conversation_db::migrate_conversations(&mut conn, &data_dir)?;
+    super::conversation_db::migrate_conversations(&mut conn)?;
     Ok(conn)
 }
 
@@ -253,52 +255,11 @@ fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
         |row| row.get::<_, bool>(0),
     )?;
     if applied {
-        ensure_column(
-            conn,
-            "ip_proxies",
-            "is_pinned",
-            "INTEGER NOT NULL DEFAULT 0",
-        )?;
-        ensure_column(
-            conn,
-            "ip_proxies",
-            "quality_json",
-            "TEXT NOT NULL DEFAULT '{}'",
-        )?;
         return Ok(());
     }
 
     let tx = conn.transaction()?;
     tx.execute_batch(SCHEMA_SQL)?;
-    ensure_column(
-        &tx,
-        "model_providers",
-        "prompt_cache_json",
-        "TEXT NOT NULL DEFAULT '{}'",
-    )?;
-    ensure_column(
-        &tx,
-        "model_providers",
-        "cache_capabilities_json",
-        "TEXT NOT NULL DEFAULT 'null'",
-    )?;
-    for (name, definition) in [
-        ("ip_address", "TEXT"),
-        ("country", "TEXT"),
-        ("country_code", "TEXT"),
-        ("region", "TEXT"),
-        ("city", "TEXT"),
-        ("is_pinned", "INTEGER NOT NULL DEFAULT 0"),
-        ("quality_json", "TEXT NOT NULL DEFAULT '{}'"),
-    ] {
-        ensure_column(&tx, "ip_proxies", name, definition)?;
-    }
-    repair_ip_proxy_names(&tx)?;
-    tx.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_proxies_name_unique
-         ON ip_proxies(name COLLATE NOCASE)",
-        [],
-    )?;
     tx.execute(
         "INSERT INTO app_schema_migrations (version, name, applied_at)
          VALUES (?1, ?2, ?3)",
@@ -309,20 +270,6 @@ fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
         ],
     )?;
     tx.commit()?;
-    Ok(())
-}
-
-fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> AppResult<()> {
-    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<Result<HashSet<_>, _>>()?;
-    if !columns.contains(column) {
-        conn.execute(
-            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
-            [],
-        )?;
-    }
     Ok(())
 }
 
@@ -373,10 +320,7 @@ pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
 }
 
 pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) -> AppResult<()> {
-    let provider_type = serde_json::to_value(&provider.provider_type)?
-        .as_str()
-        .unwrap_or("openai_compatible")
-        .to_string();
+    let provider_type = enum_value(&provider.provider_type)?;
     let models_json = serde_json::to_string(&provider.models)?;
     let model_configs_json = serde_json::to_string(&provider.model_configs)?;
     let extra_body_json = serde_json::to_string(&provider.extra_body)?;
@@ -444,8 +388,8 @@ fn row_to_provider(row: ProviderRow) -> AppResult<ModelProvider> {
     let models: Vec<String> = serde_json::from_str(&row.models_json)?;
     let model_configs: Vec<ModelConfig> = serde_json::from_str(&row.model_configs_json)?;
     let extra_body: serde_json::Value = serde_json::from_str(&row.extra_body_json)?;
-    let prompt_cache = serde_json::from_str(&row.prompt_cache_json).unwrap_or_default();
-    let cache_capabilities = serde_json::from_str(&row.cache_capabilities_json).unwrap_or(None);
+    let prompt_cache = serde_json::from_str(&row.prompt_cache_json)?;
+    let cache_capabilities = serde_json::from_str(&row.cache_capabilities_json)?;
     let created_at = chrono::DateTime::parse_from_rfc3339(&row.created_at)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|error| crate::error::AppError::Database(error.to_string()))?;
@@ -508,8 +452,8 @@ pub fn read_ip_proxies_conn(conn: &Connection) -> AppResult<Vec<IpProxy>> {
 }
 
 pub(super) fn upsert_ip_proxy_conn(conn: &Connection, proxy: &IpProxy) -> AppResult<()> {
-    let protocol = enum_value(&proxy.protocol, "http")?;
-    let status = enum_value(&proxy.status, "unchecked")?;
+    let protocol = enum_value(&proxy.protocol)?;
+    let status = enum_value(&proxy.status)?;
     let latency_ms = proxy
         .latency_ms
         .map(i64::try_from)
@@ -615,7 +559,7 @@ fn row_to_ip_proxy(row: IpProxyRow) -> AppResult<IpProxy> {
         is_pinned: row.is_pinned != 0,
         status,
         latency_ms,
-        last_checked_at: parse_optional_datetime(row.last_checked_at)?,
+        last_checked_at: parse_optional_datetime(row.last_checked_at, "last_checked_at")?,
         last_error: row.last_error,
         ip_address: row.ip_address,
         country: row.country,
@@ -623,58 +567,14 @@ fn row_to_ip_proxy(row: IpProxyRow) -> AppResult<IpProxy> {
         region: row.region,
         city: row.city,
         api_quality: serde_json::from_str(&row.quality_json).unwrap_or_default(),
-        created_at: parse_datetime(&row.created_at)?,
-        updated_at: parse_datetime(&row.updated_at)?,
+        created_at: parse_datetime(&row.created_at, "created_at")?,
+        updated_at: parse_datetime(&row.updated_at, "updated_at")?,
     })
 }
 
-fn enum_value<T: serde::Serialize>(value: &T, fallback: &str) -> AppResult<String> {
-    Ok(serde_json::to_value(value)?
+fn enum_value<T: serde::Serialize>(value: &T) -> AppResult<String> {
+    serde_json::to_value(value)?
         .as_str()
-        .unwrap_or(fallback)
-        .to_string())
-}
-
-fn parse_datetime(value: &str) -> AppResult<chrono::DateTime<Utc>> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|value| value.with_timezone(&Utc))
-        .map_err(|error| AppError::Database(error.to_string()))
-}
-
-fn parse_optional_datetime(value: Option<String>) -> AppResult<Option<chrono::DateTime<Utc>>> {
-    value.as_deref().map(parse_datetime).transpose()
-}
-
-fn repair_ip_proxy_names(conn: &Connection) -> AppResult<()> {
-    let rows = {
-        let mut statement =
-            conn.prepare("SELECT id, name FROM ip_proxies ORDER BY created_at ASC, id ASC")?;
-        statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    let mut used = HashSet::new();
-
-    for (id, original_name) in rows {
-        let base_name = if original_name.trim().is_empty() {
-            "proxy".to_string()
-        } else {
-            original_name.trim().to_string()
-        };
-        let mut name = base_name.clone();
-        let mut index = 1_u64;
-        while !used.insert(name.to_lowercase()) {
-            name = format!("{base_name}_{index}");
-            index += 1;
-        }
-        if name != original_name {
-            conn.execute(
-                "UPDATE ip_proxies SET name = ?1, updated_at = ?2 WHERE id = ?3",
-                params![name, Utc::now().to_rfc3339(), id],
-            )?;
-        }
-    }
-    Ok(())
+        .map(str::to_string)
+        .ok_or_else(|| AppError::Database("enum did not serialize to a string".to_string()))
 }

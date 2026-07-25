@@ -513,12 +513,6 @@ pub struct WebSearchSourceConfig {
     /// Extraction status slots aligned with api_keys.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extract_key_statuses: Vec<Option<WebSearchKeyStatusRecord>>,
-    /// FlareSolverr base URL, e.g. http://127.0.0.1:8191
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub flaresolverr_url: Option<String>,
-    /// Proxy used by FlareSolverr browser when opening grok.com (LAN-reachable).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub flaresolverr_proxy_url: Option<String>,
     /// Upstream proxy for Grok/CF traffic. Supports http://, socks4://, and socks5://
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_url: Option<String>,
@@ -605,8 +599,6 @@ fn default_web_search_source(
         blocked_api_key_hashes: Vec::new(),
         key_statuses: Vec::new(),
         extract_key_statuses: Vec::new(),
-        flaresolverr_url: None,
-        flaresolverr_proxy_url: None,
         proxy_url: None,
     }
 }
@@ -992,37 +984,6 @@ impl AgentToolsOverrides {
         }
     }
 
-    pub fn from_full_config(
-        config: &AgentToolsConfig,
-        defaults: &AgentToolsConfig,
-    ) -> AgentToolsOverrides {
-        AgentToolsOverrides {
-            version: tool_overrides_version(),
-            max_llm_iterations: (config.max_llm_iterations != defaults.max_llm_iterations)
-                .then_some(config.max_llm_iterations),
-            terminal: TerminalToolOverrides {
-                enabled: (config.terminal.enabled != defaults.terminal.enabled)
-                    .then_some(config.terminal.enabled),
-                permission_mode: (config.terminal.permission_mode
-                    != defaults.terminal.permission_mode)
-                    .then_some(config.terminal.permission_mode.clone()),
-                approval_grants: config.terminal.approval_grants.clone(),
-                default_timeout_ms: (config.terminal.default_timeout_ms
-                    != defaults.terminal.default_timeout_ms)
-                    .then_some(config.terminal.default_timeout_ms),
-                allowed_cwd_roots: (config.terminal.allowed_cwd_roots
-                    != defaults.terminal.allowed_cwd_roots)
-                    .then_some(config.terminal.allowed_cwd_roots.clone()),
-            },
-            web_search: WebSearchToolOverrides {
-                enabled: (config.web_search.enabled != defaults.web_search.enabled)
-                    .then_some(config.web_search.enabled),
-                max_results: (config.web_search.max_results != defaults.web_search.max_results)
-                    .then_some(config.web_search.max_results),
-            },
-        }
-    }
-
     #[cfg(test)]
     pub fn full_override(config: &AgentToolsConfig) -> AgentToolsOverrides {
         AgentToolsOverrides {
@@ -1234,8 +1195,6 @@ mod tests {
                 blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
                 extract_key_statuses: Vec::new(),
-                flaresolverr_url: None,
-                flaresolverr_proxy_url: None,
                 proxy_url: None,
             }],
             ..WebSearchToolConfig::default()
@@ -1257,8 +1216,6 @@ mod tests {
                 blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
                 extract_key_statuses: Vec::new(),
-                flaresolverr_url: None,
-                flaresolverr_proxy_url: None,
                 proxy_url: None,
             }],
             ..stored.clone()
@@ -1284,8 +1241,6 @@ mod tests {
                 blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
                 extract_key_statuses: Vec::new(),
-                flaresolverr_url: None,
-                flaresolverr_proxy_url: None,
                 proxy_url: None,
             }],
             ..stored.clone()
@@ -1308,8 +1263,6 @@ mod tests {
                 blocked_api_key_hashes: Vec::new(),
                 key_statuses: Vec::new(),
                 extract_key_statuses: Vec::new(),
-                flaresolverr_url: None,
-                flaresolverr_proxy_url: None,
                 proxy_url: None,
             }],
             ..stored.clone()

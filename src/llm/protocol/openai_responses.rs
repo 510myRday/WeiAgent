@@ -1,6 +1,5 @@
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
 
-use async_trait::async_trait;
 use reqwest::RequestBuilder;
 use serde_json::{Map, Value, json};
 
@@ -8,82 +7,21 @@ use crate::{
     domain::{Agent, ChatMessage, ChatRole, ModelProvider, ThinkingLevel},
     error::{AppError, AppResult},
     llm::{
-        cache::{apply_openai_fields, apply_provider_extra, build_context},
-        client::{ChatClient, ChatStream, RequestOptions},
+        cache::{apply_openai_fields, build_context},
         http::StreamLineParser,
         protocol::common::{
-            ProtocolAdapter, ProtocolClient, bearer_get, bearer_post, default_models,
-            merge_extra_body, message_tool_calls, validate_tool_calls,
+            ProtocolAdapter, SseData, bearer_get, bearer_post, default_models, merge_extra_body,
+            message_tool_calls, parse_sse_data_line, validate_tool_calls,
         },
         types::{
             ChatCompletionOutput, StreamEvent, ToolCall, ToolCallFunction, ToolDefinition,
-            openai_image_url, select_context_messages,
+            openai_image_url, select_context_messages, thinking_effort_str,
         },
     },
-    storage::LlmLogger,
 };
 
-#[derive(Clone)]
-pub struct OpenAiResponsesClient {
-    inner: ProtocolClient<OpenAiResponsesAdapter>,
-}
-
-impl OpenAiResponsesClient {
-    pub fn new() -> Self {
-        Self {
-            inner: ProtocolClient::new(OpenAiResponsesAdapter),
-        }
-    }
-
-    pub fn with_logger(mut self, logger: Arc<LlmLogger>) -> Self {
-        self.inner = self.inner.with_logger(logger);
-        self
-    }
-}
-
-impl Default for OpenAiResponsesClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl ChatClient for OpenAiResponsesClient {
-    async fn complete(
-        &self,
-        agent: &Agent,
-        provider: &ModelProvider,
-        messages: &[ChatMessage],
-        system_prompt: &str,
-        options: RequestOptions,
-        tools: Option<Vec<ToolDefinition>>,
-    ) -> AppResult<ChatCompletionOutput> {
-        self.inner
-            .complete(agent, provider, messages, system_prompt, options, tools)
-            .await
-    }
-
-    async fn stream(
-        &self,
-        agent: &Agent,
-        provider: &ModelProvider,
-        messages: &[ChatMessage],
-        system_prompt: &str,
-        options: RequestOptions,
-        tools: Option<Vec<ToolDefinition>>,
-    ) -> AppResult<ChatStream> {
-        self.inner
-            .stream(agent, provider, messages, system_prompt, options, tools)
-            .await
-    }
-
-    async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {
-        self.inner.list_models(provider).await
-    }
-}
-
 #[derive(Clone, Copy)]
-struct OpenAiResponsesAdapter;
+pub(crate) struct OpenAiResponsesAdapter;
 
 impl ProtocolAdapter for OpenAiResponsesAdapter {
     fn completion_url(&self, provider: &ModelProvider, _agent: &Agent, _stream: bool) -> String {
@@ -225,28 +163,9 @@ fn build_openai_responses_request(
     body.insert("instructions".to_string(), json!(system_prompt));
     body.insert("input".to_string(), Value::Array(input));
     body.insert("stream".to_string(), Value::Bool(stream));
-    if context.explicit_breakpoints {
-        body.insert(
-            "instructions".to_string(),
-            json!([{
-                "type": "input_text",
-                "text": system_prompt,
-                "cache_control": {"type": "prompt_cache_breakpoint", "mode": "explicit"}
-            }]),
-        );
-    }
-    if let Some(level) = thinking_level.filter(|level| *level != ThinkingLevel::Off) {
+    if let Some(effort) = thinking_level.and_then(thinking_effort_str) {
         let mut reasoning = Map::new();
-        reasoning.insert(
-            "effort".to_string(),
-            json!(match level {
-                ThinkingLevel::Low => "low",
-                ThinkingLevel::Medium => "medium",
-                ThinkingLevel::High => "high",
-                ThinkingLevel::XHigh => "xhigh",
-                ThinkingLevel::Off => unreachable!(),
-            }),
-        );
+        reasoning.insert("effort".to_string(), json!(effort));
         reasoning.insert("summary".to_string(), Value::String("auto".to_string()));
         body.insert("reasoning".to_string(), Value::Object(reasoning));
     }
@@ -269,7 +188,6 @@ fn build_openai_responses_request(
         );
     }
     apply_openai_fields(&mut body, provider, &context);
-    apply_provider_extra(&mut body, &context);
     merge_extra_body(
         body,
         extra_body,
@@ -281,7 +199,6 @@ fn build_openai_responses_request(
             "tools",
             "reasoning",
             "prompt_cache_key",
-            "prompt_cache_options",
             "prompt_cache_retention",
         ],
     )
@@ -490,21 +407,12 @@ impl OpenAiResponsesStreamParser {
 
 impl StreamLineParser for OpenAiResponsesStreamParser {
     fn parse_line(&mut self, line: &str) -> Vec<AppResult<StreamEvent>> {
-        let Some(data) = line.strip_prefix("data:") else {
-            return Vec::new();
-        };
-        let data = data.strip_prefix(' ').unwrap_or(data).trim();
-        if data.is_empty() {
-            return Vec::new();
+        match parse_sse_data_line(line) {
+            Ok(SseData::Skip) => Vec::new(),
+            Ok(SseData::Done) => self.finish(),
+            Ok(SseData::Json(value)) => self.parse_event(&value),
+            Err(error) => vec![Err(error)],
         }
-        if data == "[DONE]" {
-            return self.finish();
-        }
-        let value: Value = match serde_json::from_str(data) {
-            Ok(value) => value,
-            Err(error) => return vec![Err(AppError::Llm(format!("invalid SSE JSON: {error}")))],
-        };
-        self.parse_event(&value)
     }
 }
 

@@ -2,26 +2,24 @@
 //!
 //! All functions here are synchronous connection-level helpers that run on the
 //! dedicated database worker thread via `Database::call`. Message writes are
-//! incremental (single-row INSERT/UPDATE) instead of the legacy
-//! read-everything/rewrite-everything JSON files.
-
-use std::path::{Path, PathBuf};
+//! incremental (single-row INSERT/UPDATE).
 
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+
+use super::sql_util::{parse_datetime, parse_uuid};
 use uuid::Uuid;
 
 use crate::{
     domain::{
         ChatMessage, ChatMessageStatus, ChatRole, ContextCheckpoint, Conversation,
-        ConversationMessagePage, ConversationUsage,
+        ConversationMessagePage, ConversationUsage, ModelUsage,
     },
     error::{AppError, AppResult},
 };
 
 const CONVERSATIONS_SCHEMA_VERSION: i64 = 3;
 const CONVERSATION_TITLE_CHAR_LIMIT: usize = 80;
-pub(super) const MIGRATED_SUFFIX: &str = "migrated";
 
 const CONVERSATIONS_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS conversations (
@@ -57,10 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation
 ";
 
 pub(super) fn is_generated_conversation_title(title: &str) -> bool {
-    matches!(
-        title.trim(),
-        "" | "New Conversation" | "New conversation" | "新会话" | "新建会话"
-    )
+    matches!(title.trim(), "" | "New Conversation")
 }
 
 fn title_from_content(content: &str) -> Option<String> {
@@ -80,17 +75,18 @@ pub(super) fn title_from_first_user_message(messages: &[ChatMessage]) -> Option<
 }
 
 pub(super) fn conversation_usage(messages: &[ChatMessage]) -> ConversationUsage {
-    // Latest model call is a snapshot of current context-window occupancy.
-    // Summing every historical turn overcounts (turn1 50 + turn2 50 is still
-    // ~50 tokens of context, not 100).
-    let Some(usage) = messages
+    messages
         .iter()
         .rev()
         .find_map(|message| message.usage.as_ref())
-    else {
-        return ConversationUsage::default();
-    };
+        .map(latest_usage_snapshot)
+        .unwrap_or_default()
+}
 
+/// Latest model call is a snapshot of current context-window occupancy.
+/// Summing every historical turn overcounts (turn1 50 + turn2 50 is still
+/// ~50 tokens of context, not 100).
+fn latest_usage_snapshot(usage: &ModelUsage) -> ConversationUsage {
     // The provider-normalized prompt total includes uncached, cache-read, and
     // cache-write prompt tokens. Add the latest completion because it becomes
     // part of the next request's history.
@@ -112,11 +108,7 @@ pub(super) fn conversation_usage(messages: &[ChatMessage]) -> ConversationUsage 
     }
 }
 
-/*
- * Schema migration: create tables and import legacy JSON data exactly once.
- */
-
-pub(super) fn migrate_conversations(conn: &mut Connection, data_dir: &Path) -> AppResult<()> {
+pub(super) fn migrate_conversations(conn: &mut Connection) -> AppResult<()> {
     let applied = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM app_schema_migrations WHERE version = ?1)",
         [CONVERSATIONS_SCHEMA_VERSION],
@@ -126,23 +118,8 @@ pub(super) fn migrate_conversations(conn: &mut Connection, data_dir: &Path) -> A
         return Ok(());
     }
 
-    let legacy = load_legacy_conversations(data_dir)?;
-
     let tx = conn.transaction()?;
     tx.execute_batch(CONVERSATIONS_SCHEMA_SQL)?;
-    for (conversation, messages) in &legacy.entries {
-        let mut conversation = conversation.clone();
-        conversation.message_count = messages.len();
-        if is_generated_conversation_title(&conversation.title)
-            && let Some(title) = title_from_first_user_message(messages)
-        {
-            conversation.title = title;
-        }
-        insert_conversation(&tx, &conversation)?;
-        for message in messages {
-            insert_message(&tx, &conversation.id, message)?;
-        }
-    }
     tx.execute(
         "INSERT INTO app_schema_migrations (version, name, applied_at)
          VALUES (?1, ?2, ?3)",
@@ -153,67 +130,7 @@ pub(super) fn migrate_conversations(conn: &mut Connection, data_dir: &Path) -> A
         ],
     )?;
     tx.commit()?;
-
-    // The import is durable now; rename consumed files so a later startup
-    // cannot see them as fresh data, while keeping a backup on disk.
-    for file in &legacy.consumed_files {
-        let backup = backup_path(file);
-        if backup.exists() {
-            let _ = std::fs::remove_file(&backup);
-        }
-        if let Err(error) = std::fs::rename(file, &backup) {
-            tracing::warn!(
-                path = %file.display(),
-                %error,
-                "failed to back up migrated conversation file"
-            );
-        }
-    }
     Ok(())
-}
-
-fn backup_path(path: &Path) -> PathBuf {
-    let mut name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    name.push('.');
-    name.push_str(MIGRATED_SUFFIX);
-    path.with_file_name(name)
-}
-
-struct LegacyConversations {
-    entries: Vec<(Conversation, Vec<ChatMessage>)>,
-    consumed_files: Vec<PathBuf>,
-}
-
-fn load_legacy_conversations(data_dir: &Path) -> AppResult<LegacyConversations> {
-    let index_file = data_dir.join("conversations.json");
-    let mut legacy = LegacyConversations {
-        entries: Vec::new(),
-        consumed_files: Vec::new(),
-    };
-    if !index_file.exists() {
-        return Ok(legacy);
-    }
-    let content = std::fs::read_to_string(&index_file)?;
-    let conversations: Vec<Conversation> = serde_json::from_str(&content)?;
-    legacy.consumed_files.push(index_file);
-
-    let messages_dir = data_dir.join("conversations");
-    for conversation in conversations {
-        let file = messages_dir.join(format!("{}.json", conversation.id));
-        let messages = if file.exists() {
-            let content = std::fs::read_to_string(&file)?;
-            let messages: Vec<ChatMessage> = serde_json::from_str(&content)?;
-            legacy.consumed_files.push(file);
-            messages
-        } else {
-            Vec::new()
-        };
-        legacy.entries.push((conversation, messages));
-    }
-    Ok(legacy)
 }
 
 /*
@@ -252,16 +169,6 @@ fn status_from_str(value: &str) -> AppResult<ChatMessageStatus> {
     }
 }
 
-fn parse_datetime(value: &str) -> AppResult<chrono::DateTime<Utc>> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|value| value.with_timezone(&Utc))
-        .map_err(|error| AppError::Database(error.to_string()))
-}
-
-fn parse_uuid(value: &str) -> AppResult<Uuid> {
-    Uuid::parse_str(value).map_err(|error| AppError::Database(error.to_string()))
-}
-
 struct ConversationRow {
     id: String,
     agent_id: String,
@@ -296,14 +203,14 @@ fn row_to_conversation(row: ConversationRow) -> AppResult<Conversation> {
         .map(serde_json::from_str::<ContextCheckpoint>)
         .transpose()?;
     Ok(Conversation {
-        id: parse_uuid(&row.id)?,
-        agent_id: parse_uuid(&row.agent_id)?,
+        id: parse_uuid(&row.id, "id")?,
+        agent_id: parse_uuid(&row.agent_id, "agent_id")?,
         title: row.title,
         message_count: usize::try_from(row.message_count).unwrap_or(0),
         is_pinned: row.is_pinned != 0,
         context_checkpoint,
-        created_at: parse_datetime(&row.created_at)?,
-        updated_at: parse_datetime(&row.updated_at)?,
+        created_at: parse_datetime(&row.created_at, "created_at")?,
+        updated_at: parse_datetime(&row.updated_at, "updated_at")?,
     })
 }
 
@@ -369,14 +276,14 @@ fn map_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
 
 fn row_to_message(row: MessageRow) -> AppResult<ChatMessage> {
     Ok(ChatMessage {
-        id: parse_uuid(&row.id)?,
-        agent_id: parse_uuid(&row.agent_id)?,
-        conversation_id: parse_uuid(&row.conversation_id)?,
+        id: parse_uuid(&row.id, "id")?,
+        agent_id: parse_uuid(&row.agent_id, "agent_id")?,
+        conversation_id: parse_uuid(&row.conversation_id, "conversation_id")?,
         role: role_from_str(&row.role)?,
         content: row.content,
         reasoning_content: row.reasoning_content,
         status: status_from_str(&row.status)?,
-        created_at: parse_datetime(&row.created_at)?,
+        created_at: parse_datetime(&row.created_at, "created_at")?,
         tool_calls: row
             .tool_calls_json
             .as_deref()
@@ -418,7 +325,11 @@ fn message_values(message: &ChatMessage) -> AppResult<MessageValues> {
     })
 }
 
-fn insert_message(conn: &Connection, conversation_id: &Uuid, message: &ChatMessage) -> AppResult<()> {
+fn insert_message(
+    conn: &Connection,
+    conversation_id: &Uuid,
+    message: &ChatMessage,
+) -> AppResult<()> {
     let values = message_values(message)?;
     conn.execute(
         "INSERT INTO conversation_messages (
@@ -548,7 +459,7 @@ fn clear_checkpoint(conn: &Connection, conversation_id: Uuid) -> AppResult<()> {
 }
 
 /*
- * Public connection-level operations, mirroring the legacy Store semantics.
+ * Public connection-level operations.
  */
 
 pub(super) fn list_conversations_conn(
@@ -702,8 +613,20 @@ pub(super) fn read_usage_conn(
     conversation_id: Uuid,
 ) -> AppResult<ConversationUsage> {
     load_conversation(conn, conversation_id)?;
-    let messages = load_messages(conn, conversation_id)?;
-    Ok(conversation_usage(&messages))
+    let usage_json: Option<String> = conn
+        .query_row(
+            "SELECT usage_json FROM conversation_messages
+             WHERE conversation_id = ?1 AND usage_json IS NOT NULL
+             ORDER BY seq DESC LIMIT 1",
+            [conversation_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(usage_json) = usage_json else {
+        return Ok(ConversationUsage::default());
+    };
+    let usage: ModelUsage = serde_json::from_str(&usage_json)?;
+    Ok(latest_usage_snapshot(&usage))
 }
 
 pub(super) fn append_messages_conn(

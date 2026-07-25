@@ -66,10 +66,8 @@ export type PromptCacheConfig = {
   mode: PromptCacheMode;
   use_stable_key: boolean;
   retention?: string | null;
-  ttl?: string | null;
   anthropic_ttl?: string | null;
   gemini_cached_content?: string | null;
-  extra?: Record<string, unknown> | null;
 };
 
 export type ProviderCacheCapabilities = {
@@ -77,8 +75,6 @@ export type ProviderCacheCapabilities = {
   explicit_breakpoints: boolean;
   stable_cache_key: boolean;
   supports_cache_retention: boolean;
-  supports_cache_usage_fields: boolean;
-  supports_prompt_cache_options: boolean;
 };
 
 export type FetchProviderModelsPayload = {
@@ -333,9 +329,6 @@ export type ToolCallState = {
   status: ToolCallStatus;
   result?: ToolResultData;
 };
-
-/** @deprecated Prefer ToolCallState; kept for gradual renames. */
-export type ToolCallMessage = ToolCallState;
 
 export type AssistantBlock =
   | { type: 'text'; content: string }

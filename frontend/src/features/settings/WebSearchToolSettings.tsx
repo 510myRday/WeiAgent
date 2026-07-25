@@ -41,8 +41,6 @@ import type {
   SourceSection,
 } from './web-search/types';
 import {
-  defaultExpandedSourceSections,
-  defaultExpandedSources,
   hydrateKeyStatuses,
   mergeCheckedStatuses,
   mergeToolsConfig,
@@ -158,20 +156,11 @@ export function WebSearchToolSettings({
 
   useEffect(() => {
     if (scope !== 'defaults' || !hasLoadedIpProxies || !config) return;
+    const validProxyUrls = new Set(ipProxies.map((proxy) => proxy.url));
     config.web_search.sources.forEach((source, index) => {
-      const validProxyUrls = new Set(ipProxies.map((proxy) => proxy.url));
-      const patch: Partial<WebSearchSourceConfig> = {};
       if (source.proxy_url && !validProxyUrls.has(source.proxy_url)) {
-        patch.proxy_url = null;
+        updateSource(index, { proxy_url: null });
       }
-      if (source.provider === 'grok' && source.flaresolverr_proxy_url && !validProxyUrls.has(source.flaresolverr_proxy_url)) {
-        patch.flaresolverr_proxy_url = null;
-      }
-      if (source.provider !== 'grok' && (source.flaresolverr_url || source.flaresolverr_proxy_url)) {
-        patch.flaresolverr_url = null;
-        patch.flaresolverr_proxy_url = null;
-      }
-      if (Object.keys(patch).length > 0) updateSource(index, patch);
     });
   }, [config, hasLoadedIpProxies, ipProxies, scope]);
 
@@ -188,8 +177,8 @@ export function WebSearchToolSettings({
         setAddKeySourceId(null);
         dispatchKeys({ type: 'setKeysDirtyAll', keysDirty: {} });
         dispatchKeys({ type: 'setSelectedAll', selectedKeyIndices: {} });
-        setExpandedSources(defaultExpandedSources());
-        setExpandedSourceSections(defaultExpandedSourceSections());
+        setExpandedSources({});
+        setExpandedSourceSections({});
         dispatchKeys({ type: 'setAllKeyStatuses', keyStatuses: hydrateKeyStatuses(normalized.web_search.sources) });
         const serialized = serializeDefaultsForAutosave(normalized, {}).serialized;
         latestSerializedRef.current.set(contextKey, serialized);
@@ -212,8 +201,8 @@ export function WebSearchToolSettings({
           setDefaults(normalized.defaults);
           setAddKeySourceId(null);
           dispatchKeys({ type: 'setSelectedAll', selectedKeyIndices: {} });
-          setExpandedSources(defaultExpandedSources());
-          setExpandedSourceSections(defaultExpandedSourceSections());
+          setExpandedSources({});
+          setExpandedSourceSections({});
           dispatchKeys({ type: 'setAllKeyStatuses', keyStatuses: hydrateKeyStatuses(normalized.effective.web_search.sources) });
           const serialized = JSON.stringify(normalized.overrides);
           latestSerializedRef.current.set(contextKey, serialized);

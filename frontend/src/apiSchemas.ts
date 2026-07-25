@@ -197,14 +197,6 @@ export function parseChatMessage(value: unknown): ChatMessage {
   return parse(chatMessageSchema, value) as ChatMessage;
 }
 
-export function parseConversationMessagePage(value: unknown): ConversationMessagePage {
-  return parse(conversationMessagePageSchema, value) as ConversationMessagePage;
-}
-
-export function parseAgentRun(value: unknown): AgentRun {
-  return parse(agentRunSchema, value) as AgentRun;
-}
-
 export function parseJsonStreamEvent(
   event: 'user' | 'assistant' | 'phase' | 'retry' | 'tool_call_started' | 'tool_call_args_delta' | 'tool_call' | 'tool_result' | 'approval_required',
   data: string,

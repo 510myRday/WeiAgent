@@ -274,15 +274,11 @@ export function ToolDisclosure({
         <div className="message-tool__content">
           <ToolCallCard
             agentId={agentId}
-            callId={tool.call_id}
-            name={tool.name}
             arguments={tool.arguments}
             status={displayStatus}
             result={displayResult}
             argumentsText={tool.arguments_text}
             phase={tool.phase}
-            hideHeader
-            hideProcessActions
             onApprove={onApprove}
           />
         </div>

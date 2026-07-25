@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Instant};
 
+use async_trait::async_trait;
 use reqwest::RequestBuilder;
 use serde_json::{Map, Value};
 
@@ -7,10 +8,10 @@ use crate::{
     domain::{Agent, ChatMessage, ModelProvider},
     error::{AppError, AppResult},
     llm::{
-        client::{ChatStream, RequestOptions},
+        client::{ChatClient, ChatStream, RequestOptions},
         http::{
             DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, StreamLineParser, StreamLogContext,
-            read_response_body_limited, stream_response,
+            read_response_body_limited, spawn_log, stream_response,
         },
         types::{ChatCompletionOutput, ToolCall, ToolDefinition},
     },
@@ -82,9 +83,11 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         self.http = self.http.with_logger(logger);
         self
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn complete(
+#[async_trait]
+impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
+    async fn complete(
         &self,
         agent: &Agent,
         provider: &ModelProvider,
@@ -129,7 +132,8 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         {
             Ok(response) => response,
             Err(error) => {
-                self.http.spawn_log(
+                spawn_log(
+                    &self.http.logger(),
                     log_enabled,
                     &agent.name,
                     Some(agent_id.as_str()),
@@ -150,7 +154,8 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         let body = read_response_body_limited(response, options.timeout).await?;
         if !status.is_success() {
             let error = format!("upstream returned {status}: {body}");
-            self.http.spawn_log(
+            spawn_log(
+                &self.http.logger(),
                 log_enabled,
                 &agent.name,
                 Some(agent_id.as_str()),
@@ -175,7 +180,8 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
                     || !output.reasoning_content.is_empty()
                     || !output.tool_calls.is_empty() =>
             {
-                self.http.spawn_log(
+                spawn_log(
+                    &self.http.logger(),
                     log_enabled,
                     &agent.name,
                     Some(agent_id.as_str()),
@@ -192,7 +198,8 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
             }
             Ok(_) => {
                 let error = AppError::Llm("empty model response".to_string());
-                self.http.spawn_log(
+                spawn_log(
+                    &self.http.logger(),
                     log_enabled,
                     &agent.name,
                     Some(agent_id.as_str()),
@@ -208,7 +215,8 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
                 Err(error)
             }
             Err(error) => {
-                self.http.spawn_log(
+                spawn_log(
+                    &self.http.logger(),
                     log_enabled,
                     &agent.name,
                     Some(agent_id.as_str()),
@@ -226,8 +234,7 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn stream(
+    async fn stream(
         &self,
         agent: &Agent,
         provider: &ModelProvider,
@@ -270,7 +277,8 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         {
             Ok(response) => response,
             Err(error) => {
-                self.http.spawn_log(
+                spawn_log(
+                    &self.http.logger(),
                     log_enabled,
                     &agent.name,
                     Some(agent_id.as_str()),
@@ -293,7 +301,8 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
                 .await
                 .unwrap_or_else(|_| "failed to read error body".to_string());
             let error = format!("upstream returned {status}: {body}");
-            self.http.spawn_log(
+            spawn_log(
+                &self.http.logger(),
                 log_enabled,
                 &agent.name,
                 Some(agent_id.as_str()),
@@ -328,7 +337,7 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         ))
     }
 
-    pub(crate) async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {
+    async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let mut url = self.adapter.models_url(provider);
         let mut models = Vec::new();
@@ -364,6 +373,31 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         models.dedup();
         Ok(models)
     }
+}
+
+/// One SSE `data:` line, decoded far enough for a protocol stream parser.
+pub(crate) enum SseData {
+    /// Terminal `[DONE]` sentinel.
+    Done,
+    /// Not a data line, or an empty payload — nothing to parse.
+    Skip,
+    Json(Value),
+}
+
+pub(crate) fn parse_sse_data_line(line: &str) -> AppResult<SseData> {
+    let Some(data) = line.strip_prefix("data:") else {
+        return Ok(SseData::Skip);
+    };
+    let data = data.strip_prefix(' ').unwrap_or(data).trim();
+    if data.is_empty() {
+        return Ok(SseData::Skip);
+    }
+    if data == "[DONE]" {
+        return Ok(SseData::Done);
+    }
+    serde_json::from_str(data)
+        .map(SseData::Json)
+        .map_err(|error| AppError::Llm(format!("invalid SSE JSON: {error}")))
 }
 
 pub(crate) fn message_tool_calls(message: &ChatMessage) -> AppResult<Vec<ToolCall>> {

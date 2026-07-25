@@ -26,19 +26,19 @@ const MAX_DATABASE_BYTES: u64 = 500 * 1024 * 1024;
 const MAX_LIST_LIMIT: usize = 500;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct LlmLogMetrics {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub first_token_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
 }
 
@@ -84,60 +84,59 @@ pub fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LlmLogEntry {
     pub id: String,
     pub agent_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
     pub model_id: String,
     pub provider_name: String,
     pub created_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_status: Option<u16>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub first_token_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// Whether request/response payload was persisted and can be inspected.
-    #[serde(default)]
     pub has_payload: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LlmLogDetail {
     #[serde(flatten)]
     pub summary: LlmLogEntry,
     pub raw_request: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_response: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LlmLogAgentStat {
     pub agent_key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     pub agent_name: String,
     pub request_count: usize,
     pub latest_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LlmLogModelStat {
     pub model_key: String,
     pub provider_name: String,
@@ -161,7 +160,7 @@ pub struct LlmLogListFilter {
     pub status: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct LlmLogSummary {
     pub request_count: usize,
     pub success_count: usize,
@@ -173,17 +172,14 @@ pub struct LlmLogSummary {
     pub cost_usd: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LlmLogListPage {
     pub items: Vec<LlmLogEntry>,
     pub total: usize,
     pub offset: usize,
     pub limit: usize,
-    #[serde(default)]
     pub agent_stats: Vec<LlmLogAgentStat>,
-    #[serde(default)]
     pub model_stats: Vec<LlmLogModelStat>,
-    #[serde(default)]
     pub summary: LlmLogSummary,
 }
 
@@ -534,13 +530,6 @@ impl LlmLogger {
             .await
     }
 
-    pub async fn delete_log(&self, log_id: &str) -> AppResult<()> {
-        let log_id = log_id.to_string();
-        self.database
-            .call(move |conn| delete_log_conn(conn, &log_id))
-            .await
-    }
-
     #[cfg(test)]
     pub(crate) async fn cleanup_logs_for_test(&self) -> AppResult<()> {
         self.database.call(cleanup_logs_conn).await
@@ -579,12 +568,6 @@ fn get_log_conn(conn: &Connection, log_id: &str) -> AppResult<LlmLogDetail> {
         .optional()?
         .ok_or(AppError::NotFound)?;
     Ok(detail)
-}
-
-fn delete_log_conn(conn: &Connection, log_id: &str) -> AppResult<()> {
-    let _ = validate_log_id(log_id)?;
-    conn.execute("DELETE FROM llm_requests WHERE id = ?1", params![log_id])?;
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1672,32 +1655,6 @@ mod tests {
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].provider_name, "prov-b");
         assert_eq!(page.agent_stats.len(), 1);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn delete_log_removes_payload() {
-        let (_dir, logger) = temp_logger(true);
-        let id = logger
-            .write_log(
-                "Agent",
-                None,
-                None,
-                "model",
-                "provider",
-                "request-body",
-                Some("response-body"),
-                Some(200),
-                None,
-                LlmLogMetrics::default(),
-                true,
-            )
-            .await
-            .unwrap();
-        logger.delete_log(&id).await.unwrap();
-        assert!(matches!(
-            logger.get_log(&id).await.unwrap_err(),
-            AppError::NotFound
-        ));
     }
 
     #[test]

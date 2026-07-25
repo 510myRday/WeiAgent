@@ -15,11 +15,11 @@ use crate::domain::{
 };
 
 use self::key_pool::key_attempt_order;
-use self::providers::{exa, firecrawl, grok, jina, tavily};
+use self::providers::{exa, firecrawl, grok, jina, support::truncate, tavily};
 use self::types::{
     AggregatedSearchResult, ProviderError, ProviderSearchOutput, ProviderSearchRequest,
     SearchHitKind, SearchMode, SearchSourceDescriptor, SourceRunSummary, WebSearchOutput,
-    sanitize_error_message,
+    merge_status_update, sanitize_error_message,
 };
 
 pub mod client_cache;
@@ -208,39 +208,6 @@ pub(crate) async fn execute_web_search_with_status_updates(
             },
             status_updates,
         },
-    }
-}
-
-fn merge_status_update(
-    updates: &mut BTreeMap<(String, usize, String), WebSearchKeyStatusUpdate>,
-    update: WebSearchKeyStatusUpdate,
-) {
-    let key = (
-        update.source_id.clone(),
-        update.key_index,
-        update.api_key.clone(),
-    );
-    match updates.get(&key) {
-        Some(existing)
-            if key_status_severity(&existing.record.status)
-                >= key_status_severity(&update.record.status) => {}
-        _ => {
-            updates.insert(key, update);
-        }
-    }
-}
-
-fn key_status_severity(status: &str) -> u8 {
-    match status {
-        "officially_blocked" => 9,
-        "invalid_key" | "unauthorized" => 8,
-        "quota_exhausted" | "permission_denied" | "configuration_error" => 7,
-        "quota_limited" | "rate_limited" => 6,
-        "anti_bot" => 5,
-        "network_error" | "service_error" => 4,
-        "error" => 3,
-        "normal" => 0,
-        _ => 2,
     }
 }
 
@@ -767,16 +734,16 @@ async fn execute_source_query(
     let base_url = source.provider.default_base_url();
     let result = match source.provider {
         WebSearchProviderKind::Tavily => {
-            tavily::search(&control_client, &base_url, &api_key, &request).await
+            tavily::search(&control_client, base_url, &api_key, &request).await
         }
         WebSearchProviderKind::Exa => {
-            exa::search(&control_client, &base_url, &api_key, &request).await
+            exa::search(&control_client, base_url, &api_key, &request).await
         }
         WebSearchProviderKind::Jina => {
-            jina::search(&control_client, &base_url, &api_key, &request).await
+            jina::search(&control_client, base_url, &api_key, &request).await
         }
         WebSearchProviderKind::Firecrawl => {
-            firecrawl::search(&control_client, &base_url, &api_key, &request).await
+            firecrawl::search(&control_client, base_url, &api_key, &request).await
         }
         WebSearchProviderKind::Grok => {
             let grok_timeout = std::cmp::max(timeout, Duration::from_secs(90));
@@ -788,13 +755,11 @@ async fn execute_source_query(
                     grok::search(
                         &client,
                         &control_client,
-                        &base_url,
+                        base_url,
                         &api_key,
                         &request,
                         grok::GrokSearchOptions {
                             source_id: &source.id,
-                            flaresolverr_url: source.flaresolverr_url.as_deref(),
-                            flaresolverr_proxy_url: source.flaresolverr_proxy_url.as_deref(),
                             proxy_url: source.proxy_url.as_deref(),
                         },
                     )
@@ -1018,10 +983,8 @@ fn aggregate_results(
                 rank: index + 1,
                 title: entry.title,
                 url: entry.url,
-                snippet: truncate_chars(&entry.snippet, 500),
-                content_excerpt: entry
-                    .content_excerpt
-                    .map(|value| truncate_chars(&value, 4_000)),
+                snippet: truncate(&entry.snippet, 500),
+                content_excerpt: entry.content_excerpt.map(|value| truncate(&value, 4_000)),
                 evidence_kind: entry.kind,
                 source_ids,
                 provider_kinds,
@@ -1099,16 +1062,6 @@ fn url_allowed(url: &str, allowed: &[String], blocked: &[String]) -> bool {
 
 fn domain_matches(host: &str, domain: &str) -> bool {
     host == domain || host.ends_with(&format!(".{domain}"))
-}
-
-fn truncate_chars(value: &str, max: usize) -> String {
-    let mut chars = value.chars();
-    let head = chars.by_ref().take(max).collect::<String>();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
-    }
 }
 
 fn key_status_update(

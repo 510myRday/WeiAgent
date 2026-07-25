@@ -130,7 +130,7 @@ pub async fn load_or_init_settings(path: &std::path::Path) -> AppResult<AppSetti
     Ok(settings)
 }
 
-pub async fn read_settings(path: &std::path::Path) -> AppResult<AppSettings> {
+pub(crate) async fn read_settings(path: &std::path::Path) -> AppResult<AppSettings> {
     let content = fs::read_to_string(path).await?;
     let mut settings: AppSettings = serde_json::from_str(&content)?;
     validate_settings(&settings)?;

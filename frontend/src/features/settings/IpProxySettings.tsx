@@ -57,6 +57,7 @@ import {
 } from '../../components/ui';
 import { useI18n } from '../../i18n';
 import { userErrorMessage } from '../../utils/userError';
+import { formatCheckedAt } from './web-search/utils';
 
 type ProxyDialog = 'create' | 'edit' | 'import' | null;
 type ProtocolFilter = 'all' | IpProxyProtocol;
@@ -1247,15 +1248,4 @@ function maskProxyUrl(value: string) {
   } catch {
     return value;
   }
-}
-
-function formatCheckedAt(value: string, locale: 'zh' | 'en') {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
 }

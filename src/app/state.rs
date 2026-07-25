@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     app::{run_manager::RunManager, security::ApiSecurity},
     llm::registry::DynLlmRegistry,
-    storage::{JsonStore, LlmLogger},
+    storage::{LlmLogger, Store},
     tools::{
         approval::ApprovalManager, registry::ToolRegistry, runtime::CodexRuntimeManager,
         terminal::TerminalManager,
@@ -13,7 +13,7 @@ use crate::{
 #[derive(Clone)]
 pub struct AppState {
     pub api_security: Arc<ApiSecurity>,
-    pub store: Arc<JsonStore>,
+    pub store: Arc<Store>,
     pub llm_registry: DynLlmRegistry,
     pub llm_logger: Arc<LlmLogger>,
     pub terminal_manager: Arc<TerminalManager>,

@@ -33,7 +33,7 @@ export type PendingSave =
     overrides: AgentToolsOverrides;
   };
 
-export type ProxyPickerField = 'flaresolverr_proxy_url' | 'proxy_url';
+export type ProxyPickerField = 'proxy_url';
 export type ProxyLatencySort = 'latency_asc' | 'latency_desc';
 
 export const AUTO_SAVE_DELAY_MS = 600;

@@ -1,13 +1,13 @@
 import { expect, test } from 'vitest';
 
 import {
-  parseAgentRun,
-  parseConversationMessagePage,
+  agentRunRuntimeSchema,
+  conversationMessagePageRuntimeSchema,
   parseJsonStreamEvent,
 } from './apiSchemas';
 
 test('conversation page accepts a null cursor on the last history page', () => {
-  expect(parseConversationMessagePage({
+  expect(conversationMessagePageRuntimeSchema.parse({
     messages: [{
       id: 'message-1',
       agent_id: 'agent-1',
@@ -26,7 +26,7 @@ test('conversation page accepts a null cursor on the last history page', () => {
 });
 
 test('agent run accepts nullable fields emitted by Rust Option values', () => {
-  expect(parseAgentRun({
+  expect(agentRunRuntimeSchema.parse({
     id: 'run-1',
     conversation_id: 'conversation-1',
     user_message_id: null,

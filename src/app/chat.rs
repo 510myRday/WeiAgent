@@ -28,6 +28,19 @@ pub struct PreparedChat {
     pub thinking_level: Option<ThinkingLevel>,
 }
 
+/// Agent tools config with runtime availability applied: the terminal tool is
+/// forced off while the codex runtime is not installed/reachable.
+pub(crate) async fn effective_tools_config(
+    state: &AppState,
+    agent_id: Uuid,
+) -> AppResult<AgentToolsConfig> {
+    let mut config = state.store.read_agent_tools_config(agent_id).await?;
+    if config.terminal.enabled && !state.codex_runtime.is_available_cached() {
+        config.terminal.enabled = false;
+    }
+    Ok(config)
+}
+
 pub async fn prepare_chat(
     state: &AppState,
     conversation_id: Uuid,
@@ -73,10 +86,7 @@ pub async fn prepare_chat(
     } else {
         None
     };
-    let mut tools_config = state.store.read_agent_tools_config(agent.id).await?;
-    if tools_config.terminal.enabled && !state.codex_runtime.is_available_cached() {
-        tools_config.terminal.enabled = false;
-    }
+    let tools_config = effective_tools_config(state, agent.id).await?;
     let system_prompt = state
         .store
         .build_agent_system_prompt(&agent, &tools_config)

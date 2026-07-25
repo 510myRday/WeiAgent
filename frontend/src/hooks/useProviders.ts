@@ -5,7 +5,6 @@ import {
   createModelProvider,
   updateModelProvider,
   deleteModelProvider,
-  fetchModels,
 } from '../api';
 
 export function useProviders() {
@@ -42,10 +41,6 @@ export function useProviders() {
     setActiveProviderId('');
   }, []);
 
-  const fetchProviderModels = useCallback(async (id: string) => {
-    return await fetchModels(id);
-  }, []);
-
   return {
     providers,
     activeProviderId,
@@ -54,7 +49,6 @@ export function useProviders() {
     addProvider,
     editProvider,
     removeProvider,
-    fetchProviderModels,
   };
 }
 

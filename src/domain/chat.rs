@@ -162,12 +162,6 @@ fn default_stream_response() -> bool {
     true
 }
 
-#[derive(Debug, Serialize)]
-pub struct SendMessageResponse {
-    pub user: ChatMessage,
-    pub assistant: ChatMessage,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunStatus {

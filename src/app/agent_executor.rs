@@ -13,8 +13,8 @@ use uuid::Uuid;
 use crate::{
     app::{AppState, chat::PreparedChat},
     domain::{
-        ChatMessage, ChatMessageStatus, ChatRole, ModelUsage, SendMessageResponse,
-        TerminalPermissionMode, TokenUsage, ToolResult,
+        ChatMessage, ChatMessageStatus, ChatRole, ModelUsage, TerminalPermissionMode, TokenUsage,
+        ToolResult,
     },
     error::{AppError, AppResult},
     llm::{
@@ -190,7 +190,7 @@ pub async fn run_agent(
     options: RequestOptions,
     use_streaming_llm: bool,
     events: Option<mpsc::Sender<AgentRunEvent>>,
-) -> AppResult<SendMessageResponse> {
+) -> AppResult<()> {
     let client = state.llm_registry.client_for(&prepared.provider)?;
     let mut messages = prepared.messages_for_llm.clone();
     let user_message = prepared.user_message.clone();
@@ -213,9 +213,9 @@ pub async fn run_agent(
             });
         }));
     }
-    // Freeze tool definitions for this run so prompt-cache prefixes stay stable
-    // across tool iterations. Execution still hot-reloads config per tool call.
-    refresh_prepared_tools_config(&state, &mut prepared).await?;
+    // Tool definitions were computed by prepare_chat and stay frozen for this
+    // run so prompt-cache prefixes remain stable across tool iterations.
+    // Execution still hot-reloads terminal config per tool call.
     let frozen_tools = state.tool_registry.definitions(&prepared.tools_config);
     let max_llm_iterations = prepared.tools_config.max_llm_iterations();
 
@@ -312,10 +312,7 @@ pub async fn run_agent(
         if output.output.tool_calls.is_empty() {
             emit(&events, AgentRunEvent::Assistant(assistant_message.clone())).await?;
             emit(&events, AgentRunEvent::Done).await?;
-            return Ok(SendMessageResponse {
-                user: user_message,
-                assistant: assistant_message,
-            });
+            return Ok(());
         }
 
         if !assistant_message.content.is_empty() || assistant_message.reasoning_content.is_some() {
@@ -356,10 +353,7 @@ pub async fn run_agent(
         };
     emit(&events, AgentRunEvent::Assistant(summary.clone())).await?;
     emit(&events, AgentRunEvent::Done).await?;
-    Ok(SendMessageResponse {
-        user: user_message,
-        assistant: summary,
-    })
+    Ok(())
 }
 
 async fn persist_run_failure(runtime: &AgentRuntime<'_>, error: &AppError) {
@@ -593,32 +587,11 @@ async fn execute_tool_calls(
     Ok(())
 }
 
-async fn refresh_prepared_tools_config(
-    state: &AppState,
-    prepared: &mut PreparedChat,
-) -> AppResult<()> {
-    let mut tools_config = state
-        .store
-        .read_agent_tools_config(prepared.agent.id)
-        .await?;
-    if tools_config.terminal.enabled && !state.codex_runtime.is_available_cached() {
-        tools_config.terminal.enabled = false;
-    }
-    prepared.tools_config = tools_config;
-    Ok(())
-}
-
 async fn refresh_live_terminal_config(
     state: &AppState,
     prepared: &mut PreparedChat,
 ) -> AppResult<()> {
-    let mut live = state
-        .store
-        .read_agent_tools_config(prepared.agent.id)
-        .await?;
-    if live.terminal.enabled && !state.codex_runtime.is_available_cached() {
-        live.terminal.enabled = false;
-    }
+    let live = crate::app::chat::effective_tools_config(state, prepared.agent.id).await?;
     prepared.tools_config.terminal = live.terminal;
     Ok(())
 }

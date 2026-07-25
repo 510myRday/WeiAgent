@@ -77,7 +77,6 @@ export function defaultModelConfig(modelId: string): ModelConfig {
 }
 
 export function normalizeModelConfig(modelId: string, config: ModelConfig): ModelConfig {
-  const legacyConfig = config as ModelConfig & { cache_price?: number };
   return {
     model_id: modelId,
     multimodal: Boolean(config.multimodal),
@@ -88,7 +87,7 @@ export function normalizeModelConfig(modelId: string, config: ModelConfig): Mode
     input_price: config.input_price,
     output_price: config.output_price,
     cache_write_price: config.cache_write_price,
-    cache_read_price: config.cache_read_price ?? legacyConfig.cache_price,
+    cache_read_price: config.cache_read_price,
   };
 }
 

@@ -1,6 +1,5 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
-use async_trait::async_trait;
 use reqwest::RequestBuilder;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -9,82 +8,21 @@ use crate::{
     domain::{Agent, ChatMessage, ChatRole, ImageSource, ModelProvider, ThinkingLevel, TokenUsage},
     error::{AppError, AppResult},
     llm::{
-        cache::{PromptCacheMode, apply_provider_extra, build_context, effective_capabilities},
-        client::{ChatClient, ChatStream, RequestOptions},
+        cache::{PromptCacheMode, effective_capabilities},
         http::StreamLineParser,
         protocol::common::{
-            ProtocolAdapter, ProtocolClient, add_query_parameter, encode_path_segment,
-            merge_extra_body, message_tool_calls, parse_json_object, validate_tool_calls,
+            ProtocolAdapter, SseData, add_query_parameter, encode_path_segment, merge_extra_body,
+            message_tool_calls, parse_json_object, parse_sse_data_line, validate_tool_calls,
         },
         types::{
             ChatCompletionOutput, StreamEvent, ToolCall, ToolCallFunction, ToolDefinition,
             select_context_messages,
         },
     },
-    storage::LlmLogger,
 };
 
-#[derive(Clone)]
-pub struct GeminiClient {
-    inner: ProtocolClient<GeminiAdapter>,
-}
-
-impl GeminiClient {
-    pub fn new() -> Self {
-        Self {
-            inner: ProtocolClient::new(GeminiAdapter),
-        }
-    }
-
-    pub fn with_logger(mut self, logger: Arc<LlmLogger>) -> Self {
-        self.inner = self.inner.with_logger(logger);
-        self
-    }
-}
-
-impl Default for GeminiClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl ChatClient for GeminiClient {
-    async fn complete(
-        &self,
-        agent: &Agent,
-        provider: &ModelProvider,
-        messages: &[ChatMessage],
-        system_prompt: &str,
-        options: RequestOptions,
-        tools: Option<Vec<ToolDefinition>>,
-    ) -> AppResult<ChatCompletionOutput> {
-        self.inner
-            .complete(agent, provider, messages, system_prompt, options, tools)
-            .await
-    }
-
-    async fn stream(
-        &self,
-        agent: &Agent,
-        provider: &ModelProvider,
-        messages: &[ChatMessage],
-        system_prompt: &str,
-        options: RequestOptions,
-        tools: Option<Vec<ToolDefinition>>,
-    ) -> AppResult<ChatStream> {
-        self.inner
-            .stream(agent, provider, messages, system_prompt, options, tools)
-            .await
-    }
-
-    async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {
-        self.inner.list_models(provider).await
-    }
-}
-
 #[derive(Clone, Copy)]
-struct GeminiAdapter;
+pub(crate) struct GeminiAdapter;
 
 impl ProtocolAdapter for GeminiAdapter {
     fn completion_url(&self, provider: &ModelProvider, agent: &Agent, stream: bool) -> String {
@@ -115,7 +53,6 @@ impl ProtocolAdapter for GeminiAdapter {
     ) -> AppResult<Value> {
         build_gemini_request(
             &_agent.model_id,
-            _agent.id,
             provider,
             messages,
             system_prompt,
@@ -194,10 +131,8 @@ impl ProtocolAdapter for GeminiAdapter {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_gemini_request(
     model_id: &str,
-    agent_id: Uuid,
     provider: &ModelProvider,
     messages: &[ChatMessage],
     system_prompt: &str,
@@ -205,24 +140,19 @@ fn build_gemini_request(
     tools: Option<Vec<ToolDefinition>>,
     thinking_level: Option<ThinkingLevel>,
 ) -> AppResult<Value> {
-    let context = build_context(
-        provider,
-        model_id,
-        agent_id,
-        "google_gemini",
-        system_prompt,
-        tools.as_deref(),
-    );
     let selected = select_context_messages(messages);
-    let mut call_names = HashMap::new();
-    for message in &selected {
-        for call in message_tool_calls(message)? {
-            call_names.insert(call.id, call.function.name);
-        }
-    }
+    let message_calls = selected
+        .iter()
+        .map(|message| message_tool_calls(message))
+        .collect::<AppResult<Vec<_>>>()?;
+    let call_names: HashMap<&str, &str> = message_calls
+        .iter()
+        .flatten()
+        .map(|call| (call.id.as_str(), call.function.name.as_str()))
+        .collect();
 
     let mut contents: Vec<Value> = Vec::new();
-    for message in selected {
+    for (message, calls) in selected.iter().zip(&message_calls) {
         let (role, parts) = match message.role {
             ChatRole::User => {
                 let mut parts = Vec::new();
@@ -252,7 +182,7 @@ fn build_gemini_request(
                 if !message.content.is_empty() {
                     parts.push(json!({"text": message.content}));
                 }
-                for call in message_tool_calls(message)? {
+                for call in calls {
                     let args =
                         parse_json_object(&call.function.arguments, "stored tool call arguments")?;
                     parts.push(json!({
@@ -353,7 +283,6 @@ fn build_gemini_request(
             }]),
         );
     }
-    apply_provider_extra(&mut body, &context);
     merge_extra_body(
         body,
         extra_body,
@@ -578,21 +507,12 @@ impl GeminiStreamParser {
 
 impl StreamLineParser for GeminiStreamParser {
     fn parse_line(&mut self, line: &str) -> Vec<AppResult<StreamEvent>> {
-        let Some(data) = line.strip_prefix("data:") else {
-            return Vec::new();
-        };
-        let data = data.strip_prefix(' ').unwrap_or(data).trim();
-        if data.is_empty() {
-            return Vec::new();
+        match parse_sse_data_line(line) {
+            Ok(SseData::Skip) => Vec::new(),
+            Ok(SseData::Done) => self.finish(),
+            Ok(SseData::Json(value)) => self.parse_chunk(&value),
+            Err(error) => vec![Err(error)],
         }
-        if data == "[DONE]" {
-            return self.finish();
-        }
-        let value: Value = match serde_json::from_str(data) {
-            Ok(value) => value,
-            Err(error) => return vec![Err(AppError::Llm(format!("invalid SSE JSON: {error}")))],
-        };
-        self.parse_chunk(&value)
     }
 }
 
@@ -691,7 +611,6 @@ mod tests {
         );
         let request = build_gemini_request(
             "gemini-3-pro",
-            Uuid::new_v4(),
             &provider,
             &messages,
             "system",
@@ -753,7 +672,6 @@ mod tests {
         }];
         let request = build_gemini_request(
             "gemini-3-pro",
-            agent_id,
             &test_provider(),
             &messages,
             "system",

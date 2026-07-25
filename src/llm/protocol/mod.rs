@@ -22,8 +22,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        anthropic::AnthropicMessagesClient, gemini::GeminiClient,
-        openai_responses::OpenAiResponsesClient,
+        anthropic::AnthropicAdapter, common::ProtocolClient, gemini::GeminiAdapter,
+        openai_responses::OpenAiResponsesAdapter,
     };
     use crate::{
         domain::{Agent, ChatMessage, ChatMessageStatus, ChatRole, ModelProvider, ProviderType},
@@ -284,7 +284,7 @@ mod tests {
     async fn clients_send_protocol_auth_endpoints_and_sse() {
         run_http_protocol_case(
             ProtocolKind::OpenAiResponses,
-            Arc::new(OpenAiResponsesClient::new()),
+            Arc::new(ProtocolClient::new(OpenAiResponsesAdapter)),
             ProviderType::OpenAiResponses,
             "/v1/responses",
             "/v1/responses",
@@ -294,7 +294,7 @@ mod tests {
         .await;
         run_http_protocol_case(
             ProtocolKind::Anthropic,
-            Arc::new(AnthropicMessagesClient::new()),
+            Arc::new(ProtocolClient::new(AnthropicAdapter)),
             ProviderType::AnthropicMessages,
             "/v1/messages",
             "/v1/messages",
@@ -304,7 +304,7 @@ mod tests {
         .await;
         run_http_protocol_case(
             ProtocolKind::Gemini,
-            Arc::new(GeminiClient::new()),
+            Arc::new(ProtocolClient::new(GeminiAdapter)),
             ProviderType::GoogleGemini,
             "/v1/models/test-model:generateContent",
             "/v1/models/test-model:streamGenerateContent",

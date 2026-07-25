@@ -547,7 +547,7 @@ fn build_codex_shell_argv(shell_command: &str, cwd: &Path) -> Vec<String> {
             "-NoLogo".to_string(),
             "-NoProfile".to_string(),
             "-Command".to_string(),
-            windows_powershell_script(shell_command, Some(cwd)),
+            windows_powershell_script(shell_command, cwd),
         ],
         #[cfg(windows)]
         HostShellKind::Cmd => vec![
@@ -1525,14 +1525,11 @@ fn windows_cmd_script(shell_command: &str, cwd: &Path) -> String {
 }
 
 #[cfg(windows)]
-fn windows_powershell_script(shell_command: &str, cwd: Option<&Path>) -> String {
-    let set_location = match cwd {
-        Some(cwd) => format!(
-            "Set-Location -LiteralPath {}; ",
-            quote_powershell_literal(&windows_command_path(cwd))
-        ),
-        None => String::new(),
-    };
+fn windows_powershell_script(shell_command: &str, cwd: &Path) -> String {
+    let set_location = format!(
+        "Set-Location -LiteralPath {}; ",
+        quote_powershell_literal(&windows_command_path(cwd))
+    );
     format!(
         "$ErrorActionPreference = 'Stop'; $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $global:LASTEXITCODE = 0; {set_location}$command = {}; & ([ScriptBlock]::Create($command)); exit $LASTEXITCODE",
         quote_powershell_literal(shell_command)

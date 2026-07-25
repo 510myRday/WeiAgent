@@ -24,13 +24,9 @@ pub struct PromptCacheConfig {
     #[serde(default)]
     pub retention: Option<String>,
     #[serde(default)]
-    pub ttl: Option<String>,
-    #[serde(default)]
     pub anthropic_ttl: Option<String>,
     #[serde(default)]
     pub gemini_cached_content: Option<String>,
-    #[serde(default)]
-    pub extra: Value,
 }
 
 impl Default for PromptCacheConfig {
@@ -39,10 +35,8 @@ impl Default for PromptCacheConfig {
             mode: PromptCacheMode::Automatic,
             use_stable_key: false,
             retention: None,
-            ttl: None,
             anthropic_ttl: None,
             gemini_cached_content: None,
-            extra: Value::Null,
         }
     }
 }
@@ -57,10 +51,6 @@ pub struct ProviderCacheCapabilities {
     pub stable_cache_key: bool,
     #[serde(default)]
     pub supports_cache_retention: bool,
-    #[serde(default)]
-    pub supports_cache_usage_fields: bool,
-    #[serde(default)]
-    pub supports_prompt_cache_options: bool,
 }
 
 fn default_true() -> bool {
@@ -74,23 +64,14 @@ impl Default for ProviderCacheCapabilities {
             explicit_breakpoints: false,
             stable_cache_key: false,
             supports_cache_retention: false,
-            supports_cache_usage_fields: false,
-            supports_prompt_cache_options: false,
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct CacheContext {
-    pub provider_type: ProviderType,
-    pub provider_id: Uuid,
-    pub model_id: String,
-    pub agent_id: Uuid,
     pub cache_key: Option<String>,
-    pub static_prefix_hash: String,
-    pub tools_hash: String,
     pub explicit_breakpoints: bool,
-    pub provider_options: Value,
 }
 
 pub fn effective_capabilities(provider: &ModelProvider) -> ProviderCacheCapabilities {
@@ -101,27 +82,21 @@ pub fn effective_capabilities(provider: &ModelProvider) -> ProviderCacheCapabili
         ProviderType::OpenAiCompatible => ProviderCacheCapabilities::default(),
         ProviderType::OpenAiResponses => ProviderCacheCapabilities {
             automatic_prefix_cache: true,
-            explicit_breakpoints: true,
+            explicit_breakpoints: false,
             stable_cache_key: true,
             supports_cache_retention: true,
-            supports_cache_usage_fields: true,
-            supports_prompt_cache_options: true,
         },
         ProviderType::AnthropicMessages => ProviderCacheCapabilities {
             automatic_prefix_cache: true,
             explicit_breakpoints: true,
             stable_cache_key: false,
             supports_cache_retention: false,
-            supports_cache_usage_fields: true,
-            supports_prompt_cache_options: false,
         },
         ProviderType::GoogleGemini => ProviderCacheCapabilities {
             automatic_prefix_cache: true,
             explicit_breakpoints: true,
             stable_cache_key: false,
             supports_cache_retention: false,
-            supports_cache_usage_fields: true,
-            supports_prompt_cache_options: false,
         },
     }
 }
@@ -143,14 +118,14 @@ pub fn build_context(
     system_prompt: &str,
     tools: Option<&[ToolDefinition]>,
 ) -> CacheContext {
-    let tools_hash = tools_hash(tools);
-    let static_prefix_hash = system_prompt_hash(system_prompt);
     let capabilities = effective_capabilities(provider);
     let config = &provider.prompt_cache;
     let cache_key = (config.use_stable_key
         && capabilities.stable_cache_key
         && !matches!(config.mode, PromptCacheMode::Disabled))
     .then(|| {
+        let tools_hash = tools_hash(tools);
+        let static_prefix_hash = system_prompt_hash(system_prompt);
         format!(
             "weiagent:{}:{}:{}:{}:{}:{}",
             provider.id,
@@ -162,16 +137,9 @@ pub fn build_context(
         )
     });
     CacheContext {
-        provider_type: provider.provider_type.clone(),
-        provider_id: provider.id,
-        model_id: model_id.to_string(),
-        agent_id,
         cache_key,
-        static_prefix_hash,
-        tools_hash,
         explicit_breakpoints: matches!(config.mode, PromptCacheMode::Explicit)
             && capabilities.explicit_breakpoints,
-        provider_options: config.extra.clone(),
     }
 }
 
@@ -195,26 +163,6 @@ pub fn apply_openai_fields(
         && let Some(retention) = config.retention.as_ref()
     {
         body.insert("prompt_cache_retention".to_string(), json!(retention));
-    }
-    if capabilities.supports_prompt_cache_options {
-        let mut options = Map::new();
-        if let Some(ttl) = config.ttl.as_ref() {
-            options.insert("ttl".to_string(), json!(ttl));
-        }
-        if matches!(config.mode, PromptCacheMode::Explicit) && context.explicit_breakpoints {
-            options.insert("mode".to_string(), json!("explicit"));
-        }
-        if !options.is_empty() {
-            body.insert("prompt_cache_options".to_string(), Value::Object(options));
-        }
-    }
-}
-
-pub fn apply_provider_extra(body: &mut Map<String, Value>, context: &CacheContext) {
-    if let Value::Object(extra) = &context.provider_options {
-        for (key, value) in extra {
-            body.insert(key.clone(), value.clone());
-        }
     }
 }
 
@@ -261,25 +209,25 @@ mod tests {
         let p = provider();
         let a = build_context(&p, "model", Uuid::nil(), "responses", "one", None);
         let b = build_context(&p, "model", Uuid::nil(), "responses", "two", None);
-        assert_ne!(a.static_prefix_hash, b.static_prefix_hash);
+        assert_ne!(system_prompt_hash("one"), system_prompt_hash("two"));
         assert_ne!(a.cache_key, b.cache_key);
     }
 
     #[test]
     fn openai_fields_follow_declared_capabilities() {
         let mut p = provider();
-        p.prompt_cache.ttl = Some("30m".into());
+        p.prompt_cache.retention = Some("24h".into());
         let context = build_context(&p, "model", Uuid::nil(), "responses", "system", None);
         let mut body = Map::new();
         apply_openai_fields(&mut body, &p, &context);
         assert!(body.contains_key("prompt_cache_key"));
-        assert_eq!(body["prompt_cache_options"]["ttl"], "30m");
+        assert_eq!(body["prompt_cache_retention"], "24h");
 
         p.cache_capabilities = Some(ProviderCacheCapabilities::default());
         let context = build_context(&p, "model", Uuid::nil(), "openai_chat", "system", None);
         let mut body = Map::new();
         apply_openai_fields(&mut body, &p, &context);
         assert!(!body.contains_key("prompt_cache_key"));
-        assert!(!body.contains_key("prompt_cache_options"));
+        assert!(!body.contains_key("prompt_cache_retention"));
     }
 }

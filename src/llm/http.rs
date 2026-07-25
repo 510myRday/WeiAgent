@@ -19,13 +19,13 @@ use crate::{
     },
 };
 
-pub const MAX_LLM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
-pub const MAX_LLM_LOG_BYTES: usize = 1024 * 1024;
+const MAX_LLM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_LLM_LOG_BYTES: usize = 1024 * 1024;
 /// Capture budget when payload logging is disabled: only the stream tail is
 /// kept so usage metrics can still be extracted from the final SSE lines.
-pub const METRICS_ONLY_LOG_BYTES: usize = 16 * 1024;
-pub const MAX_SSE_LINE_BUFFER_BYTES: usize = 1024 * 1024;
-pub const DEFAULT_MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(30);
+const METRICS_ONLY_LOG_BYTES: usize = 16 * 1024;
+const MAX_SSE_LINE_BUFFER_BYTES: usize = 1024 * 1024;
+pub(crate) const DEFAULT_MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_LOG_TRUNCATION_MARKER: &str = "[LLM stream log middle truncated]";
 
 #[derive(Clone)]
@@ -99,42 +99,10 @@ impl LlmHttp {
         }
         Err(last_error.unwrap_or_else(|| AppError::Llm("request failed".to_string())))
     }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn spawn_log(
-        &self,
-        // When true, persist full request/response payloads; summary metrics always persist.
-        include_payload: bool,
-        agent_name: &str,
-        agent_id: Option<&str>,
-        conversation_id: Option<&str>,
-        model_id: &str,
-        provider_name: &str,
-        raw_request: &str,
-        raw_response: Option<&str>,
-        raw_status: Option<u16>,
-        error: Option<&str>,
-        metrics: LlmLogMetrics,
-    ) {
-        spawn_log(
-            &self.logger,
-            include_payload,
-            agent_name,
-            agent_id,
-            conversation_id,
-            model_id,
-            provider_name,
-            raw_request,
-            raw_response,
-            raw_status,
-            error,
-            metrics,
-        );
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_log(
+pub(crate) fn spawn_log(
     logger: &Option<Arc<LlmLogger>>,
     // When true, persist full request/response payloads; summary metrics always persist.
     include_payload: bool,
@@ -254,7 +222,7 @@ pub(crate) fn stream_metrics(
     metrics
 }
 
-pub fn capture_log_line(
+fn capture_log_line(
     line: &str,
     raw_lines: &mut Vec<String>,
     raw_bytes: &mut usize,
@@ -321,7 +289,7 @@ fn suffix_at_most(value: &str, max_bytes: usize) -> &str {
     &value[start..]
 }
 
-pub fn format_stream_log(raw_lines: &[String], truncated: bool) -> String {
+fn format_stream_log(raw_lines: &[String], truncated: bool) -> String {
     if truncated {
         let head = raw_lines.first().map(String::as_str).unwrap_or_default();
         let tail = raw_lines.get(1).map(String::as_str).unwrap_or_default();
@@ -331,14 +299,14 @@ pub fn format_stream_log(raw_lines: &[String], truncated: bool) -> String {
     }
 }
 
-pub fn drain_sse_line(buffer: &mut Vec<u8>) -> Option<AppResult<String>> {
+fn drain_sse_line(buffer: &mut Vec<u8>) -> Option<AppResult<String>> {
     let index = buffer.iter().position(|byte| *byte == b'\n')?;
     let mut line = buffer.drain(..=index).collect::<Vec<_>>();
     line.pop();
     Some(decode_sse_line(&line))
 }
 
-pub fn decode_remaining_sse_line(buffer: &[u8]) -> AppResult<Option<String>> {
+fn decode_remaining_sse_line(buffer: &[u8]) -> AppResult<Option<String>> {
     if buffer.iter().all(|byte| byte.is_ascii_whitespace()) {
         return Ok(None);
     }

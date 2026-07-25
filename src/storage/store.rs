@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-pub struct JsonStore {
+pub struct Store {
     pub data_dir: PathBuf,
     pub terminal_workspace_dir: PathBuf,
     pub attachments_dir: PathBuf,
@@ -27,7 +27,7 @@ pub struct JsonStore {
     pub(super) lock: Mutex<()>,
 }
 
-impl JsonStore {
+impl Store {
     pub async fn new(root: impl AsRef<Path>) -> AppResult<Self> {
         let root = root.as_ref().to_path_buf();
         let terminal_workspace_dir = crate::config::terminal_workspace_dir(&root);
@@ -71,24 +71,8 @@ impl JsonStore {
 
     pub(super) async fn read_providers(&self) -> AppResult<Vec<ModelProvider>> {
         let _guard = self.lock.lock().await;
-        self.read_providers_unlocked().await
-    }
-
-    pub(super) async fn read_providers_unlocked(&self) -> AppResult<Vec<ModelProvider>> {
         self.database
             .call(|connection| db::read_providers_conn(connection))
-            .await
-    }
-
-    pub(super) async fn upsert_provider_unlocked(&self, provider: ModelProvider) -> AppResult<()> {
-        self.database
-            .call(move |connection| db::upsert_provider_conn(connection, &provider))
-            .await
-    }
-
-    pub(super) async fn delete_provider_unlocked(&self, id: Uuid) -> AppResult<bool> {
-        self.database
-            .call(move |connection| db::delete_provider_conn(connection, id))
             .await
     }
 
@@ -121,7 +105,7 @@ mod tests {
     #[tokio::test]
     async fn creates_dedicated_terminal_workspace() {
         let root = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(root.path()).await.unwrap();
+        let store = Store::new(root.path()).await.unwrap();
 
         assert_eq!(
             store.terminal_workspace_dir,

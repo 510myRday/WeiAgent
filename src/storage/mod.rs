@@ -4,16 +4,17 @@ mod conversations;
 mod db;
 mod files;
 mod ip_proxies;
-mod json_store;
 pub mod llm_logs;
 mod providers;
+mod sql_util;
+mod store;
 mod tool_settings;
 mod validation;
 mod workspaces;
 
 pub use db::Database;
-pub use json_store::JsonStore;
 pub use llm_logs::LlmLogger;
+pub use store::Store;
 
 pub(super) const DEFAULT_AGENT_ICON: &str = "bot";
 pub(super) const DEFAULT_AGENT_COLOR: &str = "#22c55e";
@@ -29,11 +30,12 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::domain::agents::UpdateAgentWorkspaceRequest;
     use crate::domain::{
         ChatMessage, ChatMessageStatus, ChatRole, ContextCheckpoint, CreateAgentRequest,
         CreateConversationRequest, CreateModelProviderRequest, ProviderType,
-        UpdateAgentProfileRequest, UpdateAgentRequest, UpdateAgentWorkspaceRequest,
-        UpdateConversationRequest, UpdateModelProviderRequest,
+        UpdateAgentProfileRequest, UpdateAgentRequest, UpdateConversationRequest,
+        UpdateModelProviderRequest,
     };
 
     fn provider_request(name: &str, model: &str) -> CreateModelProviderRequest {
@@ -55,7 +57,7 @@ mod tests {
             .prepare(
                 "SELECT name FROM sqlite_master
                  WHERE type = 'table'
-                   AND (name LIKE 'tool_%' OR name IN ('storage_migrations', 'sqlite_sequence'))
+                   AND name LIKE 'tool_%'
                  ORDER BY name",
             )
             .unwrap();
@@ -68,14 +70,13 @@ mod tests {
     #[tokio::test]
     async fn initializes_settings_and_database() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
 
         let settings = store.read_settings().await.unwrap();
         assert_eq!(settings.host, "127.0.0.1");
         assert!(temp_dir.path().join("settings.json").exists());
         assert!(temp_dir.path().join("weiagent.db").exists());
         assert!(store.list_model_providers().await.unwrap().is_empty());
-        assert!(!temp_dir.path().join("tool_defaults.json").exists());
         let defaults = store.read_tool_defaults().await.unwrap();
         assert_eq!(
             defaults.max_llm_iterations,
@@ -124,7 +125,7 @@ mod tests {
     #[tokio::test]
     async fn repairs_key_status_slots_to_match_saved_keys() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let mut defaults = store.read_tool_defaults().await.unwrap();
         let source = defaults
             .web_search
@@ -167,7 +168,7 @@ mod tests {
     #[tokio::test]
     async fn source_without_key_is_forced_off_but_jina_stays_available() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let mut defaults = store.read_tool_defaults().await.unwrap();
         defaults
             .web_search
@@ -198,7 +199,7 @@ mod tests {
     #[tokio::test]
     async fn restores_missing_builtin_web_search_sources_and_preserves_existing_keys() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let mut defaults = store.read_tool_defaults().await.unwrap();
         let firecrawl = defaults
             .web_search
@@ -236,7 +237,7 @@ mod tests {
     #[tokio::test]
     async fn agent_tool_overrides_inherit_global_defaults() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let agent = store
             .list_agents()
             .await
@@ -284,7 +285,7 @@ mod tests {
     #[tokio::test]
     async fn web_search_attempts_update_matching_key_statuses() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let mut defaults = store.read_tool_defaults().await.unwrap();
         let source = defaults
             .web_search
@@ -411,416 +412,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_agent_tools_config_migrates_to_differences() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let agent_id = Uuid::new_v4();
-        let now = Utc::now();
-        let agent = crate::domain::Agent {
-            id: agent_id,
-            name: "Master".to_string(),
-            description: "Coordinates tasks".to_string(),
-            model_provider_id: Uuid::nil(),
-            model_id: String::new(),
-            is_builtin: true,
-            avatar_icon: BUILTIN_CEO_ICON.to_string(),
-            avatar_color: BUILTIN_CEO_COLOR.to_string(),
-            created_at: now,
-            updated_at: now,
-        };
-        tokio::fs::create_dir_all(temp_dir.path().join("agents").join(agent_id.to_string()))
-            .await
-            .unwrap();
-        tokio::fs::write(
-            temp_dir.path().join("agents.json"),
-            serde_json::to_string_pretty(&vec![agent]).unwrap(),
-        )
-        .await
-        .unwrap();
-
-        let defaults = crate::domain::AgentToolsConfig {
-            max_llm_iterations: 37,
-            ..crate::domain::AgentToolsConfig::default()
-        };
-        tokio::fs::write(
-            temp_dir.path().join("tool_defaults.json"),
-            serde_json::to_string_pretty(&defaults).unwrap(),
-        )
-        .await
-        .unwrap();
-        let mut legacy = defaults.clone();
-        let legacy_enabled = !defaults.terminal.enabled;
-        legacy.terminal.enabled = legacy_enabled;
-        let legacy_path = temp_dir
-            .path()
-            .join("agents")
-            .join(agent_id.to_string())
-            .join("tools.json");
-        tokio::fs::write(&legacy_path, serde_json::to_string_pretty(&legacy).unwrap())
-            .await
-            .unwrap();
-
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
-        let settings = store.read_agent_tools_settings(agent_id).await.unwrap();
-        assert_eq!(settings.overrides.terminal.enabled, Some(legacy_enabled));
-        assert_eq!(settings.overrides.max_llm_iterations, None);
-        assert_eq!(settings.defaults.max_llm_iterations, 37);
-        assert!(!legacy_path.exists());
-        assert!(!temp_dir.path().join("tool_defaults.json").exists());
-
-        let conn = db::open_data_dir(temp_dir.path()).unwrap();
-        let agent_scope: (String, String, Option<i64>) = conn
-            .query_row(
-                "SELECT scope_type, scope_id, terminal_enabled
-                 FROM tool_settings WHERE scope_type = 'agent'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(agent_scope.0, "agent");
-        assert_eq!(agent_scope.1, agent_id.to_string());
-        assert_eq!(agent_scope.2, Some(i64::from(legacy_enabled)));
-        drop(conn);
-        drop(store);
-
-        let mut stale_defaults = defaults;
-        stale_defaults.max_llm_iterations = 3;
-        tokio::fs::write(
-            temp_dir.path().join("tool_defaults.json"),
-            serde_json::to_string_pretty(&stale_defaults).unwrap(),
-        )
-        .await
-        .unwrap();
-        let reopened = JsonStore::new(temp_dir.path()).await.unwrap();
-        assert_eq!(
-            reopened
-                .read_tool_defaults()
-                .await
-                .unwrap()
-                .max_llm_iterations,
-            37
-        );
-        assert!(!temp_dir.path().join("tool_defaults.json").exists());
-    }
-
-    #[tokio::test]
-    async fn normalized_tool_tables_collapse_to_four_tables() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let agent_id = Uuid::new_v4();
-        let now = Utc::now();
-        let agent = crate::domain::Agent {
-            id: agent_id,
-            name: "Master".to_string(),
-            description: "Coordinates tasks".to_string(),
-            model_provider_id: Uuid::nil(),
-            model_id: String::new(),
-            is_builtin: true,
-            avatar_icon: BUILTIN_CEO_ICON.to_string(),
-            avatar_color: BUILTIN_CEO_COLOR.to_string(),
-            created_at: now,
-            updated_at: now,
-        };
-        tokio::fs::write(
-            temp_dir.path().join("agents.json"),
-            serde_json::to_string_pretty(&vec![agent]).unwrap(),
-        )
-        .await
-        .unwrap();
-
-        let conn = db::open_data_dir(temp_dir.path()).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE tool_settings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scope_type TEXT NOT NULL,
-                scope_id TEXT,
-                max_llm_iterations INTEGER,
-                terminal_enabled INTEGER,
-                terminal_permission_mode TEXT,
-                terminal_default_timeout_ms INTEGER,
-                terminal_allowed_cwd_roots_overridden INTEGER NOT NULL DEFAULT 0,
-                web_search_enabled INTEGER,
-                web_search_max_results INTEGER,
-                web_search_timeout_ms INTEGER,
-                web_search_key_selection TEXT,
-                evidence_storage_enabled INTEGER,
-                evidence_retention_days INTEGER,
-                evidence_max_total_mb INTEGER,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-             );
-             CREATE TABLE tool_terminal_cwd_roots (
-                settings_id INTEGER, position INTEGER, path TEXT
-             );
-             CREATE TABLE tool_terminal_approval_grants (
-                settings_id INTEGER, position INTEGER, command TEXT, cwd TEXT,
-                permission_mode TEXT, created_at TEXT, expires_at TEXT
-             );
-             CREATE TABLE tool_web_search_sources (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                settings_id INTEGER, position INTEGER, source_key TEXT, provider TEXT,
-                display_name TEXT, enabled INTEGER, deep_enabled INTEGER, priority INTEGER,
-                independence_group TEXT, base_url TEXT, flaresolverr_url TEXT,
-                flaresolverr_proxy_url TEXT, proxy_url TEXT
-             );
-             CREATE TABLE tool_web_search_source_roles (
-                source_id INTEGER, position INTEGER, role TEXT
-             );
-             CREATE TABLE tool_web_search_api_keys (
-                source_id INTEGER, position INTEGER, api_key TEXT, key_status TEXT,
-                status_detail TEXT, checked_at TEXT
-             );
-             CREATE TABLE tool_web_search_blocked_keys (
-                source_id INTEGER, position INTEGER, fingerprint TEXT
-             );
-             CREATE TABLE storage_migrations (name TEXT PRIMARY KEY, applied_at TEXT);",
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO tool_settings VALUES (
-                1, 'default', NULL, 41, 1, 'request_approval', 30000, 1,
-                1, 5, 15000, 'sequential', 1, 30, 200, ?1, ?1
-             )",
-            [now.to_rfc3339()],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO tool_settings VALUES (
-                2, 'agent', ?1, NULL, 0, NULL, NULL, 0,
-                NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?2, ?2
-             )",
-            rusqlite::params![agent_id.to_string(), now.to_rfc3339()],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO tool_web_search_sources VALUES (
-                1, 1, 0, 'tavily', 'tavily', 'Tavily', 1, 1, 10,
-                'tavily', NULL, NULL, NULL, NULL
-             )",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO tool_web_search_source_roles VALUES (1, 0, 'general_search')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO tool_web_search_api_keys VALUES (
-                1, 0, 'legacy-key', 'normal', 'request succeeded', '2026-07-23T00:00:00Z'
-             )",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO tool_web_search_blocked_keys VALUES (1, 0, ?1)",
-            ["a".repeat(64)],
-        )
-        .unwrap();
-        drop(conn);
-
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
-        let defaults = store.read_tool_defaults().await.unwrap();
-        assert_eq!(defaults.max_llm_iterations, 41);
-        let tavily = defaults
-            .web_search
-            .sources
-            .iter()
-            .find(|source| source.id == "tavily")
-            .unwrap();
-        assert_eq!(tavily.api_keys, vec!["legacy-key".to_string()]);
-        assert_eq!(tavily.blocked_api_key_hashes, vec!["a".repeat(64)]);
-        let agent = store.read_agent_tools_settings(agent_id).await.unwrap();
-        assert_eq!(agent.overrides.terminal.enabled, Some(false));
-
-        let conn = db::open_data_dir(temp_dir.path()).unwrap();
-        assert_eq!(
-            tool_table_names(&conn),
-            vec![
-                "tool_settings",
-                "tool_terminal_approval_grants",
-                "tool_web_search_api_keys",
-                "tool_web_search_sources",
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn migrates_legacy_json_conversations_into_sqlite() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let agent_id = Uuid::new_v4();
-        let now = Utc::now();
-        let agent = crate::domain::Agent {
-            id: agent_id,
-            name: "Legacy Agent".to_string(),
-            description: "Owns legacy conversations".to_string(),
-            model_provider_id: Uuid::nil(),
-            model_id: String::new(),
-            is_builtin: false,
-            avatar_icon: DEFAULT_AGENT_ICON.to_string(),
-            avatar_color: DEFAULT_AGENT_COLOR.to_string(),
-            created_at: now,
-            updated_at: now,
-        };
-        tokio::fs::write(
-            temp_dir.path().join("agents.json"),
-            serde_json::to_string_pretty(&vec![agent]).unwrap(),
-        )
-        .await
-        .unwrap();
-
-        let make_message = |conversation_id: Uuid, role: ChatRole, content: &str| ChatMessage {
-            id: Uuid::new_v4(),
-            agent_id,
-            conversation_id,
-            role,
-            content: content.to_string(),
-            reasoning_content: None,
-            status: ChatMessageStatus::Done,
-            created_at: Utc::now(),
-            tool_calls: None,
-            tool_call_id: None,
-            attachments: Vec::new(),
-            usage: None,
-        };
-
-        let plain_id = Uuid::new_v4();
-        let plain_messages = vec![
-            make_message(plain_id, ChatRole::User, "  legacy   first question  "),
-            make_message(plain_id, ChatRole::Assistant, "legacy answer"),
-            make_message(plain_id, ChatRole::User, "second question"),
-            make_message(plain_id, ChatRole::Assistant, "second answer"),
-        ];
-        let pinned_id = Uuid::new_v4();
-        let pinned_messages = vec![
-            make_message(pinned_id, ChatRole::User, "pinned question"),
-            make_message(pinned_id, ChatRole::Assistant, "pinned answer"),
-        ];
-        let checkpoint = ContextCheckpoint {
-            summary: "compacted state".to_string(),
-            covers_until_message_id: pinned_messages[1].id,
-            created_at: now,
-            generation: 2,
-            source_tokens_estimate: 4321,
-        };
-        let plain_conversation = crate::domain::Conversation {
-            id: plain_id,
-            agent_id,
-            title: "新会话".to_string(),
-            message_count: 0,
-            is_pinned: false,
-            context_checkpoint: None,
-            created_at: now,
-            updated_at: now,
-        };
-        let pinned_conversation = crate::domain::Conversation {
-            id: pinned_id,
-            agent_id,
-            title: "Pinned legacy".to_string(),
-            message_count: 2,
-            is_pinned: true,
-            context_checkpoint: Some(checkpoint.clone()),
-            created_at: now,
-            updated_at: now,
-        };
-        tokio::fs::write(
-            temp_dir.path().join("conversations.json"),
-            serde_json::to_string_pretty(&vec![
-                plain_conversation.clone(),
-                pinned_conversation.clone(),
-            ])
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-        let conversations_dir = temp_dir.path().join("conversations");
-        tokio::fs::create_dir_all(&conversations_dir).await.unwrap();
-        for (id, messages) in [(plain_id, &plain_messages), (pinned_id, &pinned_messages)] {
-            tokio::fs::write(
-                conversations_dir.join(format!("{id}.json")),
-                serde_json::to_string_pretty(messages).unwrap(),
-            )
-            .await
-            .unwrap();
-        }
-
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
-
-        // Metadata migrated with pin ordering, repaired counts, derived title.
-        let listed = store.list_conversations(agent_id).await.unwrap();
-        assert_eq!(listed.len(), 2);
-        assert_eq!(listed[0].id, pinned_id);
-        assert!(listed[0].is_pinned);
-        assert_eq!(listed[0].title, "Pinned legacy");
-        assert_eq!(listed[0].message_count, 2);
-        assert_eq!(listed[1].id, plain_id);
-        assert_eq!(listed[1].title, "legacy first question");
-        assert_eq!(listed[1].message_count, 4);
-
-        // Full message payloads survive round-tripping through SQLite.
-        assert_eq!(
-            store.read_conversation_messages(plain_id).await.unwrap(),
-            plain_messages
-        );
-        assert_eq!(
-            store.read_context_checkpoint(pinned_id).await.unwrap(),
-            Some(checkpoint)
-        );
-
-        // Cursor pagination keeps user-turn boundaries and ordering.
-        let latest = store
-            .read_conversation_message_page(plain_id, None, 2)
-            .await
-            .unwrap();
-        assert_eq!(
-            latest.messages.iter().map(|m| m.id).collect::<Vec<_>>(),
-            plain_messages[2..].iter().map(|m| m.id).collect::<Vec<_>>()
-        );
-        assert!(latest.has_more);
-        assert_eq!(latest.next_cursor, Some(plain_messages[2].id));
-        let older = store
-            .read_conversation_message_page(plain_id, latest.next_cursor, 2)
-            .await
-            .unwrap();
-        assert_eq!(
-            older.messages.iter().map(|m| m.id).collect::<Vec<_>>(),
-            plain_messages[..2].iter().map(|m| m.id).collect::<Vec<_>>()
-        );
-        assert!(!older.has_more);
-
-        // Legacy files are backed up, not deleted.
-        assert!(!temp_dir.path().join("conversations.json").exists());
-        assert!(temp_dir.path().join("conversations.json.migrated").exists());
-        assert!(!conversations_dir.join(format!("{plain_id}.json")).exists());
-        assert!(
-            conversations_dir
-                .join(format!("{plain_id}.json.migrated"))
-                .exists()
-        );
-        assert!(
-            conversations_dir
-                .join(format!("{pinned_id}.json.migrated"))
-                .exists()
-        );
-
-        // Reopening does not import the backups again.
-        drop(store);
-        let reopened = JsonStore::new(temp_dir.path()).await.unwrap();
-        let listed = reopened.list_conversations(agent_id).await.unwrap();
-        assert_eq!(listed.len(), 2);
-        assert_eq!(
-            reopened
-                .read_conversation_messages(plain_id)
-                .await
-                .unwrap()
-                .len(),
-            4
-        );
-        assert!(temp_dir.path().join("conversations.json.migrated").exists());
-    }
-
-    #[tokio::test]
     async fn stores_provider_type_and_preserves_blank_key_update() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let provider = store
             .create_model_provider(CreateModelProviderRequest {
                 name: "OpenAI".to_string(),
@@ -860,7 +454,7 @@ mod tests {
     #[tokio::test]
     async fn validates_agent_provider_and_stores_conversations() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let provider = store
             .create_model_provider(provider_request("OpenAI", "gpt-4o-mini"))
             .await
@@ -911,7 +505,7 @@ mod tests {
     #[tokio::test]
     async fn conversation_append_preserves_context_checkpoint() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let agent = store
             .list_agents()
             .await
@@ -975,7 +569,7 @@ mod tests {
     #[tokio::test]
     async fn history_restart_only_invalidates_intersected_checkpoint() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let agent = store
             .list_agents()
             .await
@@ -1057,7 +651,7 @@ mod tests {
     #[tokio::test]
     async fn paginates_messages_on_user_turn_boundaries() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let provider = store
             .create_model_provider(provider_request("OpenAI", "gpt-4o-mini"))
             .await
@@ -1133,7 +727,7 @@ mod tests {
     #[tokio::test]
     async fn conversation_list_derives_title_and_message_count_from_messages() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let provider = store
             .create_model_provider(provider_request("OpenAI", "gpt-4o-mini"))
             .await
@@ -1153,7 +747,7 @@ mod tests {
             .create_conversation(
                 agent.id,
                 CreateConversationRequest {
-                    title: Some("新会话".to_string()),
+                    title: Some("New Conversation".to_string()),
                 },
             )
             .await
@@ -1190,7 +784,7 @@ mod tests {
     #[tokio::test]
     async fn conversation_lists_do_not_reparse_message_history() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let provider = store
             .create_model_provider(provider_request("Fast List", "fast-model"))
             .await
@@ -1221,7 +815,7 @@ mod tests {
     #[tokio::test]
     async fn pinned_conversations_sort_first_and_persist() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let agent = store
             .list_agents()
             .await
@@ -1265,7 +859,7 @@ mod tests {
         assert_eq!(listed[1].id, recent.id);
 
         drop(store);
-        let reopened = JsonStore::new(temp_dir.path()).await.unwrap();
+        let reopened = Store::new(temp_dir.path()).await.unwrap();
         let persisted = reopened.list_conversations(agent.id).await.unwrap();
         assert_eq!(persisted[0].id, pinned.id);
         assert!(persisted[0].is_pinned);
@@ -1274,7 +868,7 @@ mod tests {
     #[tokio::test]
     async fn initializes_builtin_agent_workspace_and_blocks_delete() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
 
         let agents = store.list_agents().await.unwrap();
         let builtin = agents.iter().find(|agent| agent.is_builtin).unwrap();
@@ -1320,45 +914,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migrates_missing_agent_descriptions() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let legacy_id = Uuid::new_v4();
-        let now = Utc::now();
-        let legacy_agents = serde_json::json!([{
-            "id": legacy_id,
-            "name": "Legacy",
-            "model_provider_id": Uuid::nil(),
-            "model_id": "legacy-model",
-            "is_builtin": false,
-            "avatar_icon": "bot",
-            "avatar_color": "#22c55e",
-            "created_at": now,
-            "updated_at": now
-        }]);
-        tokio::fs::write(
-            temp_dir.path().join("agents.json"),
-            serde_json::to_string_pretty(&legacy_agents).unwrap(),
-        )
-        .await
-        .unwrap();
-
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
-        let migrated = store.get_agent(legacy_id).await.unwrap();
-        assert_eq!(migrated.description, "Custom AI agent");
-
-        let persisted: serde_json::Value = serde_json::from_str(
-            &tokio::fs::read_to_string(temp_dir.path().join("agents.json"))
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(persisted[0]["description"], "Custom AI agent");
-    }
-
-    #[tokio::test]
     async fn creates_workspace_and_composes_markdown_prompt() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let provider = store
             .create_model_provider(provider_request("Local", "local-model"))
             .await
@@ -1376,12 +934,22 @@ mod tests {
             .unwrap();
 
         store
-            .update_agent_workspace(
+            .update_agent_profile(
                 agent.id,
-                UpdateAgentWorkspaceRequest {
-                    personality: "Calm and direct.".to_string(),
-                    memory: "User prefers concise plans.".to_string(),
-                    instructions: "Ask only important questions.".to_string(),
+                UpdateAgentProfileRequest {
+                    agent: UpdateAgentRequest {
+                        name: None,
+                        description: None,
+                        model_provider_id: None,
+                        model_id: None,
+                        avatar_icon: None,
+                        avatar_color: None,
+                    },
+                    workspace: UpdateAgentWorkspaceRequest {
+                        personality: "Calm and direct.".to_string(),
+                        memory: "User prefers concise plans.".to_string(),
+                        instructions: "Ask only important questions.".to_string(),
+                    },
                 },
             )
             .await
@@ -1454,7 +1022,7 @@ mod tests {
     #[tokio::test]
     async fn updates_agent_profile_and_workspace_together() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let provider = store
             .create_model_provider(provider_request("Local", "local-model"))
             .await
@@ -1535,7 +1103,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_duplicate_agent_avatar_combination() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
         let provider = store
             .create_model_provider(provider_request("Avatar Test", "avatar-model"))
             .await

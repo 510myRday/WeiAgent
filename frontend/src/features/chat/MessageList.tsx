@@ -630,7 +630,6 @@ const MessageRow = memo(function MessageRow({
   onApproveToolCall: MessageListProps['onApproveToolCall'];
 }) {
   const { t } = useI18n();
-  const { toast } = useFeedback();
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.content);

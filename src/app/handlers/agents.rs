@@ -8,7 +8,7 @@ use crate::{
     app::AppState,
     domain::{
         AgentProfileResponse, AgentResponse, AgentWorkspace, CreateAgentRequest,
-        UpdateAgentProfileRequest, UpdateAgentRequest, UpdateAgentWorkspaceRequest,
+        UpdateAgentProfileRequest, UpdateAgentRequest,
     },
     error::{AppError, AppResult},
 };
@@ -67,17 +67,4 @@ pub async fn read_agent_workspace(
     Path(agent_id): Path<Uuid>,
 ) -> AppResult<Json<AgentWorkspace>> {
     Ok(Json(state.store.read_agent_workspace(agent_id).await?))
-}
-
-pub async fn update_agent_workspace(
-    State(state): State<AppState>,
-    Path(agent_id): Path<Uuid>,
-    Json(request): Json<UpdateAgentWorkspaceRequest>,
-) -> AppResult<Json<AgentWorkspace>> {
-    Ok(Json(
-        state
-            .store
-            .update_agent_workspace(agent_id, request)
-            .await?,
-    ))
 }

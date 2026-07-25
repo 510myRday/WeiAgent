@@ -7,13 +7,11 @@ import type {
   WebSearchKeyStatusRecord,
   WebSearchKeyStatus,
   WebSearchProviderKind,
-  WebSearchSourceRole,
   WebSearchSourceConfig,
   WebSearchToolConfig,
 } from '../../../api';
 import type { IpProxy, IpProxyProtocol } from '../../../types';
 import { PRESERVE_KEYS_MARKER } from './types';
-import type { ExpandedSourceSections } from './types';
 
 export function defaultWebSearch(): WebSearchToolConfig {
   return {
@@ -27,31 +25,28 @@ export function defaultWebSearch(): WebSearchToolConfig {
       allow_grok_fallback: true,
     },
     sources: [
-      { id: 'tavily', provider: 'tavily', display_name: 'Tavily', enabled: false, deep_enabled: true, extract_enabled: true, priority: 10, independence_group: 'tavily', roles: ['general_search', 'current_news', 'fact_checking', 'market_research', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'exa', provider: 'exa', display_name: 'Exa', enabled: false, deep_enabled: true, extract_enabled: true, priority: 20, independence_group: 'exa', roles: ['semantic_research', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'jina', provider: 'jina', display_name: 'Jina Search', enabled: true, deep_enabled: true, extract_enabled: true, priority: 30, independence_group: 'jina', roles: ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'grok', provider: 'grok', display_name: 'Grok Research', enabled: false, deep_enabled: true, extract_enabled: true, priority: 40, independence_group: 'grok', roles: ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
-      { id: 'firecrawl', provider: 'firecrawl', display_name: 'Firecrawl', enabled: false, deep_enabled: true, extract_enabled: true, priority: 50, independence_group: 'firecrawl', roles: ['general_search', 'current_news', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'market_research', 'product_research', 'multilingual_search'], api_keys: [], flaresolverr_url: null, flaresolverr_proxy_url: null, proxy_url: null },
+      { id: 'tavily', provider: 'tavily', display_name: 'Tavily', enabled: false, deep_enabled: true, extract_enabled: true, priority: 10, independence_group: 'tavily', roles: ['general_search', 'current_news', 'fact_checking', 'market_research', 'product_research'], api_keys: [], proxy_url: null },
+      { id: 'exa', provider: 'exa', display_name: 'Exa', enabled: false, deep_enabled: true, extract_enabled: true, priority: 20, independence_group: 'exa', roles: ['semantic_research', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'product_research'], api_keys: [], proxy_url: null },
+      { id: 'jina', provider: 'jina', display_name: 'Jina Search', enabled: true, deep_enabled: true, extract_enabled: true, priority: 30, independence_group: 'jina', roles: ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'], api_keys: [], proxy_url: null },
+      { id: 'grok', provider: 'grok', display_name: 'Grok Research', enabled: false, deep_enabled: true, extract_enabled: true, priority: 40, independence_group: 'grok', roles: ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'], api_keys: [], proxy_url: null },
+      { id: 'firecrawl', provider: 'firecrawl', display_name: 'Firecrawl', enabled: false, deep_enabled: true, extract_enabled: true, priority: 50, independence_group: 'firecrawl', roles: ['general_search', 'current_news', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'market_research', 'product_research', 'multilingual_search'], api_keys: [], proxy_url: null },
     ],
   };
 
 }
 
+/**
+ * Fill the optional fields the backend omits (`skip_serializing_if`) and clamp
+ * `enabled` to sources that actually have usable keys. All other fields are
+ * always serialized by the backend and trusted as-is.
+ */
 export function normalizeWebSearchSources(sources: WebSearchSourceConfig[]): WebSearchSourceConfig[] {
-  return sources.map((source, index) => {
+  return sources.map((source) => {
     const normalized = {
       ...source,
-      display_name: providerLabelFallback(source.provider),
-      deep_enabled: source.deep_enabled ?? true,
-      extract_enabled: source.extract_enabled ?? true,
-      priority: (index + 1) * 10,
-      independence_group: source.provider,
-      roles: source.roles?.length ? source.roles : defaultRoles(source.provider),
       api_keys: source.api_keys ?? [],
       key_statuses: source.key_statuses ?? [],
       extract_key_statuses: source.extract_key_statuses ?? [],
-      flaresolverr_url: source.flaresolverr_url ?? null,
-      flaresolverr_proxy_url: source.flaresolverr_proxy_url ?? null,
       proxy_url: source.proxy_url ?? null,
     };
     return {
@@ -66,29 +61,6 @@ export function sourceCanBeEnabled(source: WebSearchSourceConfig): boolean {
   return source.api_keys.some((key, index) => (
     key.trim().length > 0 && source.key_statuses?.[index]?.status !== 'officially_blocked'
   ));
-}
-
-export function providerLabelFallback(provider: WebSearchProviderKind): string {
-  if (provider === 'jina') return 'Jina Search';
-  if (provider === 'grok') return 'Grok Research';
-  if (provider === 'firecrawl') return 'Firecrawl';
-  return provider[0].toUpperCase() + provider.slice(1);
-}
-
-export function defaultRoles(provider: WebSearchProviderKind): WebSearchSourceRole[] {
-  if (provider === 'tavily') {
-    return ['general_search', 'current_news', 'fact_checking', 'market_research', 'product_research'];
-  }
-  if (provider === 'exa') {
-    return ['semantic_research', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'product_research'];
-  }
-  if (provider === 'jina') {
-    return ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'];
-  }
-  if (provider === 'firecrawl') {
-    return ['general_search', 'current_news', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'market_research', 'product_research', 'multilingual_search'];
-  }
-  return ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'];
 }
 
 export function withWebSearch(config: AgentToolsConfig): AgentToolsConfig {
@@ -146,7 +118,7 @@ export function mergeToolsConfig(defaults: AgentToolsConfig, overrides: AgentToo
     terminal: {
       enabled: overrides.terminal.enabled ?? defaults.terminal.enabled,
       permission_mode: overrides.terminal.permission_mode ?? defaults.terminal.permission_mode,
-      approval_grants: overrides.terminal.approval_grants ?? [],
+      approval_grants: overrides.terminal.approval_grants,
       default_timeout_ms: overrides.terminal.default_timeout_ms ?? defaults.terminal.default_timeout_ms,
       allowed_cwd_roots: overrides.terminal.allowed_cwd_roots ?? defaults.terminal.allowed_cwd_roots,
     },
@@ -231,17 +203,15 @@ export function keyStatusIcon(status: WebSearchKeyStatus) {
   return <CircleAlert size={14} />;
 }
 
-export function formatCheckedAt(value: string): string {
-  const timestamp = Date.parse(value);
-  return Number.isNaN(timestamp) ? value : new Date(timestamp).toLocaleString();
-}
-
-export function defaultExpandedSources(): Record<string, boolean> {
-  return {};
-}
-
-export function defaultExpandedSourceSections(): ExpandedSourceSections {
-  return {};
+export function formatCheckedAt(value: string, locale: 'zh' | 'en'): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
 }
 
 export function summarizeKeyStatuses(

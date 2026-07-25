@@ -37,7 +37,7 @@ pub struct ModelConfig {
     pub output_price: Option<f64>,
     #[serde(default)]
     pub cache_write_price: Option<f64>,
-    #[serde(default, alias = "cache_price")]
+    #[serde(default)]
     pub cache_read_price: Option<f64>,
 }
 
@@ -54,7 +54,7 @@ pub struct ModelProvider {
     pub model_configs: Vec<ModelConfig>,
     #[serde(default)]
     pub extra_body: serde_json::Value,
-    #[serde(default, alias = "cache")]
+    #[serde(default)]
     pub prompt_cache: PromptCacheConfig,
     #[serde(default)]
     pub cache_capabilities: Option<ProviderCacheCapabilities>,
@@ -100,19 +100,7 @@ impl From<&ModelProvider> for ModelProviderResponse {
 }
 
 fn mask_api_key(api_key: &str) -> String {
-    let trimmed = api_key.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    let suffix = trimmed
-        .chars()
-        .rev()
-        .take(4)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<String>();
-    format!("****{suffix}")
+    super::tools::mask_api_key(api_key)
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,16 +149,14 @@ mod tests {
     use super::ModelConfig;
 
     #[test]
-    fn legacy_model_config_migrates_cache_price_and_drops_removed_fields() {
+    fn model_config_defaults_context_size_and_prices() {
         let config: ModelConfig = serde_json::from_value(serde_json::json!({
-            "model_id": "legacy-model",
+            "model_id": "basic-model",
             "multimodal": true,
             "thinking": true,
-            "tool_calling": true,
-            "web_search": true,
             "input_price": 1.0,
             "output_price": 2.0,
-            "cache_price": 0.25
+            "cache_read_price": 0.25
         }))
         .unwrap();
 
@@ -179,9 +165,6 @@ mod tests {
         assert_eq!(config.context_size, 128_000);
 
         let serialized = serde_json::to_value(config).unwrap();
-        assert!(serialized.get("tool_calling").is_none());
-        assert!(serialized.get("web_search").is_none());
-        assert!(serialized.get("cache_price").is_none());
         assert_eq!(serialized["cache_read_price"], 0.25);
         assert_eq!(serialized["context_size"], 128_000);
     }

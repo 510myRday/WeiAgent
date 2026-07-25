@@ -29,12 +29,6 @@ const MAX_OLD_STRING_BYTES: usize = 200_000;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MultiEditFileArgs {
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_vec_or_json_string")]
-    pub edits: Vec<MultiEditFileEdit>,
-    #[serde(default, deserialize_with = "deserialize_vec_or_json_string")]
-    pub files: Vec<MultiEditFileSpec>,
     #[serde(default, deserialize_with = "deserialize_vec_or_json_string")]
     pub operations: Vec<MultiEditFileOperation>,
     #[serde(default)]
@@ -43,14 +37,6 @@ pub struct MultiEditFileArgs {
     pub sandbox_permissions: SandboxPermissions,
     #[serde(default)]
     pub justification: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MultiEditFileSpec {
-    pub path: String,
-    #[serde(deserialize_with = "deserialize_vec_or_json_string")]
-    pub edits: Vec<MultiEditFileEdit>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -225,7 +211,7 @@ pub async fn execute_multi_edit(
     };
     if operations.is_empty() {
         return ToolResult::Error {
-            message: "multi_edit_file requires path+edits, files, or operations".to_string(),
+            message: "multi_edit_file requires at least one operation".to_string(),
         };
     }
 
@@ -440,32 +426,7 @@ fn enforce_path_policy(
 fn normalize_multi_edit_operations(
     args: &MultiEditFileArgs,
 ) -> Result<Vec<MultiEditFileOperation>, String> {
-    let mut operations = Vec::new();
-    if !args.operations.is_empty() {
-        operations.extend(args.operations.clone());
-    }
-    if !args.files.is_empty() {
-        for file in &args.files {
-            operations.push(MultiEditFileOperation::Edit {
-                path: file.path.clone(),
-                edits: file.edits.clone(),
-            });
-        }
-    }
-    if let Some(path) = args
-        .path
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    {
-        if args.edits.is_empty() {
-            return Err("path was provided without edits".to_string());
-        }
-        operations.push(MultiEditFileOperation::Edit {
-            path: path.to_string(),
-            edits: args.edits.clone(),
-        });
-    }
+    let operations = args.operations.clone();
 
     if operations.len() > MAX_OPERATIONS {
         return Err(format!(
@@ -1121,16 +1082,20 @@ mod tests {
     }
 
     #[test]
-    fn accepts_legacy_single_file_arguments() {
+    fn accepts_camel_case_edit_aliases() {
         let args: MultiEditFileArgs = serde_json::from_value(serde_json::json!({
-            "path": "a.txt",
-            "edits": "[{\"oldString\":\"old\",\"newString\":\"new\",\"replaceAll\":true}]"
+            "operations": [{
+                "type": "edit",
+                "path": "a.txt",
+                "edits": [{"oldString": "old", "newString": "new", "replaceAll": true}]
+            }]
         }))
-        .expect("legacy arguments should deserialize");
+        .expect("camelCase edit aliases should deserialize");
 
-        assert_eq!(args.path.as_deref(), Some("a.txt"));
-        assert_eq!(args.edits.len(), 1);
-        assert!(args.edits[0].replace_all);
+        let MultiEditFileOperation::Edit { edits, .. } = &args.operations[0] else {
+            panic!("expected edit operation");
+        };
+        assert!(edits[0].replace_all);
     }
 
     fn temp_workspace() -> (tempfile::TempDir, TerminalToolConfig) {
@@ -1155,9 +1120,6 @@ mod tests {
         let result = execute_multi_edit(
             &MultiEditRequest {
                 args: MultiEditFileArgs {
-                    path: None,
-                    edits: Vec::new(),
-                    files: Vec::new(),
                     operations: vec![MultiEditFileOperation::Create {
                         path: "default-workspace.txt".to_string(),
                         content: "data directory".to_string(),
@@ -1191,9 +1153,6 @@ mod tests {
         let result = execute_multi_edit(
             &MultiEditRequest {
                 args: MultiEditFileArgs {
-                    path: None,
-                    edits: Vec::new(),
-                    files: Vec::new(),
                     operations: vec![MultiEditFileOperation::Create {
                         path: "still-default-workspace.txt".to_string(),
                         content: "data directory".to_string(),
@@ -1227,9 +1186,6 @@ mod tests {
         let configured_result = execute_multi_edit(
             &MultiEditRequest {
                 args: MultiEditFileArgs {
-                    path: None,
-                    edits: Vec::new(),
-                    files: Vec::new(),
                     operations: vec![MultiEditFileOperation::Create {
                         path: "configured-root.txt".to_string(),
                         content: "configured directory".to_string(),
@@ -1259,9 +1215,6 @@ mod tests {
         let result = execute_multi_edit(
             &MultiEditRequest {
                 args: MultiEditFileArgs {
-                    path: None,
-                    edits: Vec::new(),
-                    files: Vec::new(),
                     operations: vec![
                         MultiEditFileOperation::Edit {
                             path: "a.rs".to_string(),
@@ -1306,15 +1259,15 @@ mod tests {
         let result = execute_multi_edit(
             &MultiEditRequest {
                 args: MultiEditFileArgs {
-                    path: Some("a.txt".to_string()),
-                    edits: vec![MultiEditFileEdit {
-                        old_string: "hello".to_string(),
-                        new_string: "world".to_string(),
-                        replace_all: false,
-                        start_line: None,
+                    operations: vec![MultiEditFileOperation::Edit {
+                        path: "a.txt".to_string(),
+                        edits: vec![MultiEditFileEdit {
+                            old_string: "hello".to_string(),
+                            new_string: "world".to_string(),
+                            replace_all: false,
+                            start_line: None,
+                        }],
                     }],
-                    files: Vec::new(),
-                    operations: Vec::new(),
                     cwd: Some(dir.path().display().to_string()),
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     justification: None,
@@ -1352,15 +1305,15 @@ mod tests {
         let result = execute_multi_edit(
             &MultiEditRequest {
                 args: MultiEditFileArgs {
-                    path: Some("a.txt".to_string()),
-                    edits: vec![MultiEditFileEdit {
-                        old_string: "hello".to_string(),
-                        new_string: "world".to_string(),
-                        replace_all: false,
-                        start_line: None,
+                    operations: vec![MultiEditFileOperation::Edit {
+                        path: "a.txt".to_string(),
+                        edits: vec![MultiEditFileEdit {
+                            old_string: "hello".to_string(),
+                            new_string: "world".to_string(),
+                            replace_all: false,
+                            start_line: None,
+                        }],
                     }],
-                    files: Vec::new(),
-                    operations: Vec::new(),
                     cwd: Some(dir.path().display().to_string()),
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     justification: None,
@@ -1390,15 +1343,15 @@ mod tests {
         let result = execute_multi_edit(
             &MultiEditRequest {
                 args: MultiEditFileArgs {
-                    path: Some(target.display().to_string()),
-                    edits: vec![MultiEditFileEdit {
-                        old_string: "hello".to_string(),
-                        new_string: "world".to_string(),
-                        replace_all: false,
-                        start_line: None,
+                    operations: vec![MultiEditFileOperation::Edit {
+                        path: target.display().to_string(),
+                        edits: vec![MultiEditFileEdit {
+                            old_string: "hello".to_string(),
+                            new_string: "world".to_string(),
+                            replace_all: false,
+                            start_line: None,
+                        }],
                     }],
-                    files: Vec::new(),
-                    operations: Vec::new(),
                     cwd: Some(workspace.path().display().to_string()),
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     justification: None,
@@ -1431,15 +1384,15 @@ mod tests {
         let result = execute_multi_edit(
             &MultiEditRequest {
                 args: MultiEditFileArgs {
-                    path: Some(target.display().to_string()),
-                    edits: vec![MultiEditFileEdit {
-                        old_string: "hello".to_string(),
-                        new_string: "world".to_string(),
-                        replace_all: false,
-                        start_line: None,
+                    operations: vec![MultiEditFileOperation::Edit {
+                        path: target.display().to_string(),
+                        edits: vec![MultiEditFileEdit {
+                            old_string: "hello".to_string(),
+                            new_string: "world".to_string(),
+                            replace_all: false,
+                            start_line: None,
+                        }],
                     }],
-                    files: Vec::new(),
-                    operations: Vec::new(),
                     cwd: Some(workspace.path().display().to_string()),
                     sandbox_permissions: SandboxPermissions::RequireEscalated,
                     justification: Some("edit project root outside data workspace".to_string()),
@@ -1466,15 +1419,15 @@ mod tests {
         let result = execute_multi_edit(
             &MultiEditRequest {
                 args: MultiEditFileArgs {
-                    path: Some(target.display().to_string()),
-                    edits: vec![MultiEditFileEdit {
-                        old_string: "hello".to_string(),
-                        new_string: "world".to_string(),
-                        replace_all: false,
-                        start_line: None,
+                    operations: vec![MultiEditFileOperation::Edit {
+                        path: target.display().to_string(),
+                        edits: vec![MultiEditFileEdit {
+                            old_string: "hello".to_string(),
+                            new_string: "world".to_string(),
+                            replace_all: false,
+                            start_line: None,
+                        }],
                     }],
-                    files: Vec::new(),
-                    operations: Vec::new(),
                     cwd: Some(workspace.path().display().to_string()),
                     sandbox_permissions: SandboxPermissions::RequireEscalated,
                     justification: Some("edit project root outside data workspace".to_string()),

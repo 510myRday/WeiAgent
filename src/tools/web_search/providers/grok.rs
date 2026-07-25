@@ -51,8 +51,6 @@ struct StatsigCacheEntry {
 #[derive(Debug, Clone, Copy)]
 pub struct GrokSearchOptions<'a> {
     pub source_id: &'a str,
-    pub flaresolverr_url: Option<&'a str>,
-    pub flaresolverr_proxy_url: Option<&'a str>,
     pub proxy_url: Option<&'a str>,
 }
 
@@ -112,25 +110,8 @@ async fn execute_prompt(
     let base = base_url.trim_end_matches('/');
     let endpoint = format!("{base}/rest/app-chat/conversations/new");
     let body = build_web_chat_payload(prompt, DEFAULT_MODE);
-    let flaresolverr = super::grok_support::normalize_flaresolverr_url(options.flaresolverr_url);
-    let flaresolverr_proxy =
-        super::grok_support::normalize_optional_url(options.flaresolverr_proxy_url);
     // API traffic proxy is applied on wreq client in web_search::mod; also used for statsig signer egress.
     let proxy = super::grok_support::normalize_optional_url(options.proxy_url);
-
-    // NOTE: Do NOT inject FlareSolverr cf_clearance into wreq chat.
-    // FS runs a real browser fingerprint; wreq emulates Chrome TLS separately.
-    // Mixing them is the main cause of code=7 anti-bot after "clearance ready".
-    let _ = (flaresolverr.as_deref(), flaresolverr_proxy.as_deref());
-    if flaresolverr.is_some() {
-        tracing::info!(
-            "Grok FlareSolverr is configured for browser-side checks; chat uses the same-proxy wreq session"
-        );
-        // Cookies minted by FlareSolverr belong to its browser TLS/UA session.
-        // Replaying them on wreq is a common source of code=7, so start with a
-        // clean wreq session and let the same client warm its own CF cookies.
-        strip_foreign_cloudflare_cookies(&mut cred);
-    }
 
     let mut last_error = String::new();
     for attempt in 0..3 {
@@ -156,8 +137,6 @@ async fn execute_prompt(
             &endpoint,
             force_refresh,
             proxy.as_deref(),
-            None,
-            None,
         )
         .await
         .ok()
@@ -165,8 +144,8 @@ async fn execute_prompt(
 
         match execute_chat(client, base, &endpoint, &cred, statsig.as_deref(), &body).await {
             Ok(bytes) => {
-                let parsed = consume_upstream(&bytes)
-                    .map_err(|error| error.into_provider_error(api_key))?;
+                let parsed =
+                    consume_upstream(&bytes).map_err(|error| error.into_provider_error(api_key))?;
                 if let Some(error) = parsed.error.as_deref() {
                     if is_anti_bot_message(error) {
                         tracing::warn!(%error, "Grok chat rejected by anti-bot; skipping same-key retry");
@@ -194,7 +173,7 @@ async fn execute_prompt(
 
     Err(ProviderError::Retryable(sanitize_error_message(
         &format!(
-            "Grok request rejected (anti-bot or transport). Prefer stable proxy_url, longer timeout_ms (>=60000), SSO cookies, and usable x-statsig-id (70-byte or x0 fallback). FlareSolverr is optional. detail={last_error}"
+            "Grok request rejected (anti-bot or transport). Prefer stable proxy_url, longer timeout_ms (>=60000), SSO cookies, and usable x-statsig-id (70-byte or x0 fallback). detail={last_error}"
         ),
         api_key,
     )))
@@ -210,7 +189,7 @@ async fn execute_chat(
 ) -> Result<Vec<u8>, GrokError> {
     let headers = build_request_headers(base, cred, statsig)?;
 
-    // Chrome TLS/JA3/H2 via wreq emulation (scheme B); cookies still from SSO + FlareSolverr.
+    // Chrome TLS/JA3/H2 via wreq emulation (scheme B); cookies come from the SSO credential.
     // Proxy/idle-pool flakiness shows up as Connect/timeout — retry a few times before bubbling up.
     let mut last_send_error = String::new();
     let response = {
@@ -251,14 +230,14 @@ async fn execute_chat(
     };
 
     let status = response.status();
-    let bytes = response.bytes().await.map_err(|error| {
-        GrokError::transport(format!("Grok response body error: {error}"))
-    })?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| GrokError::transport(format!("Grok response body error: {error}")))?;
     let body_text = String::from_utf8_lossy(&bytes);
 
     if status == StatusCode::UNAUTHORIZED {
         return Err(GrokError::Http {
-            status: status.as_u16(),
             message: format!(
                 "Grok HTTP {status}: SSO unauthorized; body={}",
                 truncate(&body_text, 240)
@@ -274,7 +253,6 @@ async fn execute_chat(
     // 429, 5xx and any other non-success status share the same message shape.
     if !status.is_success() {
         return Err(GrokError::Http {
-            status: status.as_u16(),
             message: format!("Grok HTTP {status}: {}", truncate(&body_text, 240)),
         });
     }
@@ -773,23 +751,6 @@ fn is_allowed_extra_cookie(name: &str) -> bool {
     is_cloudflare_cookie_name(name) || is_session_identity_cookie_name(name)
 }
 
-/// Drop Cloudflare cookies that did not come from this wreq TLS session.
-/// Foreign cf_clearance (e.g. FlareSolverr browser) causes code=7 with emulated clients.
-fn strip_foreign_cloudflare_cookies(cred: &mut GrokCredential) {
-    let before = cred.extra_cookies.len();
-    cred.extra_cookies
-        .retain(|name, _| !is_cloudflare_cookie_name(name));
-    // Also drop UA forced by FlareSolverr so DEFAULT_USER_AGENT / Chrome146 stay aligned.
-    cred.user_agent = None;
-    let removed = before.saturating_sub(cred.extra_cookies.len());
-    if removed > 0 {
-        tracing::info!(
-            removed,
-            "Grok stripped foreign Cloudflare cookies before re-warm"
-        );
-    }
-}
-
 /// Keep the __cf_bm/device cookies minted by this wreq client across retries.
 /// Only clearance/challenge cookies are tied to a different browser session.
 fn drop_foreign_clearance_cookie(cred: &mut GrokCredential) {
@@ -903,7 +864,6 @@ fn set_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), Gr
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn resolve_statsig_id(
     client: &wreq::Client,
     control_client: &reqwest::Client,
@@ -912,18 +872,7 @@ async fn resolve_statsig_id(
     endpoint: &str,
     force_refresh: bool,
     proxy_url: Option<&str>,
-    flaresolverr_url: Option<&str>,
-    flaresolverr_proxy_url: Option<&str>,
 ) -> Result<Option<String>, GrokError> {
-    // Silence unused when we skip slow remote/FS signing by default.
-    let _ = (
-        client,
-        control_client,
-        proxy_url,
-        flaresolverr_url,
-        flaresolverr_proxy_url,
-    );
-
     // 1) Explicit credential override (manual 70-byte or x0 string in JSON/cookie config).
     if let Some(manual) = cred
         .statsig_id
@@ -949,8 +898,8 @@ async fn resolve_statsig_id(
     }
 
     // 2) Optional explicit local/remote signer ONLY if credential sets statsig_signer.
-    // Do NOT auto-probe wodf.de / 8788 / FlareSolverr: those burn the request budget
-    // (often 60–90s) and the request dies before ever reaching the working x0 path.
+    // Do NOT auto-probe public signers: those burn the request budget (often
+    // 60–90s) and the request dies before ever reaching the working x0 path.
     if let Some(signer) = cred
         .statsig_signer
         .as_deref()
@@ -972,9 +921,6 @@ async fn resolve_statsig_id(
             &path,
             &meta,
             proxy_url,
-            // Never route signing through FlareSolverr on the hot path.
-            None,
-            None,
         )
         .await
         {
@@ -994,7 +940,7 @@ async fn resolve_statsig_id(
     }
 
     // 3) Built-in x0 frontend-fallback (const in this file — not data/). Verified live chat path.
-    let fallback = x0_fallback_statsig_id();
+    let fallback = X0_FALLBACK_STATSIG_ID.to_string();
     put_cached_statsig(&cache_key, &fallback);
     tracing::info!(
         statsig = %fallback,
@@ -1016,10 +962,6 @@ fn valid_statsig_id(value: &str) -> bool {
 }
 
 /// Frontend failure fallback used when module 4629918 signing fails: btoa("x0:" + error).
-fn x0_fallback_statsig_id() -> String {
-    X0_FALLBACK_STATSIG_ID.to_string()
-}
-
 fn is_x0_fallback_statsig_id(value: &str) -> bool {
     value.trim() == X0_FALLBACK_STATSIG_ID
 }
@@ -1060,7 +1002,6 @@ async fn warm_session_cookies(
         .map_err(|error| GrokError::transport(format!("warm Grok session failed: {error}")))?;
     if !response.status().is_success() {
         return Err(GrokError::Http {
-            status: response.status().as_u16(),
             message: format!("Grok warm HTTP {}", response.status()),
         });
     }
@@ -1161,7 +1102,6 @@ async fn fetch_statsig_meta(
         .map_err(|error| GrokError::transport(format!("fetch Grok index failed: {error}")))?;
     if !response.status().is_success() {
         return Err(GrokError::Http {
-            status: response.status().as_u16(),
             message: format!("Grok index HTTP {}", response.status()),
         });
     }
@@ -1287,7 +1227,6 @@ fn looks_like_cloudflare_challenge(body: &str) -> bool {
 }
 
 /// Try multiple egress paths. Public signer is often Cloudflare-blocked for plain HTTP clients.
-#[allow(clippy::too_many_arguments)]
 async fn request_statsig_signature_resilient(
     emulated_client: &wreq::Client,
     control_client: &reqwest::Client,
@@ -1296,8 +1235,6 @@ async fn request_statsig_signature_resilient(
     path: &str,
     meta_content: &str,
     proxy_url: Option<&str>,
-    flaresolverr_url: Option<&str>,
-    flaresolverr_proxy_url: Option<&str>,
 ) -> Result<String, GrokError> {
     let mut errors = Vec::new();
     let is_local = signer_is_loopback(signer);
@@ -1336,19 +1273,8 @@ async fn request_statsig_signature_resilient(
         }
     }
 
-    // 3) Same proxy as Grok API traffic (and optional flaresolverr proxy as extra hop)
-    let mut proxies: Vec<String> = Vec::new();
-    for candidate in [proxy_url, flaresolverr_proxy_url] {
-        if let Some(proxy) = candidate.map(str::trim).filter(|v| !v.is_empty())
-            && !proxies.iter().any(|p| p == proxy)
-        {
-            proxies.push(proxy.to_string());
-        }
-    }
-    for proxy in &proxies {
-        if is_local {
-            break;
-        }
+    // 3) Same proxy as Grok API traffic
+    if !is_local && let Some(proxy) = proxy_url.map(str::trim).filter(|v| !v.is_empty()) {
         match request_statsig_signature_with_proxy(proxy, signer, method, path, meta_content).await
         {
             Ok(value) => {
@@ -1358,29 +1284,6 @@ async fn request_statsig_signature_resilient(
             Err(error) => {
                 tracing::debug!(%error, channel = "proxy", "statsig signer path failed");
                 errors.push(format!("proxy({proxy}): {error}"));
-            }
-        }
-    }
-
-    // 4) Browser POST via FlareSolverr (solve CF on public signer site)
-    if !is_local && let Some(fs) = flaresolverr_url.map(str::trim).filter(|v| !v.is_empty()) {
-        match request_statsig_signature_via_flaresolverr(
-            fs,
-            flaresolverr_proxy_url.or(proxy_url),
-            signer,
-            method,
-            path,
-            meta_content,
-        )
-        .await
-        {
-            Ok(value) => {
-                tracing::info!(channel = "flaresolverr", %signer, "statsig signer ok");
-                return Ok(value);
-            }
-            Err(error) => {
-                tracing::debug!(%error, channel = "flaresolverr", "statsig signer path failed");
-                errors.push(format!("flaresolverr: {error}"));
             }
         }
     }
@@ -1423,7 +1326,6 @@ async fn request_statsig_signature(
         .map_err(|error| GrokError::transport(format!("statsig signer body failed: {error}")))?;
     if !status.is_success() {
         return Err(GrokError::Http {
-            status: status.as_u16(),
             message: format!("statsig signer HTTP {status}: {}", truncate(&text, 160)),
         });
     }
@@ -1455,7 +1357,6 @@ async fn request_statsig_signature_emulated(
     })?;
     if !status.is_success() {
         return Err(GrokError::Http {
-            status: status.as_u16(),
             message: format!(
                 "statsig emulated signer HTTP {status}: {}",
                 truncate(&text, 160)
@@ -1485,134 +1386,6 @@ async fn request_statsig_signature_with_proxy(
             GrokError::Other(format!("failed to build proxied statsig client: {error}"))
         })?;
     request_statsig_signature(&client, signer, method, path, meta_content).await
-}
-
-async fn request_statsig_signature_via_flaresolverr(
-    flaresolverr_url: &str,
-    flaresolverr_proxy_url: Option<&str>,
-    signer: &str,
-    method: &str,
-    path: &str,
-    meta_content: &str,
-) -> Result<String, GrokError> {
-    let payload = statsig_sign_payload(method, path, meta_content);
-    let body = serde_json::to_string(&payload)
-        .map_err(|error| GrokError::Other(format!("encode statsig payload: {error}")))?;
-
-    // Important: grok.com clearance cookies do NOT apply to grok.wodf.de.
-    // FlareSolverr is strongest on GET navigations. Warm the signer origin first,
-    // then POST with that domain's Cloudflare cookies + matching UA.
-    let origin = signer_origin(signer);
-    let control = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|error| {
-            GrokError::Other(format!("build control client for signer clearance: {error}"))
-        })?;
-    let warm_url = format!("{origin}/");
-    let clearance = super::grok_support::resolve_clearance(
-        &control,
-        flaresolverr_url,
-        &warm_url,
-        flaresolverr_proxy_url,
-        false,
-    )
-    .await
-    .map_err(|error| {
-        GrokError::Other(format!("FlareSolverr warm GET {warm_url} failed: {error}"))
-    })?;
-
-    let cookie_header = cloudflare_cookie_header(&clearance.cookies);
-    let ua = clearance
-        .user_agent
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_USER_AGENT);
-
-    let mut headers = BTreeMap::new();
-    headers.insert("Content-Type".to_string(), "application/json".to_string());
-    headers.insert(
-        "Accept".to_string(),
-        "application/json, text/plain, */*".to_string(),
-    );
-    headers.insert("User-Agent".to_string(), ua.to_string());
-    headers.insert("Origin".to_string(), origin.clone());
-    headers.insert("Referer".to_string(), format!("{origin}/"));
-    if !cookie_header.is_empty() {
-        headers.insert("Cookie".to_string(), cookie_header);
-    }
-
-    tracing::info!(
-        %signer,
-        %origin,
-        cookie_names = %clearance
-            .cookies
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(","),
-        "FlareSolverr signing via warm-GET + POST (domain-local clearance)"
-    );
-
-    let result = super::grok_support::flaresolverr_request_post(
-        flaresolverr_url,
-        signer,
-        flaresolverr_proxy_url,
-        &headers,
-        &body,
-        90_000,
-    )
-    .await?;
-
-    tracing::info!(
-        status = result.status,
-        cookie_count = result.cookies.len(),
-        body_preview = %truncate(&result.body, 120),
-        "FlareSolverr statsig signer response"
-    );
-
-    if !(200..300).contains(&result.status) {
-        return Err(GrokError::Http {
-            status: result.status,
-            message: format!(
-                "FlareSolverr signer target HTTP {}: {}",
-                result.status,
-                truncate(&result.body, 240)
-            ),
-        });
-    }
-    match parse_statsig_signature_body(&result.body) {
-        Ok(value) => Ok(value),
-        Err(error) => Err(GrokError::Other(format!(
-            "{error}; http={}; body={}",
-            result.status,
-            truncate(&result.body, 240)
-        ))),
-    }
-}
-
-fn signer_origin(signer: &str) -> String {
-    reqwest::Url::parse(signer)
-        .ok()
-        .map(|url| {
-            let host = url.host_str().unwrap_or("grok.wodf.de");
-            match url.port() {
-                Some(port) => format!("{}://{}:{port}", url.scheme(), host),
-                None => format!("{}://{}", url.scheme(), host),
-            }
-        })
-        .unwrap_or_else(|| "https://grok.wodf.de".to_string())
-}
-
-fn cloudflare_cookie_header(cookies: &BTreeMap<String, String>) -> String {
-    cookies
-        .iter()
-        .filter(|(name, _)| is_cloudflare_cookie_name(name))
-        .map(|(name, value)| format!("{}={}", name.to_ascii_lowercase(), value.trim()))
-        .collect::<Vec<_>>()
-        .join("; ")
 }
 
 fn consume_upstream(bytes: &[u8]) -> Result<ParsedChat, GrokError> {
@@ -2223,7 +1996,6 @@ mod tests {
         assert!(usable_statsig_id(X0_FALLBACK_STATSIG_ID));
         // x0 payload is exactly 70 bytes after base64 decode, so it is also valid_statsig_id.
         assert!(valid_statsig_id(X0_FALLBACK_STATSIG_ID));
-        assert_eq!(x0_fallback_statsig_id(), X0_FALLBACK_STATSIG_ID);
     }
 
     #[test]

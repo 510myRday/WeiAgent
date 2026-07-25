@@ -9,7 +9,8 @@ use crate::{
     },
     error::{AppError, AppResult},
     storage::{
-        json_store::JsonStore,
+        db,
+        store::Store,
         validation::{
             normalize_avatar_color, normalize_avatar_icon, validate_agent_text,
             validate_provider_model, validate_unique_avatar,
@@ -17,10 +18,10 @@ use crate::{
     },
 };
 
-impl JsonStore {
+impl Store {
     pub async fn list_agents(&self) -> AppResult<Vec<AgentResponse>> {
         let agents = self.read_agents().await?;
-        self.agent_responses(&agents).await
+        Ok(agents.iter().map(AgentResponse::from_agent).collect())
     }
 
     pub async fn get_agent(&self, id: Uuid) -> AppResult<Agent> {
@@ -37,7 +38,10 @@ impl JsonStore {
         let avatar_color = normalize_avatar_color(request.avatar_color.as_deref())?;
 
         let _guard = self.lock.lock().await;
-        let providers = self.read_providers_unlocked().await?;
+        let providers = self
+            .database
+            .call(|connection| db::read_providers_conn(connection))
+            .await?;
         validate_provider_model(&providers, request.model_provider_id, &request.model_id)?;
 
         let mut agents = self.read_agents_unlocked().await?;
@@ -67,7 +71,10 @@ impl JsonStore {
         request: UpdateAgentRequest,
     ) -> AppResult<AgentResponse> {
         let _guard = self.lock.lock().await;
-        let providers = self.read_providers_unlocked().await?;
+        let providers = self
+            .database
+            .call(|connection| db::read_providers_conn(connection))
+            .await?;
         let mut agents = self.read_agents_unlocked().await?;
         let updated = apply_agent_update(&mut agents, &providers, id, request)?;
         self.write_agents_unlocked(&agents).await?;
@@ -80,7 +87,10 @@ impl JsonStore {
         request: UpdateAgentProfileRequest,
     ) -> AppResult<AgentProfileResponse> {
         let _guard = self.lock.lock().await;
-        let providers = self.read_providers_unlocked().await?;
+        let providers = self
+            .database
+            .call(|connection| db::read_providers_conn(connection))
+            .await?;
         let mut agents = self.read_agents_unlocked().await?;
         let original_workspace = self.read_agent_workspace_unlocked(id).await?;
         let updated = apply_agent_update(&mut agents, &providers, id, request.agent)?;
@@ -152,14 +162,6 @@ impl JsonStore {
             tracing::warn!(path = %workspace.display(), %error, "failed to remove deleted agent workspace");
         }
         Ok(())
-    }
-
-    pub(super) async fn agent_responses(&self, agents: &[Agent]) -> AppResult<Vec<AgentResponse>> {
-        let mut responses = Vec::with_capacity(agents.len());
-        for agent in agents {
-            responses.push(AgentResponse::from_agent(agent));
-        }
-        Ok(responses)
     }
 }
 

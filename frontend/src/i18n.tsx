@@ -36,7 +36,6 @@ function getByPath(obj: Record<string, unknown>, path: string): string {
 type I18nContextValue = {
   locale: Locale;
   setLocale: (locale: Locale) => void;
-  setLocaleStateOnly: (locale: Locale) => void;
   t: (path: string, params?: Record<string, string | number>) => string;
 };
 
@@ -46,11 +45,6 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(detectLocale);
 
   const setLocale = useCallback((next: Locale) => {
-    setLocaleState(next);
-    try { localStorage.setItem(STORAGE_KEY, next); } catch { /* noop */ }
-  }, []);
-
-  const setLocaleStateOnly = useCallback((next: Locale) => {
     setLocaleState(next);
     try { localStorage.setItem(STORAGE_KEY, next); } catch { /* noop */ }
   }, []);
@@ -71,7 +65,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     [locale],
   );
 
-  const value = useMemo(() => ({ locale, setLocale, setLocaleStateOnly, t }), [locale, setLocale, setLocaleStateOnly, t]);
+  const value = useMemo(() => ({ locale, setLocale, t }), [locale, setLocale, t]);
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

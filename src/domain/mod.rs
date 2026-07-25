@@ -9,12 +9,11 @@ pub mod tools;
 
 pub use agents::{
     Agent, AgentProfileResponse, AgentResponse, AgentWorkspace, CreateAgentRequest,
-    UpdateAgentProfileRequest, UpdateAgentRequest, UpdateAgentWorkspaceRequest,
+    UpdateAgentProfileRequest, UpdateAgentRequest,
 };
 pub use chat::{
     AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, ConversationUsage,
-    ImageAttachment, ImageSource, ModelUsage, SendMessageRequest, SendMessageResponse,
-    ThinkingLevel, TokenUsage,
+    ImageAttachment, ImageSource, ModelUsage, SendMessageRequest, ThinkingLevel, TokenUsage,
 };
 pub use conversations::{
     ContextCheckpoint, Conversation, ConversationMessagePage, CreateConversationRequest,
@@ -35,28 +34,10 @@ pub use runtime::{
 };
 pub use settings::AppSettings;
 pub use tools::{
-    AgentToolsConfig,
-    AgentToolsOverrides,
-    AgentToolsSettings,
-    ApprovalDecision,
-    ApprovalRequest,
-    ApprovalResponse,
-    EvidenceStorageConfig,
-    PendingApproval,
-    ProcessInfo,
-    ProcessStatus,
-    TerminalApprovalGrant,
-    TerminalPermissionMode,
-    TerminalToolConfig,
-    ToolResult,
-    WebSearchCostTier,
-    WebSearchKeySelection,
-    WebSearchKeyStatusRecord,
-    WebSearchLatencyTier,
-    WebSearchProviderKind,
-    WebSearchSourceCapabilities,
-    WebSearchSourceConfig,
-    WebSearchSourceRole,
-    WebSearchToolConfig,
-    WebSearchToolOverrides, // re-export
+    AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision, ApprovalRequest,
+    ApprovalResponse, EvidenceStorageConfig, PendingApproval, ProcessInfo, ProcessStatus,
+    TerminalApprovalGrant, TerminalPermissionMode, TerminalToolConfig, ToolResult,
+    WebSearchCostTier, WebSearchKeySelection, WebSearchKeyStatusRecord, WebSearchLatencyTier,
+    WebSearchProviderKind, WebSearchSourceCapabilities, WebSearchSourceConfig, WebSearchSourceRole,
+    WebSearchToolConfig, WebSearchToolOverrides,
 };

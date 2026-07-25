@@ -1,6 +1,3 @@
-use std::sync::Arc;
-
-use async_trait::async_trait;
 use reqwest::RequestBuilder;
 use serde_json::Value;
 
@@ -8,11 +5,10 @@ use crate::{
     domain::{Agent, ChatMessage, ModelProvider, ThinkingLevel},
     error::{AppError, AppResult},
     llm::{
-        cache::{apply_openai_fields, apply_provider_extra, build_context},
-        client::{ChatClient, ChatStream, RequestOptions},
+        cache::{apply_openai_fields, build_context},
         http::StreamLineParser,
         protocol::common::{
-            ProtocolAdapter, ProtocolClient, bearer_get, bearer_post, default_models,
+            ProtocolAdapter, bearer_get, bearer_post, default_models, merge_extra_body,
         },
         sse::{meaningful_finish_reason, openai_finish_event, parse_sse_line},
         types::{
@@ -20,70 +16,10 @@ use crate::{
             build_chat_request,
         },
     },
-    storage::LlmLogger,
 };
 
-#[derive(Clone)]
-pub struct OpenAiChatClient {
-    inner: ProtocolClient<OpenAiChatAdapter>,
-}
-
-impl OpenAiChatClient {
-    pub fn new() -> Self {
-        Self {
-            inner: ProtocolClient::new(OpenAiChatAdapter),
-        }
-    }
-
-    pub fn with_logger(mut self, logger: Arc<LlmLogger>) -> Self {
-        self.inner = self.inner.with_logger(logger);
-        self
-    }
-}
-
-impl Default for OpenAiChatClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl ChatClient for OpenAiChatClient {
-    async fn complete(
-        &self,
-        agent: &Agent,
-        provider: &ModelProvider,
-        messages: &[ChatMessage],
-        system_prompt: &str,
-        options: RequestOptions,
-        tools: Option<Vec<ToolDefinition>>,
-    ) -> AppResult<ChatCompletionOutput> {
-        self.inner
-            .complete(agent, provider, messages, system_prompt, options, tools)
-            .await
-    }
-
-    async fn stream(
-        &self,
-        agent: &Agent,
-        provider: &ModelProvider,
-        messages: &[ChatMessage],
-        system_prompt: &str,
-        options: RequestOptions,
-        tools: Option<Vec<ToolDefinition>>,
-    ) -> AppResult<ChatStream> {
-        self.inner
-            .stream(agent, provider, messages, system_prompt, options, tools)
-            .await
-    }
-
-    async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {
-        self.inner.list_models(provider).await
-    }
-}
-
 #[derive(Clone, Copy)]
-struct OpenAiChatAdapter;
+pub(crate) struct OpenAiChatAdapter;
 
 impl ProtocolAdapter for OpenAiChatAdapter {
     fn completion_url(&self, provider: &ModelProvider, _agent: &Agent, _stream: bool) -> String {
@@ -159,12 +95,11 @@ fn build_openai_chat_request(
     tools: Option<Vec<ToolDefinition>>,
     thinking_level: Option<ThinkingLevel>,
 ) -> AppResult<Value> {
-    let mut request = build_chat_request(
+    let request = build_chat_request(
         agent,
         messages,
         stream,
         system_prompt,
-        extra_body,
         tools,
         thinking_level,
     );
@@ -176,12 +111,32 @@ fn build_openai_chat_request(
         system_prompt,
         request.tools.as_deref(),
     );
-    if let Value::Object(mut extra) = request.extra_body {
-        apply_openai_fields(&mut extra, provider, &context);
-        apply_provider_extra(&mut extra, &context);
-        request.extra_body = Value::Object(extra);
-    }
-    serde_json::to_value(&request).map_err(|error| AppError::Llm(error.to_string()))
+    let Value::Object(body) =
+        serde_json::to_value(&request).map_err(|error| AppError::Llm(error.to_string()))?
+    else {
+        return Err(AppError::Llm(
+            "chat completion request must serialize to a JSON object".to_string(),
+        ));
+    };
+    // Merge user extra_body first (core request keys protected), then apply the
+    // computed cache fields so they keep precedence over user-provided ones.
+    let Value::Object(mut body) = merge_extra_body(
+        body,
+        extra_body,
+        &[
+            "model",
+            "messages",
+            "stream",
+            "tools",
+            "reasoning_effort",
+            "stream_options",
+        ],
+    )?
+    else {
+        unreachable!("merge_extra_body always returns a JSON object");
+    };
+    apply_openai_fields(&mut body, provider, &context);
+    Ok(Value::Object(body))
 }
 
 fn parse_openai_chat_output(value: &Value) -> AppResult<ChatCompletionOutput> {
@@ -270,7 +225,6 @@ mod tests {
             &messages,
             true,
             "You write Rust.",
-            &serde_json::Value::Null,
             None,
             Some(crate::domain::ThinkingLevel::High),
         );
@@ -330,7 +284,6 @@ mod tests {
             &messages,
             false,
             "You write Rust.",
-            &serde_json::Value::Null,
             None,
             Some(crate::domain::ThinkingLevel::Off),
         );
@@ -338,15 +291,8 @@ mod tests {
         let serialized = serde_json::to_string(&off_request).unwrap();
         assert!(!serialized.contains("reasoning_effort"));
 
-        let none_request = build_chat_request(
-            &agent,
-            &messages,
-            false,
-            "You write Rust.",
-            &serde_json::Value::Null,
-            None,
-            None,
-        );
+        let none_request =
+            build_chat_request(&agent, &messages, false, "You write Rust.", None, None);
         assert!(none_request.reasoning_effort.is_none());
         let serialized = serde_json::to_string(&none_request).unwrap();
         assert!(!serialized.contains("reasoning_effort"));

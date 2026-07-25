@@ -1,6 +1,3 @@
-use std::{collections::HashMap, sync::Arc};
-
-use async_trait::async_trait;
 use reqwest::RequestBuilder;
 use serde_json::{Map, Value, json};
 
@@ -8,84 +5,23 @@ use crate::{
     domain::{Agent, ChatMessage, ChatRole, ImageSource, ModelProvider, ThinkingLevel, TokenUsage},
     error::{AppError, AppResult},
     llm::{
-        cache::{PromptCacheMode, apply_provider_extra, build_context, effective_capabilities},
-        client::{ChatClient, ChatStream, RequestOptions},
+        cache::{PromptCacheMode, build_context, effective_capabilities},
         http::StreamLineParser,
         protocol::common::{
-            ProtocolAdapter, ProtocolClient, add_query_parameter, default_models, merge_extra_body,
-            message_tool_calls, parse_json_object, validate_tool_calls,
+            ProtocolAdapter, SseData, add_query_parameter, default_models, merge_extra_body,
+            message_tool_calls, parse_json_object, parse_sse_data_line, validate_tool_calls,
         },
         types::{
             ChatCompletionOutput, StreamEvent, ToolCall, ToolCallFunction, ToolDefinition,
             select_context_messages,
         },
     },
-    storage::LlmLogger,
 };
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-#[derive(Clone)]
-pub struct AnthropicMessagesClient {
-    inner: ProtocolClient<AnthropicAdapter>,
-}
-
-impl AnthropicMessagesClient {
-    pub fn new() -> Self {
-        Self {
-            inner: ProtocolClient::new(AnthropicAdapter),
-        }
-    }
-
-    pub fn with_logger(mut self, logger: Arc<LlmLogger>) -> Self {
-        self.inner = self.inner.with_logger(logger);
-        self
-    }
-}
-
-impl Default for AnthropicMessagesClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl ChatClient for AnthropicMessagesClient {
-    async fn complete(
-        &self,
-        agent: &Agent,
-        provider: &ModelProvider,
-        messages: &[ChatMessage],
-        system_prompt: &str,
-        options: RequestOptions,
-        tools: Option<Vec<ToolDefinition>>,
-    ) -> AppResult<ChatCompletionOutput> {
-        self.inner
-            .complete(agent, provider, messages, system_prompt, options, tools)
-            .await
-    }
-
-    async fn stream(
-        &self,
-        agent: &Agent,
-        provider: &ModelProvider,
-        messages: &[ChatMessage],
-        system_prompt: &str,
-        options: RequestOptions,
-        tools: Option<Vec<ToolDefinition>>,
-    ) -> AppResult<ChatStream> {
-        self.inner
-            .stream(agent, provider, messages, system_prompt, options, tools)
-            .await
-    }
-
-    async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {
-        self.inner.list_models(provider).await
-    }
-}
-
 #[derive(Clone, Copy)]
-struct AnthropicAdapter;
+pub(crate) struct AnthropicAdapter;
 
 impl ProtocolAdapter for AnthropicAdapter {
     fn completion_url(&self, provider: &ModelProvider, _agent: &Agent, _stream: bool) -> String {
@@ -196,16 +132,8 @@ fn build_anthropic_request(
         system_prompt,
         tools.as_deref(),
     );
-    let selected = select_context_messages(messages);
-    let mut call_names = HashMap::new();
-    for message in &selected {
-        for call in message_tool_calls(message)? {
-            call_names.insert(call.id, call.function.name);
-        }
-    }
-
     let mut anthropic_messages: Vec<Value> = Vec::new();
-    for message in selected {
+    for message in select_context_messages(messages) {
         let (role, blocks) = match message.role {
             ChatRole::User => {
                 let mut blocks = Vec::new();
@@ -253,11 +181,6 @@ fn build_anthropic_request(
             ChatRole::Tool => {
                 let call_id = message.tool_call_id.as_deref().ok_or_else(|| {
                     AppError::Llm("stored tool message is missing tool_call_id".to_string())
-                })?;
-                let _ = call_names.get(call_id).ok_or_else(|| {
-                    AppError::Llm(format!(
-                        "stored tool result references unknown call id {call_id}"
-                    ))
                 })?;
                 (
                     "user",
@@ -361,7 +284,6 @@ fn build_anthropic_request(
     {
         last["cache_control"] = json!({"type": "ephemeral"});
     }
-    apply_provider_extra(&mut body, &context);
     merge_extra_body(
         body,
         extra_body,
@@ -598,21 +520,12 @@ impl AnthropicStreamParser {
 
 impl StreamLineParser for AnthropicStreamParser {
     fn parse_line(&mut self, line: &str) -> Vec<AppResult<StreamEvent>> {
-        let Some(data) = line.strip_prefix("data:") else {
-            return Vec::new();
-        };
-        let data = data.strip_prefix(' ').unwrap_or(data).trim();
-        if data.is_empty() {
-            return Vec::new();
+        match parse_sse_data_line(line) {
+            Ok(SseData::Skip) => Vec::new(),
+            Ok(SseData::Done) => self.finish(),
+            Ok(SseData::Json(value)) => self.parse_event(&value),
+            Err(error) => vec![Err(error)],
         }
-        if data == "[DONE]" {
-            return self.finish();
-        }
-        let value: Value = match serde_json::from_str(data) {
-            Ok(value) => value,
-            Err(error) => return vec![Err(AppError::Llm(format!("invalid SSE JSON: {error}")))],
-        };
-        self.parse_event(&value)
     }
 }
 
