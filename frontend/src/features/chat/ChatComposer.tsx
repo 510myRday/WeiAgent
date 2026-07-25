@@ -4,8 +4,6 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type ClipboardEvent,
-  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
 } from 'react';
@@ -23,18 +21,12 @@ import type {
   ImageAttachment,
   ThinkingLevel,
 } from '../../types';
-import { Button, useFeedback } from '../../components/ui';
+import { Button } from '../../components/ui';
 import { useI18n } from '../../i18n';
 import { readChatDraft, writeChatDraft } from './chatDrafts';
+import { attachmentImageUrl } from './imageAttachments';
+import { useImageAttachments } from './useImageAttachments';
 
-const MAX_IMAGE_COUNT = 8;
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const IMAGE_TYPES = new Set<ImageAttachment['media_type']>([
-  'image/png',
-  'image/jpeg',
-  'image/webp',
-  'image/gif',
-]);
 const THINKING_LEVELS: ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'x_high'];
 
 interface ChatComposerProps {
@@ -82,27 +74,40 @@ export const ChatComposer = memo(function ChatComposer({
   onStop,
 }: ChatComposerProps) {
   const { t, locale } = useI18n();
-  const { toast } = useFeedback();
   const [draft, setDraft] = useState('');
-  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
-  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const dragDepthRef = useRef(0);
   const thinkingRef = useRef<HTMLDivElement>(null);
+  const {
+    attachments,
+    setAttachments,
+    isDraggingFiles,
+    resetDragState,
+    addFiles,
+    handlePaste,
+    handleDragEnter,
+    handleDragOver,
+    handleDragLeave,
+    handleDrop,
+  } = useImageAttachments({
+    supportsImages,
+    interactionDisabled: disabled || isSending,
+    onUnsupportedImage,
+  });
 
   useEffect(() => {
     setDraft(readChatDraft(draftKey));
     setAttachments([]);
-    setIsDraggingFiles(false);
-    dragDepthRef.current = 0;
+    resetDragState();
     setThinkingOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey]);
 
   useEffect(() => {
     if (!supportsImages) setAttachments([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supportsImages]);
 
   useEffect(() => {
@@ -145,87 +150,6 @@ export const ChatComposer = memo(function ChatComposer({
     formRef.current?.requestSubmit();
   }
 
-  async function addFiles(files: File[]) {
-    if (files.length === 0) return;
-    if (!supportsImages) {
-      onUnsupportedImage();
-      return;
-    }
-    const remaining = MAX_IMAGE_COUNT - attachments.length;
-    if (remaining <= 0) {
-      toast.warning(t('chat.imageCountLimit', { count: MAX_IMAGE_COUNT }));
-      return;
-    }
-    const accepted: ImageAttachment[] = [];
-    for (const file of files.slice(0, remaining)) {
-      const mediaType = normalizedImageType(file);
-      if (!mediaType) {
-        toast.warning(t('chat.imageTypeUnsupported'));
-        continue;
-      }
-      if (file.size > MAX_IMAGE_BYTES) {
-        toast.warning(t('chat.imageTooLarge', { size: 10 }));
-        continue;
-      }
-      accepted.push({
-        id: createAttachmentId(),
-        name: file.name || t('chat.pastedImage'),
-        media_type: mediaType,
-        source_type: 'base64',
-        data: await fileToBase64(file),
-      });
-    }
-    if (files.length > remaining) {
-      toast.warning(t('chat.imageCountLimit', { count: MAX_IMAGE_COUNT }));
-    }
-    if (accepted.length > 0) {
-      setAttachments((current) => [...current, ...accepted]);
-    }
-  }
-
-  function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
-    const imageFiles = Array.from(event.clipboardData.items)
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-      .map((item) => item.getAsFile())
-      .filter((file): file is File => file !== null);
-    if (imageFiles.length === 0) return;
-    event.preventDefault();
-    void addFiles(imageFiles);
-  }
-
-  function handleDragEnter(event: DragEvent<HTMLDivElement>) {
-    if (disabled || isSending || !isFileDrag(event.dataTransfer)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    dragDepthRef.current += 1;
-    setIsDraggingFiles(true);
-  }
-
-  function handleDragOver(event: DragEvent<HTMLDivElement>) {
-    if (disabled || isSending || !isFileDrag(event.dataTransfer)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = 'copy';
-  }
-
-  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
-    if (!isFileDrag(event.dataTransfer)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-    if (dragDepthRef.current === 0) setIsDraggingFiles(false);
-  }
-
-  function handleDrop(event: DragEvent<HTMLDivElement>) {
-    if (!isFileDrag(event.dataTransfer)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    dragDepthRef.current = 0;
-    setIsDraggingFiles(false);
-    if (disabled || isSending) return;
-    void addFiles(Array.from(event.dataTransfer.files));
-  }
-
   const canSend = Boolean(draft.trim() || attachments.length > 0);
 
   return (
@@ -241,7 +165,7 @@ export const ChatComposer = memo(function ChatComposer({
           <div className="composer-image-strip">
             {attachments.map((attachment) => (
               <div className="composer-image-preview" key={attachment.id}>
-                <img src={attachmentUrl(attachment)} alt={attachment.name} />
+                <img src={attachmentImageUrl(attachment)} alt={attachment.name} />
                 <button
                   type="button"
                   onClick={() => setAttachments((current) => (
@@ -381,47 +305,6 @@ export const ChatComposer = memo(function ChatComposer({
     </form>
   );
 });
-
-function normalizedImageType(file: File): ImageAttachment['media_type'] | null {
-  if (IMAGE_TYPES.has(file.type as ImageAttachment['media_type'])) {
-    return file.type as ImageAttachment['media_type'];
-  }
-  const extension = file.name.split('.').pop()?.toLowerCase();
-  if (extension === 'png') return 'image/png';
-  if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
-  if (extension === 'webp') return 'image/webp';
-  if (extension === 'gif') return 'image/gif';
-  return null;
-}
-
-function isFileDrag(dataTransfer: DataTransfer): boolean {
-  return Array.from(dataTransfer.types).includes('Files');
-}
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error('Failed to read image'));
-    reader.onload = () => {
-      const result = String(reader.result ?? '');
-      resolve(result.slice(result.indexOf(',') + 1));
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-function attachmentUrl(attachment: ImageAttachment): string {
-  return attachment.source_type === 'base64'
-    ? `data:${attachment.media_type};base64,${attachment.data}`
-    : attachment.url;
-}
-
-function createAttachmentId(): string {
-  return typeof crypto !== 'undefined' && crypto.randomUUID
-    ? crypto.randomUUID()
-    : `image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 
 function ContextUsageRing({
   used,

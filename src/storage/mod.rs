@@ -1,4 +1,5 @@
 mod agents;
+mod conversation_db;
 mod conversations;
 mod db;
 mod files;
@@ -108,7 +109,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(migration_versions, vec![1, 2]);
+        assert_eq!(migration_versions, vec![1, 2, 3]);
         assert_eq!(
             tool_table_names(&conn),
             vec![
@@ -643,6 +644,180 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migrates_legacy_json_conversations_into_sqlite() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let agent_id = Uuid::new_v4();
+        let now = Utc::now();
+        let agent = crate::domain::Agent {
+            id: agent_id,
+            name: "Legacy Agent".to_string(),
+            description: "Owns legacy conversations".to_string(),
+            model_provider_id: Uuid::nil(),
+            model_id: String::new(),
+            is_builtin: false,
+            avatar_icon: DEFAULT_AGENT_ICON.to_string(),
+            avatar_color: DEFAULT_AGENT_COLOR.to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        tokio::fs::write(
+            temp_dir.path().join("agents.json"),
+            serde_json::to_string_pretty(&vec![agent]).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let make_message = |conversation_id: Uuid, role: ChatRole, content: &str| ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id,
+            conversation_id,
+            role,
+            content: content.to_string(),
+            reasoning_content: None,
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        };
+
+        let plain_id = Uuid::new_v4();
+        let plain_messages = vec![
+            make_message(plain_id, ChatRole::User, "  legacy   first question  "),
+            make_message(plain_id, ChatRole::Assistant, "legacy answer"),
+            make_message(plain_id, ChatRole::User, "second question"),
+            make_message(plain_id, ChatRole::Assistant, "second answer"),
+        ];
+        let pinned_id = Uuid::new_v4();
+        let pinned_messages = vec![
+            make_message(pinned_id, ChatRole::User, "pinned question"),
+            make_message(pinned_id, ChatRole::Assistant, "pinned answer"),
+        ];
+        let checkpoint = ContextCheckpoint {
+            summary: "compacted state".to_string(),
+            covers_until_message_id: pinned_messages[1].id,
+            created_at: now,
+            generation: 2,
+            source_tokens_estimate: 4321,
+        };
+        let plain_conversation = crate::domain::Conversation {
+            id: plain_id,
+            agent_id,
+            title: "新会话".to_string(),
+            message_count: 0,
+            is_pinned: false,
+            context_checkpoint: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let pinned_conversation = crate::domain::Conversation {
+            id: pinned_id,
+            agent_id,
+            title: "Pinned legacy".to_string(),
+            message_count: 2,
+            is_pinned: true,
+            context_checkpoint: Some(checkpoint.clone()),
+            created_at: now,
+            updated_at: now,
+        };
+        tokio::fs::write(
+            temp_dir.path().join("conversations.json"),
+            serde_json::to_string_pretty(&vec![
+                plain_conversation.clone(),
+                pinned_conversation.clone(),
+            ])
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let conversations_dir = temp_dir.path().join("conversations");
+        tokio::fs::create_dir_all(&conversations_dir).await.unwrap();
+        for (id, messages) in [(plain_id, &plain_messages), (pinned_id, &pinned_messages)] {
+            tokio::fs::write(
+                conversations_dir.join(format!("{id}.json")),
+                serde_json::to_string_pretty(messages).unwrap(),
+            )
+            .await
+            .unwrap();
+        }
+
+        let store = JsonStore::new(temp_dir.path()).await.unwrap();
+
+        // Metadata migrated with pin ordering, repaired counts, derived title.
+        let listed = store.list_conversations(agent_id).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, pinned_id);
+        assert!(listed[0].is_pinned);
+        assert_eq!(listed[0].title, "Pinned legacy");
+        assert_eq!(listed[0].message_count, 2);
+        assert_eq!(listed[1].id, plain_id);
+        assert_eq!(listed[1].title, "legacy first question");
+        assert_eq!(listed[1].message_count, 4);
+
+        // Full message payloads survive round-tripping through SQLite.
+        assert_eq!(
+            store.read_conversation_messages(plain_id).await.unwrap(),
+            plain_messages
+        );
+        assert_eq!(
+            store.read_context_checkpoint(pinned_id).await.unwrap(),
+            Some(checkpoint)
+        );
+
+        // Cursor pagination keeps user-turn boundaries and ordering.
+        let latest = store
+            .read_conversation_message_page(plain_id, None, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            latest.messages.iter().map(|m| m.id).collect::<Vec<_>>(),
+            plain_messages[2..].iter().map(|m| m.id).collect::<Vec<_>>()
+        );
+        assert!(latest.has_more);
+        assert_eq!(latest.next_cursor, Some(plain_messages[2].id));
+        let older = store
+            .read_conversation_message_page(plain_id, latest.next_cursor, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            older.messages.iter().map(|m| m.id).collect::<Vec<_>>(),
+            plain_messages[..2].iter().map(|m| m.id).collect::<Vec<_>>()
+        );
+        assert!(!older.has_more);
+
+        // Legacy files are backed up, not deleted.
+        assert!(!temp_dir.path().join("conversations.json").exists());
+        assert!(temp_dir.path().join("conversations.json.migrated").exists());
+        assert!(!conversations_dir.join(format!("{plain_id}.json")).exists());
+        assert!(
+            conversations_dir
+                .join(format!("{plain_id}.json.migrated"))
+                .exists()
+        );
+        assert!(
+            conversations_dir
+                .join(format!("{pinned_id}.json.migrated"))
+                .exists()
+        );
+
+        // Reopening does not import the backups again.
+        drop(store);
+        let reopened = JsonStore::new(temp_dir.path()).await.unwrap();
+        let listed = reopened.list_conversations(agent_id).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(
+            reopened
+                .read_conversation_messages(plain_id)
+                .await
+                .unwrap()
+                .len(),
+            4
+        );
+        assert!(temp_dir.path().join("conversations.json.migrated").exists());
+    }
+
+    #[tokio::test]
     async fn stores_provider_type_and_preserves_blank_key_update() {
         let temp_dir = tempfile::tempdir().unwrap();
         let store = JsonStore::new(temp_dir.path()).await.unwrap();
@@ -1033,9 +1208,6 @@ mod tests {
             .unwrap();
         let conversation = store
             .create_conversation(agent.id, CreateConversationRequest { title: None })
-            .await
-            .unwrap();
-        tokio::fs::write(store.conversation_file(conversation.id), "{broken-json")
             .await
             .unwrap();
 

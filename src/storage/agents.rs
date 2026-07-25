@@ -132,31 +132,18 @@ impl JsonStore {
         if agents.len() == before {
             return Err(AppError::NotFound);
         }
-        let mut conversations = self.read_conversations_unlocked().await?;
-        let original_conversations = conversations.clone();
-        let deleted = conversations
-            .iter()
-            .filter(|conversation| conversation.agent_id == id)
-            .map(|conversation| conversation.id)
-            .collect::<Vec<_>>();
-        conversations.retain(|conversation| conversation.agent_id != id);
-        self.write_conversations_unlocked(&conversations).await?;
-        if let Err(error) = self.write_agents_unlocked(&agents).await {
-            let _ = self
-                .write_conversations_unlocked(&original_conversations)
-                .await;
-            return Err(error);
+        self.write_agents_unlocked(&agents).await?;
+        if let Err(error) = self
+            .database
+            .call(move |conn| {
+                crate::storage::conversation_db::delete_agent_conversations_conn(conn, id)
+            })
+            .await
+        {
+            tracing::warn!(agent_id = %id, %error, "failed to remove deleted agent conversations");
         }
         if let Err(error) = self.delete_agent_tool_settings_unlocked(id).await {
             tracing::warn!(agent_id = %id, %error, "failed to remove deleted agent tool settings");
-        }
-        for conversation_id in deleted {
-            let file = self.conversation_file(conversation_id);
-            if fs::metadata(&file).await.is_ok()
-                && let Err(error) = fs::remove_file(&file).await
-            {
-                tracing::warn!(path = %file.display(), %error, "failed to remove deleted conversation file");
-            }
         }
         let workspace = self.agent_workspace_dir(id);
         if fs::metadata(&workspace).await.is_ok()

@@ -40,6 +40,9 @@ import { agentDisplayName } from '../../components/AgentListItem';
 import { Button, EmptyState, useFeedback } from '../../components/ui';
 import { useI18n } from '../../i18n';
 import { MarkdownContent } from './MarkdownContent';
+import { StreamingMarkdown } from './StreamingMarkdown';
+import { MAX_IMAGE_COUNT, attachmentImageUrl } from './imageAttachments';
+import { useImageAttachments } from './useImageAttachments';
 import { ReasoningDisclosure } from './ReasoningDisclosure';
 import { ToolDisclosure } from './ToolDisclosure';
 
@@ -96,14 +99,6 @@ const INITIAL_POSITION_STABLE_FRAMES = 2;
 const BOTTOM_POSITION_TOLERANCE = 1;
 const WAITING_SCROLL_PADDING = 48;
 const STREAM_SCROLL_THROTTLE_MS = 800;
-const MAX_EDIT_IMAGE_COUNT = 8;
-const MAX_EDIT_IMAGE_BYTES = 10 * 1024 * 1024;
-const EDIT_IMAGE_TYPES = new Set<ImageAttachment['media_type']>([
-  'image/png',
-  'image/jpeg',
-  'image/webp',
-  'image/gif',
-]);
 
 export const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList({
   conversationId,
@@ -639,11 +634,23 @@ const MessageRow = memo(function MessageRow({
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.content);
-  const [editAttachments, setEditAttachments] = useState<ImageAttachment[]>(message.attachments ?? []);
-  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const editInputRef = useRef<HTMLTextAreaElement>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
-  const dragDepthRef = useRef(0);
+  const {
+    attachments: editAttachments,
+    setAttachments: setEditAttachments,
+    isDraggingFiles,
+    resetDragState,
+    addFiles: addEditFiles,
+    handlePaste: handleEditPaste,
+    handleDragEnter: handleEditDragEnter,
+    handleDragOver: handleEditDragOver,
+    handleDragLeave: handleEditDragLeave,
+    handleDrop: handleEditDrop,
+  } = useImageAttachments({
+    supportsImages,
+    interactionDisabled: actionsDisabled,
+  });
   const canRestart = isUser && Boolean(message.id) && message.status !== 'streaming';
 
   useLayoutEffect(() => {
@@ -665,8 +672,7 @@ const MessageRow = memo(function MessageRow({
   function cancelEditing() {
     setEditDraft(message.content);
     setEditAttachments(message.attachments ?? []);
-    setIsDraggingFiles(false);
-    dragDepthRef.current = 0;
+    resetDragState();
     setIsEditing(false);
   }
 
@@ -676,87 +682,6 @@ const MessageRow = memo(function MessageRow({
     if ((!content && editAttachments.length === 0) || actionsDisabled || !message.id) return;
     setIsEditing(false);
     onRestart(message.id, content, editAttachments);
-  }
-
-  async function addEditFiles(files: File[]) {
-    if (files.length === 0) return;
-    if (!supportsImages) {
-      toast.warning(t('chat.imageUnsupportedModel'));
-      return;
-    }
-    const remaining = MAX_EDIT_IMAGE_COUNT - editAttachments.length;
-    if (remaining <= 0) {
-      toast.warning(t('chat.imageCountLimit', { count: MAX_EDIT_IMAGE_COUNT }));
-      return;
-    }
-    const accepted: ImageAttachment[] = [];
-    for (const file of files.slice(0, remaining)) {
-      const mediaType = normalizedEditImageType(file);
-      if (!mediaType) {
-        toast.warning(t('chat.imageTypeUnsupported'));
-        continue;
-      }
-      if (file.size > MAX_EDIT_IMAGE_BYTES) {
-        toast.warning(t('chat.imageTooLarge', { size: 10 }));
-        continue;
-      }
-      accepted.push({
-        id: createEditAttachmentId(),
-        name: file.name || t('chat.pastedImage'),
-        media_type: mediaType,
-        source_type: 'base64',
-        data: await editFileToBase64(file),
-      });
-    }
-    if (files.length > remaining) {
-      toast.warning(t('chat.imageCountLimit', { count: MAX_EDIT_IMAGE_COUNT }));
-    }
-    if (accepted.length > 0) {
-      setEditAttachments((current) => [...current, ...accepted]);
-    }
-  }
-
-  function handleEditPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
-    const imageFiles = Array.from(event.clipboardData.items)
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-      .map((item) => item.getAsFile())
-      .filter((file): file is File => file !== null);
-    if (imageFiles.length === 0) return;
-    event.preventDefault();
-    void addEditFiles(imageFiles);
-  }
-
-  function handleEditDragEnter(event: DragEvent<HTMLDivElement>) {
-    if (actionsDisabled || !isEditFileDrag(event.dataTransfer)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    dragDepthRef.current += 1;
-    setIsDraggingFiles(true);
-  }
-
-  function handleEditDragOver(event: DragEvent<HTMLDivElement>) {
-    if (actionsDisabled || !isEditFileDrag(event.dataTransfer)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = 'copy';
-  }
-
-  function handleEditDragLeave(event: DragEvent<HTMLDivElement>) {
-    if (!isEditFileDrag(event.dataTransfer)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-    if (dragDepthRef.current === 0) setIsDraggingFiles(false);
-  }
-
-  function handleEditDrop(event: DragEvent<HTMLDivElement>) {
-    if (!isEditFileDrag(event.dataTransfer)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    dragDepthRef.current = 0;
-    setIsDraggingFiles(false);
-    if (actionsDisabled) return;
-    void addEditFiles(Array.from(event.dataTransfer.files));
   }
 
   function handleEditKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -846,7 +771,7 @@ const MessageRow = memo(function MessageRow({
                   className="message-action-button message-edit-add-image"
                   type="button"
                   onClick={() => editFileInputRef.current?.click()}
-                  disabled={actionsDisabled || !supportsImages || editAttachments.length >= MAX_EDIT_IMAGE_COUNT}
+                  disabled={actionsDisabled || !supportsImages || editAttachments.length >= MAX_IMAGE_COUNT}
                   aria-label={t('chat.addImage')}
                   title={t('chat.addImage')}
                 >
@@ -999,12 +924,17 @@ function MessageContent({
         blocks.map((block, index) => {
           if (block.type === 'text') {
             if (!block.content) return null;
+            const isStreamingTail = message.status === 'streaming' && index === blocks.length - 1;
             return (
               <div
                 key={`text-${index}`}
-                className={`message-markdown${message.status === 'streaming' && index === blocks.length - 1 ? ' streaming-content' : ''}`}
+                className={`message-markdown${isStreamingTail ? ' streaming-content' : ''}`}
               >
-                <MarkdownContent content={block.content} />
+                {isStreamingTail ? (
+                  <StreamingMarkdown content={block.content} />
+                ) : (
+                  <MarkdownContent content={block.content} />
+                )}
               </div>
             );
           }
@@ -1019,51 +949,15 @@ function MessageContent({
         })
       ) : message.content ? (
         <div className={`message-markdown${message.status === 'streaming' ? ' streaming-content' : ''}`}>
-          <MarkdownContent content={message.content} />
+          {message.status === 'streaming' ? (
+            <StreamingMarkdown content={message.content} />
+          ) : (
+            <MarkdownContent content={message.content} />
+          )}
         </div>
       ) : null}
     </>
   );
-}
-
-function attachmentImageUrl(attachment: ImageAttachment): string {
-  return attachment.source_type === 'base64'
-    ? `data:${attachment.media_type};base64,${attachment.data}`
-    : attachment.url;
-}
-
-function normalizedEditImageType(file: File): ImageAttachment['media_type'] | null {
-  if (EDIT_IMAGE_TYPES.has(file.type as ImageAttachment['media_type'])) {
-    return file.type as ImageAttachment['media_type'];
-  }
-  const extension = file.name.split('.').pop()?.toLowerCase();
-  if (extension === 'png') return 'image/png';
-  if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
-  if (extension === 'webp') return 'image/webp';
-  if (extension === 'gif') return 'image/gif';
-  return null;
-}
-
-function isEditFileDrag(dataTransfer: DataTransfer): boolean {
-  return Array.from(dataTransfer.types).includes('Files');
-}
-
-function editFileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error('Failed to read image'));
-    reader.onload = () => {
-      const result = String(reader.result ?? '');
-      resolve(result.slice(result.indexOf(',') + 1));
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-function createEditAttachmentId(): string {
-  return typeof crypto !== 'undefined' && crypto.randomUUID
-    ? crypto.randomUUID()
-    : `image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function TypingIndicator({ label }: { label: string }) {

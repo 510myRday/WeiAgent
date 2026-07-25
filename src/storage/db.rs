@@ -232,6 +232,8 @@ fn open_initialized_connection(db_path: &Path) -> AppResult<Connection> {
     let mut conn = Connection::open(db_path)?;
     configure_connection(&conn)?;
     migrate_base_schema(&mut conn)?;
+    let data_dir = db_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+    super::conversation_db::migrate_conversations(&mut conn, &data_dir)?;
     Ok(conn)
 }
 
