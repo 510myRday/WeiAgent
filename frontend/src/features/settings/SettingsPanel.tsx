@@ -1,21 +1,10 @@
-import { useState, useEffect, useRef, FormEvent, type SyntheticEvent } from 'react';
+import { useState, useEffect, useRef, FormEvent } from 'react';
 import {
   ArrowLeft,
-  ChevronDown,
-  ChevronRight,
-  Code2,
-  Download,
-  Eye,
-  EyeOff,
   KeyRound,
-  LayoutTemplate,
-  LockKeyhole,
   Network,
   Plus,
-  Save,
-  SearchX,
   Server,
-  SlidersHorizontal,
   Brain,
   Trash2,
 } from 'lucide-react';
@@ -31,9 +20,40 @@ import { fetchModels, fetchModelsForProvider } from '../../api';
 import { useBeforeUnloadGuard } from '../../hooks';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
-import { AutoSaveIndicator, Button, Dialog, FormField, IconButton, ListItem, PaneHeader, SearchInput, useFeedback } from '../../components/ui';
+import { AutoSaveIndicator, Button, FormField, ListItem, PaneHeader, useFeedback } from '../../components/ui';
 import { userErrorMessage } from '../../utils/userError';
 import { IpProxySettings } from './IpProxySettings';
+import { protocolPresetByType, providerTemplateById } from './settings-panel/providerTemplates';
+import type { ProviderTemplateId } from './settings-panel/providerTemplates';
+import {
+  PROVIDER_AUTO_SAVE_DELAY_MS,
+  PROVIDER_AUTO_SAVE_MAX_RETRY_DELAY_MS,
+  PROVIDER_AUTO_SAVE_RETRY_DELAY_MS,
+  RUNTIME_AUTO_SAVE_DELAY_MS,
+  RUNTIME_AUTO_SAVE_MAX_RETRY_DELAY_MS,
+  RUNTIME_AUTO_SAVE_RETRY_DELAY_MS,
+  buildProviderPayload,
+  defaultProviderForm,
+  formFromSerializedSnapshot,
+  isValidRuntimeSettings,
+  parseExtraBodyText,
+  parseModels,
+  providerTemplateToForm,
+  providerToForm,
+  serializeProviderForm,
+  serializeRuntimeSettings,
+  syncModelConfigs,
+} from './settings-panel/settingsPanelUtils';
+import type {
+  PendingProviderSave,
+  PendingRuntimeSave,
+  ProviderAutoSaveStatus,
+  ProviderForm,
+  RuntimeAutoSaveStatus,
+} from './settings-panel/settingsPanelUtils';
+import { AgentSection, RuntimeSection } from './settings-panel/RuntimeSettingsSections';
+import { ProviderEditorForm } from './settings-panel/ProviderEditorForm';
+import { ProviderTemplateDialog } from './settings-panel/ProviderTemplateDialog';
 
 interface SettingsPanelProps {
   settingsForm: AppSettings;
@@ -51,498 +71,6 @@ interface SettingsPanelProps {
 }
 
 type SettingsSection = 'runtime' | 'agent' | 'providers' | 'proxies';
-type RuntimeAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
-type PendingRuntimeSave = {
-  serialized: string;
-  payload: AppSettings;
-};
-type ProviderAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
-type PendingProviderSave = {
-  providerId: string;
-  serialized: string;
-  payload: ModelProviderPayload;
-};
-type ExtraBodyStatus = 'empty' | 'invalid' | 'valid';
-
-type ProviderForm = {
-  provider_type: ProviderType;
-  name: string;
-  base_url: string;
-  api_key: string;
-  modelsText: string;
-  modelConfigs: ModelConfig[];
-  extraBodyText: string;
-};
-
-type ProtocolPreset = {
-  type: ProviderType;
-  labelKey: string;
-  shortKey: string;
-  endpoint: string;
-  defaultBaseUrl: string;
-};
-
-type ProviderTemplateId =
-  | 'openai'
-  | 'deepseek'
-  | 'google'
-  | 'anthropic'
-  | 'kimi'
-  | 'zhipu'
-  | 'nvidia'
-  | 'bailian'
-  | 'openrouter'
-  | 'siliconflow'
-  | 'stepfun'
-  | 'grok'
-  | 'minimax'
-  | 'opencode'
-  | 'custom';
-
-type ProviderTemplate = {
-  id: ProviderTemplateId;
-  labelKey: string;
-  descriptionKey: string;
-  providerType?: ProviderType;
-  baseUrl?: string;
-  iconPath?: string;
-  fixed: boolean;
-};
-
-const PROTOCOL_PRESETS: ProtocolPreset[] = [
-  {
-    type: 'openai_compatible',
-    labelKey: 'provider.protocol.openaiChat',
-    shortKey: 'provider.protocol.openaiChatShort',
-    endpoint: 'Chat Completions',
-    defaultBaseUrl: 'https://api.openai.com/v1',
-  },
-  {
-    type: 'openai_responses',
-    labelKey: 'provider.protocol.openaiResponses',
-    shortKey: 'provider.protocol.openaiResponsesShort',
-    endpoint: 'Responses API',
-    defaultBaseUrl: 'https://api.openai.com/v1',
-  },
-  {
-    type: 'anthropic_messages',
-    labelKey: 'provider.protocol.anthropic',
-    shortKey: 'provider.protocol.anthropicShort',
-    endpoint: 'Messages API',
-    defaultBaseUrl: 'https://api.anthropic.com/v1',
-  },
-  {
-    type: 'google_gemini',
-    labelKey: 'provider.protocol.gemini',
-    shortKey: 'provider.protocol.geminiShort',
-    endpoint: 'Gemini generateContent',
-    defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-  },
-];
-
-const protocolPresetByType = Object.fromEntries(
-  PROTOCOL_PRESETS.map((preset) => [preset.type, preset]),
-) as Record<ProviderType, ProtocolPreset>;
-
-const PROVIDER_TEMPLATES: ProviderTemplate[] = [
-  {
-    id: 'custom',
-    labelKey: 'provider.template.custom.name',
-    descriptionKey: 'provider.template.custom.description',
-    fixed: false,
-  },
-  {
-    id: 'openai',
-    labelKey: 'provider.template.openai.name',
-    descriptionKey: 'provider.template.openai.description',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://api.openai.com/v1',
-    iconPath: '/model-providers/openai.svg',
-    fixed: true,
-  },
-  {
-    id: 'deepseek',
-    labelKey: 'provider.template.deepseek.name',
-    descriptionKey: 'provider.template.deepseek.description',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://api.deepseek.com/v1',
-    iconPath: '/model-providers/deepseek.svg',
-    fixed: true,
-  },
-  {
-    id: 'google',
-    labelKey: 'provider.template.google.name',
-    descriptionKey: 'provider.template.google.description',
-    providerType: 'google_gemini',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    iconPath: '/model-providers/google-gemini.svg',
-    fixed: true,
-  },
-  {
-    id: 'anthropic',
-    labelKey: 'provider.template.anthropic.name',
-    descriptionKey: 'provider.template.anthropic.description',
-    providerType: 'anthropic_messages',
-    baseUrl: 'https://api.anthropic.com/v1',
-    iconPath: '/model-providers/anthropic.svg',
-    fixed: true,
-  },
-  {
-    id: 'nvidia',
-    labelKey: 'provider.template.nvidia.name',
-    descriptionKey: 'provider.template.nvidia.description',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://integrate.api.nvidia.com/v1',
-    iconPath: '/model-providers/nvidia.svg',
-    fixed: true,
-  },
-  {
-    id: 'bailian',
-    labelKey: 'provider.template.bailian.name',
-    descriptionKey: 'provider.template.bailian.description',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    iconPath: '/model-providers/alibaba-bailian.svg',
-    fixed: true,
-  },
-  {
-    id: 'openrouter',
-    labelKey: 'provider.template.openrouter.name',
-    descriptionKey: 'provider.template.openrouter.description',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    iconPath: '/model-providers/openrouter.svg',
-    fixed: true,
-  },
-  {
-    id: 'siliconflow',
-    labelKey: 'provider.template.siliconflow.name',
-    descriptionKey: 'provider.template.siliconflow.description',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://api.siliconflow.cn/v1',
-    iconPath: '/model-providers/siliconflow.svg',
-    fixed: true,
-  },
-  {
-    id: 'stepfun',
-    labelKey: 'provider.template.stepfun.name',
-    descriptionKey: 'provider.template.stepfun.description',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://api.stepfun.com/v1',
-    iconPath: '/model-providers/stepfun.svg',
-    fixed: true,
-  },
-  {
-    id: 'grok',
-    labelKey: 'provider.template.grok.name',
-    descriptionKey: 'provider.template.grok.description',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://api.x.ai/v1',
-    iconPath: '/model-providers/grok.svg',
-    fixed: true,
-  },
-  {
-    id: 'minimax',
-    labelKey: 'provider.template.minimax.name',
-    descriptionKey: 'provider.template.minimax.description',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://api.minimaxi.com/v1',
-    iconPath: '/model-providers/minimax.svg',
-    fixed: true,
-  },
-  {
-    id: 'kimi',
-    labelKey: 'provider.template.kimi.name',
-    descriptionKey: 'provider.template.kimi.description',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://api.moonshot.cn/v1',
-    iconPath: '/model-providers/kimi.svg',
-    fixed: true,
-  },
-  {
-    id: 'zhipu',
-    labelKey: 'provider.template.zhipu.name',
-    descriptionKey: 'provider.template.zhipu.description',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    iconPath: '/model-providers/zhipu.svg',
-    fixed: true,
-  },
-  {
-    id: 'opencode',
-    labelKey: 'provider.template.opencode.name',
-    descriptionKey: 'provider.template.opencode.description',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://opencode.ai/zen/v1',
-    iconPath: '/model-providers/opencode.svg',
-    fixed: true,
-  },
-];
-
-const providerTemplateById = Object.fromEntries(
-  PROVIDER_TEMPLATES.map((template) => [template.id, template]),
-) as Record<ProviderTemplateId, ProviderTemplate>;
-
-const defaultProviderForm: ProviderForm = {
-  provider_type: 'openai_compatible',
-  name: '',
-  base_url: protocolPresetByType.openai_compatible.defaultBaseUrl,
-  api_key: '',
-  modelsText: '',
-  modelConfigs: [],
-  extraBodyText: '',
-};
-
-function providerTemplateToForm(template: ProviderTemplate, name: string): ProviderForm {
-  if (!template.fixed || !template.providerType || !template.baseUrl) {
-    return { ...defaultProviderForm, modelConfigs: [] };
-  }
-  return {
-    ...defaultProviderForm,
-    provider_type: template.providerType,
-    name,
-    base_url: template.baseUrl,
-    modelConfigs: [],
-  };
-}
-
-const VALID_HOSTS = new Set(['127.0.0.1', '::1']);
-const VALID_LOG_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error']);
-const RUNTIME_AUTO_SAVE_DELAY_MS = 600;
-const RUNTIME_AUTO_SAVE_RETRY_DELAY_MS = 1200;
-const RUNTIME_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
-const PROVIDER_AUTO_SAVE_DELAY_MS = 600;
-const PROVIDER_AUTO_SAVE_RETRY_DELAY_MS = 1200;
-const PROVIDER_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
-
-function parseModels(value: string): string[] {
-  return Array.from(new Set(value.split(/\r?\n|,/).map((model) => model.trim()).filter(Boolean)));
-}
-
-function defaultModelConfig(modelId: string): ModelConfig {
-  return {
-    model_id: modelId,
-    multimodal: false,
-    thinking: false,
-    context_size: 128000,
-  };
-}
-
-function normalizeModelConfig(modelId: string, config: ModelConfig): ModelConfig {
-  const legacyConfig = config as ModelConfig & { cache_price?: number };
-  return {
-    model_id: modelId,
-    multimodal: Boolean(config.multimodal),
-    thinking: Boolean(config.thinking),
-    context_size: Number.isFinite(config.context_size) && config.context_size > 0
-      ? Math.floor(config.context_size)
-      : 128000,
-    input_price: config.input_price,
-    output_price: config.output_price,
-    cache_write_price: config.cache_write_price,
-    cache_read_price: config.cache_read_price ?? legacyConfig.cache_price,
-  };
-}
-
-function syncModelConfigs(models: string[], current: ModelConfig[]): ModelConfig[] {
-  const exactMatches = new Map(current.map((config) => [config.model_id, config]));
-  const nextModelSet = new Set(models);
-  const usedConfigIds = new Set<string>();
-
-  return models.map((modelId, index) => {
-    const exact = exactMatches.get(modelId);
-    if (exact) {
-      usedConfigIds.add(exact.model_id);
-      return normalizeModelConfig(modelId, exact);
-    }
-
-    const sameRow = current[index];
-    if (
-      sameRow
-      && !nextModelSet.has(sameRow.model_id)
-      && !usedConfigIds.has(sameRow.model_id)
-    ) {
-      usedConfigIds.add(sameRow.model_id);
-      return normalizeModelConfig(modelId, sameRow);
-    }
-
-    return defaultModelConfig(modelId);
-  });
-}
-
-function parseOptionalPrice(value: string): number | undefined {
-  if (!value.trim()) return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function parseContextSize(value: string): number {
-  if (!value.trim()) return 128000;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 128000;
-  return Math.floor(parsed);
-}
-
-function isValidRuntimeSettings(settings: AppSettings): boolean {
-  if (!VALID_HOSTS.has(settings.host)) return false;
-  if (!Number.isInteger(settings.port) || settings.port < 1 || settings.port > 65535) return false;
-  if (!VALID_LOG_LEVELS.has(settings.log_level)) return false;
-  if (
-    !Number.isInteger(settings.request_timeout_seconds)
-    || settings.request_timeout_seconds < 1
-    || settings.request_timeout_seconds > 600
-  ) {
-    return false;
-  }
-  if (
-    !Number.isInteger(settings.request_retry_attempts)
-    || settings.request_retry_attempts < 1
-    || settings.request_retry_attempts > 10
-  ) {
-    return false;
-  }
-  if (
-    !Number.isInteger(settings.context_compress_threshold_percent)
-    || settings.context_compress_threshold_percent < 1
-    || settings.context_compress_threshold_percent > 99
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function serializeRuntimeSettings(settings: AppSettings): string {
-  return JSON.stringify({
-    host: settings.host,
-    port: settings.port,
-    log_level: settings.log_level,
-    request_timeout_seconds: settings.request_timeout_seconds,
-    request_retry_attempts: settings.request_retry_attempts,
-    context_compress_threshold_percent: settings.context_compress_threshold_percent,
-    llm_log_enabled: settings.llm_log_enabled,
-    conversation_title_provider_id: settings.conversation_title_provider_id,
-    conversation_title_model_id: settings.conversation_title_model_id,
-    // Keep avatar/language in the payload for saves, but treat them as owned elsewhere
-    // so external Sidebar updates do not thrash auto-save status.
-    avatar_icon: settings.avatar_icon,
-    avatar_color: settings.avatar_color,
-    language: settings.language,
-  });
-}
-
-function formatExtraBodyText(extraBody: unknown): string {
-  if (extraBody == null || typeof extraBody !== 'object' || Array.isArray(extraBody)) {
-    return '';
-  }
-  if (Object.keys(extraBody as Record<string, unknown>).length === 0) {
-    return '';
-  }
-  return JSON.stringify(extraBody, null, 2);
-}
-
-function providerToForm(provider: ModelProvider): ProviderForm {
-  return {
-    provider_type: provider.provider_type,
-    name: provider.name,
-    base_url: provider.base_url,
-    api_key: '',
-    modelsText: provider.models.join('\n'),
-    modelConfigs: syncModelConfigs(provider.models, provider.model_configs ?? []),
-    extraBodyText: formatExtraBodyText(provider.extra_body),
-  };
-}
-
-function parseExtraBodyText(text: string): {
-  status: ExtraBodyStatus;
-  value?: Record<string, unknown>;
-} {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return { status: 'empty' };
-  }
-  try {
-    const parsed: unknown = JSON.parse(trimmed);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return { status: 'invalid' };
-    }
-    return {
-      status: 'valid',
-      value: parsed as Record<string, unknown>,
-    };
-  } catch {
-    return { status: 'invalid' };
-  }
-}
-
-function buildProviderPayload(
-  form: ProviderForm,
-  requireApiKey: boolean,
-): ModelProviderPayload | null {
-  const parsedExtraBody = parseExtraBodyText(form.extraBodyText);
-  if (parsedExtraBody.status === 'invalid') {
-    return null;
-  }
-
-  const models = parseModels(form.modelsText);
-  const payload: ModelProviderPayload = {
-    provider_type: form.provider_type,
-    name: form.name.trim(),
-    base_url: form.base_url.trim(),
-    api_key: form.api_key.trim(),
-    models,
-    model_configs: syncModelConfigs(models, form.modelConfigs),
-    // Always send an object so PUT updates apply (JSON null becomes Option::None
-    // on the backend and would leave the previous extra_body unchanged).
-    extra_body: parsedExtraBody.status === 'valid'
-      ? parsedExtraBody.value
-      : {},
-  };
-
-  if (
-    !payload.name
-    || !payload.base_url
-    || (requireApiKey && !payload.api_key)
-    || payload.models.length === 0
-  ) {
-    return null;
-  }
-  return payload;
-}
-
-function serializeProviderForm(form: ProviderForm): string {
-  const models = parseModels(form.modelsText);
-  return JSON.stringify({
-    provider_type: form.provider_type,
-    name: form.name.trim(),
-    base_url: form.base_url.trim(),
-    api_key: form.api_key.trim(),
-    models,
-    model_configs: syncModelConfigs(models, form.modelConfigs),
-    extra_body_text: form.extraBodyText.trim(),
-  });
-}
-
-/** Rebuild editor state from a serializeProviderForm snapshot, clearing api_key. */
-function formFromSerializedSnapshot(serialized: string): ProviderForm {
-  const snap = JSON.parse(serialized) as {
-    provider_type: ProviderType;
-    name: string;
-    base_url: string;
-    models: string[];
-    model_configs: ModelConfig[];
-    extra_body_text: string;
-  };
-  return {
-    provider_type: snap.provider_type,
-    name: snap.name,
-    base_url: snap.base_url,
-    api_key: '',
-    modelsText: snap.models.join('\n'),
-    modelConfigs: snap.model_configs ?? [],
-    // Keep the exact extra-body text the user saved (not server pretty-print).
-    extraBodyText: snap.extra_body_text ?? '',
-  };
-}
 
 export function SettingsPanel({
   settingsForm,
@@ -571,7 +99,6 @@ export function SettingsPanel({
   const [providerAutoSaveStatus, setProviderAutoSaveStatus] = useState<ProviderAutoSaveStatus>('idle');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [providerTemplateDialogOpen, setProviderTemplateDialogOpen] = useState(false);
-  const [providerTemplateSearch, setProviderTemplateSearch] = useState('');
   const [selectedProviderTemplateId, setSelectedProviderTemplateId] = useState<ProviderTemplateId>('custom');
   const [pendingProviderTemplateId, setPendingProviderTemplateId] = useState<ProviderTemplateId | null>(null);
   const [proxyCount, setProxyCount] = useState(0);
@@ -612,23 +139,8 @@ export function SettingsPanel({
   );
 
   const activeProvider = providers.find((provider) => provider.id === activeProviderId);
-  const modelCount = parseModels(providerForm.modelsText).length;
-  const extraBodyStatus = parseExtraBodyText(providerForm.extraBodyText).status;
   const selectedProviderTemplate = providerTemplateById[selectedProviderTemplateId];
   const providerConnectionLocked = !activeProvider && selectedProviderTemplate.fixed;
-  const normalizedProviderTemplateSearch = providerTemplateSearch.trim().toLocaleLowerCase();
-  const filteredProviderTemplates = PROVIDER_TEMPLATES.filter((template) => {
-    if (!template.fixed) return false;
-    if (!normalizedProviderTemplateSearch) return true;
-    const protocol = template.providerType ? protocolPresetByType[template.providerType] : null;
-    return [
-      t(template.labelKey),
-      t(template.descriptionKey),
-      template.baseUrl,
-      protocol ? t(protocol.labelKey) : '',
-      protocol ? t(protocol.shortKey) : '',
-    ].some((value) => value?.toLocaleLowerCase().includes(normalizedProviderTemplateSearch));
-  });
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -997,7 +509,6 @@ export function SettingsPanel({
 
   function handleProviderTemplateSelect(templateId: ProviderTemplateId) {
     setProviderTemplateDialogOpen(false);
-    setProviderTemplateSearch('');
     setPendingProviderTemplateId(templateId);
     if (activeProviderId) {
       handleProviderChange('');
@@ -1126,35 +637,11 @@ export function SettingsPanel({
     }));
   }
 
-  function renderProviderTemplateOption(template: ProviderTemplate) {
-    const protocol = template.providerType
-      ? protocolPresetByType[template.providerType]
-      : null;
-    return (
-      <button
-        className={`provider-template-option provider-template-option--${template.id}`}
-        key={template.id}
-        type="button"
-        onClick={() => handleProviderTemplateSelect(template.id)}
-      >
-        <span className="provider-template-option__mark" aria-hidden="true">
-          {template.iconPath ? (
-            <img src={template.iconPath} alt="" width="26" height="26" />
-          ) : (
-            <SlidersHorizontal size={21} />
-          )}
-        </span>
-        <span className="provider-template-option__copy">
-          <strong>{t(template.labelKey)}</strong>
-          <small>{t(template.descriptionKey)}</small>
-          <span className="provider-template-option__meta">
-            <span>{protocol ? t(protocol.shortKey) : t('provider.template.customMode')}</span>
-            {template.baseUrl ? <code>{template.baseUrl}</code> : null}
-          </span>
-        </span>
-        <ChevronRight className="provider-template-option__chevron" size={18} aria-hidden="true" />
-      </button>
-    );
+  function handleExtraBodyChange(nextValue: string) {
+    changeProviderForm((current) => ({ ...current, extraBodyText: nextValue }));
+    if (nextValue.trim()) {
+      setAdvancedOpen(true);
+    }
   }
 
   return (
@@ -1243,153 +730,9 @@ export function SettingsPanel({
           />
 
           {activeSection === 'runtime' ? (
-            <div className="form-card entity-form narrow-form">
-              <div className="settings-field-pair">
-                <label className="settings-field-pair__label settings-field-pair__label--left" htmlFor="settings-host">
-                  {t('settings.host')}<span className="required-marker" aria-hidden="true">*</span>
-                </label>
-                <label className="settings-field-pair__label settings-field-pair__label--right" htmlFor="settings-port">
-                  {t('settings.port')}<span className="required-marker" aria-hidden="true">*</span>
-                </label>
-                <p className="settings-field-pair__hint">{t('settings.restartHint')}</p>
-                <select
-                  className="settings-field-pair__control settings-field-pair__control--left"
-                  id="settings-host"
-                  value={settingsForm.host}
-                  onChange={(e) => patchRuntimeSettings({ host: e.target.value })}
-                  required
-                >
-                  <option value="127.0.0.1">127.0.0.1</option>
-                  <option value="::1">::1</option>
-                </select>
-                <input
-                  className="settings-field-pair__control settings-field-pair__control--right"
-                  id="settings-port"
-                  type="number"
-                  min={1}
-                  max={65535}
-                  value={settingsForm.port}
-                  onChange={(e) => patchRuntimeSettings({ port: Number(e.target.value) })}
-                  required
-                />
-                <FormField label={t('settings.logLevel')} htmlFor="settings-log" required>
-                  <select
-                    id="settings-log"
-                    value={settingsForm.log_level}
-                    onChange={(e) => patchRuntimeSettings({ log_level: e.target.value })}
-                    required
-                  >
-                    {['trace', 'debug', 'info', 'warn', 'error'].map((level) => <option key={level} value={level}>{level}</option>)}
-                  </select>
-                </FormField>
-              </div>
-            </div>
+            <RuntimeSection settingsForm={settingsForm} onPatch={patchRuntimeSettings} />
           ) : activeSection === 'agent' ? (
-            <div className="form-card entity-form narrow-form model-agent-settings-card">
-              <div className="settings-field-pair">
-                <label className="settings-field-pair__label settings-field-pair__label--left" htmlFor="settings-timeout">
-                  {t('settings.requestTimeout')}<span className="required-marker" aria-hidden="true">*</span>
-                </label>
-                <label className="settings-field-pair__label settings-field-pair__label--right" htmlFor="settings-retries">
-                  {t('settings.requestRetries')}<span className="required-marker" aria-hidden="true">*</span>
-                </label>
-                <p className="settings-field-pair__hint">{t('settings.agentRetryHint')}</p>
-                <input
-                  className="settings-field-pair__control settings-field-pair__control--left"
-                  id="settings-timeout"
-                  type="number"
-                  min={1}
-                  max={600}
-                  value={settingsForm.request_timeout_seconds}
-                  onChange={(e) => patchRuntimeSettings({ request_timeout_seconds: Number(e.target.value) })}
-                  required
-                />
-                <input
-                  className="settings-field-pair__control settings-field-pair__control--right"
-                  id="settings-retries"
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={settingsForm.request_retry_attempts}
-                  onChange={(e) => patchRuntimeSettings({ request_retry_attempts: Number(e.target.value) })}
-                  required
-                />
-              </div>
-              <div className="setting-row settings-context-policy">
-                <div className="setting-info">
-                  <label htmlFor="settings-context-compress-threshold">
-                    {t('settings.contextCompressThreshold')}
-                    <span className="required-marker" aria-hidden="true">*</span>
-                  </label>
-                  <p className="setting-desc">{t('settings.contextCompressThresholdHint')}</p>
-                </div>
-                <label
-                  className="timeout-input settings-percent-input"
-                  htmlFor="settings-context-compress-threshold"
-                >
-                  <input
-                    id="settings-context-compress-threshold"
-                    type="number"
-                    min={1}
-                    max={99}
-                    step={1}
-                    value={clampCompressThreshold(
-                      settingsForm.context_compress_threshold_percent ?? 90,
-                    )}
-                    onChange={(e) => patchRuntimeSettings({
-                      context_compress_threshold_percent: clampCompressThreshold(
-                        Number(e.target.value),
-                      ),
-                    })}
-                    required
-                  />
-                  <span className="unit">{t('settings.contextCompressThresholdUnit')}</span>
-                </label>
-              </div>
-              <div className="settings-field-pair conversation-title-settings-grid">
-                <label className="settings-field-pair__label settings-field-pair__label--left" htmlFor="settings-conversation-title-provider">
-                  {t('settings.conversationTitleProvider')}
-                </label>
-                <label className="settings-field-pair__label settings-field-pair__label--right" htmlFor="settings-conversation-title-model">
-                  {t('settings.conversationTitleModel')}
-                </label>
-                <p className="settings-field-pair__hint">{t('settings.conversationTitleHint')}</p>
-                <select
-                  className="settings-field-pair__control settings-field-pair__control--left"
-                  id="settings-conversation-title-provider"
-                  value={settingsForm.conversation_title_provider_id ?? ''}
-                  onChange={(event) => {
-                    const providerId = event.target.value || null;
-                    const provider = providers.find((item) => item.id === providerId);
-                    patchRuntimeSettings({
-                      conversation_title_provider_id: providerId,
-                      conversation_title_model_id: provider?.models.includes(settingsForm.conversation_title_model_id ?? '')
-                        ? settingsForm.conversation_title_model_id
-                        : provider?.models[0] ?? null,
-                    });
-                  }}
-                >
-                  <option value="">{t('settings.conversationTitleDisabled')}</option>
-                  {providers.map((provider) => (
-                    <option key={provider.id} value={provider.id}>{provider.name}</option>
-                  ))}
-                </select>
-                <select
-                  className="settings-field-pair__control settings-field-pair__control--right"
-                  id="settings-conversation-title-model"
-                  value={settingsForm.conversation_title_model_id ?? ''}
-                  onChange={(event) => patchRuntimeSettings({
-                    conversation_title_model_id: event.target.value || null,
-                  })}
-                  disabled={!settingsForm.conversation_title_provider_id}
-                >
-                  <option value="">{t('settings.conversationTitleModelPlaceholder')}</option>
-                  {(providers.find((provider) => provider.id === settingsForm.conversation_title_provider_id)?.models ?? []).map((model) => (
-                    <option key={model} value={model}>{model}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
+            <AgentSection settingsForm={settingsForm} providers={providers} onPatch={patchRuntimeSettings} />
           ) : activeSection === 'proxies' ? (
             <IpProxySettings onCountChange={setProxyCount} />
           ) : (
@@ -1416,7 +759,6 @@ export function SettingsPanel({
                     variant="secondary"
                     type="button"
                     onClick={() => {
-                      setProviderTemplateSearch('');
                       setProviderTemplateDialogOpen(true);
                     }}
                     icon={<Plus size={16} />}
@@ -1437,330 +779,36 @@ export function SettingsPanel({
                 </div>
               </div>
 
-              <form className="form-card entity-form provider-editor" onSubmit={handleProviderSubmit}>
-                <p className="provider-editor-kicker">
-                  {activeProvider ? t('provider.editing') : t('provider.creating')}
-                </p>
-
-                <section className="provider-form-section">
-                  <PaneHeader
-                    compact
-                    title={t('provider.connection')}
-                    actions={(
-                      <div className="provider-connection-statuses">
-                        {providerConnectionLocked ? (
-                          <span className="mini-status-badge provider-template-locked">
-                            <LockKeyhole size={13} aria-hidden="true" />
-                            {t('provider.template.locked')}
-                          </span>
-                        ) : null}
-                        <span className={`mini-status-badge${
-                          activeProvider?.has_api_key || providerForm.api_key ? '' : ' is-required'
-                        }`}>
-                          {activeProvider?.has_api_key || providerForm.api_key
-                            ? t('provider.keyConfigured')
-                            : t('provider.keyRequired')}
-                        </span>
-                      </div>
-                    )}
-                  />
-                  <div className="form-grid two-column provider-connection-grid">
-                    <FormField label={t('provider.name')} htmlFor="provider-name" required>
-                      <input id="provider-name" value={providerForm.name} onChange={(e) => changeProviderForm((current) => ({ ...current, name: e.target.value }))} disabled={isSubmittingProvider} required />
-                    </FormField>
-                    <FormField label={t('provider.apiMode')} htmlFor="provider-api-mode" required>
-                      <select
-                        className={providerConnectionLocked ? 'provider-template-fixed-control' : undefined}
-                        id="provider-api-mode"
-                        value={providerForm.provider_type}
-                        onChange={(event) => handleProtocolChange(event.target.value as ProviderType)}
-                        disabled={isSubmittingProvider || providerConnectionLocked}
-                        required
-                      >
-                        {PROTOCOL_PRESETS.map((preset) => (
-                          <option key={preset.type} value={preset.type}>
-                            {t(preset.labelKey)}
-                          </option>
-                        ))}
-                      </select>
-                    </FormField>
-                    <FormField label={t('provider.baseUrl')} htmlFor="provider-base-url" required>
-                      <input className={providerConnectionLocked ? 'provider-template-fixed-control' : undefined} id="provider-base-url" value={providerForm.base_url} onChange={(e) => changeProviderForm((current) => ({ ...current, base_url: e.target.value }))} disabled={isSubmittingProvider || providerConnectionLocked} required />
-                    </FormField>
-                    <FormField label={t('provider.apiKey')} htmlFor="provider-api-key" required={!activeProvider}>
-                      <div className="provider-secret-input">
-                        <input
-                          id="provider-api-key"
-                          type={showApiKey ? 'text' : 'password'}
-                          value={providerForm.api_key}
-                          onChange={(e) => changeProviderForm((current) => ({ ...current, api_key: e.target.value }))}
-                          placeholder={activeProvider?.has_api_key ? activeProvider.masked_api_key : ''}
-                          disabled={isSubmittingProvider}
-                          required={!activeProvider}
-                        />
-                        <IconButton
-                          className="provider-secret-toggle"
-                          variant="ghost"
-                          type="button"
-                          onClick={() => setShowApiKey((visible) => !visible)}
-                          label={showApiKey ? t('provider.hideKey') : t('provider.showKey')}
-                        >
-                          {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                        </IconButton>
-                      </div>
-                    </FormField>
-                  </div>
-                </section>
-
-                <section className="provider-form-section">
-                  <div className="provider-model-section-heading">
-                    <div>
-                      <h3>{t('provider.models')}</h3>
-                      <p>{t('provider.modelsDescription')}</p>
-                    </div>
-                    <div className="provider-field-actions">
-                      <span className={`mini-status-badge${modelCount === 0 ? ' is-required' : ''}`}>
-                        {modelCount === 0
-                          ? t('provider.modelsRequired')
-                          : t('provider.modelCount', { count: modelCount })}
-                      </span>
-                      <Button
-                        className="inline-action"
-                        variant="ghost"
-                        type="button"
-                        disabled={fetchingModels}
-                        onClick={handleFetchModels}
-                        icon={<Download size={14} />}
-                      >
-                        {fetchingModels ? t('provider.fetchingModels') : t('provider.fetchModels')}
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="provider-model-workspace">
-                    <FormField
-                      label={t('provider.modelIds')}
-                      htmlFor="provider-models"
-                      required
-                    >
-                      <textarea
-                        id="provider-models"
-                        value={providerForm.modelsText}
-                        onChange={(event) => handleModelsTextChange(event.target.value)}
-                        rows={Math.max(8, Math.min(14, modelCount + 3))}
-                        required
-                        aria-required="true"
-                        placeholder={t('provider.modelsPlaceholder')}
-                        disabled={isSubmittingProvider || fetchingModels}
-                      />
-                    </FormField>
-
-                    <div className="provider-model-config">
-                      <div className="provider-model-config__label">
-                        {t('provider.modelConfiguration')}
-                        <span>（{t('provider.priceUnit')}）</span>
-                      </div>
-                      <div className="model-config-list">
-                        {providerForm.modelConfigs.length === 0 ? (
-                          <div className="model-config-empty">{t('provider.modelConfigurationEmpty')}</div>
-                        ) : (
-                          <>
-                            <div className="model-config-header" aria-hidden="true">
-                              <span>{t('provider.model')}</span>
-                              <span>{t('provider.capabilities')}</span>
-                              <span>{t('provider.contextSize')}</span>
-                              <span>{t('provider.inputPrice')}</span>
-                              <span>{t('provider.outputPrice')}</span>
-                              <span>{t('provider.cacheWritePrice')}</span>
-                              <span>{t('provider.cacheReadPrice')}</span>
-                            </div>
-                            {providerForm.modelConfigs.map((config, index) => (
-                              <div className="model-config-row" key={config.model_id}>
-                                <strong className="model-config-name" title={config.model_id}>
-                                  {config.model_id}
-                                </strong>
-                                <div className="model-capabilities">
-                                  {([
-                                    ['multimodal', 'provider.multimodal'],
-                                    ['thinking', 'provider.thinking'],
-                                  ] as const).map(([field, labelKey]) => (
-                                    <label className="model-capability-toggle" key={field}>
-                                      <span>{t(labelKey)}</span>
-                                      <input
-                                        type="checkbox"
-                                        checked={config[field]}
-                                        onChange={(event) => patchModelConfig(config.model_id, {
-                                          [field]: event.target.checked,
-                                        })}
-                                        disabled={isSubmittingProvider}
-                                        aria-label={`${config.model_id} ${t(labelKey)}`}
-                                      />
-                                      <span className="model-capability-toggle__track" aria-hidden="true" />
-                                    </label>
-                                  ))}
-                                </div>
-                                <label className="model-context-field">
-                                  <span className="model-price-field__mobile-label">{t('provider.contextSize')}</span>
-                                  <span className="model-context-field__input">
-                                    <input
-                                      id={`provider-model-${index}-context_size`}
-                                      type="number"
-                                      min="1"
-                                      step="1"
-                                      inputMode="numeric"
-                                      value={config.context_size}
-                                      placeholder="128000"
-                                      onChange={(event) => patchModelConfig(config.model_id, {
-                                        context_size: parseContextSize(event.target.value),
-                                      })}
-                                      disabled={isSubmittingProvider}
-                                      aria-label={`${config.model_id} ${t('provider.contextSize')}`}
-                                    />
-                                  </span>
-                                </label>
-                                {([
-                                  ['input_price', 'provider.inputPrice'],
-                                  ['output_price', 'provider.outputPrice'],
-                                  ['cache_write_price', 'provider.cacheWritePrice'],
-                                  ['cache_read_price', 'provider.cacheReadPrice'],
-                                ] as const).map(([field, labelKey]) => (
-                                  <label className="model-price-field" key={field}>
-                                    <span className="model-price-field__mobile-label">{t(labelKey)}</span>
-                                    <span className="model-price-field__input">
-                                      <span aria-hidden="true">$</span>
-                                      <input
-                                        id={`provider-model-${index}-${field}`}
-                                        type="number"
-                                        min="0"
-                                        step="0.000001"
-                                        inputMode="decimal"
-                                        value={config[field] ?? ''}
-                                        placeholder="0.00"
-                                        onChange={(event) => patchModelConfig(config.model_id, {
-                                          [field]: parseOptionalPrice(event.target.value),
-                                        })}
-                                        disabled={isSubmittingProvider}
-                                        aria-label={`${config.model_id} ${t(labelKey)}`}
-                                      />
-                                    </span>
-                                  </label>
-                                ))}
-                              </div>
-                            ))}
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </section>
-
-                <details
-                  className="provider-advanced"
-                  open={advancedOpen}
-                  onToggle={(event: SyntheticEvent<HTMLDetailsElement>) => {
-                    setAdvancedOpen(event.currentTarget.open);
-                  }}
-                >
-                  <summary>
-                    <span className="provider-advanced__icon" aria-hidden="true">
-                      <Code2 size={17} />
-                    </span>
-                    <span className="provider-advanced__content">
-                      <strong>{t('provider.advanced')}</strong>
-                      <small>{t('provider.extraBody')}</small>
-                    </span>
-                    {extraBodyStatus === 'valid' ? (
-                      <span className="mini-status-badge">{t('provider.advancedConfigured')}</span>
-                    ) : extraBodyStatus === 'invalid' ? (
-                      <span className="mini-status-badge is-required">{t('provider.advancedInvalid')}</span>
-                    ) : null}
-                    <ChevronDown className="provider-advanced__chevron" size={17} aria-hidden="true" />
-                  </summary>
-                  <FormField label={t('provider.extraBody')} htmlFor="provider-extra-body">
-                    <textarea
-                      id="provider-extra-body"
-                      value={providerForm.extraBodyText}
-                      onChange={(e) => {
-                        const nextValue = e.target.value;
-                        changeProviderForm((current) => ({ ...current, extraBodyText: nextValue }));
-                        if (nextValue.trim()) {
-                          setAdvancedOpen(true);
-                        }
-                      }}
-                      rows={5}
-                      placeholder='{"temperature": 0.7}'
-                      disabled={isSubmittingProvider}
-                      aria-invalid={extraBodyStatus === 'invalid'}
-                    />
-                    {extraBodyStatus === 'invalid' ? (
-                      <p className="hint-text provider-extra-body-error" role="alert">
-                        {t('error.invalidJson')}
-                      </p>
-                    ) : null}
-                  </FormField>
-                </details>
-
-                {!activeProvider ? (
-                  <div className="form-actions provider-form-actions">
-                    <Button variant="primary" type="submit" disabled={isSubmittingProvider} icon={<Save size={17} />}>
-                      {t('provider.create')}
-                    </Button>
-                  </div>
-                ) : null}
-              </form>
+              <ProviderEditorForm
+                providerForm={providerForm}
+                activeProvider={activeProvider}
+                isSubmittingProvider={isSubmittingProvider}
+                fetchingModels={fetchingModels}
+                showApiKey={showApiKey}
+                advancedOpen={advancedOpen}
+                providerConnectionLocked={providerConnectionLocked}
+                onSubmit={handleProviderSubmit}
+                onToggleShowApiKey={() => setShowApiKey((visible) => !visible)}
+                onAdvancedOpenChange={setAdvancedOpen}
+                onNameChange={(name) => changeProviderForm((current) => ({ ...current, name }))}
+                onProtocolChange={handleProtocolChange}
+                onBaseUrlChange={(base_url) => changeProviderForm((current) => ({ ...current, base_url }))}
+                onApiKeyChange={(api_key) => changeProviderForm((current) => ({ ...current, api_key }))}
+                onModelsTextChange={handleModelsTextChange}
+                onPatchModelConfig={patchModelConfig}
+                onExtraBodyChange={handleExtraBodyChange}
+                onFetchModels={handleFetchModels}
+              />
             </div>
           )}
           </div>
         )}
       />
-      <Dialog
+      <ProviderTemplateDialog
         open={providerTemplateDialogOpen}
-        title={t('provider.template.title')}
-        description={t('provider.template.description')}
-        icon={<LayoutTemplate size={21} />}
-        closeLabel={t('common.close')}
-        onClose={() => {
-          setProviderTemplateDialogOpen(false);
-          setProviderTemplateSearch('');
-        }}
-        size="lg"
-        className="provider-template-dialog"
-        bodyClassName="provider-template-dialog__body"
-      >
-        <div className="provider-template-featured">
-          {renderProviderTemplateOption(providerTemplateById.custom)}
-        </div>
-        <div className="provider-template-search">
-          <SearchInput
-            value={providerTemplateSearch}
-            onChange={setProviderTemplateSearch}
-            placeholder={t('provider.template.searchPlaceholder')}
-          />
-        </div>
-        {filteredProviderTemplates.length > 0 ? (
-          <div className="provider-template-grid">
-            {filteredProviderTemplates.map(renderProviderTemplateOption)}
-          </div>
-        ) : (
-          <div className="provider-template-empty" role="status">
-            <SearchX size={24} aria-hidden="true" />
-            <div>
-              <strong>{t('provider.template.searchEmpty')}</strong>
-              <span>{t('provider.template.searchEmptyDescription')}</span>
-            </div>
-            <Button variant="ghost" type="button" onClick={() => setProviderTemplateSearch('')}>
-              {t('provider.template.clearSearch')}
-            </Button>
-          </div>
-        )}
-      </Dialog>
+        onClose={() => setProviderTemplateDialogOpen(false)}
+        onSelect={handleProviderTemplateSelect}
+      />
     </>
   );
 }
-
-function clampCompressThreshold(value: number): number {
-  if (!Number.isFinite(value)) return 90;
-  return Math.min(99, Math.max(1, Math.round(value)));
-}
-
-

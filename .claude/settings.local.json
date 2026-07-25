@@ -30,7 +30,9 @@
       "Bash(cp src/llm/types.rs ../WeiAgent_llm_check/src/llm/types.rs)",
       "Bash(cargo clippy *)",
       "Bash(git stash *)",
-      "Bash(cargo fmt *)"
+      "Bash(cargo fmt *)",
+      "Bash(npm test *)",
+      "Bash(npm run *)"
     ]
   }
 }

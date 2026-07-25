@@ -5,9 +5,101 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use wreq_util::Emulation;
 
+use crate::tools::web_search::types::{ProviderError, sanitize_error_message};
+
 use super::support::truncate as truncate_for_error;
 
 const DEFAULT_FLARESOLVERR_TIMEOUT_MS: u64 = 90_000;
+
+/// Structured error for the Grok provider (grok.rs + grok_support.rs internals).
+///
+/// Every variant stores the exact user-visible message so that `Display` (and
+/// therefore logs and the final `ProviderError` text) stays byte-identical to
+/// the previous `Result<_, String>` plumbing. The variant itself carries the
+/// classification that used to be recovered via string matching.
+#[derive(Debug, Clone)]
+pub(crate) enum GrokError {
+    /// Non-success HTTP status from Grok or a statsig signer endpoint.
+    Http {
+        /// Kept for structured matching/diagnostics; classification currently
+        /// treats every Grok error as retryable, so nothing reads it yet.
+        #[allow(dead_code)]
+        status: u16,
+        message: String,
+    },
+    /// Anti-bot / Cloudflare rejection (HTTP 403, code=7 payload, challenge HTML).
+    AntiBot(String),
+    /// Connection-level failure. `retryable` mirrors `is_transport_retryable`
+    /// computed once on the full message at construction time.
+    Transport { message: String, retryable: bool },
+    /// Credential could not be parsed or is missing the SSO token.
+    InvalidCredential(String),
+    /// Error frame reported by the Grok chat stream.
+    Upstream(String),
+    /// Uncategorized; retry classification falls back to string matching.
+    Other(String),
+}
+
+impl GrokError {
+    /// Connection-level failure; retryability is derived from the message once.
+    pub(crate) fn transport(message: impl Into<String>) -> Self {
+        let message = message.into();
+        let retryable = is_transport_retryable(&message);
+        Self::Transport { message, retryable }
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        match self {
+            Self::Http { message, .. } | Self::Transport { message, .. } => message,
+            Self::AntiBot(message)
+            | Self::InvalidCredential(message)
+            | Self::Upstream(message)
+            | Self::Other(message) => message,
+        }
+    }
+
+    /// Should the caller retry this error as proxy/TLS flakiness?
+    /// Variant-based first; `Http`/`Other` keep the string fallback so the
+    /// retry decision matches the previous message-matching behavior.
+    pub(crate) fn is_retryable_transport(&self) -> bool {
+        match self {
+            Self::Transport { retryable, .. } => *retryable,
+            Self::AntiBot(_) | Self::InvalidCredential(_) | Self::Upstream(_) => false,
+            Self::Http { message, .. } | Self::Other(message) => is_transport_retryable(message),
+        }
+    }
+
+    /// Module boundary: every Grok failure is surfaced as a retryable
+    /// `ProviderError` (as before), with the secret redacted from the text.
+    pub(crate) fn into_provider_error(self, secret: &str) -> ProviderError {
+        ProviderError::Retryable(sanitize_error_message(self.message(), secret))
+    }
+}
+
+impl std::fmt::Display for GrokError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+/// Proxy/TLS flakiness: Connect, timeout, reset, broken pipe, etc.
+pub(crate) fn is_transport_retryable(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("client error (connect)")
+        || lower.contains("error sending request")
+        || lower.contains("connection reset")
+        || lower.contains("connection refused")
+        || lower.contains("connection closed")
+        || lower.contains("connection aborted")
+        || lower.contains("broken pipe")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("temporarily unavailable")
+        || lower.contains("network is unreachable")
+        || lower.contains("dns error")
+        || lower.contains("proxy")
+            && (lower.contains("connect") || lower.contains("tunnel") || lower.contains("failed"))
+}
 const FLARESOLVERR_CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
 const CLEARANCE_CACHE_TTL: Duration = Duration::from_secs(45 * 60);
 
@@ -135,13 +227,13 @@ pub async fn resolve_clearance(
     target_url: &str,
     flaresolverr_proxy_url: Option<&str>,
     force_refresh: bool,
-) -> Result<ClearanceBundle, String> {
+) -> Result<ClearanceBundle, GrokError> {
     // Proxy here is ONLY for FlareSolverr's headless Chrome when opening target_url.
     // Use the proxy URL exactly as configured (no host rewriting).
     // WeiAgent's own Grok API traffic uses a separate proxy on the emulated wreq client.
     let flaresolverr_url = flaresolverr_url.trim().trim_end_matches('/');
     if flaresolverr_url.is_empty() {
-        return Err("FlareSolverr URL is empty".to_string());
+        return Err(GrokError::Other("FlareSolverr URL is empty".to_string()));
     }
     let fs_proxy = flaresolverr_proxy_url
         .map(str::trim)
@@ -181,7 +273,9 @@ pub async fn resolve_clearance(
         .connect_timeout(Duration::from_secs(15))
         .pool_max_idle_per_host(2)
         .build()
-        .map_err(|error| format!("failed to build FlareSolverr client: {error}"))?;
+        .map_err(|error| {
+            GrokError::Other(format!("failed to build FlareSolverr client: {error}"))
+        })?;
     let _ = control_client; // keep signature for callers; FS call is independent
 
     let response = fs_client
@@ -193,27 +287,31 @@ pub async fn resolve_clearance(
         .await
         .map_err(|error| {
             if error.is_timeout() {
-                format!(
+                GrokError::transport(format!(
                     "FlareSolverr timed out after {}s waiting for {endpoint}. FS often needs 20-60s; check service is reachable.",
                     FLARESOLVERR_CLIENT_TIMEOUT.as_secs()
-                )
+                ))
             } else if error.is_connect() {
-                format!("FlareSolverr connect failed for {endpoint}: {error}")
+                GrokError::transport(format!(
+                    "FlareSolverr connect failed for {endpoint}: {error}"
+                ))
             } else {
-                format!("FlareSolverr request failed for {endpoint}: {error}")
+                GrokError::transport(format!(
+                    "FlareSolverr request failed for {endpoint}: {error}"
+                ))
             }
         })?;
     let status = response.status();
     let text = response
         .text()
         .await
-        .map_err(|error| format!("FlareSolverr body failed: {error}"))?;
+        .map_err(|error| GrokError::transport(format!("FlareSolverr body failed: {error}")))?;
     if !status.is_success() {
         return Err(format_flaresolverr_http_error(status, &text));
     }
 
     let value: Value = serde_json::from_str(&text)
-        .map_err(|error| format!("FlareSolverr invalid JSON: {error}"))?;
+        .map_err(|error| GrokError::Other(format!("FlareSolverr invalid JSON: {error}")))?;
     let status_text = value
         .get("status")
         .and_then(Value::as_str)
@@ -224,13 +322,15 @@ pub async fn resolve_clearance(
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("unknown error");
-        return Err(format!("FlareSolverr status={status_text}: {message}"));
+        return Err(GrokError::Other(format!(
+            "FlareSolverr status={status_text}: {message}"
+        )));
     }
 
     let solution = value
         .get("solution")
         .and_then(Value::as_object)
-        .ok_or_else(|| "FlareSolverr missing solution".to_string())?;
+        .ok_or_else(|| GrokError::Other("FlareSolverr missing solution".to_string()))?;
     let mut cookies = BTreeMap::new();
     if let Some(items) = solution.get("cookies").and_then(Value::as_array) {
         for item in items {
@@ -257,10 +357,10 @@ pub async fn resolve_clearance(
             .get("status")
             .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|n| n as i64)))
             .unwrap_or(-1);
-        return Err(format!(
+        return Err(GrokError::Other(format!(
             "FlareSolverr returned no cookies (proxy={}, target_http={http_status}). Proxy is passed exactly as configured.",
             fs_proxy.as_deref().unwrap_or("none")
-        ));
+        )));
     }
     if !cookies
         .keys()
@@ -310,10 +410,10 @@ pub async fn flaresolverr_request_post(
     headers: &BTreeMap<String, String>,
     body: &str,
     max_timeout_ms: u64,
-) -> Result<FlareSolverrHttpResult, String> {
+) -> Result<FlareSolverrHttpResult, GrokError> {
     let flaresolverr_url = flaresolverr_url.trim().trim_end_matches('/');
     if flaresolverr_url.is_empty() {
-        return Err("FlareSolverr URL is empty".to_string());
+        return Err(GrokError::Other("FlareSolverr URL is empty".to_string()));
     }
     let endpoint = if flaresolverr_url.ends_with("/v1") {
         flaresolverr_url.to_string()
@@ -353,7 +453,9 @@ pub async fn flaresolverr_request_post(
         .connect_timeout(Duration::from_secs(15))
         .pool_max_idle_per_host(2)
         .build()
-        .map_err(|error| format!("failed to build FlareSolverr client: {error}"))?;
+        .map_err(|error| {
+            GrokError::Other(format!("failed to build FlareSolverr client: {error}"))
+        })?;
 
     tracing::info!(
         %endpoint,
@@ -371,24 +473,26 @@ pub async fn flaresolverr_request_post(
         .await
         .map_err(|error| {
             if error.is_timeout() {
-                format!(
+                GrokError::transport(format!(
                     "FlareSolverr POST timed out after {}s for {endpoint}",
                     FLARESOLVERR_CLIENT_TIMEOUT.as_secs()
-                )
+                ))
             } else {
-                format!("FlareSolverr POST request failed for {endpoint}: {error}")
+                GrokError::transport(format!(
+                    "FlareSolverr POST request failed for {endpoint}: {error}"
+                ))
             }
         })?;
     let status = response.status();
     let text = response
         .text()
         .await
-        .map_err(|error| format!("FlareSolverr POST body failed: {error}"))?;
+        .map_err(|error| GrokError::transport(format!("FlareSolverr POST body failed: {error}")))?;
     if !status.is_success() {
         return Err(format_flaresolverr_http_error(status, &text));
     }
     let value: Value = serde_json::from_str(&text)
-        .map_err(|error| format!("FlareSolverr POST invalid JSON: {error}"))?;
+        .map_err(|error| GrokError::Other(format!("FlareSolverr POST invalid JSON: {error}")))?;
     let status_text = value
         .get("status")
         .and_then(Value::as_str)
@@ -399,12 +503,14 @@ pub async fn flaresolverr_request_post(
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("unknown error");
-        return Err(format!("FlareSolverr POST status={status_text}: {message}"));
+        return Err(GrokError::Other(format!(
+            "FlareSolverr POST status={status_text}: {message}"
+        )));
     }
     let solution = value
         .get("solution")
         .and_then(Value::as_object)
-        .ok_or_else(|| "FlareSolverr POST missing solution".to_string())?;
+        .ok_or_else(|| GrokError::Other("FlareSolverr POST missing solution".to_string()))?;
     let mut cookies = BTreeMap::new();
     if let Some(items) = solution.get("cookies").and_then(Value::as_array) {
         for item in items {
@@ -450,24 +556,33 @@ pub async fn flaresolverr_request_post(
     })
 }
 
-fn format_flaresolverr_http_error(status: reqwest::StatusCode, text: &str) -> String {
+fn format_flaresolverr_http_error(status: reqwest::StatusCode, text: &str) -> GrokError {
     let lower = text.to_ascii_lowercase();
     if lower.contains("err_proxy_connection_failed") {
-        return format!(
-            "FlareSolverr HTTP {status}: cannot reach flaresolverr_proxy_url from FlareSolverr host. Proxy must be reachable FROM the FlareSolverr machine using the exact URL you filled. detail={}",
-            truncate_for_error(text, 160)
-        );
+        return GrokError::Http {
+            status: status.as_u16(),
+            message: format!(
+                "FlareSolverr HTTP {status}: cannot reach flaresolverr_proxy_url from FlareSolverr host. Proxy must be reachable FROM the FlareSolverr machine using the exact URL you filled. detail={}",
+                truncate_for_error(text, 160)
+            ),
+        };
     }
     if lower.contains("err_connection_reset") || lower.contains("err_connection_timed_out") {
-        return format!(
-            "FlareSolverr HTTP {status}: FlareSolverr host cannot open target (likely blocked). Set flaresolverr_proxy_url so FlareSolverr browser goes through your proxy. detail={}",
-            truncate_for_error(text, 160)
-        );
+        return GrokError::Http {
+            status: status.as_u16(),
+            message: format!(
+                "FlareSolverr HTTP {status}: FlareSolverr host cannot open target (likely blocked). Set flaresolverr_proxy_url so FlareSolverr browser goes through your proxy. detail={}",
+                truncate_for_error(text, 160)
+            ),
+        };
     }
-    format!(
-        "FlareSolverr HTTP {status}: {}",
-        truncate_for_error(text, 240)
-    )
+    GrokError::Http {
+        status: status.as_u16(),
+        message: format!(
+            "FlareSolverr HTTP {status}: {}",
+            truncate_for_error(text, 240)
+        ),
+    }
 }
 
 fn get_cached_clearance(key: &str) -> Option<ClearanceBundle> {

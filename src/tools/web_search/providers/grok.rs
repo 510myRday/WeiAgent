@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use wreq::StatusCode;
 use wreq::header::{HeaderMap, HeaderName, HeaderValue};
 
+use super::grok_support::{GrokError, is_transport_retryable};
 use super::support::truncate;
 use crate::tools::web_search::canonicalize_url;
 use crate::tools::web_search::types::{
@@ -101,8 +102,7 @@ async fn execute_prompt(
     prompt: &str,
     options: GrokSearchOptions<'_>,
 ) -> Result<ParsedChat, ProviderError> {
-    let mut cred = parse_credential(api_key)
-        .map_err(|message| ProviderError::Retryable(sanitize_error_message(&message, api_key)))?;
+    let mut cred = parse_credential(api_key).map_err(|error| error.into_provider_error(api_key))?;
     if cred.sso.is_empty() {
         return Err(ProviderError::Retryable(
             "Grok SSO token is empty".to_string(),
@@ -165,9 +165,8 @@ async fn execute_prompt(
 
         match execute_chat(client, base, &endpoint, &cred, statsig.as_deref(), &body).await {
             Ok(bytes) => {
-                let parsed = consume_upstream(&bytes).map_err(|error| {
-                    ProviderError::Retryable(sanitize_error_message(&error, api_key))
-                })?;
+                let parsed = consume_upstream(&bytes)
+                    .map_err(|error| error.into_provider_error(api_key))?;
                 if let Some(error) = parsed.error.as_deref() {
                     if is_anti_bot_message(error) {
                         tracing::warn!(%error, "Grok chat rejected by anti-bot; skipping same-key retry");
@@ -177,20 +176,18 @@ async fn execute_prompt(
                 return Ok(parsed);
             }
             Err(error) => {
-                let message = error.message().to_string();
-                let retryable_transport = is_transport_retryable(&message);
-                if retryable_transport && attempt < 2 {
+                if error.is_retryable_transport() && attempt < 2 {
                     tracing::warn!(
                         attempt,
-                        %message,
-                        transport = retryable_transport,
+                        message = %error,
+                        transport = true,
                         "Grok chat transport failed; retrying"
                     );
-                    last_error = message;
+                    last_error = error.message().to_string();
                     tokio::time::sleep(Duration::from_millis(350 * (attempt as u64 + 1))).await;
                     continue;
                 }
-                return Err(error);
+                return Err(error.into_provider_error(&cred.sso));
             }
         }
     }
@@ -210,9 +207,8 @@ async fn execute_chat(
     cred: &GrokCredential,
     statsig: Option<&str>,
     body: &Value,
-) -> Result<Vec<u8>, ProviderError> {
-    let headers = build_request_headers(base, cred, statsig)
-        .map_err(|message| ProviderError::Retryable(sanitize_error_message(&message, &cred.sso)))?;
+) -> Result<Vec<u8>, GrokError> {
+    let headers = build_request_headers(base, cred, statsig)?;
 
     // Chrome TLS/JA3/H2 via wreq emulation (scheme B); cookies still from SSO + FlareSolverr.
     // Proxy/idle-pool flakiness shows up as Connect/timeout — retry a few times before bubbling up.
@@ -243,59 +239,44 @@ async fn execute_chat(
                             .await;
                         continue;
                     }
-                    return Err(ProviderError::Retryable(sanitize_error_message(
-                        &format!("Grok request failed: {last_send_error}"),
-                        &cred.sso,
+                    return Err(GrokError::transport(format!(
+                        "Grok request failed: {last_send_error}"
                     )));
                 }
             }
         }
         response.ok_or_else(|| {
-            ProviderError::Retryable(sanitize_error_message(
-                &format!("Grok request failed: {last_send_error}"),
-                &cred.sso,
-            ))
+            GrokError::transport(format!("Grok request failed: {last_send_error}"))
         })?
     };
 
     let status = response.status();
     let bytes = response.bytes().await.map_err(|error| {
-        ProviderError::Retryable(sanitize_error_message(
-            &format!("Grok response body error: {error}"),
-            &cred.sso,
-        ))
+        GrokError::transport(format!("Grok response body error: {error}"))
     })?;
     let body_text = String::from_utf8_lossy(&bytes);
 
     if status == StatusCode::UNAUTHORIZED {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!(
+        return Err(GrokError::Http {
+            status: status.as_u16(),
+            message: format!(
                 "Grok HTTP {status}: SSO unauthorized; body={}",
                 truncate(&body_text, 240)
             ),
-            &cred.sso,
-        )));
+        });
     }
     if status == StatusCode::FORBIDDEN || is_anti_bot_message(&body_text) {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!(
-                "Grok HTTP {status}: anti-bot/forbidden; body={}",
-                truncate(&body_text, 240)
-            ),
-            &cred.sso,
+        return Err(GrokError::AntiBot(format!(
+            "Grok HTTP {status}: anti-bot/forbidden; body={}",
+            truncate(&body_text, 240)
         )));
     }
-    if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!("Grok HTTP {status}: {}", truncate(&body_text, 240)),
-            &cred.sso,
-        )));
-    }
+    // 429, 5xx and any other non-success status share the same message shape.
     if !status.is_success() {
-        return Err(ProviderError::Retryable(sanitize_error_message(
-            &format!("Grok HTTP {status}: {}", truncate(&body_text, 240)),
-            &cred.sso,
-        )));
+        return Err(GrokError::Http {
+            status: status.as_u16(),
+            message: format!("Grok HTTP {status}: {}", truncate(&body_text, 240)),
+        });
     }
     Ok(bytes.to_vec())
 }
@@ -486,10 +467,7 @@ fn parse_structured_extract(
 }
 
 fn classify_upstream_error(error: &str, api_key: &str) -> ProviderError {
-    ProviderError::Retryable(sanitize_error_message(
-        &format!("Grok upstream error: {error}"),
-        api_key,
-    ))
+    GrokError::Upstream(format!("Grok upstream error: {error}")).into_provider_error(api_key)
 }
 
 pub fn classify_key_status(message: &str) -> &'static str {
@@ -532,25 +510,6 @@ fn is_anti_bot_message(message: &str) -> bool {
         || lower.contains("antibot")
         || lower.contains("\"code\":7")
         || lower.contains("request rejected by anti-bot")
-}
-
-/// Proxy/TLS flakiness: Connect, timeout, reset, broken pipe, etc.
-fn is_transport_retryable(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("client error (connect)")
-        || lower.contains("error sending request")
-        || lower.contains("connection reset")
-        || lower.contains("connection refused")
-        || lower.contains("connection closed")
-        || lower.contains("connection aborted")
-        || lower.contains("broken pipe")
-        || lower.contains("timed out")
-        || lower.contains("timeout")
-        || lower.contains("temporarily unavailable")
-        || lower.contains("network is unreachable")
-        || lower.contains("dns error")
-        || lower.contains("proxy")
-            && (lower.contains("connect") || lower.contains("tunnel") || lower.contains("failed"))
 }
 
 fn build_search_prompt(request: &ProviderSearchRequest) -> String {
@@ -631,22 +590,25 @@ fn build_web_chat_payload(message: &str, mode: &str) -> Value {
     })
 }
 
-fn parse_credential(raw: &str) -> Result<GrokCredential, String> {
+fn parse_credential(raw: &str) -> Result<GrokCredential, GrokError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("empty credential".to_string());
+        return Err(GrokError::InvalidCredential("empty credential".to_string()));
     }
 
     if trimmed.starts_with('{') {
-        let value: Value = serde_json::from_str(trimmed)
-            .map_err(|error| format!("invalid Grok credential JSON: {error}"))?;
-        let obj = value
-            .as_object()
-            .ok_or_else(|| "Grok credential JSON must be an object".to_string())?;
+        let value: Value = serde_json::from_str(trimmed).map_err(|error| {
+            GrokError::InvalidCredential(format!("invalid Grok credential JSON: {error}"))
+        })?;
+        let obj = value.as_object().ok_or_else(|| {
+            GrokError::InvalidCredential("Grok credential JSON must be an object".to_string())
+        })?;
         let sso = first_string(obj, &["sso", "token", "auth_token", "api_key"])
             .map(normalize_sso_token)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| "Grok credential JSON missing sso/token".to_string())?;
+            .ok_or_else(|| {
+                GrokError::InvalidCredential("Grok credential JSON missing sso/token".to_string())
+            })?;
         let mut extra = BTreeMap::new();
         if let Some(cookies) = first_string(obj, &["cookies", "cookie", "cf_cookies", "cloudflare"])
         {
@@ -849,7 +811,7 @@ fn build_request_headers(
     base: &str,
     cred: &GrokCredential,
     statsig: Option<&str>,
-) -> Result<HeaderMap, String> {
+) -> Result<HeaderMap, GrokError> {
     let ua = cred
         .user_agent
         .as_deref()
@@ -887,7 +849,7 @@ fn build_request_headers(
     Ok(headers)
 }
 
-fn apply_chromium_client_hints(headers: &mut HeaderMap, user_agent: &str) -> Result<(), String> {
+fn apply_chromium_client_hints(headers: &mut HeaderMap, user_agent: &str) -> Result<(), GrokError> {
     let lower = user_agent.to_ascii_lowercase();
     let version = capture_version(user_agent, &["Chrome/", "Chromium/", "Edg/"])
         .unwrap_or_else(|| "146".to_string());
@@ -932,11 +894,11 @@ fn capture_version(user_agent: &str, markers: &[&str]) -> Option<String> {
     None
 }
 
-fn set_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), String> {
+fn set_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), GrokError> {
     let header_name = HeaderName::from_bytes(name.as_bytes())
-        .map_err(|error| format!("invalid header name {name}: {error}"))?;
+        .map_err(|error| GrokError::Other(format!("invalid header name {name}: {error}")))?;
     let header_value = HeaderValue::from_str(value)
-        .map_err(|error| format!("invalid header value for {name}: {error}"))?;
+        .map_err(|error| GrokError::Other(format!("invalid header value for {name}: {error}")))?;
     headers.insert(header_name, header_value);
     Ok(())
 }
@@ -952,7 +914,7 @@ async fn resolve_statsig_id(
     proxy_url: Option<&str>,
     flaresolverr_url: Option<&str>,
     flaresolverr_proxy_url: Option<&str>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, GrokError> {
     // Silence unused when we skip slow remote/FS signing by default.
     let _ = (
         client,
@@ -1071,7 +1033,7 @@ async fn warm_session_cookies(
     client: &wreq::Client,
     base: &str,
     cred: &mut GrokCredential,
-) -> Result<(), String> {
+) -> Result<(), GrokError> {
     let ua = cred
         .user_agent
         .as_deref()
@@ -1095,9 +1057,12 @@ async fn warm_session_cookies(
         .header("Cookie", build_sso_cookie(cred))
         .send()
         .await
-        .map_err(|error| format!("warm Grok session failed: {error}"))?;
+        .map_err(|error| GrokError::transport(format!("warm Grok session failed: {error}")))?;
     if !response.status().is_success() {
-        return Err(format!("Grok warm HTTP {}", response.status()));
+        return Err(GrokError::Http {
+            status: response.status().as_u16(),
+            message: format!("Grok warm HTTP {}", response.status()),
+        });
     }
     let mut kept = 0usize;
     for value in response.headers().get_all(wreq::header::SET_COOKIE) {
@@ -1169,7 +1134,7 @@ async fn fetch_statsig_meta(
     client: &wreq::Client,
     base: &str,
     cred: &GrokCredential,
-) -> Result<String, String> {
+) -> Result<String, GrokError> {
     let ua = cred
         .user_agent
         .as_deref()
@@ -1193,16 +1158,20 @@ async fn fetch_statsig_meta(
         .header("Cookie", build_sso_cookie(cred))
         .send()
         .await
-        .map_err(|error| format!("fetch Grok index failed: {error}"))?;
+        .map_err(|error| GrokError::transport(format!("fetch Grok index failed: {error}")))?;
     if !response.status().is_success() {
-        return Err(format!("Grok index HTTP {}", response.status()));
+        return Err(GrokError::Http {
+            status: response.status().as_u16(),
+            message: format!("Grok index HTTP {}", response.status()),
+        });
     }
     let html = response
         .text()
         .await
-        .map_err(|error| format!("read Grok index failed: {error}"))?;
-    extract_statsig_meta_content(&html)
-        .ok_or_else(|| "Grok index missing grok-site-verification meta".to_string())
+        .map_err(|error| GrokError::transport(format!("read Grok index failed: {error}")))?;
+    extract_statsig_meta_content(&html).ok_or_else(|| {
+        GrokError::Other("Grok index missing grok-site-verification meta".to_string())
+    })
 }
 
 fn extract_statsig_meta_content(html: &str) -> Option<String> {
@@ -1262,15 +1231,15 @@ fn statsig_sign_payload(method: &str, path: &str, meta_content: &str) -> Value {
     })
 }
 
-fn parse_statsig_signature_body(text: &str) -> Result<String, String> {
+fn parse_statsig_signature_body(text: &str) -> Result<String, GrokError> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err("statsig signer empty body".to_string());
+        return Err(GrokError::Other("statsig signer empty body".to_string()));
     }
     if looks_like_cloudflare_challenge(trimmed) {
-        return Err(
+        return Err(GrokError::AntiBot(
             "statsig signer returned Cloudflare challenge HTML (Just a moment...)".to_string(),
-        );
+        ));
     }
     // Prefer pure JSON; some browser-proxy wrappers embed JSON in HTML.
     let json_slice = if trimmed.starts_with('{') {
@@ -1280,16 +1249,18 @@ fn parse_statsig_signature_body(text: &str) -> Result<String, String> {
         if end > start {
             trimmed[start..=end].to_string()
         } else {
-            return Err("statsig signer body has no JSON object".to_string());
+            return Err(GrokError::Other(
+                "statsig signer body has no JSON object".to_string(),
+            ));
         }
     } else {
-        return Err(format!(
+        return Err(GrokError::Other(format!(
             "statsig signer non-JSON body: {}",
             truncate(trimmed, 160)
-        ));
+        )));
     };
     let value: Value = serde_json::from_str(&json_slice)
-        .map_err(|error| format!("statsig signer invalid JSON: {error}"))?;
+        .map_err(|error| GrokError::Other(format!("statsig signer invalid JSON: {error}")))?;
     let statsig = value
         .get("x-statsig-id")
         .or_else(|| value.get("x_statsig_id"))
@@ -1297,9 +1268,11 @@ fn parse_statsig_signature_body(text: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "statsig signer missing x-statsig-id".to_string())?;
+        .ok_or_else(|| GrokError::Other("statsig signer missing x-statsig-id".to_string()))?;
     if !valid_statsig_id(statsig) {
-        return Err("statsig signer returned invalid x-statsig-id shape".to_string());
+        return Err(GrokError::Other(
+            "statsig signer returned invalid x-statsig-id shape".to_string(),
+        ));
     }
     Ok(statsig.to_string())
 }
@@ -1325,7 +1298,7 @@ async fn request_statsig_signature_resilient(
     proxy_url: Option<&str>,
     flaresolverr_url: Option<&str>,
     flaresolverr_proxy_url: Option<&str>,
-) -> Result<String, String> {
+) -> Result<String, GrokError> {
     let mut errors = Vec::new();
     let is_local = signer_is_loopback(signer);
 
@@ -1412,7 +1385,7 @@ async fn request_statsig_signature_resilient(
         }
     }
 
-    Err(errors.join(" | "))
+    Err(GrokError::Other(errors.join(" | ")))
 }
 
 fn signer_is_loopback(signer: &str) -> bool {
@@ -1431,7 +1404,7 @@ async fn request_statsig_signature(
     method: &str,
     path: &str,
     meta_content: &str,
-) -> Result<String, String> {
+) -> Result<String, GrokError> {
     let payload = statsig_sign_payload(method, path, meta_content);
     let response = client
         .post(signer)
@@ -1442,17 +1415,17 @@ async fn request_statsig_signature(
         .timeout(Duration::from_secs(12))
         .send()
         .await
-        .map_err(|error| format!("statsig signer request failed: {error}"))?;
+        .map_err(|error| GrokError::transport(format!("statsig signer request failed: {error}")))?;
     let status = response.status();
     let text = response
         .text()
         .await
-        .map_err(|error| format!("statsig signer body failed: {error}"))?;
+        .map_err(|error| GrokError::transport(format!("statsig signer body failed: {error}")))?;
     if !status.is_success() {
-        return Err(format!(
-            "statsig signer HTTP {status}: {}",
-            truncate(&text, 160)
-        ));
+        return Err(GrokError::Http {
+            status: status.as_u16(),
+            message: format!("statsig signer HTTP {status}: {}", truncate(&text, 160)),
+        });
     }
     parse_statsig_signature_body(&text)
 }
@@ -1463,7 +1436,7 @@ async fn request_statsig_signature_emulated(
     method: &str,
     path: &str,
     meta_content: &str,
-) -> Result<String, String> {
+) -> Result<String, GrokError> {
     let payload = statsig_sign_payload(method, path, meta_content);
     let response = client
         .post(signer)
@@ -1473,17 +1446,21 @@ async fn request_statsig_signature_emulated(
         .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("statsig emulated signer request failed: {error}"))?;
+        .map_err(|error| {
+            GrokError::transport(format!("statsig emulated signer request failed: {error}"))
+        })?;
     let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|error| format!("statsig emulated signer body failed: {error}"))?;
+    let text = response.text().await.map_err(|error| {
+        GrokError::transport(format!("statsig emulated signer body failed: {error}"))
+    })?;
     if !status.is_success() {
-        return Err(format!(
-            "statsig emulated signer HTTP {status}: {}",
-            truncate(&text, 160)
-        ));
+        return Err(GrokError::Http {
+            status: status.as_u16(),
+            message: format!(
+                "statsig emulated signer HTTP {status}: {}",
+                truncate(&text, 160)
+            ),
+        });
     }
     parse_statsig_signature_body(&text)
 }
@@ -1494,16 +1471,19 @@ async fn request_statsig_signature_with_proxy(
     method: &str,
     path: &str,
     meta_content: &str,
-) -> Result<String, String> {
-    let proxy = reqwest::Proxy::all(proxy_url)
-        .map_err(|error| format!("invalid statsig proxy '{proxy_url}': {error}"))?;
+) -> Result<String, GrokError> {
+    let proxy = reqwest::Proxy::all(proxy_url).map_err(|error| {
+        GrokError::Other(format!("invalid statsig proxy '{proxy_url}': {error}"))
+    })?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(10))
         .proxy(proxy)
         .pool_max_idle_per_host(2)
         .build()
-        .map_err(|error| format!("failed to build proxied statsig client: {error}"))?;
+        .map_err(|error| {
+            GrokError::Other(format!("failed to build proxied statsig client: {error}"))
+        })?;
     request_statsig_signature(&client, signer, method, path, meta_content).await
 }
 
@@ -1514,10 +1494,10 @@ async fn request_statsig_signature_via_flaresolverr(
     method: &str,
     path: &str,
     meta_content: &str,
-) -> Result<String, String> {
+) -> Result<String, GrokError> {
     let payload = statsig_sign_payload(method, path, meta_content);
     let body = serde_json::to_string(&payload)
-        .map_err(|error| format!("encode statsig payload: {error}"))?;
+        .map_err(|error| GrokError::Other(format!("encode statsig payload: {error}")))?;
 
     // Important: grok.com clearance cookies do NOT apply to grok.wodf.de.
     // FlareSolverr is strongest on GET navigations. Warm the signer origin first,
@@ -1527,7 +1507,9 @@ async fn request_statsig_signature_via_flaresolverr(
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
         .build()
-        .map_err(|error| format!("build control client for signer clearance: {error}"))?;
+        .map_err(|error| {
+            GrokError::Other(format!("build control client for signer clearance: {error}"))
+        })?;
     let warm_url = format!("{origin}/");
     let clearance = super::grok_support::resolve_clearance(
         &control,
@@ -1537,7 +1519,9 @@ async fn request_statsig_signature_via_flaresolverr(
         false,
     )
     .await
-    .map_err(|error| format!("FlareSolverr warm GET {warm_url} failed: {error}"))?;
+    .map_err(|error| {
+        GrokError::Other(format!("FlareSolverr warm GET {warm_url} failed: {error}"))
+    })?;
 
     let cookie_header = cloudflare_cookie_header(&clearance.cookies);
     let ua = clearance
@@ -1590,19 +1574,22 @@ async fn request_statsig_signature_via_flaresolverr(
     );
 
     if !(200..300).contains(&result.status) {
-        return Err(format!(
-            "FlareSolverr signer target HTTP {}: {}",
-            result.status,
-            truncate(&result.body, 240)
-        ));
+        return Err(GrokError::Http {
+            status: result.status,
+            message: format!(
+                "FlareSolverr signer target HTTP {}: {}",
+                result.status,
+                truncate(&result.body, 240)
+            ),
+        });
     }
     match parse_statsig_signature_body(&result.body) {
         Ok(value) => Ok(value),
-        Err(error) => Err(format!(
+        Err(error) => Err(GrokError::Other(format!(
             "{error}; http={}; body={}",
             result.status,
             truncate(&result.body, 240)
-        )),
+        ))),
     }
 }
 
@@ -1628,7 +1615,7 @@ fn cloudflare_cookie_header(cookies: &BTreeMap<String, String>) -> String {
         .join("; ")
 }
 
-fn consume_upstream(bytes: &[u8]) -> Result<ParsedChat, String> {
+fn consume_upstream(bytes: &[u8]) -> Result<ParsedChat, GrokError> {
     let mut parsed = ParsedChat::default();
     for frame in extract_json_objects(bytes) {
         apply_frame(&mut parsed, &frame)?;
@@ -1683,7 +1670,7 @@ fn extract_json_objects(bytes: &[u8]) -> Vec<Vec<u8>> {
     objects
 }
 
-fn apply_frame(parsed: &mut ParsedChat, data: &[u8]) -> Result<(), String> {
+fn apply_frame(parsed: &mut ParsedChat, data: &[u8]) -> Result<(), GrokError> {
     let Ok(root) = serde_json::from_slice::<Value>(data) else {
         return Ok(());
     };
@@ -1693,7 +1680,7 @@ fn apply_frame(parsed: &mut ParsedChat, data: &[u8]) -> Result<(), String> {
     if let Some(error) = root.get("error")
         && let Some(message) = error_message(error)
     {
-        return Err(message);
+        return Err(GrokError::Upstream(message));
     }
     let Some(result) = root.get("result").and_then(Value::as_object) else {
         return Ok(());
@@ -1704,7 +1691,7 @@ fn apply_frame(parsed: &mut ParsedChat, data: &[u8]) -> Result<(), String> {
     if let Some(error) = response.get("error")
         && let Some(message) = error_message(error)
     {
-        return Err(message);
+        return Err(GrokError::Upstream(message));
     }
     collect_search_sources(parsed, &Value::Object(response.clone()));
     let thinking = response
@@ -1728,7 +1715,7 @@ fn apply_frame(parsed: &mut ParsedChat, data: &[u8]) -> Result<(), String> {
         if let Some(errors) = model_response.get("streamErrors").and_then(Value::as_array) {
             for item in errors {
                 if let Some(message) = error_message(item) {
-                    return Err(message);
+                    return Err(GrokError::Upstream(message));
                 }
             }
         }
