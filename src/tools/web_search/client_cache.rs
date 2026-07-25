@@ -47,7 +47,7 @@ fn normalized_proxy(proxy_url: Option<&str>) -> Option<String> {
     proxy_url
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
+        .map(|value| crate::domain::ip_proxies::proxy_url_with_remote_dns(value).into_owned())
 }
 
 /// Provider control-plane client (search/extract REST APIs).

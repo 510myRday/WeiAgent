@@ -93,7 +93,7 @@ pub fn normalize_optional_url(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+        .map(|value| crate::domain::ip_proxies::proxy_url_with_remote_dns(value).into_owned())
 }
 
 /// Browser-fingerprint HTTP client (Chrome TLS/JA3/H2) for Grok API traffic.
@@ -110,10 +110,7 @@ pub fn build_emulated_client(
     let timeout = timeout.max(Duration::from_secs(90));
     let key = (
         timeout.as_millis() as u64,
-        proxy_url
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
+        normalize_optional_url(proxy_url),
     );
     let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
     if let Ok(guard) = cache.lock()
@@ -174,6 +171,10 @@ mod tests {
         assert_eq!(
             normalize_optional_url(Some("  http://127.0.0.1:8191  ")).as_deref(),
             Some("http://127.0.0.1:8191")
+        );
+        assert_eq!(
+            normalize_optional_url(Some("socks5://proxy.test:1080")).as_deref(),
+            Some("socks5h://proxy.test:1080")
         );
         assert_eq!(normalize_optional_url(Some("   ")), None);
     }

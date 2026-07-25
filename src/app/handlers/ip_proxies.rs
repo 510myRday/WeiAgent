@@ -112,7 +112,9 @@ async fn run_proxy_tests_with_quality(
 async fn test_proxy_connection(proxy: IpProxy) -> IpProxyTestUpdate {
     let checked_at = Utc::now();
     let result = async {
-        let reqwest_proxy = reqwest::Proxy::all(&proxy.url).map_err(|error| error.to_string())?;
+        let proxy_url = crate::domain::ip_proxies::proxy_url_with_remote_dns(&proxy.url);
+        let reqwest_proxy =
+            reqwest::Proxy::all(proxy_url.as_ref()).map_err(|error| error.to_string())?;
         let client = reqwest::Client::builder()
             .no_proxy()
             .proxy(reqwest_proxy)
@@ -190,9 +192,10 @@ impl QualityApi {
 }
 
 async fn test_proxy_quality(proxy: IpProxy) -> IpProxyQualityTestUpdate {
+    let proxy_url = crate::domain::ip_proxies::proxy_url_with_remote_dns(&proxy.url);
     let client = reqwest::Client::builder()
         .no_proxy()
-        .proxy(match reqwest::Proxy::all(&proxy.url) {
+        .proxy(match reqwest::Proxy::all(proxy_url.as_ref()) {
             Ok(proxy) => proxy,
             Err(error) => {
                 let message = compact_error(error.to_string());

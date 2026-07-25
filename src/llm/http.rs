@@ -273,6 +273,47 @@ fn capture_log_line(
     *raw_truncated = true;
 }
 
+fn redact_stream_log_line(line: &str) -> String {
+    let (prefix, payload) = if let Some(payload) = line.strip_prefix("data: ") {
+        ("data: ", payload)
+    } else if let Some(payload) = line.strip_prefix("data:") {
+        ("data:", payload)
+    } else {
+        return line.to_string();
+    };
+    if !payload.contains("\"encrypted_content\"") {
+        return line.to_string();
+    }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return line.to_string();
+    };
+    redact_encrypted_content(&mut value);
+    format!("{prefix}{value}")
+}
+
+fn redact_encrypted_content(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                if key == "encrypted_content" && value.as_str().is_some() {
+                    let length = value.as_str().map_or(0, str::len);
+                    *value = serde_json::Value::String(format!(
+                        "[encrypted reasoning omitted: {length} chars]"
+                    ));
+                } else {
+                    redact_encrypted_content(value);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_encrypted_content(value);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn prefix_at_most(value: &str, max_bytes: usize) -> &str {
     let mut end = max_bytes.min(value.len());
     while !value.is_char_boundary(end) {
@@ -382,8 +423,9 @@ impl StreamLogState {
     }
 
     fn capture(&mut self, line: &str) {
+        let line = redact_stream_log_line(line);
         capture_log_line(
-            line,
+            &line,
             &mut self.raw_lines,
             &mut self.raw_bytes,
             &mut self.raw_truncated,
@@ -525,6 +567,17 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
+
+    #[test]
+    fn stream_logs_redact_encrypted_reasoning() {
+        let line = r#"data: {"type":"response.output_item.done","item":{"type":"reasoning","encrypted_content":"opaque-state"}}"#;
+        let redacted = redact_stream_log_line(line);
+        assert!(!redacted.contains("opaque-state"));
+        assert!(redacted.contains("encrypted reasoning omitted: 12 chars"));
+
+        let no_space = redact_stream_log_line(&line.replacen("data: ", "data:", 1));
+        assert!(!no_space.contains("opaque-state"));
+    }
 
     #[tokio::test]
     async fn response_body_has_an_idle_timeout() {

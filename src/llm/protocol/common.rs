@@ -501,25 +501,29 @@ pub(crate) fn bearer_get(http: &reqwest::Client, url: &str, api_key: &str) -> Re
 
 pub(crate) fn request_json_for_log(request: &Value) -> String {
     let mut redacted = request.clone();
-    redact_image_payloads(&mut redacted);
+    redact_log_payloads(&mut redacted);
     serde_json::to_string_pretty(&redacted).unwrap_or_else(|_| redacted.to_string())
 }
 
-fn redact_image_payloads(value: &mut Value) {
+fn redact_log_payloads(value: &mut Value) {
     match value {
         Value::Object(map) => {
             for (key, value) in map {
-                if key == "data" && value.as_str().is_some_and(|data| data.len() > 256) {
+                if key == "encrypted_content" && value.as_str().is_some() {
+                    let length = value.as_str().map_or(0, str::len);
+                    *value =
+                        Value::String(format!("[encrypted reasoning omitted: {length} chars]"));
+                } else if key == "data" && value.as_str().is_some_and(|data| data.len() > 256) {
                     let length = value.as_str().map_or(0, str::len);
                     *value = Value::String(format!("[base64 image omitted: {length} chars]"));
                 } else {
-                    redact_image_payloads(value);
+                    redact_log_payloads(value);
                 }
             }
         }
         Value::Array(values) => {
             for value in values {
-                redact_image_payloads(value);
+                redact_log_payloads(value);
             }
         }
         Value::String(text) if text.starts_with("data:image/") && text.len() > 256 => {
@@ -527,5 +531,22 @@ fn redact_image_payloads(value: &mut Value) {
             *text = format!("[data URL image omitted: {length} chars]");
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_logs_redact_encrypted_reasoning() {
+        let logged = request_json_for_log(&serde_json::json!({
+            "input": [{
+                "type": "reasoning",
+                "encrypted_content": "opaque-state"
+            }]
+        }));
+        assert!(!logged.contains("opaque-state"));
+        assert!(logged.contains("encrypted reasoning omitted: 12 chars"));
     }
 }

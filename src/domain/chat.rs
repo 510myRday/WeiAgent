@@ -104,6 +104,10 @@ pub struct ChatMessage {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    /// Opaque Responses API items required for stateless reasoning continuity.
+    /// They are persisted locally but never exposed through the chat API.
+    #[serde(default, skip_serializing)]
+    pub openai_response_items: Vec<serde_json::Value>,
     #[serde(default)]
     pub status: ChatMessageStatus,
     pub created_at: DateTime<Utc>,
@@ -188,4 +192,35 @@ pub struct AgentRun {
     pub error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encrypted_response_items_are_internal_only() {
+        let message = ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            conversation_id: Uuid::new_v4(),
+            role: ChatRole::Assistant,
+            content: "answer".to_string(),
+            reasoning_content: None,
+            openai_response_items: vec![serde_json::json!({
+                "type": "reasoning",
+                "encrypted_content": "opaque-state"
+            })],
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        };
+
+        let serialized = serde_json::to_value(message).unwrap();
+        assert!(serialized.get("openai_response_items").is_none());
+        assert!(!serialized.to_string().contains("opaque-state"));
+    }
 }

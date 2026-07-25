@@ -147,6 +147,7 @@ pub async fn generate_conversation_title(
         role: ChatRole::User,
         content: content.to_string(),
         reasoning_content: None,
+        openai_response_items: Vec::new(),
         status: ChatMessageStatus::Done,
         created_at: Utc::now(),
         tool_calls: None,

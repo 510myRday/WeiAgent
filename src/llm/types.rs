@@ -41,6 +41,7 @@ pub struct ToolCallFunction {
 pub struct ChatCompletionOutput {
     pub content: String,
     pub reasoning_content: String,
+    pub openai_response_items: Vec<serde_json::Value>,
     pub tool_calls: Vec<ToolCall>,
     pub usage: TokenUsage,
 }
@@ -51,6 +52,7 @@ pub struct ChatCompletionOutput {
 pub enum StreamEvent {
     TextDelta(String),
     ReasoningDelta(String),
+    OpenAiResponseItem(serde_json::Value),
     ToolCallStart {
         index: usize,
         id: String,
@@ -256,6 +258,11 @@ fn context_message_groups(messages: &[ChatMessage]) -> Vec<Vec<&ChatMessage>> {
 fn context_message_bytes(message: &ChatMessage) -> usize {
     message.content.len()
         + message
+            .openai_response_items
+            .iter()
+            .map(|item| item.to_string().len())
+            .sum::<usize>()
+        + message
             .attachments
             .iter()
             .map(|attachment| match &attachment.source {
@@ -425,6 +432,7 @@ mod tests {
             role,
             content: content.into(),
             reasoning_content: None,
+            openai_response_items: Vec::new(),
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
             tool_calls: None,

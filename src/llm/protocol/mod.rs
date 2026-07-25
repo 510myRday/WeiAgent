@@ -76,6 +76,7 @@ mod tests {
             role: ChatRole::User,
             content: "run it".to_string(),
             reasoning_content: None,
+            openai_response_items: Vec::new(),
             status: ChatMessageStatus::Done,
             created_at: now,
             tool_calls: None,
@@ -274,6 +275,23 @@ mod tests {
                         .unwrap(),
                     "2023-06-01"
                 );
+            }
+        }
+        if matches!(protocol, ProtocolKind::OpenAiResponses) {
+            for request in &captured[..2] {
+                assert_eq!(
+                    request.body["include"],
+                    json!(["reasoning.encrypted_content"])
+                );
+                assert_eq!(
+                    request.body["prompt_cache_key"],
+                    messages[0].conversation_id.to_string()
+                );
+                assert_eq!(request.body["store"], false);
+                assert_eq!(request.body["tool_choice"], "auto");
+                assert_eq!(request.body["parallel_tool_calls"], true);
+                assert_eq!(request.body["input"][0]["type"], "message");
+                assert_eq!(request.body["input"][0]["content"][0]["type"], "input_text");
             }
         }
         assert!(!captured[0].body.is_null());

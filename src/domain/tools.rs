@@ -513,8 +513,12 @@ pub struct WebSearchSourceConfig {
     /// Extraction status slots aligned with api_keys.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extract_key_statuses: Vec<Option<WebSearchKeyStatusRecord>>,
-    /// Upstream proxy for Grok/CF traffic. Supports http://, socks4://, and socks5://
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Upstream proxy for Grok/CF traffic. Supports HTTP and SOCKS proxy URLs.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::domain::ip_proxies::serialize_optional_proxy_url"
+    )]
     pub proxy_url: Option<String>,
 }
 

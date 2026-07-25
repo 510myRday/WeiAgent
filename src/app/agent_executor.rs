@@ -292,6 +292,7 @@ pub async fn run_agent(
             content: output.output.content.clone(),
             reasoning_content: (!output.output.reasoning_content.is_empty())
                 .then_some(output.output.reasoning_content.clone()),
+            openai_response_items: output.output.openai_response_items.clone(),
             status: ChatMessageStatus::Done,
             created_at: output.created_at,
             tool_calls: (!output.output.tool_calls.is_empty()).then(|| {
@@ -364,6 +365,7 @@ async fn persist_run_failure(runtime: &AgentRuntime<'_>, error: &AppError) {
         role: ChatRole::Assistant,
         content: format!("Agent run stopped: {error}"),
         reasoning_content: None,
+        openai_response_items: Vec::new(),
         status: ChatMessageStatus::Failed,
         created_at: Utc::now(),
         tool_calls: None,
@@ -394,6 +396,7 @@ async fn finalize_after_budget(
             "System notice: tool-capable iterations reached the configured limit of {max_llm_iterations}. Do not call tools. Summarize completed work, failures, and remaining steps."
         ),
         reasoning_content: None,
+        openai_response_items: Vec::new(),
         status: ChatMessageStatus::Done,
         created_at: Utc::now(),
         tool_calls: None,
@@ -431,6 +434,7 @@ async fn finalize_after_budget(
         content,
         reasoning_content: (!output.output.reasoning_content.is_empty())
             .then_some(output.output.reasoning_content),
+        openai_response_items: output.output.openai_response_items,
         status: ChatMessageStatus::Done,
         created_at: output.created_at,
         tool_calls: None,
@@ -844,6 +848,7 @@ struct StreamAccumulator {
     created_at: chrono::DateTime<Utc>,
     content: String,
     reasoning_content: String,
+    openai_response_items: Vec<Value>,
     persisted: bool,
     persisted_bytes: usize,
     last_save: Instant,
@@ -944,6 +949,7 @@ async fn stream_llm_iteration(
         created_at: Utc::now(),
         content: String::new(),
         reasoning_content: String::new(),
+        openai_response_items: Vec::new(),
         persisted: false,
         persisted_bytes: 0,
         last_save: Instant::now(),
@@ -989,6 +995,15 @@ async fn stream_llm_iteration(
             StreamEvent::ReasoningDelta(delta) => {
                 append_delta_and_persist(runtime, &mut acc, delta, StreamDeltaKind::Reasoning)
                     .await?;
+            }
+            StreamEvent::OpenAiResponseItem(item) => {
+                if !acc
+                    .openai_response_items
+                    .iter()
+                    .any(|existing| existing == &item)
+                {
+                    acc.openai_response_items.push(item);
+                }
             }
             StreamEvent::ToolCallStart { index, id, name } => {
                 let builder = calls.entry(index).or_default();
@@ -1088,6 +1103,7 @@ async fn stream_llm_iteration(
         output: ChatCompletionOutput {
             content: acc.content,
             reasoning_content: acc.reasoning_content,
+            openai_response_items: acc.openai_response_items,
             tool_calls,
             usage,
         },
@@ -1200,6 +1216,7 @@ async fn persist_tool_result(
         tool_calls: None,
         tool_call_id: Some(call_id.to_string()),
         attachments: Vec::new(),
+        openai_response_items: Vec::new(),
         usage: None,
     };
     state
@@ -1227,6 +1244,7 @@ fn partial_assistant(
         role: ChatRole::Assistant,
         content: content.to_string(),
         reasoning_content: (!reasoning_content.is_empty()).then(|| reasoning_content.to_string()),
+        openai_response_items: Vec::new(),
         status: ChatMessageStatus::Streaming,
         created_at,
         tool_calls: None,

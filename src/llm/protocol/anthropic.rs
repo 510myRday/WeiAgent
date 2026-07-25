@@ -348,6 +348,7 @@ fn parse_anthropic_output(value: &Value) -> AppResult<ChatCompletionOutput> {
     validate_tool_calls(tool_calls).map(|tool_calls| ChatCompletionOutput {
         content,
         reasoning_content,
+        openai_response_items: Vec::new(),
         tool_calls,
         usage: parse_anthropic_usage(&value["usage"]),
     })
@@ -560,6 +561,7 @@ mod tests {
                 role: ChatRole::Assistant,
                 content: String::new(),
                 reasoning_content: None,
+                openai_response_items: Vec::new(),
                 status: ChatMessageStatus::Done,
                 created_at: now,
                 tool_calls: Some(json!([{
@@ -578,6 +580,7 @@ mod tests {
                 role: ChatRole::Tool,
                 content: "ok".to_string(),
                 reasoning_content: None,
+                openai_response_items: Vec::new(),
                 status: ChatMessageStatus::Done,
                 created_at: now,
                 tool_calls: None,
@@ -620,6 +623,7 @@ mod tests {
                 role: ChatRole::User,
                 content: "inspect".to_string(),
                 reasoning_content: None,
+                openai_response_items: Vec::new(),
                 status: ChatMessageStatus::Done,
                 created_at: Utc::now(),
                 tool_calls: None,

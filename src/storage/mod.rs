@@ -110,7 +110,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(migration_versions, vec![1, 2, 3]);
+        assert_eq!(migration_versions, vec![1, 2, 3, 4]);
         assert_eq!(
             tool_table_names(&conn),
             vec![
@@ -120,6 +120,50 @@ mod tests {
                 "tool_web_search_sources",
             ]
         );
+    }
+
+    #[test]
+    fn upgrades_v3_messages_with_response_items_column() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE app_schema_migrations (
+                version INTEGER PRIMARY KEY NOT NULL,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+             );
+             INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (3, 'conversations_sqlite_v3', '2026-01-01T00:00:00Z');
+             CREATE TABLE conversation_messages (
+                seq INTEGER PRIMARY KEY,
+                reasoning_content TEXT
+             );",
+        )
+        .unwrap();
+
+        conversation_db::migrate_conversations(&mut conn).unwrap();
+
+        let columns = conn
+            .prepare("PRAGMA table_info(conversation_messages)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            columns
+                .iter()
+                .any(|name| name == "openai_response_items_json")
+        );
+        let applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM app_schema_migrations WHERE version = 4
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(applied);
     }
 
     #[tokio::test]
@@ -481,6 +525,10 @@ mod tests {
             role: ChatRole::User,
             content: "hello".to_string(),
             reasoning_content: None,
+            openai_response_items: vec![serde_json::json!({
+                "type": "reasoning",
+                "encrypted_content": "opaque-state"
+            })],
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
             tool_calls: None,
@@ -524,6 +572,7 @@ mod tests {
             role: ChatRole::User,
             content: "old".to_string(),
             reasoning_content: None,
+            openai_response_items: Vec::new(),
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
             tool_calls: None,
@@ -588,6 +637,7 @@ mod tests {
             role,
             content: content.to_string(),
             reasoning_content: None,
+            openai_response_items: Vec::new(),
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
             tool_calls: None,
@@ -681,6 +731,7 @@ mod tests {
                     role,
                     content: format!("turn {turn}"),
                     reasoning_content: None,
+                    openai_response_items: Vec::new(),
                     status: ChatMessageStatus::Done,
                     created_at: Utc::now(),
                     tool_calls: None,
@@ -759,6 +810,7 @@ mod tests {
             role: ChatRole::User,
             content: "  这是第一条用户消息\n用于生成标题  ".to_string(),
             reasoning_content: None,
+            openai_response_items: Vec::new(),
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
             tool_calls: None,

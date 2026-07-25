@@ -62,7 +62,9 @@ impl Store {
         let proxies = self.read_ip_proxies_unlocked().await?;
         let mut known_urls = proxies
             .iter()
-            .map(|proxy| proxy.url.clone())
+            .map(|proxy| {
+                crate::domain::ip_proxies::proxy_url_with_remote_dns(&proxy.url).into_owned()
+            })
             .collect::<HashSet<_>>();
         let mut known_names = proxies
             .iter()
@@ -342,10 +344,12 @@ fn normalize_proxy_url(value: &str) -> AppResult<(String, IpProxyProtocol)> {
 }
 
 fn ensure_unique_url(proxies: &[IpProxy], url: &str, current_id: Option<Uuid>) -> AppResult<()> {
-    if proxies
-        .iter()
-        .any(|proxy| proxy.id != current_id.unwrap_or(Uuid::nil()) && proxy.url == url)
-    {
+    let url = crate::domain::ip_proxies::proxy_url_with_remote_dns(url);
+    if proxies.iter().any(|proxy| {
+        proxy.id != current_id.unwrap_or(Uuid::nil())
+            && crate::domain::ip_proxies::proxy_url_with_remote_dns(&proxy.url).as_ref()
+                == url.as_ref()
+    }) {
         return Err(AppError::Conflict(
             "proxy address is already configured".to_string(),
         ));
@@ -413,6 +417,20 @@ mod tests {
             normalize_proxy_url("socks://proxy.test:1080").unwrap(),
             (
                 "socks5://proxy.test:1080".to_string(),
+                IpProxyProtocol::Socks5
+            )
+        );
+        assert_eq!(
+            normalize_proxy_url("socks5://proxy.test:1080").unwrap(),
+            (
+                "socks5://proxy.test:1080".to_string(),
+                IpProxyProtocol::Socks5
+            )
+        );
+        assert_eq!(
+            normalize_proxy_url("socks5h://proxy.test:1080").unwrap(),
+            (
+                "socks5h://proxy.test:1080".to_string(),
                 IpProxyProtocol::Socks5
             )
         );

@@ -160,6 +160,7 @@ fn parse_openai_chat_output(value: &Value) -> AppResult<ChatCompletionOutput> {
     Ok(ChatCompletionOutput {
         content: choice.message.content.unwrap_or_default(),
         reasoning_content: choice.message.reasoning_content.unwrap_or_default(),
+        openai_response_items: Vec::new(),
         tool_calls: choice.message.tool_calls.unwrap_or_default(),
         usage,
     })
@@ -205,6 +206,7 @@ mod tests {
             role: ChatRole::User,
             content: "hello".to_string(),
             reasoning_content: Some("saved-reasoning-must-not-be-sent".to_string()),
+            openai_response_items: Vec::new(),
             status: ChatMessageStatus::Done,
             created_at: now,
             tool_calls: None,
@@ -271,6 +273,7 @@ mod tests {
             role: ChatRole::User,
             content: "hello".to_string(),
             reasoning_content: None,
+            openai_response_items: Vec::new(),
             status: ChatMessageStatus::Done,
             created_at: now,
             tool_calls: None,
@@ -359,6 +362,7 @@ mod tests {
             role: ChatRole::User,
             content: "hello".to_string(),
             reasoning_content: None,
+            openai_response_items: Vec::new(),
             status: ChatMessageStatus::Done,
             created_at: now,
             tool_calls: None,

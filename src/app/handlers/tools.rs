@@ -372,7 +372,12 @@ pub async fn check_web_search_keys(
     };
     let timeout = std::time::Duration::from_millis(config.web_search.timeout_ms());
     let base_url = provider.default_base_url().to_string();
-    let proxy_url = source_proxy_url.as_deref();
+    let effective_proxy_url = source_proxy_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| crate::domain::ip_proxies::proxy_url_with_remote_dns(value).into_owned());
+    let proxy_url = effective_proxy_url.as_deref();
     let mut control_client_builder =
         reqwest::Client::builder().timeout(timeout.max(std::time::Duration::from_secs(90)));
     if provider != WebSearchProviderKind::Grok

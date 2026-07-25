@@ -19,6 +19,7 @@ use crate::{
 };
 
 const CONVERSATIONS_SCHEMA_VERSION: i64 = 3;
+const RESPONSES_ITEMS_SCHEMA_VERSION: i64 = 4;
 const CONVERSATION_TITLE_CHAR_LIMIT: usize = 80;
 
 const CONVERSATIONS_SCHEMA_SQL: &str = "
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     reasoning_content TEXT,
+    openai_response_items_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     tool_calls_json TEXT,
@@ -109,27 +111,57 @@ fn latest_usage_snapshot(usage: &ModelUsage) -> ConversationUsage {
 }
 
 pub(super) fn migrate_conversations(conn: &mut Connection) -> AppResult<()> {
-    let applied = conn.query_row(
+    let conversations_applied = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM app_schema_migrations WHERE version = ?1)",
         [CONVERSATIONS_SCHEMA_VERSION],
         |row| row.get::<_, bool>(0),
     )?;
-    if applied {
-        return Ok(());
+    if !conversations_applied {
+        let tx = conn.transaction()?;
+        tx.execute_batch(CONVERSATIONS_SCHEMA_SQL)?;
+        tx.execute(
+            "INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (?1, ?2, ?3)",
+            params![
+                CONVERSATIONS_SCHEMA_VERSION,
+                "conversations_sqlite_v3",
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        tx.commit()?;
     }
 
-    let tx = conn.transaction()?;
-    tx.execute_batch(CONVERSATIONS_SCHEMA_SQL)?;
-    tx.execute(
-        "INSERT INTO app_schema_migrations (version, name, applied_at)
-         VALUES (?1, ?2, ?3)",
-        params![
-            CONVERSATIONS_SCHEMA_VERSION,
-            "conversations_sqlite_v3",
-            Utc::now().to_rfc3339()
-        ],
+    let responses_items_applied = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_schema_migrations WHERE version = ?1)",
+        [RESPONSES_ITEMS_SCHEMA_VERSION],
+        |row| row.get::<_, bool>(0),
     )?;
-    tx.commit()?;
+    if !responses_items_applied {
+        let tx = conn.transaction()?;
+        let has_column = tx
+            .prepare("PRAGMA table_info(conversation_messages)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "openai_response_items_json");
+        if !has_column {
+            tx.execute(
+                "ALTER TABLE conversation_messages
+                 ADD COLUMN openai_response_items_json TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (?1, ?2, ?3)",
+            params![
+                RESPONSES_ITEMS_SCHEMA_VERSION,
+                "responses_reasoning_items_sqlite_v4",
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -246,6 +278,7 @@ struct MessageRow {
     role: String,
     content: String,
     reasoning_content: Option<String>,
+    openai_response_items_json: String,
     status: String,
     created_at: String,
     tool_calls_json: Option<String>,
@@ -255,7 +288,8 @@ struct MessageRow {
 }
 
 const MESSAGE_COLUMNS: &str = "id, agent_id, conversation_id, role, content, reasoning_content,
-    status, created_at, tool_calls_json, tool_call_id, attachments_json, usage_json";
+    openai_response_items_json, status, created_at, tool_calls_json, tool_call_id,
+    attachments_json, usage_json";
 
 fn map_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
     Ok(MessageRow {
@@ -265,12 +299,13 @@ fn map_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
         role: row.get(3)?,
         content: row.get(4)?,
         reasoning_content: row.get(5)?,
-        status: row.get(6)?,
-        created_at: row.get(7)?,
-        tool_calls_json: row.get(8)?,
-        tool_call_id: row.get(9)?,
-        attachments_json: row.get(10)?,
-        usage_json: row.get(11)?,
+        openai_response_items_json: row.get(6)?,
+        status: row.get(7)?,
+        created_at: row.get(8)?,
+        tool_calls_json: row.get(9)?,
+        tool_call_id: row.get(10)?,
+        attachments_json: row.get(11)?,
+        usage_json: row.get(12)?,
     })
 }
 
@@ -282,6 +317,7 @@ fn row_to_message(row: MessageRow) -> AppResult<ChatMessage> {
         role: role_from_str(&row.role)?,
         content: row.content,
         reasoning_content: row.reasoning_content,
+        openai_response_items: serde_json::from_str(&row.openai_response_items_json)?,
         status: status_from_str(&row.status)?,
         created_at: parse_datetime(&row.created_at, "created_at")?,
         tool_calls: row
@@ -302,6 +338,7 @@ fn row_to_message(row: MessageRow) -> AppResult<ChatMessage> {
 struct MessageValues {
     role: &'static str,
     status: &'static str,
+    openai_response_items_json: String,
     tool_calls_json: Option<String>,
     attachments_json: String,
     usage_json: Option<String>,
@@ -311,6 +348,7 @@ fn message_values(message: &ChatMessage) -> AppResult<MessageValues> {
     Ok(MessageValues {
         role: role_to_str(&message.role),
         status: status_to_str(&message.status),
+        openai_response_items_json: serde_json::to_string(&message.openai_response_items)?,
         tool_calls_json: message
             .tool_calls
             .as_ref()
@@ -334,8 +372,9 @@ fn insert_message(
     conn.execute(
         "INSERT INTO conversation_messages (
             id, agent_id, conversation_id, role, content, reasoning_content,
-            status, created_at, tool_calls_json, tool_call_id, attachments_json, usage_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            openai_response_items_json, status, created_at, tool_calls_json,
+            tool_call_id, attachments_json, usage_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             message.id.to_string(),
             message.agent_id.to_string(),
@@ -343,6 +382,7 @@ fn insert_message(
             values.role,
             message.content,
             message.reasoning_content,
+            values.openai_response_items_json,
             values.status,
             message.created_at.to_rfc3339(),
             values.tool_calls_json,
@@ -360,8 +400,9 @@ fn update_message(conn: &Connection, message: &ChatMessage) -> AppResult<()> {
     conn.execute(
         "UPDATE conversation_messages SET
             agent_id = ?2, role = ?3, content = ?4, reasoning_content = ?5,
-            status = ?6, created_at = ?7, tool_calls_json = ?8, tool_call_id = ?9,
-            attachments_json = ?10, usage_json = ?11
+            openai_response_items_json = ?6, status = ?7, created_at = ?8,
+            tool_calls_json = ?9, tool_call_id = ?10, attachments_json = ?11,
+            usage_json = ?12
          WHERE id = ?1",
         params![
             message.id.to_string(),
@@ -369,6 +410,7 @@ fn update_message(conn: &Connection, message: &ChatMessage) -> AppResult<()> {
             values.role,
             message.content,
             message.reasoning_content,
+            values.openai_response_items_json,
             values.status,
             message.created_at.to_rfc3339(),
             values.tool_calls_json,
@@ -806,6 +848,7 @@ pub(super) fn fail_streaming_messages_conn(
             })
             .to_string(),
             reasoning_content: None,
+            openai_response_items: Vec::new(),
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
             tool_calls: None,

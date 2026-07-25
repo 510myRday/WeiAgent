@@ -106,34 +106,46 @@ fn build_openai_responses_request(
     for message in select_context_messages(messages) {
         match message.role {
             ChatRole::User => {
-                let content = if message.attachments.is_empty() {
-                    Value::String(message.content.clone())
-                } else {
-                    let mut blocks = Vec::new();
-                    if !message.content.is_empty() {
-                        blocks.push(json!({
-                            "type": "input_text",
-                            "text": message.content,
-                        }));
-                    }
-                    blocks.extend(message.attachments.iter().map(|attachment| {
-                        json!({
-                            "type": "input_image",
-                            "image_url": openai_image_url(attachment),
-                        })
+                let mut content = Vec::new();
+                if !message.content.is_empty() || message.attachments.is_empty() {
+                    content.push(json!({
+                        "type": "input_text",
+                        "text": message.content,
                     }));
-                    Value::Array(blocks)
-                };
+                }
+                content.extend(message.attachments.iter().map(|attachment| {
+                    json!({
+                        "type": "input_image",
+                        "image_url": openai_image_url(attachment),
+                    })
+                }));
                 input.push(json!({
+                    "type": "message",
                     "role": "user",
                     "content": content,
                 }));
             }
             ChatRole::Assistant => {
+                input.extend(
+                    message
+                        .openai_response_items
+                        .iter()
+                        .filter(|item| {
+                            item["type"] == "reasoning"
+                                && item["encrypted_content"]
+                                    .as_str()
+                                    .is_some_and(|content| !content.is_empty())
+                        })
+                        .cloned(),
+                );
                 if !message.content.is_empty() {
                     input.push(json!({
+                        "type": "message",
                         "role": "assistant",
-                        "content": message.content,
+                        "content": [{
+                            "type": "output_text",
+                            "text": message.content,
+                        }],
                     }));
                 }
                 for call in message_tool_calls(message)? {
@@ -158,15 +170,34 @@ fn build_openai_responses_request(
         }
     }
 
+    let replays_reasoning = input.iter().any(|item| {
+        item["type"] == "reasoning"
+            && item["encrypted_content"]
+                .as_str()
+                .is_some_and(|content| !content.is_empty())
+    });
     let mut body = Map::new();
+    let prompt_cache_key = messages
+        .last()
+        .map(|message| message.conversation_id.to_string())
+        .unwrap_or_else(|| agent.id.to_string());
     body.insert("model".to_string(), json!(agent.model_id));
     body.insert("instructions".to_string(), json!(system_prompt));
     body.insert("input".to_string(), Value::Array(input));
     body.insert("stream".to_string(), Value::Bool(stream));
-    if let Some(effort) = thinking_level.and_then(thinking_effort_str) {
+    let effort = thinking_level.and_then(thinking_effort_str);
+    if effort.is_some() || replays_reasoning {
         let mut reasoning = Map::new();
-        reasoning.insert("effort".to_string(), json!(effort));
-        reasoning.insert("summary".to_string(), Value::String("auto".to_string()));
+        if let Some(effort) = effort {
+            reasoning.insert("effort".to_string(), json!(effort));
+            reasoning.insert("summary".to_string(), Value::String("auto".to_string()));
+        }
+        if replays_reasoning {
+            reasoning.insert(
+                "context".to_string(),
+                Value::String("all_turns".to_string()),
+            );
+        }
         body.insert("reasoning".to_string(), Value::Object(reasoning));
     }
     if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
@@ -188,6 +219,16 @@ fn build_openai_responses_request(
         );
     }
     apply_openai_fields(&mut body, provider, &context);
+    // Codex treats the app conversation as its session and reuses this key for
+    // every turn, independent of optional provider cache settings.
+    body.insert(
+        "include".to_string(),
+        json!(["reasoning.encrypted_content"]),
+    );
+    body.insert("prompt_cache_key".to_string(), json!(prompt_cache_key));
+    body.insert("store".to_string(), Value::Bool(false));
+    body.insert("tool_choice".to_string(), Value::String("auto".to_string()));
+    body.insert("parallel_tool_calls".to_string(), Value::Bool(true));
     merge_extra_body(
         body,
         extra_body,
@@ -198,8 +239,12 @@ fn build_openai_responses_request(
             "stream",
             "tools",
             "reasoning",
+            "include",
             "prompt_cache_key",
             "prompt_cache_retention",
+            "store",
+            "tool_choice",
+            "parallel_tool_calls",
         ],
     )
 }
@@ -209,6 +254,7 @@ fn parse_openai_responses_output(value: &Value) -> AppResult<ChatCompletionOutpu
 
     let mut content = String::new();
     let mut reasoning_content = String::new();
+    let mut openai_response_items = Vec::new();
     let mut tool_calls = Vec::new();
     for item in value["output"].as_array().into_iter().flatten() {
         match item["type"].as_str() {
@@ -241,6 +287,12 @@ fn parse_openai_responses_output(value: &Value) -> AppResult<ChatCompletionOutpu
                         reasoning_content.push_str(text);
                     }
                 }
+                if item["encrypted_content"]
+                    .as_str()
+                    .is_some_and(|content| !content.is_empty())
+                {
+                    openai_response_items.push(item.clone());
+                }
             }
             _ => {}
         }
@@ -256,6 +308,7 @@ fn parse_openai_responses_output(value: &Value) -> AppResult<ChatCompletionOutpu
     validate_tool_calls(tool_calls).map(|tool_calls| ChatCompletionOutput {
         content,
         reasoning_content,
+        openai_response_items,
         tool_calls,
         usage,
     })
@@ -316,7 +369,18 @@ impl OpenAiResponsesStreamParser {
                     .unwrap_or_default()
             }
             Some("response.output_item.added") => self.function_item(value, false),
-            Some("response.output_item.done") => self.function_item(value, true),
+            Some("response.output_item.done") => {
+                let item = &value["item"];
+                if item["type"] == "reasoning"
+                    && item["encrypted_content"]
+                        .as_str()
+                        .is_some_and(|content| !content.is_empty())
+                {
+                    vec![Ok(StreamEvent::OpenAiResponseItem(item.clone()))]
+                } else {
+                    self.function_item(value, true)
+                }
+            }
             Some("response.function_call_arguments.delta") => {
                 let index = value["output_index"].as_u64().unwrap_or(0) as usize;
                 let Some(arguments) = value["delta"].as_str().filter(|value| !value.is_empty())
@@ -447,6 +511,7 @@ mod tests {
                 role: ChatRole::User,
                 content: "run it".to_string(),
                 reasoning_content: None,
+                openai_response_items: Vec::new(),
                 status: ChatMessageStatus::Done,
                 created_at: now,
                 tool_calls: None,
@@ -468,6 +533,7 @@ mod tests {
                 role: ChatRole::Assistant,
                 content: String::new(),
                 reasoning_content: None,
+                openai_response_items: Vec::new(),
                 status: ChatMessageStatus::Done,
                 created_at: now,
                 tool_calls: Some(json!([{
@@ -486,6 +552,7 @@ mod tests {
                 role: ChatRole::Tool,
                 content: "ok".to_string(),
                 reasoning_content: None,
+                openai_response_items: Vec::new(),
                 status: ChatMessageStatus::Done,
                 created_at: now,
                 tool_calls: None,
@@ -519,6 +586,13 @@ mod tests {
         let (agent, mut messages) = fixture();
         let provider = test_provider();
         messages[1].reasoning_content = Some("saved-reasoning-must-not-be-sent".to_string());
+        let encrypted_reasoning = json!({
+            "id": "rs-test",
+            "type": "reasoning",
+            "summary": [],
+            "encrypted_content": "opaque-state"
+        });
+        messages[1].openai_response_items = vec![encrypted_reasoning.clone()];
         let request = build_openai_responses_request(
             &agent,
             &provider,
@@ -534,6 +608,24 @@ mod tests {
         assert_eq!(request["stream"], true);
         assert_eq!(request["reasoning"]["effort"], "xhigh");
         assert_eq!(request["reasoning"]["summary"], "auto");
+        assert_eq!(request["reasoning"]["context"], "all_turns");
+        assert_eq!(request["include"], json!(["reasoning.encrypted_content"]));
+        assert_eq!(
+            request["prompt_cache_key"],
+            messages[0].conversation_id.to_string()
+        );
+        assert_eq!(request["store"], false);
+        assert_eq!(request["tool_choice"], "auto");
+        assert_eq!(request["parallel_tool_calls"], true);
+        assert!(request["input"].as_array().unwrap().iter().any(|item| {
+            item["type"] == "message"
+                && item["role"] == "user"
+                && item["content"].as_array().is_some_and(|blocks| {
+                    blocks
+                        .iter()
+                        .any(|block| block["type"] == "input_text" && block["text"] == "run it")
+                })
+        }));
         assert!(request["input"].as_array().unwrap().iter().any(|item| {
             item["content"].as_array().is_some_and(|blocks| {
                 blocks.iter().any(|block| {
@@ -547,11 +639,69 @@ mod tests {
                 item["type"] == "function_call_output" && item["call_id"] == "call-1"
             })
         );
+        let input = request["input"].as_array().unwrap();
+        let reasoning_index = input
+            .iter()
+            .position(|item| item == &encrypted_reasoning)
+            .unwrap();
+        let function_index = input
+            .iter()
+            .position(|item| item["type"] == "function_call")
+            .unwrap();
+        assert!(reasoning_index < function_index);
         assert!(
             !request
                 .to_string()
                 .contains("saved-reasoning-must-not-be-sent")
         );
+    }
+
+    #[test]
+    fn prompt_cache_key_tracks_the_conversation() {
+        let (agent, messages) = fixture();
+        let provider = test_provider();
+        let first = build_openai_responses_request(
+            &agent,
+            &provider,
+            &messages,
+            false,
+            "system",
+            &Value::Null,
+            None,
+            None,
+        )
+        .unwrap();
+        let repeated = build_openai_responses_request(
+            &agent,
+            &provider,
+            &messages,
+            true,
+            "system",
+            &Value::Null,
+            None,
+            Some(ThinkingLevel::High),
+        )
+        .unwrap();
+        assert_eq!(first["prompt_cache_key"], repeated["prompt_cache_key"]);
+
+        let mut other_conversation = messages.clone();
+        let other_id = Uuid::new_v4();
+        for message in &mut other_conversation {
+            message.conversation_id = other_id;
+        }
+        let other = build_openai_responses_request(
+            &agent,
+            &provider,
+            &other_conversation,
+            false,
+            "system",
+            &Value::Null,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_ne!(first["prompt_cache_key"], other["prompt_cache_key"]);
+        assert_eq!(other["prompt_cache_key"], other_id.to_string());
     }
 
     #[test]
@@ -594,7 +744,12 @@ mod tests {
                 "input_tokens_details": {"cached_tokens": 20}
             },
             "output": [
-                {"type":"reasoning","summary":[{"type":"summary_text","text":"considering"}]},
+                {
+                    "id":"rs-output",
+                    "type":"reasoning",
+                    "summary":[{"type":"summary_text","text":"considering"}],
+                    "encrypted_content":"opaque-output"
+                },
                 {"type":"message","content":[{"type":"output_text","text":"hello"}]},
                 {"type":"function_call","call_id":"call-r","name":"run","arguments":"{}"}
             ]
@@ -602,6 +757,11 @@ mod tests {
         .unwrap();
         assert_eq!(output.content, "hello");
         assert_eq!(output.reasoning_content, "considering");
+        assert_eq!(output.openai_response_items.len(), 1);
+        assert_eq!(
+            output.openai_response_items[0]["encrypted_content"],
+            "opaque-output"
+        );
         assert_eq!(output.tool_calls[0].id, "call-r");
         assert_eq!(output.usage.input_tokens, 100);
         assert_eq!(output.usage.cache_read_tokens, 20);
@@ -619,6 +779,15 @@ mod tests {
         assert!(matches!(
             events.into_iter().next().unwrap().unwrap(),
             StreamEvent::ReasoningDelta(text) if text == "plan"
+        ));
+
+        let events = parser.parse_line(
+            r#"data: {"type":"response.output_item.done","item":{"id":"rs-stream","type":"reasoning","summary":[],"encrypted_content":"opaque-stream"}}"#,
+        );
+        assert!(matches!(
+            events.into_iter().next().unwrap().unwrap(),
+            StreamEvent::OpenAiResponseItem(item)
+                if item["encrypted_content"] == "opaque-stream"
         ));
     }
 

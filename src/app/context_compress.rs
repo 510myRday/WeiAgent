@@ -182,6 +182,7 @@ fn summary_anchor_message(covered: &[ChatMessage], checkpoint: &ContextCheckpoin
         role: ChatRole::User,
         content: format!("{SUMMARY_ANCHOR_PREFIX}\n{}", checkpoint.summary.trim()),
         reasoning_content: None,
+        openai_response_items: Vec::new(),
         status: ChatMessageStatus::Done,
         created_at: checkpoint.created_at,
         tool_calls: None,
@@ -213,6 +214,11 @@ fn estimate_message_tokens(message: &ChatMessage) -> u64 {
         .tool_calls
         .as_ref()
         .map_or(0, |value| estimate_text_tokens(&value.to_string()));
+    let response_item_tokens = message
+        .openai_response_items
+        .iter()
+        .map(|item| estimate_text_tokens(&item.to_string()))
+        .sum::<u64>();
     let attachment_tokens = message.attachments.iter().fold(0_u64, |total, attachment| {
         total.saturating_add(match &attachment.source {
             crate::domain::ImageSource::Base64 { .. } => IMAGE_TOKEN_ESTIMATE,
@@ -236,6 +242,7 @@ fn estimate_message_tokens(message: &ChatMessage) -> u64 {
                 .map_or(0, estimate_text_tokens),
         )
         .saturating_add(tool_call_tokens)
+        .saturating_add(response_item_tokens)
         .saturating_add(attachment_tokens)
 }
 
@@ -301,6 +308,7 @@ fn compaction_instruction_message(agent: &Agent, covered: &[ChatMessage]) -> Cha
         role: ChatRole::User,
         content: COMPACTION_USER_PROMPT.to_string(),
         reasoning_content: None,
+        openai_response_items: Vec::new(),
         status: ChatMessageStatus::Done,
         created_at: Utc::now(),
         tool_calls: None,
@@ -701,6 +709,7 @@ fn build_summarizer_messages(
                 checkpoint.summary.trim()
             ),
             reasoning_content: None,
+            openai_response_items: Vec::new(),
             status: ChatMessageStatus::Done,
             created_at: checkpoint.created_at,
             tool_calls: None,
@@ -732,6 +741,7 @@ fn truncate_message_for_summary(message: &ChatMessage) -> ChatMessage {
     if let Some(reasoning) = cloned.reasoning_content.as_mut() {
         *reasoning = truncate_chars(reasoning, MAX_SUMMARY_TOOL_CHARS);
     }
+    cloned.openai_response_items.clear();
     // Drop bulky attachments from the summarizer request; note presence only.
     if !cloned.attachments.is_empty() {
         let count = cloned.attachments.len();
@@ -843,6 +853,7 @@ fn force_fit_messages(
     for message in &mut messages {
         message.usage = None;
         message.reasoning_content = None;
+        message.openai_response_items.clear();
         if !message.attachments.is_empty() {
             let count = message.attachments.len();
             message.attachments.clear();
@@ -1003,6 +1014,7 @@ mod tests {
             role,
             content: content.to_string(),
             reasoning_content: None,
+            openai_response_items: Vec::new(),
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
             tool_calls: None,
@@ -1083,6 +1095,7 @@ mod tests {
                 role: ChatRole::User,
                 content: format!("{SUMMARY_ANCHOR_PREFIX}\nprevious state"),
                 reasoning_content: None,
+                openai_response_items: Vec::new(),
                 status: ChatMessageStatus::Done,
                 created_at: Utc::now(),
                 tool_calls: None,

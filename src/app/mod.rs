@@ -67,6 +67,7 @@ mod tests {
             Ok(ChatCompletionOutput {
                 content: format!("{} via {}", agent.model_id, provider.name),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: Vec::new(),
             })
@@ -625,6 +626,7 @@ mod tests {
             ChatCompletionOutput {
                 content: String::new(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-1",
@@ -635,6 +637,7 @@ mod tests {
             ChatCompletionOutput {
                 content: String::new(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-2",
@@ -645,6 +648,7 @@ mod tests {
             ChatCompletionOutput {
                 content: "all tool rounds completed".to_string(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: Vec::new(),
             },
@@ -683,6 +687,7 @@ mod tests {
         let outputs = vec![ChatCompletionOutput {
             content: String::new(),
             reasoning_content: String::new(),
+            openai_response_items: Vec::new(),
             usage: Default::default(),
             tool_calls: vec![scripted_tool_call(
                 "call-before-error",
@@ -723,6 +728,7 @@ mod tests {
             ChatCompletionOutput {
                 content: String::new(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![crate::llm::types::ToolCall {
                     id: "invalid-args-call".to_string(),
@@ -736,6 +742,7 @@ mod tests {
             ChatCompletionOutput {
                 content: "handled invalid arguments".to_string(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: Vec::new(),
             },
@@ -763,6 +770,7 @@ mod tests {
             ChatCompletionOutput {
                 content: String::new(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-background",
@@ -773,6 +781,7 @@ mod tests {
             ChatCompletionOutput {
                 content: "background process started".to_string(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: Vec::new(),
             },
@@ -842,6 +851,7 @@ mod tests {
             ChatCompletionOutput {
                 content: String::new(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-approval-1",
@@ -856,12 +866,14 @@ mod tests {
             ChatCompletionOutput {
                 content: "approved once".to_string(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: Vec::new(),
             },
             ChatCompletionOutput {
                 content: String::new(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-approval-2",
@@ -876,6 +888,7 @@ mod tests {
             ChatCompletionOutput {
                 content: "approved permanently".to_string(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: Vec::new(),
             },
@@ -994,6 +1007,7 @@ mod tests {
             ChatCompletionOutput {
                 content: String::new(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-hot-reload-1",
@@ -1008,6 +1022,7 @@ mod tests {
             ChatCompletionOutput {
                 content: String::new(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-hot-reload-2",
@@ -1022,6 +1037,7 @@ mod tests {
             ChatCompletionOutput {
                 content: "hot reload applied".to_string(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: Vec::new(),
             },
@@ -1087,6 +1103,7 @@ mod tests {
             ChatCompletionOutput {
                 content: String::new(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-blocked",
@@ -1100,6 +1117,7 @@ mod tests {
             ChatCompletionOutput {
                 content: "invalid escalation rejected".to_string(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: Vec::new(),
             },
@@ -1144,6 +1162,7 @@ mod tests {
             ChatCompletionOutput {
                 content: String::new(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-explicit-background",
@@ -1154,6 +1173,7 @@ mod tests {
             ChatCompletionOutput {
                 content: "service started".to_string(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: Vec::new(),
             },
@@ -1309,6 +1329,7 @@ mod tests {
             ChatCompletionOutput {
                 content: String::new(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-budget-1",
@@ -1319,6 +1340,7 @@ mod tests {
             ChatCompletionOutput {
                 content: String::new(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
                     "call-budget-2",
@@ -1329,6 +1351,7 @@ mod tests {
             ChatCompletionOutput {
                 content: "budget summary ready".to_string(),
                 reasoning_content: String::new(),
+                openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: Vec::new(),
             },
@@ -1427,6 +1450,40 @@ mod tests {
             1
         );
         assert_eq!(messages.last().unwrap().content, "streamed final");
+    }
+
+    #[tokio::test]
+    async fn streaming_response_preserves_opaque_reasoning_items() {
+        let reasoning_item = json!({
+            "id": "rs-stream",
+            "type": "reasoning",
+            "summary": [],
+            "encrypted_content": "opaque-stream-state"
+        });
+        let (app, store, conversation_id) = streaming_test_app(vec![vec![
+            StreamEvent::OpenAiResponseItem(reasoning_item.clone()),
+            StreamEvent::TextDelta("final answer".to_string()),
+            StreamEvent::Finished,
+        ]])
+        .await;
+        let response = post_message_run(
+            &app,
+            conversation_id,
+            json!({"content": "keep reasoning", "stream": true}),
+        )
+        .await;
+        let run_id = started_run_id(response).await;
+        assert_eq!(wait_run_terminal(&app, &run_id).await, "completed");
+        let event_text = run_events_text(&app, &run_id).await;
+        assert!(!event_text.contains("opaque-stream-state"));
+
+        let messages = store
+            .read_conversation_messages(conversation_id)
+            .await
+            .unwrap();
+        let assistant = messages.last().unwrap();
+        assert_eq!(assistant.content, "final answer");
+        assert_eq!(assistant.openai_response_items, vec![reasoning_item]);
     }
 
     #[tokio::test]
