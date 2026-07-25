@@ -225,25 +225,15 @@ pub async fn execute_web_extract_with_status_updates(
         .max_chars_per_url
         .unwrap_or(DEFAULT_MAX_CHARS_PER_URL)
         .clamp(1_000, MAX_CHARS_PER_URL);
-    let local_client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(45))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent("WeiAgent/1.0 web_extract")
-        .build()
-    {
+    let local_client = match crate::tools::web_search::client_cache::local_extract_client() {
         Ok(client) => client,
-        Err(error) => {
-            return extraction_error(format!("failed to build local extraction client: {error}"));
-        }
+        Err(error) => return extraction_error(error),
     };
-    let remote_client = match reqwest::Client::builder()
-        .timeout(Duration::from_millis(web_search.timeout_ms()).max(Duration::from_secs(45)))
-        .build()
-    {
+    let remote_client = match crate::tools::web_search::client_cache::remote_extract_client(
+        Duration::from_millis(web_search.timeout_ms()).max(Duration::from_secs(45)),
+    ) {
         Ok(client) => client,
-        Err(error) => {
-            return extraction_error(format!("failed to build remote extraction client: {error}"));
-        }
+        Err(error) => return extraction_error(error),
     };
     let query = args.query.unwrap_or_default();
     let semaphore = Arc::new(Semaphore::new(3));
@@ -762,25 +752,18 @@ async fn execute_provider_extract(
 ) -> Result<ProviderExtractOutput, ProviderError> {
     let base_url = source.provider.default_extract_base_url();
     let proxied_client = if source.provider != WebSearchProviderKind::Grok {
-        if let Some(proxy_url) = source
+        source
             .proxy_url
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-        {
-            let proxy = reqwest::Proxy::all(proxy_url)
-                .map_err(|error| ProviderError::Retryable(format!("invalid proxy: {error}")))?;
-            Some(
-                reqwest::Client::builder()
-                    .timeout(Duration::from_millis(request.timeout_ms))
-                    .proxy(proxy)
-                    .build()
-                    .map_err(|error| {
-                        ProviderError::Retryable(format!("failed to build proxy client: {error}"))
-                    })?,
-            )
-        } else {
-            None
-        }
+            .map(|proxy_url| {
+                crate::tools::web_search::client_cache::control_client(
+                    Duration::from_millis(request.timeout_ms),
+                    Some(proxy_url),
+                )
+                .map_err(ProviderError::Retryable)
+            })
+            .transpose()?
     } else {
         None
     };

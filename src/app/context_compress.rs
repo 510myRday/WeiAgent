@@ -239,7 +239,7 @@ fn estimate_message_tokens(message: &ChatMessage) -> u64 {
         .saturating_add(attachment_tokens)
 }
 
-fn fixed_request_tokens(system_prompt: &str, tools: Option<&[ToolDefinition]>) -> u64 {
+pub fn fixed_request_tokens(system_prompt: &str, tools: Option<&[ToolDefinition]>) -> u64 {
     let tool_tokens = tools.map_or(0, |definitions| {
         serde_json::to_string(definitions)
             .map(|value| estimate_text_tokens(&value))
@@ -351,8 +351,13 @@ pub fn projected_request_tokens(
     system_prompt: &str,
     tools: Option<&[ToolDefinition]>,
 ) -> u64 {
-    let full_estimate = estimate_messages_tokens(messages)
-        .saturating_add(fixed_request_tokens(system_prompt, tools));
+    projected_request_tokens_with_fixed(messages, fixed_request_tokens(system_prompt, tools))
+}
+
+/// Same as [`projected_request_tokens`] with a precomputed fixed-prompt token
+/// count, so per-iteration callers avoid re-serializing the tool definitions.
+pub fn projected_request_tokens_with_fixed(messages: &[ChatMessage], fixed_tokens: u64) -> u64 {
+    let full_estimate = estimate_messages_tokens(messages).saturating_add(fixed_tokens);
     match latest_usage_context_tokens(messages) {
         Some((index, usage)) => usage
             .saturating_add(estimate_messages_tokens(
@@ -370,6 +375,14 @@ pub fn needs_compaction(
     tools: Option<&[ToolDefinition]>,
 ) -> bool {
     projected_request_tokens(messages, system_prompt, tools) >= config.soft_limit_tokens()
+}
+
+pub fn needs_compaction_with_fixed(
+    messages: &[ChatMessage],
+    config: &CompactionConfig,
+    fixed_tokens: u64,
+) -> bool {
+    projected_request_tokens_with_fixed(messages, fixed_tokens) >= config.soft_limit_tokens()
 }
 
 /// Ensure `messages` fit under the global threshold. May call the model for a summary.

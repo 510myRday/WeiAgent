@@ -64,8 +64,39 @@ pub fn build_emulated_client(
     timeout: Duration,
     proxy_url: Option<&str>,
 ) -> Result<wreq::Client, String> {
+    // Cache by (timeout, proxy): the Chrome TLS emulation client is expensive
+    // to build and per-search rebuilds would also discard its connection pool.
+    static CACHE: OnceLock<Mutex<BTreeMap<(u64, Option<String>), wreq::Client>>> = OnceLock::new();
+    const MAX_CACHED_CLIENTS: usize = 16;
     // Grok chat via local proxy is slow; never use a sub-60s overall budget.
     let timeout = timeout.max(Duration::from_secs(90));
+    let key = (
+        timeout.as_millis() as u64,
+        proxy_url
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    );
+    let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Ok(guard) = cache.lock()
+        && let Some(client) = guard.get(&key)
+    {
+        return Ok(client.clone());
+    }
+    let client = build_emulated_client_uncached(timeout, key.1.as_deref())?;
+    if let Ok(mut guard) = cache.lock() {
+        if guard.len() >= MAX_CACHED_CLIENTS {
+            guard.clear();
+        }
+        guard.insert(key, client.clone());
+    }
+    Ok(client)
+}
+
+fn build_emulated_client_uncached(
+    timeout: Duration,
+    proxy_url: Option<&str>,
+) -> Result<wreq::Client, String> {
     let mut builder = wreq::Client::builder()
         .emulation(Emulation::Chrome146)
         // Keep the warm-up and chat request on a reusable short-lived connection.

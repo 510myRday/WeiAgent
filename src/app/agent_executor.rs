@@ -109,28 +109,30 @@ struct ToolBudget {
     web_search_provenance: crate::tools::web_search::evidence::WebSearchProvenanceCache,
 }
 
+/// Per-run compaction inputs, loaded once instead of re-reading settings and
+/// the checkpoint from storage on every LLM iteration.
+struct CompactionState {
+    config: crate::app::context_compress::CompactionConfig,
+    checkpoint: Option<crate::domain::ContextCheckpoint>,
+    fixed_tokens_with_tools: u64,
+    fixed_tokens_without_tools: u64,
+}
+
 async fn ensure_messages_within_context(
     runtime: &AgentRuntime<'_>,
     messages: &mut Vec<ChatMessage>,
     tools: Option<&[ToolDefinition]>,
+    compaction: &mut CompactionState,
 ) -> AppResult<()> {
-    let checkpoint = runtime
-        .state
-        .store
-        .read_context_checkpoint(runtime.prepared.user_message.conversation_id)
-        .await?;
-    let settings = runtime.state.store.read_settings().await?;
-    let config = crate::app::context_compress::CompactionConfig::from_agent_provider_and_threshold(
-        &runtime.prepared.agent,
-        &runtime.prepared.provider,
-        settings.context_compress_threshold_percent,
-        runtime.options.thinking_level,
-    );
-    if !crate::app::context_compress::needs_compaction(
+    let fixed_tokens = if tools.is_some() {
+        compaction.fixed_tokens_with_tools
+    } else {
+        compaction.fixed_tokens_without_tools
+    };
+    if !crate::app::context_compress::needs_compaction_with_fixed(
         messages,
-        &config,
-        &runtime.prepared.system_prompt,
-        tools,
+        &compaction.config,
+        fixed_tokens,
     ) {
         return Ok(());
     }
@@ -149,12 +151,12 @@ async fn ensure_messages_within_context(
         runtime.client,
         &runtime.prepared.agent,
         &runtime.prepared.provider,
-        &config,
+        &compaction.config,
         &runtime.prepared.system_prompt,
         &runtime.options,
         tools,
         messages.clone(),
-        checkpoint,
+        compaction.checkpoint.clone(),
         runtime.events.as_ref(),
     )
     .await?;
@@ -171,8 +173,12 @@ async fn ensure_messages_within_context(
             runtime
                 .state
                 .store
-                .write_context_checkpoint(runtime.prepared.user_message.conversation_id, checkpoint)
+                .write_context_checkpoint(
+                    runtime.prepared.user_message.conversation_id,
+                    checkpoint.clone(),
+                )
                 .await?;
+            compaction.checkpoint = Some(checkpoint);
         }
     }
     Ok(())
@@ -213,6 +219,31 @@ pub async fn run_agent(
     let frozen_tools = state.tool_registry.definitions(&prepared.tools_config);
     let max_llm_iterations = prepared.tools_config.max_llm_iterations();
 
+    // Load compaction inputs once per run; the checkpoint is kept in memory and
+    // written back only when compaction produces a new one.
+    let settings = state.store.read_settings().await?;
+    let checkpoint = state
+        .store
+        .read_context_checkpoint(user_message.conversation_id)
+        .await?;
+    let mut compaction = CompactionState {
+        config: crate::app::context_compress::CompactionConfig::from_agent_provider_and_threshold(
+            &prepared.agent,
+            &prepared.provider,
+            settings.context_compress_threshold_percent,
+            options.thinking_level,
+        ),
+        checkpoint,
+        fixed_tokens_with_tools: crate::app::context_compress::fixed_request_tokens(
+            &prepared.system_prompt,
+            frozen_tools.as_deref(),
+        ),
+        fixed_tokens_without_tools: crate::app::context_compress::fixed_request_tokens(
+            &prepared.system_prompt,
+            None,
+        ),
+    };
+
     let runtime = AgentRuntime {
         state: &state,
         client: &client,
@@ -228,7 +259,8 @@ pub async fn run_agent(
             break;
         }
         let tools = frozen_tools.clone();
-        ensure_messages_within_context(&runtime, &mut messages, tools.as_deref()).await?;
+        ensure_messages_within_context(&runtime, &mut messages, tools.as_deref(), &mut compaction)
+            .await?;
         emit(
             &events,
             AgentRunEvent::Phase {
@@ -312,7 +344,14 @@ pub async fn run_agent(
         }
     }
 
-    let summary = match finalize_after_budget(&runtime, &mut messages, max_llm_iterations).await {
+    let summary = match finalize_after_budget(
+        &runtime,
+        &mut messages,
+        max_llm_iterations,
+        &mut compaction,
+    )
+    .await
+    {
         Ok(summary) => summary,
         Err(error) => {
             persist_run_failure(&runtime, &error).await;
@@ -354,6 +393,7 @@ async fn finalize_after_budget(
     runtime: &AgentRuntime<'_>,
     messages: &mut Vec<ChatMessage>,
     max_llm_iterations: usize,
+    compaction: &mut CompactionState,
 ) -> AppResult<ChatMessage> {
     let budget_notice = ChatMessage {
         id: Uuid::new_v4(),
@@ -374,7 +414,7 @@ async fn finalize_after_budget(
     // Keep the budget notice in the in-memory LLM context only.
     messages.push(budget_notice);
 
-    ensure_messages_within_context(runtime, messages, None).await?;
+    ensure_messages_within_context(runtime, messages, None, compaction).await?;
     emit(
         runtime.events,
         AgentRunEvent::Phase {

@@ -22,6 +22,7 @@ use self::types::{
     sanitize_error_message,
 };
 
+pub mod client_cache;
 pub mod evidence;
 pub mod key_pool;
 pub mod providers;
@@ -755,41 +756,18 @@ async fn execute_source_query(
         }
     };
     let timeout = Duration::from_millis(config.timeout_ms());
-    let mut control_client_builder = reqwest::Client::builder().timeout(timeout);
-    if source.provider != WebSearchProviderKind::Grok {
-        if let Some(proxy_url) = source
+    let control_proxy = if source.provider != WebSearchProviderKind::Grok {
+        source
             .proxy_url
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-        {
-            match reqwest::Proxy::all(proxy_url) {
-                Ok(proxy) => {
-                    control_client_builder = control_client_builder.proxy(proxy);
-                }
-                Err(error) => {
-                    return source_failure(
-                        source,
-                        query,
-                        started,
-                        "failed",
-                        format!("failed to configure proxy: {error}"),
-                        Vec::new(),
-                    );
-                }
-            }
-        }
-    }
-    let control_client = match control_client_builder.build() {
+    } else {
+        None
+    };
+    let control_client = match client_cache::control_client(timeout, control_proxy) {
         Ok(client) => client,
         Err(error) => {
-            return source_failure(
-                source,
-                query,
-                started,
-                "failed",
-                format!("failed to build HTTP client: {error}"),
-                Vec::new(),
-            );
+            return source_failure(source, query, started, "failed", error, Vec::new());
         }
     };
     let base_url = source.provider.default_base_url();
