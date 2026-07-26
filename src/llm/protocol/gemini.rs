@@ -277,7 +277,7 @@ fn build_gemini_request(
                     .map(|tool| json!({
                         "name": tool.function.name,
                         "description": tool.function.description,
-                        "parameters": tool.function.parameters,
+                        "parameters": sanitize_gemini_schema(&tool.function.parameters),
                     }))
                     .collect::<Vec<_>>()
             }]),
@@ -288,6 +288,78 @@ fn build_gemini_request(
         extra_body,
         &["systemInstruction", "contents", "tools", "generationConfig"],
     )
+}
+
+/// Gemini's native functionDeclarations schema is an OpenAPI 3.0 subset whose
+/// protobuf parser rejects unknown fields outright, so full JSON Schema tool
+/// definitions must be downgraded before sending: `oneOf` becomes the
+/// supported `anyOf`, `const` becomes a single-value `enum`,
+/// `type: [T, "null"]` becomes `type: T` plus `nullable`, tuple-form `items`
+/// keeps its first entry, and every keyword outside the documented allowlist
+/// (`additionalProperties`, `allOf`, `$ref`, exclusive bounds, ...) is
+/// dropped. Constraints are loosened, never tightened, so any call that was
+/// valid under the original schema still validates after the downgrade.
+fn sanitize_gemini_schema(schema: &Value) -> Value {
+    let Value::Object(map) = schema else {
+        return schema.clone();
+    };
+    let mut out = Map::new();
+    for (key, value) in map {
+        match key.as_str() {
+            "oneOf" | "anyOf" => {
+                if let Value::Array(branches) = value {
+                    out.insert(
+                        "anyOf".to_string(),
+                        Value::Array(branches.iter().map(sanitize_gemini_schema).collect()),
+                    );
+                }
+            }
+            "const" => {
+                // An explicit sibling `enum` wins over the derived one.
+                out.entry("enum".to_string())
+                    .or_insert_with(|| Value::Array(vec![value.clone()]));
+            }
+            "properties" => {
+                if let Value::Object(properties) = value {
+                    let sanitized: Map<String, Value> = properties
+                        .iter()
+                        .map(|(name, property)| (name.clone(), sanitize_gemini_schema(property)))
+                        .collect();
+                    out.insert("properties".to_string(), Value::Object(sanitized));
+                }
+            }
+            "items" => {
+                let item = if let Value::Array(entries) = value {
+                    entries.first().cloned().unwrap_or(Value::Null)
+                } else {
+                    value.clone()
+                };
+                if !item.is_null() {
+                    out.insert("items".to_string(), sanitize_gemini_schema(&item));
+                }
+            }
+            "type" => match value {
+                Value::Array(types) => {
+                    if let Some(main) = types.iter().find(|entry| entry.as_str() != Some("null")) {
+                        out.insert("type".to_string(), main.clone());
+                    }
+                    if types.iter().any(|entry| entry.as_str() == Some("null")) {
+                        out.insert("nullable".to_string(), Value::Bool(true));
+                    }
+                }
+                other => {
+                    out.insert("type".to_string(), other.clone());
+                }
+            },
+            "format" | "title" | "description" | "nullable" | "enum" | "maxItems" | "minItems"
+            | "required" | "minProperties" | "maxProperties" | "minLength" | "maxLength"
+            | "pattern" | "example" | "propertyOrdering" | "default" | "minimum" | "maximum" => {
+                out.insert(key.clone(), value.clone());
+            }
+            _ => {}
+        }
+    }
+    Value::Object(out)
 }
 
 fn append_parts(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
@@ -746,5 +818,77 @@ mod tests {
             StreamEvent::TextDelta(text) if text == "partial"
         ));
         assert!(events.last().unwrap().is_err());
+    }
+
+    #[test]
+    fn schema_downgrade_covers_unsupported_keywords() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "mode": {"const": "fast"},
+                "value": {"type": ["string", "null"], "maxLength": 10},
+                "ops": {
+                    "type": "array",
+                    "items": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {"a": {"type": "string"}}
+                            },
+                            {"type": "object", "properties": {"b": {"const": 2}}}
+                        ]
+                    }
+                },
+                "tuple": {"type": "array", "items": [{"type": "string"}, {"type": "integer"}]}
+            },
+            "required": ["mode"]
+        });
+
+        let sanitized = sanitize_gemini_schema(&schema);
+        let text = sanitized.to_string();
+        assert!(!text.contains("additionalProperties"));
+        assert!(!text.contains("oneOf"));
+        assert!(!text.contains("const"));
+        assert_eq!(sanitized["properties"]["mode"]["enum"], json!(["fast"]));
+        assert_eq!(sanitized["properties"]["value"]["type"], "string");
+        assert_eq!(sanitized["properties"]["value"]["nullable"], true);
+        assert_eq!(sanitized["properties"]["value"]["maxLength"], 10);
+        let branches = sanitized["properties"]["ops"]["items"]["anyOf"]
+            .as_array()
+            .expect("oneOf branches downgraded to anyOf");
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[1]["properties"]["b"]["enum"], json!([2]));
+        assert_eq!(sanitized["properties"]["tuple"]["items"]["type"], "string");
+        assert_eq!(sanitized["required"], json!(["mode"]));
+    }
+
+    #[test]
+    fn request_downgrades_builtin_tool_schemas() {
+        let provider = test_provider();
+        let mut config = crate::domain::AgentToolsConfig::default();
+        config.terminal.enabled = true;
+        let tools = crate::tools::registry::ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .expect("builtin tools available");
+
+        let request = build_gemini_request(
+            "gemini-3-pro",
+            &provider,
+            &fixture(),
+            "system",
+            &Value::Null,
+            Some(tools),
+            None,
+        )
+        .unwrap();
+
+        let declarations = request["tools"][0]["functionDeclarations"].to_string();
+        assert!(declarations.contains("multi_edit_file"));
+        assert!(declarations.contains("anyOf"));
+        assert!(!declarations.contains("oneOf"));
+        assert!(!declarations.contains("additionalProperties"));
+        assert!(!declarations.contains("\"const\""));
     }
 }

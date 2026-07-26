@@ -1,6 +1,8 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
+    ffi::OsStr,
     path::{Path, PathBuf},
+    sync::{Arc, LazyLock, Mutex as StdMutex},
     time::Instant,
 };
 
@@ -26,9 +28,19 @@ const MAX_PATH_BYTES: usize = 4_096;
 const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_OLD_STRING_BYTES: usize = 200_000;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MultiEditFileArgs {
+    /// Legacy single-file form: `path` plus top-level `edits`. Not advertised
+    /// in the schema, but accepted so model calls shaped after common edit
+    /// tools still work instead of failing deserialization.
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_vec_or_json_string")]
+    pub edits: Vec<MultiEditFileEdit>,
+    /// Legacy multi-file form: `files[]`, each with its own path and edits.
+    #[serde(default, deserialize_with = "deserialize_vec_or_json_string")]
+    pub files: Vec<MultiEditFileSpec>,
     #[serde(default, deserialize_with = "deserialize_vec_or_json_string")]
     pub operations: Vec<MultiEditFileOperation>,
     #[serde(default)]
@@ -37,6 +49,14 @@ pub struct MultiEditFileArgs {
     pub sandbox_permissions: SandboxPermissions,
     #[serde(default)]
     pub justification: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MultiEditFileSpec {
+    pub path: String,
+    #[serde(default, deserialize_with = "deserialize_vec_or_json_string")]
+    pub edits: Vec<MultiEditFileEdit>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -161,6 +181,66 @@ struct FileEditOutcome {
     warnings: Vec<String>,
 }
 
+/// Failure that still carries the warnings collected so far, most importantly
+/// rollback failures. Collapsing this to a plain message would silently drop
+/// the only signal that the disk may be in a partially rolled-back state.
+#[derive(Debug)]
+struct FileEditFailure {
+    message: String,
+    warnings: Vec<String>,
+}
+
+fn render_edit_failure(failure: FileEditFailure) -> String {
+    if failure.warnings.is_empty() {
+        return failure.message;
+    }
+    let mut message = failure.message;
+    message.push_str("\nwarnings:");
+    for warning in &failure.warnings {
+        message.push_str("\n- ");
+        message.push_str(warning);
+    }
+    message
+}
+
+/// Per-path async locks shared by every multi_edit_file call in this process.
+/// Two concurrent calls (e.g. from different conversations) that touch the
+/// same file would otherwise both stage from the same on-disk version and
+/// silently lose one side's changes, or the later writer would fail with an
+/// old_string mismatch. Keys come from `fsutil::path_identity_key`, so case
+/// variants of one Windows path share a lock.
+static FILE_LOCKS: LazyLock<StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+/// Locks are acquired in sorted key order so overlapping calls cannot
+/// deadlock against each other.
+async fn acquire_file_locks(paths: &[PathBuf]) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
+    let mut keys: Vec<String> = paths
+        .iter()
+        .map(|path| fsutil::path_identity_key(path))
+        .collect();
+    keys.sort();
+    keys.dedup();
+
+    let mutexes: Vec<Arc<tokio::sync::Mutex<()>>> = {
+        let mut table = FILE_LOCKS.lock().expect("file lock table poisoned");
+        keys.iter()
+            .map(|key| {
+                table
+                    .entry(key.clone())
+                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                    .clone()
+            })
+            .collect()
+    };
+
+    let mut guards = Vec::with_capacity(mutexes.len());
+    for mutex in mutexes {
+        guards.push(mutex.lock_owned().await);
+    }
+    guards
+}
+
 #[derive(Debug)]
 enum StagedFileOperation {
     Update {
@@ -209,11 +289,6 @@ pub async fn execute_multi_edit(
         Ok(ops) => ops,
         Err(message) => return ToolResult::Error { message },
     };
-    if operations.is_empty() {
-        return ToolResult::Error {
-            message: "multi_edit_file requires at least one operation".to_string(),
-        };
-    }
 
     let full_access = config.permission_mode == TerminalPermissionMode::FullAccess;
     let escalation_requested =
@@ -248,9 +323,28 @@ pub async fn execute_multi_edit(
     }
 
     let started = Instant::now();
-    let outcome = match apply_multi_edit_file(&workspace.cwd, &operations) {
-        Ok(outcome) => outcome,
-        Err(message) => return ToolResult::Error { message },
+    // Hold the per-path locks for the whole stage+commit window, and move the
+    // synchronous filesystem work off the async runtime so a large batch does
+    // not stall unrelated tasks on the shared worker threads.
+    let _file_locks = acquire_file_locks(&affected).await;
+    let cwd_for_apply = workspace.cwd.clone();
+    let operations_for_apply = operations.clone();
+    let outcome = match tokio::task::spawn_blocking(move || {
+        apply_multi_edit_file(&cwd_for_apply, &operations_for_apply)
+    })
+    .await
+    {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(failure)) => {
+            return ToolResult::Error {
+                message: render_edit_failure(failure),
+            };
+        }
+        Err(join_error) => {
+            return ToolResult::Error {
+                message: format!("multi_edit_file worker panicked: {join_error}"),
+            };
+        }
     };
 
     let payload = serde_json::json!({
@@ -360,7 +454,7 @@ fn resolve_edit_workspace(
 
     let requested = match cwd.map(str::trim).filter(|value| !value.is_empty()) {
         Some(path) => {
-            let path = PathBuf::from(path);
+            let path = PathBuf::from(expand_home_path(path));
             if path.is_absolute() {
                 path
             } else {
@@ -426,8 +520,36 @@ fn enforce_path_policy(
 fn normalize_multi_edit_operations(
     args: &MultiEditFileArgs,
 ) -> Result<Vec<MultiEditFileOperation>, String> {
-    let operations = args.operations.clone();
+    let mut operations = Vec::new();
 
+    if let Some(path) = args
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        operations.push(MultiEditFileOperation::Edit {
+            path: path.to_string(),
+            edits: args.edits.clone(),
+        });
+    } else if !args.edits.is_empty() {
+        return Err("path is required when using top-level edits".to_string());
+    }
+
+    for file in &args.files {
+        operations.push(MultiEditFileOperation::Edit {
+            path: file.path.clone(),
+            edits: file.edits.clone(),
+        });
+    }
+
+    operations.extend(args.operations.clone());
+
+    if operations.is_empty() {
+        return Err(
+            "multi_edit_file requires operations (or legacy path+edits / files)".to_string(),
+        );
+    }
     if operations.len() > MAX_OPERATIONS {
         return Err(format!(
             "multi_edit_file supports at most {MAX_OPERATIONS} operations per call"
@@ -524,7 +646,29 @@ fn collect_affected_paths(
             }
         }
     }
+    let mut seen = BTreeSet::new();
+    paths.retain(|path| seen.insert(fsutil::path_identity_key(path)));
     Ok(paths)
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+}
+
+fn expand_home_path(raw: &str) -> String {
+    if raw == "~"
+        && let Some(home) = home_dir()
+    {
+        return home.to_string_lossy().into_owned();
+    }
+    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\"))
+        && let Some(home) = home_dir()
+    {
+        return home.join(rest).to_string_lossy().into_owned();
+    }
+    raw.to_string()
 }
 
 fn resolve_operation_path(cwd: &Path, path: &str) -> Result<PathBuf, String> {
@@ -532,7 +676,7 @@ fn resolve_operation_path(cwd: &Path, path: &str) -> Result<PathBuf, String> {
     if path.is_empty() {
         return Err("path cannot be empty".to_string());
     }
-    let candidate = PathBuf::from(path);
+    let candidate = PathBuf::from(expand_home_path(path));
     let joined = if candidate.is_absolute() {
         candidate
     } else {
@@ -580,7 +724,7 @@ fn build_approval_summary(operations: &[MultiEditFileOperation]) -> String {
 fn apply_multi_edit_file(
     cwd: &Path,
     operations: &[MultiEditFileOperation],
-) -> Result<FileEditOutcome, String> {
+) -> Result<FileEditOutcome, FileEditFailure> {
     let mut touched = BTreeSet::new();
     let mut staged = Vec::new();
     let mut warnings = Vec::new();
@@ -593,11 +737,15 @@ fn apply_multi_edit_file(
             &mut touched,
             &mut staged,
             &mut warnings,
-        )?;
+        )
+        .map_err(|message| FileEditFailure {
+            message,
+            warnings: Vec::new(),
+        })?;
     }
 
     let mut changes = Vec::new();
-    let mut committed = Vec::new();
+    let mut committed: Vec<StagedFileOperation> = Vec::with_capacity(staged.len());
     for operation in staged {
         match commit_operation(&operation) {
             Ok(change) => {
@@ -605,18 +753,32 @@ fn apply_multi_edit_file(
                 committed.push(operation);
             }
             Err(error) => {
-                let rollback = rollback_committed(&committed);
-                warnings.extend(rollback);
-                return Err(format!(
-                    "{error}; rolled back {} earlier change(s)",
-                    committed.len()
-                ));
+                let rollback_warnings = rollback_committed(&committed);
+                // Only claim a clean rollback when every undo step succeeded;
+                // otherwise say exactly how many steps failed and surface the
+                // per-step details through the warnings.
+                let message = if committed.is_empty() {
+                    error
+                } else if rollback_warnings.is_empty() {
+                    format!("{error}; rolled back {} earlier change(s)", committed.len())
+                } else {
+                    format!(
+                        "{error}; attempted rollback of {} earlier change(s) but {} rollback step(s) failed, files may be partially modified",
+                        committed.len(),
+                        rollback_warnings.len()
+                    )
+                };
+                warnings.extend(rollback_warnings);
+                return Err(FileEditFailure { message, warnings });
             }
         }
     }
 
     if changes.is_empty() {
-        return Err("multi_edit_file produced no changes".to_string());
+        return Err(FileEditFailure {
+            message: "multi_edit_file produced no changes".to_string(),
+            warnings,
+        });
     }
 
     Ok(FileEditOutcome {
@@ -655,9 +817,7 @@ fn stage_operation(
                 ));
             }
             let updated = restore_line_endings(&updated_lf, endings);
-            if let Some(warning) = delimiter_warning(path, &original, &updated) {
-                warnings.push(warning);
-            }
+            warnings.extend(collect_edit_warnings(&target, &original, &updated));
             staged.push(StagedFileOperation::Update {
                 path: target,
                 old_content: original,
@@ -686,13 +846,18 @@ fn stage_operation(
                     }
                     Some(existing)
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) if is_path_not_found(&error) => None,
                 Err(error) => {
                     return Err(format!(
                         "operation {index} failed to inspect {path}: {error}"
                     ));
                 }
             };
+            warnings.extend(collect_edit_warnings(
+                &target,
+                previous.as_deref().unwrap_or_default(),
+                content,
+            ));
             staged.push(StagedFileOperation::Create {
                 path: target,
                 content: content.clone(),
@@ -723,6 +888,11 @@ fn stage_operation(
         } => {
             let from_path = resolve_operation_path(cwd, from)?;
             let to_path = resolve_operation_path(cwd, to)?;
+            if fsutil::paths_equal(&from_path, &to_path) {
+                return Err(format!(
+                    "operation {index} move source and target are the same: {from}"
+                ));
+            }
             ensure_unique(touched, &from_path)?;
             ensure_unique(touched, &to_path)?;
             if from_path.is_dir() || to_path.is_dir() {
@@ -742,7 +912,7 @@ fn stage_operation(
                     }
                     Some(existing)
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) if is_path_not_found(&error) => None,
                 Err(error) => {
                     return Err(format!(
                         "operation {index} failed to inspect move target {to}: {error}"
@@ -831,54 +1001,92 @@ fn commit_operation(operation: &StagedFileOperation) -> Result<FileEditChange, S
     }
 }
 
+/// Best-effort rollback of operations that already reached disk before a
+/// later stage failed. Iterates in reverse order; every failed undo step is
+/// reported individually and never aborts the remaining undo attempts.
 fn rollback_committed(committed: &[StagedFileOperation]) -> Vec<String> {
     let mut warnings = Vec::new();
     for operation in committed.iter().rev() {
-        let result = match operation {
+        match operation {
             StagedFileOperation::Update {
                 path, old_content, ..
-            } => write_text_file(path, old_content),
+            } => {
+                if let Err(error) = write_text_file(path, old_content) {
+                    warnings.push(error);
+                }
+            }
             StagedFileOperation::Create {
                 path,
                 overwritten,
                 previous_content,
                 ..
             } => {
-                if *overwritten {
+                let result = if *overwritten {
                     if let Some(previous) = previous_content {
                         write_text_file(path, previous)
                     } else {
                         Ok(())
                     }
                 } else {
-                    std::fs::remove_file(path).map_err(|error| {
-                        format!("rollback failed to remove {}: {error}", path.display())
-                    })
+                    remove_file_tolerant(path)
+                };
+                if let Err(error) = result {
+                    warnings.push(error);
                 }
             }
-            StagedFileOperation::Delete { path, content } => write_text_file(path, content),
+            StagedFileOperation::Delete { path, content } => {
+                if let Err(error) = write_text_file(path, content) {
+                    warnings.push(error);
+                }
+            }
             StagedFileOperation::Move {
                 from,
                 to,
                 content,
                 overwritten_content,
             } => {
-                let restore_from = write_text_file(from, content);
+                if let Err(error) = write_text_file(from, content) {
+                    warnings.push(error);
+                }
                 let restore_to = if let Some(previous) = overwritten_content {
                     write_text_file(to, previous)
                 } else {
-                    std::fs::remove_file(to).map_err(|error| {
-                        format!("rollback failed to remove {}: {error}", to.display())
-                    })
+                    remove_file_tolerant(to)
                 };
-                restore_from.and(restore_to)
+                if let Err(error) = restore_to {
+                    warnings.push(error);
+                }
             }
-        };
-        if let Err(error) = result {
-            warnings.push(error);
         }
     }
     warnings
+}
+
+/// Removing a file that is already gone is a successful undo, not a failure.
+fn remove_file_tolerant(path: &Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "rollback failed to remove {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+/// Returns true if the IO error indicates the path (or a component of it)
+/// does not exist. On Unix, traversing a path like `file.txt/child.txt`
+/// where `file.txt` is a regular file yields ENOTDIR (raw OS error 20)
+/// rather than ENOENT; Windows reports NotFound for the same situation.
+fn is_path_not_found(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return true;
+    }
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(20) {
+        return true;
+    }
+    false
 }
 
 fn write_text_file(path: &Path, content: &str) -> Result<(), String> {
@@ -920,6 +1128,7 @@ fn apply_edits_to_lf(
 ) -> Result<(String, usize), String> {
     let mut current = content.to_string();
     let mut total = 0usize;
+    let mut applied_new_strings: Vec<String> = Vec::new();
     for (edit_index, edit) in edits.iter().enumerate() {
         let old = normalize_to_lf(&edit.old_string);
         let new = normalize_to_lf(&edit.new_string);
@@ -935,6 +1144,18 @@ fn apply_edits_to_lf(
                 edit_index + 1
             ));
         }
+        // Refuse edits whose old_string targets text that an earlier edit in
+        // this same operation just produced: those matches did not exist in
+        // the file the model read, so applying them silently rewrites
+        // generated content in ways the model did not intend.
+        for previous_new_string in &applied_new_strings {
+            if previous_new_string.contains(&old) {
+                return Err(format!(
+                    "operation {operation_index} edit {} old_string is a substring of a previous new_string; split or reorder edits to avoid re-editing generated content",
+                    edit_index + 1
+                ));
+            }
+        }
         let matches: Vec<_> = current.match_indices(&old).map(|(idx, _)| idx).collect();
         if matches.is_empty() {
             return Err(format!(
@@ -945,22 +1166,24 @@ fn apply_edits_to_lf(
         if edit.replace_all {
             current = current.replace(&old, &new);
             total = total.saturating_add(matches.len());
+            applied_new_strings.push(new);
             continue;
         }
         if matches.len() > 1 {
             let Some(start_line) = edit.start_line else {
                 return Err(format!(
-                    "operation {operation_index} edit {} old_string matches {} times in {path}; set replace_all=true or provide startLine",
+                    "operation {operation_index} edit {} old_string matches {} times in {path}; set replace_all=true or provide start_line",
                     edit_index + 1,
                     matches.len()
                 ));
             };
-            let chosen = choose_closest_match(&current, &matches, start_line).ok_or_else(|| {
-                format!(
-                    "operation {operation_index} edit {} could not resolve ambiguous match near line {start_line} in {path}",
-                    edit_index + 1
-                )
-            })?;
+            let chosen =
+                choose_closest_match(&current, &old, &matches, start_line).ok_or_else(|| {
+                    format!(
+                        "operation {operation_index} edit {} could not resolve ambiguous match near line {start_line} in {path}",
+                        edit_index + 1
+                    )
+                })?;
             current.replace_range(chosen..chosen + old.len(), &new);
             total = total.saturating_add(1);
         } else {
@@ -968,22 +1191,41 @@ fn apply_edits_to_lf(
             current.replace_range(idx..idx + old.len(), &new);
             total = total.saturating_add(1);
         }
+        applied_new_strings.push(new);
     }
     Ok((current, total))
 }
 
-fn choose_closest_match(content: &str, matches: &[usize], start_line: usize) -> Option<usize> {
-    if start_line == 0 {
+/// Pick the ambiguous match closest to the model-provided line hint. The hint
+/// is scored against both the expected first line and the expected last line
+/// of the old_string block, so hints that point anywhere near a multi-line
+/// block (or drift after earlier edits shifted content) still resolve to the
+/// intended occurrence. A hint of 0 is treated as the top of the file.
+fn choose_closest_match(
+    content: &str,
+    old_string: &str,
+    matches: &[usize],
+    start_line: usize,
+) -> Option<usize> {
+    if matches.is_empty() {
         return None;
     }
-    matches.iter().copied().min_by_key(|idx| {
-        let line = content[..*idx]
-            .bytes()
-            .filter(|byte| *byte == b'\n')
-            .count()
-            + 1;
-        line.abs_diff(start_line)
+    let expected = start_line.max(1);
+    let old_line_count = old_string.split('\n').count().max(1);
+    matches.iter().copied().min_by_key(|byte_index| {
+        let actual_line = line_number_at_byte_index(content, *byte_index);
+        let distance_to_start = actual_line.abs_diff(expected);
+        let distance_to_end = actual_line.abs_diff(expected.saturating_add(old_line_count - 1));
+        distance_to_start.min(distance_to_end)
     })
+}
+
+fn line_number_at_byte_index(content: &str, byte_index: usize) -> usize {
+    content[..byte_index.min(content.len())]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1
 }
 
 fn summarize_changes(changes: &[FileEditChange]) -> MultiEditSummary {
@@ -1011,8 +1253,10 @@ fn summarize_changes(changes: &[FileEditChange]) -> MultiEditSummary {
     summary
 }
 
+/// Only CRLF pairs are folded for matching; a lone `\r` is real file content
+/// and folding it would rewrite untouched regions on write-back.
 fn normalize_to_lf(value: &str) -> String {
-    value.replace("\r\n", "\n").replace('\r', "\n")
+    value.replace("\r\n", "\n")
 }
 
 #[derive(Clone, Copy)]
@@ -1021,8 +1265,12 @@ enum LineEnding {
     Crlf,
 }
 
+/// Majority vote instead of `contains("\r\n")`: one stray CRLF in an
+/// otherwise-LF file must not flip the whole file to CRLF on write-back.
 fn detect_line_endings(value: &str) -> LineEnding {
-    if value.contains("\r\n") {
+    let crlf_count = value.match_indices("\r\n").count();
+    let lf_count = value.bytes().filter(|byte| *byte == b'\n').count();
+    if crlf_count > lf_count.saturating_sub(crlf_count) {
         LineEnding::Crlf
     } else {
         LineEnding::Lf
@@ -1036,30 +1284,176 @@ fn restore_line_endings(value: &str, endings: LineEnding) -> String {
     }
 }
 
-fn delimiter_warning(path: &str, before: &str, after: &str) -> Option<String> {
-    let pairs = [('(', ')'), ('[', ']'), ('{', '}')];
-    for (open, close) in pairs {
-        let before_balance = balance(before, open, close);
-        let after_balance = balance(after, open, close);
-        if before_balance == 0 && after_balance != 0 {
-            return Some(format!(
-                "warning: edit for {path} changed balance of {open}{close} delimiters"
+/// Post-edit hazard checks for code files. Warnings never block the write;
+/// they flag likely mistakes (escaped `${` in TS/JS templates, delimiters
+/// that became unbalanced) so the model can inspect before continuing.
+fn collect_edit_warnings(path: &Path, old_content: &str, new_content: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let Some(extension) = path.extension().and_then(OsStr::to_str) else {
+        return warnings;
+    };
+    let extension = extension.to_ascii_lowercase();
+    let is_js_like = matches!(extension.as_str(), "js" | "jsx" | "ts" | "tsx");
+    let is_checked_code = is_js_like || extension == "rs";
+
+    if is_js_like && new_content.contains("\\${") {
+        warnings.push(format!(
+            "{} contains `\\${{`; TS/JS template expressions usually require `${{...}}` without the backslash.",
+            path.to_string_lossy()
+        ));
+    }
+
+    if is_checked_code {
+        let old_issues = bracket_balance_issues(old_content, is_js_like);
+        let new_issues = bracket_balance_issues(new_content, is_js_like);
+        // Only warn when this edit introduced or changed the issues; a file
+        // that was already unbalanced before the edit stays silent.
+        if !new_issues.is_empty() && old_issues != new_issues {
+            warnings.push(format!(
+                "{} may have unbalanced delimiters after edit: {}",
+                path.to_string_lossy(),
+                new_issues.join("; ")
             ));
         }
     }
-    None
+
+    warnings
 }
 
-fn balance(value: &str, open: char, close: char) -> i32 {
-    let mut score = 0i32;
-    for ch in value.chars() {
-        if ch == open {
-            score += 1;
-        } else if ch == close {
-            score -= 1;
+/// Bracket balance scanner that skips comments and string literals so quoted
+/// delimiters do not produce false positives. Reports at most five issues
+/// with line and column positions.
+fn bracket_balance_issues(content: &str, js_like: bool) -> Vec<String> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ScanState {
+        Code,
+        LineComment,
+        BlockComment,
+        DoubleString,
+        SingleString,
+        TemplateString,
+    }
+
+    let mut state = ScanState::Code;
+    let mut escaped = false;
+    let mut stack = Vec::<(char, usize, usize)>::new();
+    let mut issues = Vec::<String>::new();
+    let mut chars = content.chars().peekable();
+    let mut line = 1usize;
+    let mut column = 0usize;
+
+    while let Some(ch) = chars.next() {
+        column += 1;
+        let next = chars.peek().copied();
+
+        match state {
+            ScanState::Code => match ch {
+                '/' if next == Some('/') => {
+                    chars.next();
+                    column += 1;
+                    state = ScanState::LineComment;
+                }
+                '/' if next == Some('*') => {
+                    chars.next();
+                    column += 1;
+                    state = ScanState::BlockComment;
+                }
+                '"' => {
+                    escaped = false;
+                    state = ScanState::DoubleString;
+                }
+                '\'' if js_like => {
+                    escaped = false;
+                    state = ScanState::SingleString;
+                }
+                '`' if js_like => {
+                    escaped = false;
+                    state = ScanState::TemplateString;
+                }
+                '(' | '[' | '{' => stack.push((ch, line, column)),
+                ')' | ']' | '}' => {
+                    let expected = matching_open_delimiter(ch);
+                    match stack.pop() {
+                        Some((open, _, _)) if open == expected => {}
+                        Some((open, open_line, open_column)) => issues.push(format!(
+                            "line {line}, column {column}: found `{ch}` while `{open}` opened at line {open_line}, column {open_column}"
+                        )),
+                        None => issues.push(format!(
+                            "line {line}, column {column}: unmatched closing `{ch}`"
+                        )),
+                    }
+                }
+                _ => {}
+            },
+            ScanState::LineComment => {
+                if ch == '\n' {
+                    state = ScanState::Code;
+                }
+            }
+            ScanState::BlockComment => {
+                if ch == '*' && next == Some('/') {
+                    chars.next();
+                    column += 1;
+                    state = ScanState::Code;
+                }
+            }
+            ScanState::DoubleString => {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    state = ScanState::Code;
+                }
+            }
+            ScanState::SingleString => {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '\'' {
+                    state = ScanState::Code;
+                }
+            }
+            ScanState::TemplateString => {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '`' {
+                    state = ScanState::Code;
+                }
+            }
+        }
+
+        if ch == '\n' {
+            line += 1;
+            column = 0;
+            if state == ScanState::LineComment {
+                state = ScanState::Code;
+            }
         }
     }
-    score
+
+    issues.extend(
+        stack
+            .into_iter()
+            .rev()
+            .map(|(open, open_line, open_column)| {
+                format!("line {open_line}, column {open_column}: unclosed `{open}`")
+            }),
+    );
+    issues.truncate(5);
+    issues
+}
+
+fn matching_open_delimiter(close: char) -> char {
+    match close {
+        ')' => '(',
+        ']' => '[',
+        '}' => '{',
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -1128,6 +1522,7 @@ mod tests {
                     cwd: None,
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     justification: None,
+                    ..Default::default()
                 },
                 approved: true,
             },
@@ -1161,6 +1556,7 @@ mod tests {
                     cwd: None,
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     justification: None,
+                    ..Default::default()
                 },
                 approved: true,
             },
@@ -1194,6 +1590,7 @@ mod tests {
                     cwd: Some(configured_root.path().display().to_string()),
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     justification: None,
+                    ..Default::default()
                 },
                 approved: true,
             },
@@ -1234,6 +1631,7 @@ mod tests {
                     cwd: Some(dir.path().display().to_string()),
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     justification: None,
+                    ..Default::default()
                 },
                 approved: true,
             },
@@ -1271,6 +1669,7 @@ mod tests {
                     cwd: Some(dir.path().display().to_string()),
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     justification: None,
+                    ..Default::default()
                 },
                 approved: false,
             },
@@ -1317,6 +1716,7 @@ mod tests {
                     cwd: Some(dir.path().display().to_string()),
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     justification: None,
+                    ..Default::default()
                 },
                 approved: false,
             },
@@ -1355,6 +1755,7 @@ mod tests {
                     cwd: Some(workspace.path().display().to_string()),
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     justification: None,
+                    ..Default::default()
                 },
                 approved: false,
             },
@@ -1396,6 +1797,7 @@ mod tests {
                     cwd: Some(workspace.path().display().to_string()),
                     sandbox_permissions: SandboxPermissions::RequireEscalated,
                     justification: Some("edit project root outside data workspace".to_string()),
+                    ..Default::default()
                 },
                 approved: false,
             },
@@ -1431,6 +1833,7 @@ mod tests {
                     cwd: Some(workspace.path().display().to_string()),
                     sandbox_permissions: SandboxPermissions::RequireEscalated,
                     justification: Some("edit project root outside data workspace".to_string()),
+                    ..Default::default()
                 },
                 approved: true,
             },
@@ -1461,7 +1864,250 @@ mod tests {
             }],
         )
         .unwrap_err();
-        assert!(err.contains("matches"));
+        assert!(err.message.contains("matches"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "x\nx\n");
+    }
+
+    #[test]
+    fn legacy_path_and_files_forms_normalize_to_operations() {
+        let args: MultiEditFileArgs = serde_json::from_value(serde_json::json!({
+            "path": "a.txt",
+            "edits": [{"old_string": "x", "new_string": "y"}],
+            "files": [{"path": "b.txt", "edits": [{"old_string": "1", "new_string": "2"}]}],
+            "operations": [{"type": "delete", "path": "c.txt"}]
+        }))
+        .expect("legacy argument forms should deserialize");
+
+        let operations = normalize_multi_edit_operations(&args).expect("normalize");
+        assert_eq!(operations.len(), 3);
+        assert!(
+            matches!(&operations[0], MultiEditFileOperation::Edit { path, .. } if path == "a.txt")
+        );
+        assert!(
+            matches!(&operations[1], MultiEditFileOperation::Edit { path, .. } if path == "b.txt")
+        );
+        assert!(
+            matches!(&operations[2], MultiEditFileOperation::Delete { path } if path == "c.txt")
+        );
+    }
+
+    #[test]
+    fn top_level_edits_without_path_are_rejected() {
+        let args: MultiEditFileArgs = serde_json::from_value(serde_json::json!({
+            "edits": [{"old_string": "x", "new_string": "y"}]
+        }))
+        .expect("top-level edits should deserialize");
+        let err = normalize_multi_edit_operations(&args).unwrap_err();
+        assert!(err.contains("path is required"));
+    }
+
+    #[test]
+    fn rejects_old_string_from_previous_new_string() {
+        let err = apply_edits_to_lf(
+            "alpha\n",
+            &[
+                MultiEditFileEdit {
+                    old_string: "alpha".to_string(),
+                    new_string: "beta gamma".to_string(),
+                    replace_all: false,
+                    start_line: None,
+                },
+                MultiEditFileEdit {
+                    old_string: "gamma".to_string(),
+                    new_string: "delta".to_string(),
+                    replace_all: false,
+                    start_line: None,
+                },
+            ],
+            "a.txt",
+            1,
+        )
+        .unwrap_err();
+        assert!(err.contains("substring of a previous new_string"));
+    }
+
+    #[test]
+    fn line_endings_follow_majority_style() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        let edit_two = || {
+            vec![MultiEditFileEdit {
+                old_string: "two".to_string(),
+                new_string: "TWO".to_string(),
+                replace_all: false,
+                start_line: None,
+            }]
+        };
+
+        // One stray CRLF in an LF-majority file must not flip it to CRLF.
+        std::fs::write(&path, "one\ntwo\r\nthree\nfour\n").unwrap();
+        apply_multi_edit_file(
+            dir.path(),
+            &[MultiEditFileOperation::Edit {
+                path: "a.txt".to_string(),
+                edits: edit_two(),
+            }],
+        )
+        .expect("edit should apply");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "one\nTWO\nthree\nfour\n"
+        );
+
+        // A CRLF-majority file keeps CRLF endings.
+        std::fs::write(&path, "one\r\ntwo\r\nthree\n").unwrap();
+        apply_multi_edit_file(
+            dir.path(),
+            &[MultiEditFileOperation::Edit {
+                path: "a.txt".to_string(),
+                edits: edit_two(),
+            }],
+        )
+        .expect("edit should apply");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "one\r\nTWO\r\nthree\r\n"
+        );
+    }
+
+    #[test]
+    fn start_line_zero_is_tolerated_and_block_end_hint_resolves() {
+        // Two identical two-line blocks starting at lines 1 and 9.
+        let content = "alpha\nbeta\n1\n2\n3\n4\n5\n6\nalpha\nbeta\n";
+        let edits = |start_line: Option<usize>| {
+            vec![MultiEditFileEdit {
+                old_string: "alpha\nbeta".to_string(),
+                new_string: "ALPHA\nBETA".to_string(),
+                replace_all: false,
+                start_line,
+            }]
+        };
+
+        // A hint on the block's last line still selects that block.
+        let (updated, replacements) =
+            apply_edits_to_lf(content, &edits(Some(10)), "a.txt", 1).unwrap();
+        assert_eq!(replacements, 1);
+        assert!(updated.starts_with("alpha\nbeta\n"));
+        assert!(updated.ends_with("ALPHA\nBETA\n"));
+
+        // A zero hint counts as the top of the file instead of erroring.
+        let (updated, _) = apply_edits_to_lf(content, &edits(Some(0)), "a.txt", 1).unwrap();
+        assert!(updated.starts_with("ALPHA\nBETA\n"));
+    }
+
+    #[test]
+    fn warns_on_escaped_template_dollar_and_scanner_ignores_strings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ts"), "const x = `v`;\n").unwrap();
+        let outcome = apply_multi_edit_file(
+            dir.path(),
+            &[MultiEditFileOperation::Edit {
+                path: "a.ts".to_string(),
+                edits: vec![MultiEditFileEdit {
+                    old_string: "`v`".to_string(),
+                    new_string: "`v \\${name}`".to_string(),
+                    replace_all: false,
+                    start_line: None,
+                }],
+            }],
+        )
+        .expect("edit should apply");
+        assert!(outcome.warnings.iter().any(|w| w.contains("\\${")));
+
+        // A parenthesis inside a string literal must not trigger the scanner.
+        std::fs::write(dir.path().join("b.rs"), "fn main() { let _s = \"x\"; }\n").unwrap();
+        let outcome = apply_multi_edit_file(
+            dir.path(),
+            &[MultiEditFileOperation::Edit {
+                path: "b.rs".to_string(),
+                edits: vec![MultiEditFileEdit {
+                    old_string: "\"x\"".to_string(),
+                    new_string: "\"(\"".to_string(),
+                    replace_all: false,
+                    start_line: None,
+                }],
+            }],
+        )
+        .expect("edit should apply");
+        assert!(
+            outcome.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            outcome.warnings
+        );
+    }
+
+    #[test]
+    fn warns_on_unbalanced_brackets_from_edit_and_create() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+        let outcome = apply_multi_edit_file(
+            dir.path(),
+            &[
+                MultiEditFileOperation::Edit {
+                    path: "a.rs".to_string(),
+                    edits: vec![MultiEditFileEdit {
+                        old_string: "fn main() {}".to_string(),
+                        new_string: "fn main() {".to_string(),
+                        replace_all: false,
+                        start_line: None,
+                    }],
+                },
+                MultiEditFileOperation::Create {
+                    path: "b.rs".to_string(),
+                    content: "fn broken( {}\n".to_string(),
+                    overwrite: false,
+                },
+            ],
+        )
+        .expect("operations should apply");
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("a.rs") && w.contains("unclosed"))
+        );
+        assert!(outcome.warnings.iter().any(|w| w.contains("b.rs")));
+    }
+
+    #[test]
+    fn expand_home_path_resolves_tilde_prefix() {
+        let home = home_dir().expect("home directory available in test environment");
+        let expanded = expand_home_path("~/wei-agent-test.txt");
+        assert!(Path::new(&expanded).starts_with(&home));
+        assert_eq!(expand_home_path("plain.txt"), "plain.txt");
+    }
+
+    #[tokio::test]
+    async fn file_locks_serialize_writes_to_the_same_path() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let target = PathBuf::from("wei-agent-lock-test/shared.txt");
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        let in_critical = Arc::new(AtomicBool::new(false));
+        let saw_overlap = Arc::new(AtomicBool::new(false));
+
+        let run = || {
+            let target = target.clone();
+            let gate = gate.clone();
+            let in_critical = in_critical.clone();
+            let saw_overlap = saw_overlap.clone();
+            async move {
+                gate.wait().await;
+                let _guards = acquire_file_locks(std::slice::from_ref(&target)).await;
+                if in_critical.swap(true, Ordering::SeqCst) {
+                    saw_overlap.store(true, Ordering::SeqCst);
+                }
+                // Hold the lock long enough that the peer would observe
+                // overlap if serialization were broken.
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                in_critical.store(false, Ordering::SeqCst);
+            }
+        };
+
+        let first = tokio::spawn(run());
+        let second = tokio::spawn(run());
+        first.await.expect("first task");
+        second.await.expect("second task");
+        assert!(!saw_overlap.load(Ordering::SeqCst));
     }
 }

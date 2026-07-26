@@ -529,7 +529,7 @@ struct MultiEditFileTool;
 impl AgentTool for MultiEditFileTool {
     fn definition(&self, config: &AgentToolsConfig) -> ToolDefinition {
         let description = format!(
-            "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated by the server; failure leaves files unchanged. For an edit, read the current file first when it is not already in context, copy old_string exactly including indentation, keep it short and unique, and put all replacements for one path in one operation. operations must be a JSON array, never quoted JSON text. Do not include line-number prefixes in old_string. In-workspace edits may require approval under request_approval. Paths outside the configured workspace roots must set sandbox_permissions=require_escalated with a short justification so the user can approve; do not bypass multi_edit_file via shell when an outside-root edit is needed. Exact edits compare LF-normalized text; use replace_all or startLine only when needed.{}",
+            "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated before anything is written; on failure files are left unchanged. Result warnings (for example possibly unbalanced delimiters) do not block the write; inspect them before continuing. For an edit, read the current file first when it is not already in context, keep each old_string short but unique, and put all replacements for one path in one edit operation. To fully rewrite an existing file, use a single create operation with overwrite=true instead of many edits. operations must be a JSON array, never quoted JSON text. Order edits so a later old_string never targets text produced by an earlier new_string; such edits are rejected. In TS/JS template strings write ${{...}} exactly; do not escape the dollar sign as \\${{...}}. In-workspace edits may require approval under request_approval. Paths outside the configured workspace roots must set sandbox_permissions=require_escalated with a short justification so the user can approve; do not bypass multi_edit_file via shell when an outside-root edit is needed.{}",
             configured_working_directories_guidance(config)
         );
         tool_definition(
@@ -548,24 +548,26 @@ impl AgentTool for MultiEditFileTool {
                             "oneOf": [
                                 {
                                     "type": "object",
+                                    "description": "Apply exact text replacements inside one existing file.",
                                     "additionalProperties": false,
                                     "required": ["type", "path", "edits"],
                                     "properties": {
-                                        "type": {"const": "edit"},
-                                        "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+                                        "type": {"type": "string", "enum": ["edit"]},
+                                        "path": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "File to edit, relative to cwd unless absolute."},
                                         "edits": {
                                             "type": "array",
                                             "minItems": 1,
                                             "maxItems": 64,
+                                            "description": "Ordered replacements for this file, validated and applied in memory before any write.",
                                             "items": {
                                                 "type": "object",
                                                 "additionalProperties": false,
                                                 "required": ["old_string", "new_string"],
                                                 "properties": {
-                                                    "old_string": {"type": "string", "maxLength": 200000},
-                                                    "new_string": {"type": "string", "maxLength": 2097152},
-                                                    "replace_all": {"type": "boolean"},
-                                                    "startLine": {"type": "integer", "minimum": 1}
+                                                    "old_string": {"type": "string", "maxLength": 200000, "description": "Exact text copied from the current file, including indentation, without line-number prefixes. Compared after normalizing CRLF to LF."},
+                                                    "new_string": {"type": "string", "maxLength": 2097152, "description": "Replacement text. Must differ from old_string."},
+                                                    "replace_all": {"type": "boolean", "description": "Replace every occurrence of old_string. Defaults to false."},
+                                                    "start_line": {"type": "integer", "minimum": 1, "description": "Optional 1-based line hint used only when old_string matches more than once; the occurrence closest to this line is replaced."}
                                                 }
                                             }
                                         }
@@ -573,33 +575,36 @@ impl AgentTool for MultiEditFileTool {
                                 },
                                 {
                                     "type": "object",
+                                    "description": "Create a new file, or fully rewrite an existing one with overwrite=true.",
                                     "additionalProperties": false,
                                     "required": ["type", "path", "content"],
                                     "properties": {
-                                        "type": {"const": "create"},
-                                        "path": {"type": "string", "minLength": 1, "maxLength": 4096},
-                                        "content": {"type": "string", "maxLength": 2097152},
-                                        "overwrite": {"type": "boolean"}
+                                        "type": {"type": "string", "enum": ["create"]},
+                                        "path": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "File to create. Parent directories are created automatically."},
+                                        "content": {"type": "string", "maxLength": 2097152, "description": "Full file content to write."},
+                                        "overwrite": {"type": "boolean", "description": "Defaults to false, which fails when the target already exists. Set true to replace the existing file; this is the preferred way to fully rewrite a file."}
                                     }
                                 },
                                 {
                                     "type": "object",
+                                    "description": "Delete one file. Directories are refused.",
                                     "additionalProperties": false,
                                     "required": ["type", "path"],
                                     "properties": {
-                                        "type": {"const": "delete"},
-                                        "path": {"type": "string", "minLength": 1, "maxLength": 4096}
+                                        "type": {"type": "string", "enum": ["delete"]},
+                                        "path": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "File to delete."}
                                     }
                                 },
                                 {
                                     "type": "object",
+                                    "description": "Move or rename one file. Directories are refused.",
                                     "additionalProperties": false,
                                     "required": ["type", "from", "to"],
                                     "properties": {
-                                        "type": {"const": "move"},
-                                        "from": {"type": "string", "minLength": 1, "maxLength": 4096},
-                                        "to": {"type": "string", "minLength": 1, "maxLength": 4096},
-                                        "overwrite": {"type": "boolean"}
+                                        "type": {"type": "string", "enum": ["move"]},
+                                        "from": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "Source file."},
+                                        "to": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "Target path. Parent directories are created automatically."},
+                                        "overwrite": {"type": "boolean", "description": "Defaults to false, which fails when the target already exists. Set true to replace the target file."}
                                     }
                                 }
                             ]
@@ -607,7 +612,7 @@ impl AgentTool for MultiEditFileTool {
                     },
                     "cwd": {
                         "type": "string",
-                        "description": "Existing working directory for relative paths. Omit to use the default workspace. If target files are outside the configured workspace roots, set sandbox_permissions=require_escalated and provide justification so the user can approve access."
+                        "description": "Existing working directory for relative paths; a ~ prefix expands to the user home directory. Omit to use the default workspace. If target files are outside the configured workspace roots, set sandbox_permissions=require_escalated and provide justification so the user can approve access."
                     },
                     "sandbox_permissions": {
                         "type": "string",
