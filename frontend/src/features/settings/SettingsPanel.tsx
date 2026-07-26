@@ -41,8 +41,10 @@ import {
   RUNTIME_AUTO_SAVE_MAX_RETRY_DELAY_MS,
   RUNTIME_AUTO_SAVE_RETRY_DELAY_MS,
   buildProviderPayload,
+  commitPendingApiKeys,
   defaultProviderForm,
   formFromSerializedSnapshot,
+  isMaskedApiKey,
   isValidRuntimeSettings,
   parseExtraBodyText,
   parseModels,
@@ -340,7 +342,7 @@ export function SettingsPanel({
       return;
     }
 
-    const payload = buildProviderPayload(providerForm, false);
+    const payload = buildProviderPayload(providerForm);
     if (!payload) {
       setProviderAutoSaveStatus('pending');
       if (providerSaveTimerRef.current !== undefined) {
@@ -455,7 +457,7 @@ export function SettingsPanel({
 
     let retryDelay = 0;
     try {
-      await onProviderEditRef.current(pending.providerId, pending.payload);
+      const updated = await onProviderEditRef.current(pending.providerId, pending.payload);
       providerSaveRetryCountRef.current = 0;
 
       // Restore from the draft snapshot we just saved. Do NOT rebuild from the API
@@ -466,7 +468,15 @@ export function SettingsPanel({
         && activeProviderIdRef.current === pending.providerId
         && providerLatestSerializedByIdRef.current.get(pending.providerId) === pending.serialized
       ) {
-        const nextForm = formFromSerializedSnapshot(pending.serialized);
+        // Keys are the exception: newly added plaintext keys must be swapped
+        // for the server's masked entries so they never linger in the form.
+        const nextForm = {
+          ...formFromSerializedSnapshot(pending.serialized),
+          ...(updated ? {
+            apiKeys: [...(updated.masked_api_keys ?? [])],
+            key_strategy: updated.key_strategy ?? 'failover',
+          } : {}),
+        };
         const nextSerialized = serializeProviderForm(nextForm);
         providerLatestSerializedByIdRef.current.set(pending.providerId, nextSerialized);
         providerPersistedSerializedByIdRef.current.set(pending.providerId, nextSerialized);
@@ -479,7 +489,7 @@ export function SettingsPanel({
           window.clearTimeout(providerSaveTimerRef.current);
           providerSaveTimerRef.current = undefined;
         }
-        setProviderForm(nextForm);
+        setProviderForm((current) => ({ ...nextForm, newKeyText: current.newKeyText }));
         setShowApiKey(false);
         setProviderDirty(false);
         setProviderAutoSaveStatus('saved');
@@ -573,7 +583,12 @@ export function SettingsPanel({
       retryProviderSaveNow();
       return;
     }
-    const payload = buildProviderPayload(providerForm, true);
+    // Fold a typed-but-not-yet-added key into the pool before validating.
+    const committedForm = commitPendingApiKeys(providerForm);
+    if (committedForm !== providerForm) {
+      setProviderForm(committedForm);
+    }
+    const payload = buildProviderPayload(committedForm);
     if (!payload) {
       toast.warning(t('error.providerValidation'));
       return;
@@ -583,7 +598,7 @@ export function SettingsPanel({
       await onProviderAdd(payload);
       clearNewProviderDraft();
       toast.success(t('notification.providerCreated'));
-      setProviderForm((current) => ({ ...current, api_key: '' }));
+      setProviderForm((current) => ({ ...current, apiKeys: [], newKeyText: '' }));
     } catch (cause) {
       toast.error(userErrorMessage(cause, {
         summary: t('error.providerSaveFailed'),
@@ -622,7 +637,11 @@ export function SettingsPanel({
     }
     const extraBody = parsedExtraBody.value;
     const baseUrl = providerForm.base_url.trim();
-    const apiKey = providerForm.api_key.trim();
+    // Probe with the first not-yet-saved key (including one still sitting in
+    // the add-key input); masked entries only exist server-side.
+    const apiKey = commitPendingApiKeys(providerForm).apiKeys
+      .map((key) => key.trim())
+      .find((key) => key && !isMaskedApiKey(key)) ?? '';
     const canUseStoredKey = Boolean(
       activeProvider
       && activeProvider.has_api_key
@@ -848,7 +867,10 @@ export function SettingsPanel({
                 onNameChange={(name) => changeProviderForm((current) => ({ ...current, name }))}
                 onProtocolChange={handleProtocolChange}
                 onBaseUrlChange={(base_url) => changeProviderForm((current) => ({ ...current, base_url }))}
-                onApiKeyChange={(api_key) => changeProviderForm((current) => ({ ...current, api_key }))}
+                onApiKeysChange={(apiKeys) => changeProviderForm((current) => ({ ...current, apiKeys }))}
+                onNewKeyTextChange={(newKeyText) => changeProviderForm((current) => ({ ...current, newKeyText }))}
+                onAppendApiKeys={(raw) => changeProviderForm((current) => commitPendingApiKeys({ ...current, newKeyText: raw }))}
+                onKeyStrategyChange={(key_strategy) => changeProviderForm((current) => ({ ...current, key_strategy }))}
                 onModelsTextChange={handleModelsTextChange}
                 onPatchModelConfig={patchModelConfig}
                 onExtraBodyChange={handleExtraBodyChange}

@@ -21,6 +21,97 @@
   box-shadow: none;
 }
 
+.provider-api-keys-field {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.provider-key-strategy-select {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 40px;
+  padding-right: 30px;
+}
+
+.provider-key-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Row boundaries come from the tinted fill, not a hairline: 1px borders on
+   white can rasterize away at fractional display scaling (Windows 125%). */
+.provider-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-code);
+}
+
+.provider-key-row .icon-button {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+}
+
+.provider-key-row__index {
+  flex: 0 0 auto;
+  min-width: 18px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.provider-key-row__masked {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-key-row__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 28px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.provider-key-row__badge {
+  flex: 0 0 auto;
+}
+
+.provider-key-row__badge.is-new {
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+  color: var(--color-primary);
+}
+
+.provider-key-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-key-add .provider-secret-input {
+  flex: 1 1 220px;
+}
+
 .provider-page {
   display: grid;
   gap: 18px;

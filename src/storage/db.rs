@@ -12,7 +12,10 @@ use super::sql_util::{parse_datetime, parse_optional_datetime};
 use uuid::Uuid;
 
 use crate::{
-    domain::{IpProxy, IpProxyProtocol, IpProxyStatus, ModelConfig, ModelProvider, ProviderType},
+    domain::{
+        ApiKeyStrategy, IpProxy, IpProxyProtocol, IpProxyStatus, ModelConfig, ModelProvider,
+        ProviderType,
+    },
     error::{AppError, AppResult},
 };
 
@@ -20,6 +23,11 @@ pub const DB_FILE_NAME: &str = "weiagent.db";
 const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const BASE_SCHEMA_VERSION: i64 = 1;
 const PROVIDER_PROXY_SCHEMA_VERSION: i64 = 5;
+const PROVIDER_KEY_STRATEGY_SCHEMA_VERSION: i64 = 6;
+
+/// Multiple API keys are stored newline-joined in the legacy `api_key` column,
+/// so single-key rows written before key pools existed stay valid as-is.
+const API_KEY_SEPARATOR: char = '\n';
 
 type DatabaseJob = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
@@ -182,6 +190,7 @@ CREATE TABLE IF NOT EXISTS model_providers (
     name TEXT NOT NULL,
     base_url TEXT NOT NULL,
     api_key TEXT NOT NULL DEFAULT '',
+    key_strategy TEXT NOT NULL DEFAULT 'failover',
     models_json TEXT NOT NULL,
     model_configs_json TEXT NOT NULL,
     extra_body_json TEXT NOT NULL DEFAULT 'null',
@@ -300,6 +309,39 @@ fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
         )?;
         tx.commit()?;
     }
+
+    let key_strategy_applied = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM app_schema_migrations WHERE version = ?1
+        )",
+        [PROVIDER_KEY_STRATEGY_SCHEMA_VERSION],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !key_strategy_applied {
+        let tx = conn.transaction()?;
+        let has_column = tx
+            .prepare("PRAGMA table_info(model_providers)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "key_strategy");
+        if !has_column {
+            tx.execute(
+                "ALTER TABLE model_providers ADD COLUMN key_strategy TEXT NOT NULL DEFAULT 'failover'",
+                [],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (?1, ?2, ?3)",
+            params![
+                PROVIDER_KEY_STRATEGY_SCHEMA_VERSION,
+                "model_provider_key_strategy_v6",
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -320,7 +362,7 @@ pub fn open_data_dir(data_dir: &Path) -> AppResult<Connection> {
 
 pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
     let mut stmt = conn.prepare(
-        "SELECT id, provider_type, name, base_url, api_key, models_json,
+        "SELECT id, provider_type, name, base_url, api_key, key_strategy, models_json,
                 model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, proxy_url, created_at, updated_at
          FROM model_providers
          ORDER BY created_at ASC, id ASC",
@@ -332,14 +374,15 @@ pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
             name: row.get(2)?,
             base_url: row.get(3)?,
             api_key: row.get(4)?,
-            models_json: row.get(5)?,
-            model_configs_json: row.get(6)?,
-            extra_body_json: row.get(7)?,
-            prompt_cache_json: row.get(8)?,
-            cache_capabilities_json: row.get(9)?,
-            proxy_url: row.get(10)?,
-            created_at: row.get(11)?,
-            updated_at: row.get(12)?,
+            key_strategy: row.get(5)?,
+            models_json: row.get(6)?,
+            model_configs_json: row.get(7)?,
+            extra_body_json: row.get(8)?,
+            prompt_cache_json: row.get(9)?,
+            cache_capabilities_json: row.get(10)?,
+            proxy_url: row.get(11)?,
+            created_at: row.get(12)?,
+            updated_at: row.get(13)?,
         })
     })?;
 
@@ -352,6 +395,8 @@ pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
 
 pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) -> AppResult<()> {
     let provider_type = enum_value(&provider.provider_type)?;
+    let key_strategy = enum_value(&provider.key_strategy)?;
+    let api_key = join_api_keys(&provider.api_keys);
     let models_json = serde_json::to_string(&provider.models)?;
     let model_configs_json = serde_json::to_string(&provider.model_configs)?;
     let extra_body_json = serde_json::to_string(&provider.extra_body)?;
@@ -359,14 +404,15 @@ pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) 
     let cache_capabilities_json = serde_json::to_string(&provider.cache_capabilities)?;
     conn.execute(
         "INSERT INTO model_providers (
-            id, provider_type, name, base_url, api_key, models_json,
+            id, provider_type, name, base_url, api_key, key_strategy, models_json,
             model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, proxy_url, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(id) DO UPDATE SET
             provider_type = excluded.provider_type,
             name = excluded.name,
             base_url = excluded.base_url,
             api_key = excluded.api_key,
+            key_strategy = excluded.key_strategy,
             models_json = excluded.models_json,
             model_configs_json = excluded.model_configs_json,
             extra_body_json = excluded.extra_body_json,
@@ -379,7 +425,8 @@ pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) 
             provider_type,
             provider.name,
             provider.base_url,
-            provider.api_key,
+            api_key,
+            key_strategy,
             models_json,
             model_configs_json,
             extra_body_json,
@@ -391,6 +438,24 @@ pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) 
         ],
     )?;
     Ok(())
+}
+
+fn join_api_keys(api_keys: &[String]) -> String {
+    api_keys
+        .iter()
+        .map(|key| key.trim())
+        .filter(|key| !key.is_empty())
+        .collect::<Vec<_>>()
+        .join(&API_KEY_SEPARATOR.to_string())
+}
+
+fn split_api_keys(api_key: &str) -> Vec<String> {
+    api_key
+        .split(API_KEY_SEPARATOR)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 pub(super) fn delete_provider_conn(conn: &Connection, id: Uuid) -> AppResult<bool> {
@@ -406,6 +471,7 @@ struct ProviderRow {
     name: String,
     base_url: String,
     api_key: String,
+    key_strategy: String,
     models_json: String,
     model_configs_json: String,
     extra_body_json: String,
@@ -419,6 +485,9 @@ struct ProviderRow {
 fn row_to_provider(row: ProviderRow) -> AppResult<ModelProvider> {
     let provider_type: ProviderType =
         serde_json::from_value(serde_json::Value::String(row.provider_type))?;
+    // Tolerate unknown strategy values so a listing never bricks on bad data.
+    let key_strategy: ApiKeyStrategy =
+        serde_json::from_value(serde_json::Value::String(row.key_strategy)).unwrap_or_default();
     let models: Vec<String> = serde_json::from_str(&row.models_json)?;
     let model_configs: Vec<ModelConfig> = serde_json::from_str(&row.model_configs_json)?;
     let extra_body: serde_json::Value = serde_json::from_str(&row.extra_body_json)?;
@@ -436,7 +505,8 @@ fn row_to_provider(row: ProviderRow) -> AppResult<ModelProvider> {
         provider_type,
         name: row.name,
         base_url: row.base_url,
-        api_key: row.api_key,
+        api_keys: split_api_keys(&row.api_key),
+        key_strategy,
         models,
         model_configs,
         extra_body,

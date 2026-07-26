@@ -552,8 +552,7 @@
     "apiKey": "API Key",
     "apiMode": "接口模式",
     "connection": "连接信息",
-    "proxyUrl": "访问代理",
-    "proxyUrlDesc": "调用该提供商的模型 API 时使用，请从已保存的 IP 代理中选择。",
+    "proxyUrl": "代理IP",
     "extraBody": "额外请求体 (JSON)",
     "models": "模型列表（每行一个）",
     "modelsDescription": "左侧快速增删模型，右侧配置每个模型的能力与价格。",
@@ -576,6 +575,23 @@
     "fetchingModels": "获取中...",
     "fetchModelsMissingConfig": "请先填写 Base URL 和 API Key，再获取模型。",
     "modelCount": "{count} 个模型",
+    "keyPoolCount": "{count} 个 Key",
+    "keySaved": "已保存",
+    "keyNew": "新增",
+    "removeKey": "移除该 Key",
+    "addKey": "添加",
+    "addKeyPlaceholder": "粘贴一个或多个 API Key（换行、逗号或空格分隔）",
+    "keyStrategyLabel": "多 Key 轮询",
+    "keyStrategyOption": {
+      "failover": "故障切换",
+      "round_robin": "顺序轮询",
+      "random": "随机"
+    },
+    "keyStrategyDesc": {
+      "failover": "一直使用当前 Key，请求报错后自动切换到下一个 Key。",
+      "round_robin": "每次请求按顺序轮换使用下一个 Key。",
+      "random": "每次请求随机选择一个 Key。"
+    },
     "keyConfigured": "密钥已配置",
     "keyRequired": "需要 API Key",
     "showKey": "显示 API Key",

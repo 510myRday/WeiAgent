@@ -17,6 +17,21 @@ pub enum ProviderType {
     GoogleGemini,
 }
 
+/// How a provider with several API keys picks the key for each request.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ApiKeyStrategy {
+    /// Stick to the current key; move to the next one only after it errors.
+    #[default]
+    #[serde(rename = "failover")]
+    Failover,
+    /// Every request advances to the next key in list order.
+    #[serde(rename = "round_robin")]
+    RoundRobin,
+    /// Every request picks a random key.
+    #[serde(rename = "random")]
+    Random,
+}
+
 fn default_context_size() -> u32 {
     128_000
 }
@@ -48,7 +63,10 @@ pub struct ModelProvider {
     pub provider_type: ProviderType,
     pub name: String,
     pub base_url: String,
-    pub api_key: String,
+    /// Ordered API key pool; requests pick a key according to `key_strategy`.
+    pub api_keys: Vec<String>,
+    #[serde(default)]
+    pub key_strategy: ApiKeyStrategy,
     pub models: Vec<String>,
     #[serde(default)]
     pub model_configs: Vec<ModelConfig>,
@@ -76,7 +94,9 @@ pub struct ModelProviderResponse {
     pub name: String,
     pub base_url: String,
     pub has_api_key: bool,
-    pub masked_api_key: String,
+    /// One masked entry per stored key, in pool order.
+    pub masked_api_keys: Vec<String>,
+    pub key_strategy: ApiKeyStrategy,
     pub models: Vec<String>,
     pub model_configs: Vec<ModelConfig>,
     pub extra_body: serde_json::Value,
@@ -95,8 +115,17 @@ impl From<&ModelProvider> for ModelProviderResponse {
             provider_type: provider.provider_type.clone(),
             name: provider.name.clone(),
             base_url: provider.base_url.clone(),
-            has_api_key: !provider.api_key.trim().is_empty(),
-            masked_api_key: mask_api_key(&provider.api_key),
+            has_api_key: provider
+                .api_keys
+                .iter()
+                .any(|key| !key.trim().is_empty()),
+            masked_api_keys: provider
+                .api_keys
+                .iter()
+                .map(|key| mask_api_key(key))
+                .filter(|masked| !masked.is_empty())
+                .collect(),
+            key_strategy: provider.key_strategy,
             models: provider.models.clone(),
             model_configs: provider.model_configs.clone(),
             extra_body: provider.extra_body.clone(),
@@ -113,13 +142,61 @@ fn mask_api_key(api_key: &str) -> String {
     super::tools::mask_api_key(api_key)
 }
 
+/// Merge a submitted key list into the stored pool. Masked entries reference
+/// existing keys — resolved positionally when the mask at that slot lines up,
+/// otherwise by unique mask content, so a retried update resolves identically
+/// even after the pool shifted. Plaintext entries are new keys. Order follows
+/// the submitted list; blanks, dangling masks, and duplicates drop out.
+pub fn merge_api_keys(existing: &[String], submitted: &[String]) -> Vec<String> {
+    let mut used = vec![false; existing.len()];
+    let mut merged: Vec<String> = Vec::new();
+    for (slot, entry) in submitted.iter().enumerate() {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let resolved = if super::tools::is_masked_api_key(entry) {
+            let positional = existing
+                .get(slot)
+                .filter(|_| !used[slot])
+                .filter(|key| super::tools::mask_api_key(key) == entry)
+                .map(|key| (slot, key.clone()));
+            let by_content = || {
+                let mut matches = existing.iter().enumerate().filter(|(index, key)| {
+                    !used[*index] && super::tools::mask_api_key(key) == entry
+                });
+                let first = matches.next().map(|(index, key)| (index, key.clone()));
+                first.filter(|_| matches.next().is_none())
+            };
+            match positional.or_else(by_content) {
+                Some((index, key)) => {
+                    used[index] = true;
+                    key
+                }
+                // The referenced key no longer exists (e.g. an update retried
+                // after it already applied): drop the stale reference.
+                None => continue,
+            }
+        } else {
+            entry.to_string()
+        };
+        if !merged.contains(&resolved) {
+            merged.push(resolved);
+        }
+    }
+    merged
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateModelProviderRequest {
     #[serde(default)]
     pub provider_type: ProviderType,
     pub name: String,
     pub base_url: String,
-    pub api_key: String,
+    /// Plaintext keys; masked entries are only meaningful on update.
+    pub api_keys: Vec<String>,
+    #[serde(default)]
+    pub key_strategy: ApiKeyStrategy,
     pub models: Vec<String>,
     #[serde(default)]
     pub model_configs: Vec<ModelConfig>,
@@ -150,7 +227,10 @@ pub struct UpdateModelProviderRequest {
     pub provider_type: Option<ProviderType>,
     pub name: Option<String>,
     pub base_url: Option<String>,
-    pub api_key: Option<String>,
+    /// Missing = keys unchanged. Entries: masked = keep that stored key,
+    /// plaintext = new key; the merged pool must not end up empty.
+    pub api_keys: Option<Vec<String>>,
+    pub key_strategy: Option<ApiKeyStrategy>,
     pub models: Option<Vec<String>>,
     pub model_configs: Option<Vec<ModelConfig>>,
     pub extra_body: Option<serde_json::Value>,
@@ -170,7 +250,55 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::ModelConfig;
+    use super::{ModelConfig, merge_api_keys};
+
+    fn keys(values: &[&str]) -> Vec<String> {
+        values.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn merge_api_keys_keeps_masked_entries_and_appends_new_keys() {
+        let existing = keys(&["sk-alpha-1111", "sk-beta-2222"]);
+        let merged = merge_api_keys(&existing, &keys(&["****1111", "****2222", " sk-new-3333 "]));
+        assert_eq!(merged, keys(&["sk-alpha-1111", "sk-beta-2222", "sk-new-3333"]));
+    }
+
+    #[test]
+    fn merge_api_keys_supports_deleting_and_reordering() {
+        let existing = keys(&["sk-alpha-1111", "sk-beta-2222", "sk-gamma-3333"]);
+        // The first key was removed client-side, so the remaining masks shift slots.
+        let merged = merge_api_keys(&existing, &keys(&["****2222", "****3333"]));
+        assert_eq!(merged, keys(&["sk-beta-2222", "sk-gamma-3333"]));
+    }
+
+    #[test]
+    fn merge_api_keys_is_idempotent_when_an_update_is_retried() {
+        // First apply: delete the middle key, add one.
+        let original = keys(&["sk-alpha-1111", "sk-beta-2222", "sk-gamma-3333"]);
+        let submitted = keys(&["****1111", "****3333", "sk-new-4444"]);
+        let applied = merge_api_keys(&original, &submitted);
+        // Retry of the same payload against the already-updated pool.
+        let retried = merge_api_keys(&applied, &submitted);
+        assert_eq!(applied, keys(&["sk-alpha-1111", "sk-gamma-3333", "sk-new-4444"]));
+        assert_eq!(retried, applied);
+    }
+
+    #[test]
+    fn merge_api_keys_prefers_positional_match_on_mask_collisions() {
+        let existing = keys(&["sk-alpha-9999", "sk-beta-9999"]);
+        let merged = merge_api_keys(&existing, &keys(&["****9999", "****9999"]));
+        assert_eq!(merged, existing);
+    }
+
+    #[test]
+    fn merge_api_keys_drops_blanks_duplicates_and_dangling_masks() {
+        let existing = keys(&["sk-alpha-1111"]);
+        let merged = merge_api_keys(
+            &existing,
+            &keys(&["  ", "****1111", "sk-alpha-1111", "****gone", "sk-new-2222"]),
+        );
+        assert_eq!(merged, keys(&["sk-alpha-1111", "sk-new-2222"]));
+    }
 
     #[test]
     fn model_config_defaults_context_size_and_prices() {

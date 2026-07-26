@@ -14,13 +14,17 @@ export type AppSettings = {
   conversation_title_model_id: string | null;
 };
 
+export type ApiKeyStrategy = 'failover' | 'round_robin' | 'random';
+
 export type ModelProvider = {
   id: string;
   provider_type: ProviderType;
   name: string;
   base_url: string;
   has_api_key: boolean;
-  masked_api_key: string;
+  /** One masked entry per stored key, in pool order. */
+  masked_api_keys: string[];
+  key_strategy: ApiKeyStrategy;
   models: string[];
   model_configs: ModelConfig[];
   extra_body: Record<string, unknown> | null;
@@ -53,7 +57,9 @@ export type ModelProviderPayload = {
   provider_type: ProviderType;
   name: string;
   base_url: string;
-  api_key: string;
+  /** Masked entries keep the stored key at that slot; plaintext entries are new keys. */
+  api_keys: string[];
+  key_strategy: ApiKeyStrategy;
   models: string[];
   model_configs: ModelConfig[];
   extra_body?: Record<string, unknown> | null;

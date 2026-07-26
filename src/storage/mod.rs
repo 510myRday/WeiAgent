@@ -32,8 +32,8 @@ mod tests {
     use super::*;
     use crate::domain::agents::UpdateAgentWorkspaceRequest;
     use crate::domain::{
-        ChatMessage, ChatMessageStatus, ChatRole, ContextCheckpoint, CreateAgentRequest,
-        CreateConversationRequest, CreateModelProviderRequest, ProviderType,
+        ApiKeyStrategy, ChatMessage, ChatMessageStatus, ChatRole, ContextCheckpoint,
+        CreateAgentRequest, CreateConversationRequest, CreateModelProviderRequest, ProviderType,
         UpdateAgentProfileRequest, UpdateAgentRequest, UpdateConversationRequest,
         UpdateModelProviderRequest,
     };
@@ -43,7 +43,8 @@ mod tests {
             provider_type: ProviderType::OpenAiCompatible,
             name: name.to_string(),
             base_url: "https://example.test/v1".to_string(),
-            api_key: "sk-test".to_string(),
+            api_keys: vec!["sk-test".to_string()],
+            key_strategy: Default::default(),
             models: vec![model.to_string()],
             model_configs: Vec::new(),
             extra_body: serde_json::Value::Null,
@@ -111,7 +112,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(migration_versions, vec![1, 2, 3, 4, 5]);
+        assert_eq!(migration_versions, vec![1, 2, 3, 4, 5, 6]);
         assert_eq!(
             tool_table_names(&conn),
             vec![
@@ -457,13 +458,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stores_provider_type_and_preserves_blank_key_update() {
+    async fn stores_provider_type_and_merges_key_pool_updates() {
         let temp_dir = tempfile::tempdir().unwrap();
         let store = Store::new(temp_dir.path()).await.unwrap();
         let provider = store
             .create_model_provider(CreateModelProviderRequest {
                 name: "OpenAI".to_string(),
-                api_key: "sk-test-secret".to_string(),
+                api_keys: vec!["sk-test-secret".to_string()],
                 models: vec!["gpt-4o-mini".to_string()],
                 ..provider_request("OpenAI", "gpt-4o-mini")
             })
@@ -472,8 +473,10 @@ mod tests {
 
         assert_eq!(provider.provider_type, ProviderType::OpenAiCompatible);
         assert!(provider.has_api_key);
-        assert_eq!(provider.masked_api_key, "****cret");
+        assert_eq!(provider.masked_api_keys, vec!["****cret".to_string()]);
+        assert_eq!(provider.key_strategy, ApiKeyStrategy::Failover);
 
+        // Omitting api_keys leaves the stored pool untouched.
         let updated = store
             .update_model_provider(
                 provider.id,
@@ -481,7 +484,8 @@ mod tests {
                     provider_type: Some(ProviderType::OpenAiCompatible),
                     name: Some("OpenAI Compatible".to_string()),
                     base_url: None,
-                    api_key: Some(String::new()),
+                    api_keys: None,
+                    key_strategy: None,
                     models: None,
                     model_configs: None,
                     extra_body: None,
@@ -495,6 +499,40 @@ mod tests {
         assert_eq!(updated.name, "OpenAI Compatible");
         assert_eq!(updated.provider_type, ProviderType::OpenAiCompatible);
         assert!(updated.has_api_key);
+
+        // Masked entries keep their stored key; plaintext entries append.
+        let expanded = store
+            .update_model_provider(
+                provider.id,
+                UpdateModelProviderRequest {
+                    provider_type: None,
+                    name: None,
+                    base_url: None,
+                    api_keys: Some(vec!["****cret".to_string(), "sk-added-key".to_string()]),
+                    key_strategy: Some(ApiKeyStrategy::RoundRobin),
+                    models: None,
+                    model_configs: None,
+                    extra_body: None,
+                    prompt_cache: None,
+                    cache_capabilities: None,
+                    proxy_url: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            expanded.masked_api_keys,
+            vec!["****cret".to_string(), "****-key".to_string()]
+        );
+        assert_eq!(expanded.key_strategy, ApiKeyStrategy::RoundRobin);
+
+        // The merged pool survives a reload from the database.
+        let reloaded = store.get_model_provider(provider.id).await.unwrap();
+        assert_eq!(
+            reloaded.api_keys,
+            vec!["sk-test-secret".to_string(), "sk-added-key".to_string()]
+        );
+        assert_eq!(reloaded.key_strategy, ApiKeyStrategy::RoundRobin);
     }
 
     #[tokio::test]

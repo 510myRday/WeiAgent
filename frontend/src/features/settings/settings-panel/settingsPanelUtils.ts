@@ -1,4 +1,5 @@
 import type {
+  ApiKeyStrategy,
   AppSettings,
   ModelConfig,
   ModelProvider,
@@ -25,7 +26,11 @@ export type ProviderForm = {
   provider_type: ProviderType;
   name: string;
   base_url: string;
-  api_key: string;
+  /** Masked entries reference stored keys; other entries are new plaintext keys. */
+  apiKeys: string[];
+  /** Text sitting in the add-key input, not yet committed to `apiKeys`. */
+  newKeyText: string;
+  key_strategy: ApiKeyStrategy;
   modelsText: string;
   modelConfigs: ModelConfig[];
   extraBodyText: string;
@@ -36,12 +41,27 @@ export const defaultProviderForm: ProviderForm = {
   provider_type: 'openai_compatible',
   name: '',
   base_url: protocolPresetByType.openai_compatible.defaultBaseUrl,
-  api_key: '',
+  apiKeys: [],
+  newKeyText: '',
+  key_strategy: 'failover',
   modelsText: '',
   modelConfigs: [],
   extraBodyText: '',
   proxy_url: null,
 };
+
+/** Fold the pending add-key input into the committed key rows. */
+export function commitPendingApiKeys(form: ProviderForm): ProviderForm {
+  const pending = parseApiKeyInput(form.newKeyText);
+  if (pending.length === 0) {
+    return form.newKeyText ? { ...form, newKeyText: '' } : form;
+  }
+  return {
+    ...form,
+    apiKeys: normalizeFormApiKeys([...form.apiKeys, ...pending]),
+    newKeyText: '',
+  };
+}
 
 export function providerTemplateToForm(template: ProviderTemplate, name: string): ProviderForm {
   if (!template.fixed || !template.providerType || !template.baseUrl) {
@@ -67,6 +87,21 @@ export const PROVIDER_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
 
 export function parseModels(value: string): string[] {
   return Array.from(new Set(value.split(/\r?\n|,/).map((model) => model.trim()).filter(Boolean)));
+}
+
+/** Mirrors the backend convention: masked keys render as **** plus at most 4 tail chars. */
+export function isMaskedApiKey(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.startsWith('****') && trimmed.length <= 8;
+}
+
+/** Split pasted text into individual keys (newlines, commas, or blanks separate keys). */
+export function parseApiKeyInput(value: string): string[] {
+  return Array.from(new Set(value.split(/[\s,]+/).map((key) => key.trim()).filter(Boolean)));
+}
+
+export function normalizeFormApiKeys(apiKeys: string[]): string[] {
+  return Array.from(new Set(apiKeys.map((key) => key.trim()).filter(Boolean)));
 }
 
 export function defaultModelConfig(modelId: string): ModelConfig {
@@ -194,7 +229,9 @@ export function providerToForm(provider: ModelProvider): ProviderForm {
     provider_type: provider.provider_type,
     name: provider.name,
     base_url: provider.base_url,
-    api_key: '',
+    apiKeys: [...(provider.masked_api_keys ?? [])],
+    newKeyText: '',
+    key_strategy: provider.key_strategy ?? 'failover',
     modelsText: provider.models.join('\n'),
     modelConfigs: syncModelConfigs(provider.models, provider.model_configs ?? []),
     extraBodyText: formatExtraBodyText(provider.extra_body),
@@ -224,10 +261,7 @@ export function parseExtraBodyText(text: string): {
   }
 }
 
-export function buildProviderPayload(
-  form: ProviderForm,
-  requireApiKey: boolean,
-): ModelProviderPayload | null {
+export function buildProviderPayload(form: ProviderForm): ModelProviderPayload | null {
   const parsedExtraBody = parseExtraBodyText(form.extraBodyText);
   if (parsedExtraBody.status === 'invalid') {
     return null;
@@ -238,7 +272,8 @@ export function buildProviderPayload(
     provider_type: form.provider_type,
     name: form.name.trim(),
     base_url: form.base_url.trim(),
-    api_key: form.api_key.trim(),
+    api_keys: normalizeFormApiKeys(form.apiKeys),
+    key_strategy: form.key_strategy,
     models,
     model_configs: syncModelConfigs(models, form.modelConfigs),
     // Always send an object so PUT updates apply (JSON null becomes Option::None
@@ -253,7 +288,7 @@ export function buildProviderPayload(
   if (
     !payload.name
     || !payload.base_url
-    || (requireApiKey && !payload.api_key)
+    || payload.api_keys.length === 0
     || payload.models.length === 0
   ) {
     return null;
@@ -267,7 +302,8 @@ export function serializeProviderForm(form: ProviderForm): string {
     provider_type: form.provider_type,
     name: form.name.trim(),
     base_url: form.base_url.trim(),
-    api_key: form.api_key.trim(),
+    api_keys: normalizeFormApiKeys(form.apiKeys),
+    key_strategy: form.key_strategy,
     models,
     model_configs: syncModelConfigs(models, form.modelConfigs),
     extra_body_text: form.extraBodyText.trim(),
@@ -275,12 +311,14 @@ export function serializeProviderForm(form: ProviderForm): string {
   });
 }
 
-/** Rebuild editor state from a serializeProviderForm snapshot, clearing api_key. */
+/** Rebuild editor state from a serializeProviderForm snapshot. */
 export function formFromSerializedSnapshot(serialized: string): ProviderForm {
   const snap = JSON.parse(serialized) as {
     provider_type: ProviderType;
     name: string;
     base_url: string;
+    api_keys?: string[];
+    key_strategy?: ApiKeyStrategy;
     models: string[];
     model_configs: ModelConfig[];
     extra_body_text: string;
@@ -290,7 +328,9 @@ export function formFromSerializedSnapshot(serialized: string): ProviderForm {
     provider_type: snap.provider_type,
     name: snap.name,
     base_url: snap.base_url,
-    api_key: '',
+    apiKeys: snap.api_keys ?? [],
+    newKeyText: '',
+    key_strategy: snap.key_strategy ?? 'failover',
     modelsText: snap.models.join('\n'),
     modelConfigs: snap.model_configs ?? [],
     // Keep the exact extra-body text the user saved (not server pretty-print).

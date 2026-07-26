@@ -88,7 +88,13 @@
       "Read(//d/Code_Save/rust/mcp_gateway_rust/mcp-gateway/crates/gateway-http/src/**)",
       "Skill(claude-api)",
       "Skill(claude-api:*)",
-      "Bash(python -c \"import json; json.load\\(open\\('frontend/locales/zh.json', encoding='utf-8'\\)\\); json.load\\(open\\('frontend/locales/en.json', encoding='utf-8'\\)\\); print\\('locales OK'\\)\")"
+      "Bash(python -c \"import json; json.load\\(open\\('frontend/locales/zh.json', encoding='utf-8'\\)\\); json.load\\(open\\('frontend/locales/en.json', encoding='utf-8'\\)\\); print\\('locales OK'\\)\")",
+      "Bash(curl -sS -o /tmp/resp1.json -w 'HTTP %{http_code} time:%{time_total}s\\\\n' --max-time 60 https://a-ocnfniawgw.cn-shanghai.fcapp.run/v1/messages -H 'Content-Type: application/json' -H 'x-api-key: sk-bApk0Ty2GDD7dDIOoFlzZ3VqhYDJRRHtOBY2cljYyHPeyy0t' -H 'anthropic-version: 2023-06-01' -d '{\"model\":\"claude-fable-5\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"回复OK两个字母即可\"}]}')",
+      "Bash(curl -sS -o /tmp/resp2.json -w 'HTTP %{http_code} time:%{time_total}s\\\\n' --max-time 120 https://a-ocnfniawgw.cn-shanghai.fcapp.run/v1/messages -H 'Content-Type: application/json' -H 'x-api-key: sk-bApk0Ty2GDD7dDIOoFlzZ3VqhYDJRRHtOBY2cljYyHPeyy0t' -H 'anthropic-version: 2023-06-01' -H 'anthropic-beta: context-1m-2025-08-07' -d '{\"model\":\"claude-fable-5\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"回复OK两个字母即可\"}]}')",
+      "Bash(curl -sS -o /tmp/respA.json -w 'HTTP %{http_code}\\\\n' --max-time 120 https://a-ocnfniawgw.cn-shanghai.fcapp.run/v1/messages -H 'Content-Type: application/json' -H 'x-api-key: sk-bApk0Ty2GDD7dDIOoFlzZ3VqhYDJRRHtOBY2cljYyHPeyy0t' -H 'anthropic-version: 2023-06-01' -d '{\"model\":\"claude-fable-5[1m]\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"回复OK两个字母即可\"}]}')",
+      "Bash(curl -sS -o /tmp/respB.json -w 'HTTP %{http_code}\\\\n' --max-time 120 https://a-ocnfniawgw.cn-shanghai.fcapp.run/v1/messages -H 'Content-Type: application/json' -H 'x-api-key: sk-bApk0Ty2GDD7dDIOoFlzZ3VqhYDJRRHtOBY2cljYyHPeyy0t' -H 'anthropic-version: 2023-06-01' -H 'anthropic-beta: context-1m-2025-08-07' -d '{\"model\":\"claude-fable-5[1m]\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"回复OK两个字母即可\"}]}')",
+      "Bash(curl -sS -o /tmp/respC.json -w 'HTTP %{http_code}\\\\n' --max-time 120 https://a-ocnfniawgw.cn-shanghai.fcapp.run/v1/messages -H 'Content-Type: application/json' -H 'x-api-key: sk-bApk0Ty2GDD7dDIOoFlzZ3VqhYDJRRHtOBY2cljYyHPeyy0t' -H 'anthropic-version: 2023-06-01' -H 'anthropic-beta: context-1m-2025-08-07' -d '{\"model\":\"claude-fable-5\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"回复OK\"}]}')",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('\\\\n'.join\\(m['id'] for m in d['data']\\)\\)\")"
     ]
   }
 }

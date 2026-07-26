@@ -282,8 +282,7 @@
     "apiKey": "API Key",
     "apiMode": "API Mode",
     "connection": "Connection",
-    "proxyUrl": "Access proxy",
-    "proxyUrlDesc": "Used when calling this provider's model API. Pick from your saved IP proxies.",
+    "proxyUrl": "Proxy IP",
     "extraBody": "Extra Body (JSON)",
     "models": "Models (one per line)",
     "modelsDescription": "Edit model IDs on the left and configure capabilities and pricing on the right.",
@@ -306,6 +305,23 @@
     "fetchingModels": "Fetching...",
     "fetchModelsMissingConfig": "Enter Base URL and API key before fetching models.",
     "modelCount": "{count} models",
+    "keyPoolCount": "{count} keys",
+    "keySaved": "Saved",
+    "keyNew": "New",
+    "removeKey": "Remove this key",
+    "addKey": "Add",
+    "addKeyPlaceholder": "Paste one or more API keys (newline, comma, or space separated)",
+    "keyStrategyLabel": "Key rotation",
+    "keyStrategyOption": {
+      "failover": "Failover",
+      "round_robin": "Round-robin",
+      "random": "Random"
+    },
+    "keyStrategyDesc": {
+      "failover": "Stick to the current key and switch to the next one after a request fails.",
+      "round_robin": "Each request rotates to the next key in order.",
+      "random": "Each request picks a random key."
+    },
     "keyConfigured": "Key configured",
     "keyRequired": "API key required",
     "showKey": "Show API key",

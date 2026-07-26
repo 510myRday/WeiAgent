@@ -13,6 +13,7 @@ use crate::{
             DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, StreamLineParser, StreamLogContext,
             read_response_body_limited, spawn_log, stream_response,
         },
+        keys::ApiKeyCycle,
         types::{ChatCompletionOutput, ToolCall, ToolDefinition},
     },
     storage::{LlmLogger, llm_logs::LlmLogMetrics},
@@ -107,7 +108,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             tools,
             options.thinking_level,
         )?;
-        let api_key = self.http.api_key(&provider.api_key)?.to_string();
+        let mut api_keys = ApiKeyCycle::new(provider)?;
         let url = self.adapter.completion_url(provider, agent, false);
         let client = self.http.client_for(provider.proxy_url.as_deref())?;
         let log_enabled = self.http.log_enabled();
@@ -126,9 +127,9 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
 
         let response = match self
             .http
-            .retry_send(&options, || {
+            .retry_send(&options, &mut api_keys, |api_key| {
                 self.adapter
-                    .authenticated_post(&client, &url, &api_key, &request, provider)
+                    .authenticated_post(&client, &url, api_key, &request, provider)
             })
             .await
         {
@@ -255,7 +256,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             tools,
             options.thinking_level,
         )?;
-        let api_key = self.http.api_key(&provider.api_key)?.to_string();
+        let mut api_keys = ApiKeyCycle::new(provider)?;
         let url = self.adapter.completion_url(provider, agent, true);
         let client = self.http.client_for(provider.proxy_url.as_deref())?;
         let log_enabled = self.http.log_enabled();
@@ -272,9 +273,9 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
 
         let response = match self
             .http
-            .retry_send(&options, || {
+            .retry_send(&options, &mut api_keys, |api_key| {
                 self.adapter
-                    .authenticated_post(&client, &url, &api_key, &request, provider)
+                    .authenticated_post(&client, &url, api_key, &request, provider)
             })
             .await
         {
@@ -341,7 +342,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
     }
 
     async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {
-        let api_key = self.http.api_key(&provider.api_key)?.to_string();
+        let api_key = ApiKeyCycle::new(provider)?.next_key().to_string();
         let client = self.http.client_for(provider.proxy_url.as_deref())?;
         let mut url = self.adapter.models_url(provider);
         let mut models = Vec::new();

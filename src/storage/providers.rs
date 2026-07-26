@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         CreateModelProviderRequest, ModelConfig, ModelProvider, ModelProviderResponse,
-        UpdateModelProviderRequest,
+        UpdateModelProviderRequest, merge_api_keys,
     },
     error::{AppError, AppResult},
     storage::{
@@ -31,7 +31,7 @@ impl Store {
         let provider_type = request.provider_type;
         let name = validate_non_empty("provider name", &request.name)?;
         let base_url = validate_non_empty("base_url", &request.base_url)?;
-        let api_key = validate_non_empty("api_key", &request.api_key)?;
+        let api_keys = validate_api_keys(merge_api_keys(&[], &request.api_keys))?;
         let models = normalize_models(request.models)?;
         let model_configs = normalize_model_configs(&models, request.model_configs)?;
         validate_extra_body(&request.extra_body)?;
@@ -44,7 +44,8 @@ impl Store {
             provider_type,
             name,
             base_url,
-            api_key,
+            api_keys,
+            key_strategy: request.key_strategy,
             models,
             model_configs,
             extra_body: request.extra_body,
@@ -88,10 +89,11 @@ impl Store {
         if let Some(base_url) = request.base_url {
             provider.base_url = validate_non_empty("base_url", &base_url)?;
         }
-        if let Some(api_key) = request.api_key
-            && !api_key.trim().is_empty()
-        {
-            provider.api_key = api_key.trim().to_string();
+        if let Some(submitted) = request.api_keys {
+            provider.api_keys = validate_api_keys(merge_api_keys(&provider.api_keys, &submitted))?;
+        }
+        if let Some(key_strategy) = request.key_strategy {
+            provider.key_strategy = key_strategy;
         }
         let requested_model_configs = request.model_configs;
         if let Some(models) = request.models {
@@ -172,6 +174,15 @@ impl Store {
             .find(|provider| provider.id == id)
             .ok_or(AppError::NotFound)
     }
+}
+
+fn validate_api_keys(api_keys: Vec<String>) -> AppResult<Vec<String>> {
+    if api_keys.is_empty() {
+        return Err(AppError::BadRequest(
+            "at least one API key is required".to_string(),
+        ));
+    }
+    Ok(api_keys)
 }
 
 fn normalize_model_configs(

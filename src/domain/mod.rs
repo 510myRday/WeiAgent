@@ -25,8 +25,8 @@ pub use ip_proxies::{
     IpProxyQualityTestUpdate, IpProxyStatus, IpProxyTestUpdate, UpdateIpProxyRequest,
 };
 pub use providers::{
-    CreateModelProviderRequest, FetchProviderModelsRequest, ModelConfig, ModelProvider,
-    ModelProviderResponse, ProviderType, UpdateModelProviderRequest,
+    ApiKeyStrategy, CreateModelProviderRequest, FetchProviderModelsRequest, ModelConfig,
+    ModelProvider, ModelProviderResponse, ProviderType, UpdateModelProviderRequest, merge_api_keys,
 };
 pub use runtime::{
     CodexRuntimeSource, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus,
