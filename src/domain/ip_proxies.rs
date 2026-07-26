@@ -159,12 +159,6 @@ pub struct ImportIpProxiesResponse {
     pub proxies: Vec<IpProxy>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct TestIpProxiesRequest {
-    #[serde(default)]
-    pub ids: Vec<Uuid>,
-}
-
 #[derive(Debug, Clone)]
 pub struct IpProxyTestUpdate {
     pub id: Uuid,

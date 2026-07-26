@@ -26,6 +26,7 @@ export type ModelProvider = {
   extra_body: Record<string, unknown> | null;
   prompt_cache?: PromptCacheConfig;
   cache_capabilities?: ProviderCacheCapabilities | null;
+  proxy_url?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -58,6 +59,7 @@ export type ModelProviderPayload = {
   extra_body?: Record<string, unknown> | null;
   prompt_cache?: PromptCacheConfig;
   cache_capabilities?: ProviderCacheCapabilities | null;
+  proxy_url?: string | null;
 };
 
 export type PromptCacheMode = 'disabled' | 'automatic' | 'explicit';
@@ -82,6 +84,7 @@ export type FetchProviderModelsPayload = {
   base_url: string;
   api_key: string;
   extra_body?: Record<string, unknown>;
+  proxy_url?: string | null;
 };
 
 export type Agent = {

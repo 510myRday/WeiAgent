@@ -483,23 +483,17 @@ export function importIpProxies(
 }
 
 export function testIpProxy(id: string): Promise<IpProxy> {
-  return request<IpProxy>(`/api/ip-proxies/${id}/test`, { method: 'POST' }, undefined, 20000);
-}
-
-export function testIpProxies(ids: string[]): Promise<IpProxy[]> {
-  return request<IpProxy[]>('/api/ip-proxies/test', {
-    method: 'POST',
-    body: JSON.stringify({ ids }),
-  }, undefined, 600000);
+  return request<IpProxy>(`/api/ip-proxies/${id}/test`, { method: 'POST' }, undefined, 30000);
 }
 
 export function generateConversationTitle(
   conversationId: string,
   content: string,
+  locale?: string,
 ): Promise<Conversation> {
   return request<Conversation>(`/api/conversations/${conversationId}/title`, {
     method: 'POST',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, locale }),
   }, undefined, CONVERSATION_TITLE_REQUEST_TIMEOUT_MS);
 }
 

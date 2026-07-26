@@ -604,6 +604,7 @@ mod tests {
             extra_body: Value::Null,
             prompt_cache: Default::default(),
             cache_capabilities: None,
+            proxy_url: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -773,6 +774,7 @@ mod tests {
             extra_body: Value::Null,
             prompt_cache: Default::default(),
             cache_capabilities: None,
+            proxy_url: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

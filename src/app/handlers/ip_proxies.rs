@@ -5,7 +5,6 @@ use axum::{
     extract::{Path, State},
 };
 use chrono::Utc;
-use futures_util::{StreamExt, stream};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -14,7 +13,7 @@ use crate::{
     domain::{
         CreateIpProxyRequest, ImportIpProxiesRequest, ImportIpProxiesResponse, IpProxy,
         IpProxyQuality, IpProxyQualityProbe, IpProxyQualityStatus, IpProxyQualityTestUpdate,
-        IpProxyStatus, IpProxyTestUpdate, TestIpProxiesRequest, UpdateIpProxyRequest,
+        IpProxyStatus, IpProxyTestUpdate, UpdateIpProxyRequest,
     },
     error::AppResult,
 };
@@ -23,7 +22,6 @@ const PROXY_GEO_TEST_URL: &str = "http://ip-api.com/json/?lang=zh-CN";
 const PROXY_IP_TEST_URL: &str = "https://api64.ipify.org?format=json";
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(12);
 const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
-const MAX_CONCURRENT_TESTS: usize = 8;
 const QUALITY_GOOGLE_URL: &str =
     "https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta";
 const QUALITY_OPENAI_URL: &str = "https://api.openai.com/v1/models";
@@ -67,46 +65,22 @@ pub async fn test_ip_proxy(
     State(state): State<AppState>,
     Path(proxy_id): Path<Uuid>,
 ) -> AppResult<Json<IpProxy>> {
-    let proxies = state.store.ip_proxies_for_test(&[proxy_id]).await?;
-    let mut updated = run_proxy_tests_with_quality(&state, proxies).await?;
-    Ok(Json(updated.remove(0)))
-}
-
-pub async fn test_ip_proxies(
-    State(state): State<AppState>,
-    Json(request): Json<TestIpProxiesRequest>,
-) -> AppResult<Json<Vec<IpProxy>>> {
-    let proxies = state.store.ip_proxies_for_test(&request.ids).await?;
-    Ok(Json(run_proxy_tests_with_quality(&state, proxies).await?))
-}
-
-async fn run_proxy_tests_with_quality(
-    state: &AppState,
-    proxies: Vec<IpProxy>,
-) -> AppResult<Vec<IpProxy>> {
-    if proxies.is_empty() {
-        return Ok(Vec::new());
-    }
-    let updates = stream::iter(proxies)
-        .map(|proxy| async move {
-            let quality_proxy = proxy.clone();
-            tokio::join!(
-                test_proxy_connection(proxy),
-                test_proxy_quality(quality_proxy),
-            )
-        })
-        .buffer_unordered(MAX_CONCURRENT_TESTS)
-        .collect::<Vec<_>>()
-        .await;
-    let (test_updates, quality_updates): (Vec<_>, Vec<_>) = updates.into_iter().unzip();
+    let mut proxies = state.store.ip_proxies_for_test(&[proxy_id]).await?;
+    let proxy = proxies.remove(0);
+    let quality_proxy = proxy.clone();
+    let (test_update, quality_update) = tokio::join!(
+        test_proxy_connection(proxy),
+        test_proxy_quality(quality_proxy),
+    );
     state
         .store
-        .apply_ip_proxy_test_updates(&test_updates)
+        .apply_ip_proxy_test_updates(std::slice::from_ref(&test_update))
         .await?;
-    state
+    let mut updated = state
         .store
-        .apply_ip_proxy_quality_updates(&quality_updates)
-        .await
+        .apply_ip_proxy_quality_updates(std::slice::from_ref(&quality_update))
+        .await?;
+    Ok(Json(updated.remove(0)))
 }
 
 async fn test_proxy_connection(proxy: IpProxy) -> IpProxyTestUpdate {

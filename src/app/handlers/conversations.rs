@@ -99,6 +99,8 @@ pub async fn update_conversation(
 #[derive(Debug, Deserialize)]
 pub struct GenerateConversationTitleRequest {
     pub content: String,
+    #[serde(default)]
+    pub locale: Option<String>,
 }
 
 pub async fn generate_conversation_title(
@@ -155,6 +157,13 @@ pub async fn generate_conversation_title(
         attachments: Vec::new(),
         usage: None,
     };
+    let language_instruction = match request.locale.as_deref() {
+        Some("en") => "Write the title in English.",
+        _ => "Write the title in Simplified Chinese (简体中文).",
+    };
+    let system_prompt = format!(
+        "Read the user's message and summarize it as one conversation title no longer than 15 characters. {language_instruction} Output only the title itself. Do not output quotes, punctuation, labels, explanations, markdown, or any other text."
+    );
     let client = state.llm_registry.client_for(&provider)?;
     let output = tokio::time::timeout(
         CONVERSATION_TITLE_TIMEOUT,
@@ -162,7 +171,7 @@ pub async fn generate_conversation_title(
             &title_agent,
             &provider,
             &[title_message],
-            "Read the user's message and summarize it as one conversation title no longer than 15 characters. Output only the title itself. Do not output quotes, punctuation, labels, explanations, markdown, or any other text.",
+            &system_prompt,
             RequestOptions {
                 timeout: CONVERSATION_TITLE_TIMEOUT,
                 retry_attempts: 1,

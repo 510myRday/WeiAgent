@@ -11,18 +11,20 @@ import {
 
 import type {
   AppSettings,
+  IpProxy,
   ModelConfig,
   ModelProvider,
   ModelProviderPayload,
   ProviderType,
 } from '../../types';
-import { fetchModels, fetchModelsForProvider } from '../../api';
+import { fetchModels, fetchModelsForProvider, listIpProxies } from '../../api';
 import { useBeforeUnloadGuard } from '../../hooks';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
 import { AutoSaveIndicator, Button, FormField, ListItem, PaneHeader, useFeedback } from '../../components/ui';
 import { userErrorMessage } from '../../utils/userError';
 import { IpProxySettings } from './IpProxySettings';
+import { ProxyPickerDialog } from './web-search/ProxyPickerDialog';
 import { protocolPresetByType, providerTemplateById } from './settings-panel/providerTemplates';
 import type { ProviderTemplateId } from './settings-panel/providerTemplates';
 import {
@@ -102,6 +104,9 @@ export function SettingsPanel({
   const [selectedProviderTemplateId, setSelectedProviderTemplateId] = useState<ProviderTemplateId>('custom');
   const [pendingProviderTemplateId, setPendingProviderTemplateId] = useState<ProviderTemplateId | null>(null);
   const [proxyCount, setProxyCount] = useState(0);
+  const [ipProxies, setIpProxies] = useState<IpProxy[]>([]);
+  const [isLoadingIpProxies, setIsLoadingIpProxies] = useState(false);
+  const [providerProxyPickerOpen, setProviderProxyPickerOpen] = useState(false);
 
   const latestSerializedRef = useRef('');
   const persistedSerializedRef = useRef('');
@@ -170,6 +175,27 @@ export function SettingsPanel({
   useEffect(() => {
     setActiveSection(initialSection);
   }, [initialSection]);
+
+  // Refresh the proxy list whenever the provider page is shown so proxies
+  // created on the IP proxy page are immediately selectable.
+  useEffect(() => {
+    if (activeSection !== 'providers') return;
+    let cancelled = false;
+    setIsLoadingIpProxies(true);
+    listIpProxies()
+      .then((next) => {
+        if (!cancelled) setIpProxies(next);
+      })
+      .catch(() => {
+        if (!cancelled) toast.warning(t('tools.webSearch.ipProxyLoadFailed'));
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingIpProxies(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSection, t, toast]);
 
   useEffect(() => {
     if (providerLoadedIdRef.current === activeProviderId) return;
@@ -590,6 +616,7 @@ export function SettingsPanel({
           base_url: baseUrl,
           api_key: apiKey,
           extra_body: extraBody,
+          proxy_url: providerForm.proxy_url,
         });
       changeProviderForm((current) => ({
         ...current,
@@ -787,6 +814,7 @@ export function SettingsPanel({
                 showApiKey={showApiKey}
                 advancedOpen={advancedOpen}
                 providerConnectionLocked={providerConnectionLocked}
+                ipProxies={ipProxies}
                 onSubmit={handleProviderSubmit}
                 onToggleShowApiKey={() => setShowApiKey((visible) => !visible)}
                 onAdvancedOpenChange={setAdvancedOpen}
@@ -798,6 +826,7 @@ export function SettingsPanel({
                 onPatchModelConfig={patchModelConfig}
                 onExtraBodyChange={handleExtraBodyChange}
                 onFetchModels={handleFetchModels}
+                onOpenProxyPicker={() => setProviderProxyPickerOpen(true)}
               />
             </div>
           )}
@@ -809,6 +838,23 @@ export function SettingsPanel({
         onClose={() => setProviderTemplateDialogOpen(false)}
         onSelect={handleProviderTemplateSelect}
       />
+      {providerProxyPickerOpen ? (
+        <ProxyPickerDialog
+          value={providerForm.proxy_url}
+          ipProxies={ipProxies}
+          isLoading={isLoadingIpProxies}
+          onSelect={(url) => {
+            changeProviderForm((current) => ({ ...current, proxy_url: url }));
+            setProviderProxyPickerOpen(false);
+          }}
+          onClose={() => setProviderProxyPickerOpen(false)}
+          onOpenIpProxies={() => {
+            setProviderProxyPickerOpen(false);
+            setActiveSection('proxies');
+            onOpenMain();
+          }}
+        />
+      ) : null}
     </>
   );
 }

@@ -33,7 +33,6 @@ import {
   deleteIpProxy,
   importIpProxies,
   listIpProxies,
-  testIpProxies,
   testIpProxy,
   updateIpProxy,
 } from '../../api';
@@ -98,6 +97,8 @@ const EMPTY_PROXY_FORM: IpProxyPayload = {
   url: '',
   enabled: true,
 };
+
+const TEST_CONCURRENCY = 6;
 
 export function IpProxySettings({
   onCountChange,
@@ -411,28 +412,49 @@ export function IpProxySettings({
     }
   }
 
-  async function runTests(ids: string[], single = false) {
+  async function runTests(ids: string[]) {
     const uniqueIds = Array.from(new Set(ids));
     if (uniqueIds.length === 0) {
       toast.info(t('ipProxy.noEnabled'));
       return;
     }
     setTestingIds((current) => new Set([...current, ...uniqueIds]));
-    try {
-      const updated = single && uniqueIds.length === 1
-        ? [await testIpProxy(uniqueIds[0])]
-        : await testIpProxies(uniqueIds);
-      mergeUpdatedProxies(updated);
-      const available = updated.filter((proxy) => proxy.status === 'available').length;
-      toast.success(t('ipProxy.testSummary', { available, count: updated.length }));
-    } catch (cause) {
-      toast.error(userErrorMessage(cause, { summary: t('ipProxy.testFailed') }));
-    } finally {
-      setTestingIds((current) => {
-        const next = new Set(current);
-        uniqueIds.forEach((id) => next.delete(id));
-        return next;
-      });
+
+    let available = 0;
+    let failed = 0;
+    let firstError: unknown = null;
+    const queue = [...uniqueIds];
+    const worker = async () => {
+      for (;;) {
+        const id = queue.shift();
+        if (id == null) return;
+        try {
+          const updated = await testIpProxy(id);
+          mergeUpdatedProxies([updated]);
+          if (updated.status === 'available') available += 1;
+        } catch (cause) {
+          failed += 1;
+          firstError = firstError ?? cause;
+        } finally {
+          setTestingIds((current) => {
+            const next = new Set(current);
+            next.delete(id);
+            return next;
+          });
+        }
+      }
+    };
+    await Promise.all(Array.from(
+      { length: Math.min(TEST_CONCURRENCY, uniqueIds.length) },
+      () => worker(),
+    ));
+
+    const completed = uniqueIds.length - failed;
+    if (failed > 0) {
+      toast.error(userErrorMessage(firstError, { summary: t('ipProxy.testFailed') }));
+    }
+    if (completed > 0) {
+      toast.success(t('ipProxy.testSummary', { available, count: completed }));
     }
   }
 
@@ -683,7 +705,7 @@ export function IpProxySettings({
                             variant="ghost"
                             label={t('ipProxy.testOne')}
                             disabled={isTesting || isDeleting}
-                            onClick={() => void runTests([proxy.id], true)}
+                            onClick={() => void runTests([proxy.id])}
                           >
                             {isTesting ? <LoaderCircle size={15} className="is-spinning" /> : <Activity size={15} />}
                           </IconButton>

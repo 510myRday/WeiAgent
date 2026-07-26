@@ -1,9 +1,10 @@
 import type { FormEvent, SyntheticEvent } from 'react';
-import { ChevronDown, Code2, Download, Eye, EyeOff, LockKeyhole, Save } from 'lucide-react';
+import { ChevronDown, CircleAlert, Code2, Download, Eye, EyeOff, LockKeyhole, Save } from 'lucide-react';
 
-import type { ModelConfig, ModelProvider, ProviderType } from '../../../types';
+import type { IpProxy, ModelConfig, ModelProvider, ProviderType } from '../../../types';
 import { useI18n } from '../../../i18n';
 import { Button, FormField, IconButton, PaneHeader } from '../../../components/ui';
+import { displayProxyUrl } from '../web-search/utils';
 import { PROTOCOL_PRESETS } from './providerTemplates';
 import {
   parseContextSize,
@@ -21,6 +22,7 @@ interface ProviderEditorFormProps {
   showApiKey: boolean;
   advancedOpen: boolean;
   providerConnectionLocked: boolean;
+  ipProxies: IpProxy[];
   onSubmit: (e: FormEvent<HTMLFormElement>) => void;
   onToggleShowApiKey: () => void;
   onAdvancedOpenChange: (open: boolean) => void;
@@ -32,6 +34,7 @@ interface ProviderEditorFormProps {
   onPatchModelConfig: (modelId: string, patch: Partial<ModelConfig>) => void;
   onExtraBodyChange: (extraBodyText: string) => void;
   onFetchModels: () => void;
+  onOpenProxyPicker: () => void;
 }
 
 export function ProviderEditorForm({
@@ -42,6 +45,7 @@ export function ProviderEditorForm({
   showApiKey,
   advancedOpen,
   providerConnectionLocked,
+  ipProxies,
   onSubmit,
   onToggleShowApiKey,
   onAdvancedOpenChange,
@@ -53,10 +57,13 @@ export function ProviderEditorForm({
   onPatchModelConfig,
   onExtraBodyChange,
   onFetchModels,
+  onOpenProxyPicker,
 }: ProviderEditorFormProps) {
   const { t } = useI18n();
   const modelCount = parseModels(providerForm.modelsText).length;
   const extraBodyStatus = parseExtraBodyText(providerForm.extraBodyText).status;
+  const proxyValue = providerForm.proxy_url;
+  const currentProxy = ipProxies.find((proxy) => proxy.url === proxyValue) ?? null;
 
   return (
     <form className="form-card entity-form provider-editor" onSubmit={onSubmit}>
@@ -130,6 +137,37 @@ export function ProviderEditorForm({
                 {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
               </IconButton>
             </div>
+          </FormField>
+          <FormField
+            label={t('provider.proxyUrl')}
+            htmlFor="provider-proxy"
+            hint={t('provider.proxyUrlDesc')}
+          >
+            <button
+              id="provider-proxy"
+              type="button"
+              className={`web-search-proxy-picker${currentProxy ? '' : ' is-empty'}`}
+              onClick={onOpenProxyPicker}
+              disabled={isSubmittingProvider}
+              aria-label={t('provider.proxyUrl')}
+            >
+              <span className="web-search-proxy-picker__copy">
+                {currentProxy ? (
+                  <>
+                    <strong>{currentProxy.name}</strong>
+                    <code>{displayProxyUrl(currentProxy.url)}</code>
+                  </>
+                ) : proxyValue ? (
+                  <>
+                    <strong className="is-warning"><CircleAlert size={14} />{t('tools.webSearch.proxyNotInList')}</strong>
+                    <code>{displayProxyUrl(proxyValue)}</code>
+                  </>
+                ) : (
+                  <span>{t('tools.webSearch.selectIpProxy')}</span>
+                )}
+              </span>
+              <ChevronDown size={17} aria-hidden="true" />
+            </button>
           </FormField>
         </div>
       </section>

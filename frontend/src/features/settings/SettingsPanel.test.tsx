@@ -7,6 +7,12 @@ import { I18nProvider } from '../../i18n';
 import { FeedbackProvider } from '../../components/ui';
 import { SettingsPanel } from './SettingsPanel';
 
+vi.mock('../../api', () => ({
+  fetchModels: vi.fn().mockResolvedValue([]),
+  fetchModelsForProvider: vi.fn().mockResolvedValue([]),
+  listIpProxies: vi.fn().mockResolvedValue([]),
+}));
+
 const settings: AppSettings = {
   host: '127.0.0.1',
   port: 3000,

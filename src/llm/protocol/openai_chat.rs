@@ -352,6 +352,7 @@ mod tests {
             extra_body: serde_json::json!({"temperature": 0.2}),
             prompt_cache: Default::default(),
             cache_capabilities: None,
+            proxy_url: None,
             created_at: now,
             updated_at: now,
         };

@@ -72,7 +72,6 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             "/api/ip-proxies/import",
             post(ip_proxies::import_ip_proxies),
         )
-        .route("/api/ip-proxies/test", post(ip_proxies::test_ip_proxies))
         .route(
             "/api/ip-proxies/{proxy_id}",
             put(ip_proxies::update_ip_proxy).delete(ip_proxies::delete_ip_proxy),

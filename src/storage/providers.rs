@@ -35,6 +35,7 @@ impl Store {
         let models = normalize_models(request.models)?;
         let model_configs = normalize_model_configs(&models, request.model_configs)?;
         validate_extra_body(&request.extra_body)?;
+        let proxy_url = normalize_provider_proxy_url(request.proxy_url)?;
 
         let _guard = self.lock.lock().await;
         let now = Utc::now();
@@ -49,6 +50,7 @@ impl Store {
             extra_body: request.extra_body,
             prompt_cache: request.prompt_cache,
             cache_capabilities: request.cache_capabilities,
+            proxy_url,
             created_at: now,
             updated_at: now,
         };
@@ -119,6 +121,9 @@ impl Store {
         }
         if let Some(cache_capabilities) = request.cache_capabilities {
             provider.cache_capabilities = cache_capabilities;
+        }
+        if let Some(proxy_url) = request.proxy_url {
+            provider.proxy_url = normalize_provider_proxy_url(proxy_url)?;
         }
 
         provider.updated_at = Utc::now();
@@ -227,6 +232,30 @@ fn validate_model_price(field: &str, price: Option<f64>) -> AppResult<()> {
     Err(AppError::BadRequest(format!(
         "{field} must be a non-negative finite number"
     )))
+}
+
+fn normalize_provider_proxy_url(value: Option<String>) -> AppResult<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if !(value.starts_with("http://")
+        || value.starts_with("https://")
+        || value.starts_with("socks4://")
+        || value.starts_with("socks4a://")
+        || value.starts_with("socks5://")
+        || value.starts_with("socks5h://")
+        || value.starts_with("socks://"))
+    {
+        return Err(AppError::BadRequest(
+            "provider proxy_url must start with http://, https://, socks4://, socks4a://, socks5:// or socks5h://"
+                .to_string(),
+        ));
+    }
+    Ok(Some(value.to_string()))
 }
 
 fn validate_extra_body(extra_body: &serde_json::Value) -> AppResult<()> {

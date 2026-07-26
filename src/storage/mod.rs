@@ -49,6 +49,7 @@ mod tests {
             extra_body: serde_json::Value::Null,
             prompt_cache: Default::default(),
             cache_capabilities: None,
+            proxy_url: None,
         }
     }
 
@@ -110,7 +111,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(migration_versions, vec![1, 2, 3, 4]);
+        assert_eq!(migration_versions, vec![1, 2, 3, 4, 5]);
         assert_eq!(
             tool_table_names(&conn),
             vec![
@@ -486,6 +487,7 @@ mod tests {
                     extra_body: None,
                     prompt_cache: None,
                     cache_capabilities: None,
+                    proxy_url: None,
                 },
             )
             .await

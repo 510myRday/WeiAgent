@@ -22,8 +22,7 @@ pub use conversations::{
 pub use ip_proxies::{
     CreateIpProxyRequest, ImportIpProxiesRequest, ImportIpProxiesResponse, IpProxy,
     IpProxyProtocol, IpProxyQuality, IpProxyQualityProbe, IpProxyQualityStatus,
-    IpProxyQualityTestUpdate, IpProxyStatus, IpProxyTestUpdate, TestIpProxiesRequest,
-    UpdateIpProxyRequest,
+    IpProxyQualityTestUpdate, IpProxyStatus, IpProxyTestUpdate, UpdateIpProxyRequest,
 };
 pub use providers::{
     CreateModelProviderRequest, FetchProviderModelsRequest, ModelConfig, ModelProvider,

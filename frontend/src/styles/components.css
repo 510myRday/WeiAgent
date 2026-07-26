@@ -2775,7 +2775,6 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
-  padding: var(--space-4) 0;
   border-bottom: 1px solid var(--border-subtle);
 }
 

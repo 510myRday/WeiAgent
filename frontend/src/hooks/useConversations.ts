@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { useI18n } from '../i18n';
 import type {
   AgentRun,
   AgentRunPhase,
@@ -518,6 +519,7 @@ export function useConversations({
   runInterruptedMessage,
   onError,
 }: UseConversationsOptions) {
+  const { locale } = useI18n();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState('');
   const [messages, setMessages] = useState<UiMessageItem[]>([]);
@@ -1215,7 +1217,7 @@ export function useConversations({
           const titleInput = attachments.length > 0
             ? `${content.trim()}\n\n${imageAttachmentTitleNote}`
             : content.trim();
-          void generateConversationTitle(conversationId, titleInput)
+          void generateConversationTitle(conversationId, titleInput, locale)
             .then((updated) => {
               setConversations((current) => current.map((conversation) => (
                 conversation.id === updated.id ? updated : conversation

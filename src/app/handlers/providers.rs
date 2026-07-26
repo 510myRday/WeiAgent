@@ -41,6 +41,7 @@ pub async fn fetch_provider_models(
         extra_body: request.extra_body,
         prompt_cache: Default::default(),
         cache_capabilities: None,
+        proxy_url: request.proxy_url,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

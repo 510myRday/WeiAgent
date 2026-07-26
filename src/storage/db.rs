@@ -19,6 +19,7 @@ use crate::{
 pub const DB_FILE_NAME: &str = "weiagent.db";
 const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const BASE_SCHEMA_VERSION: i64 = 1;
+const PROVIDER_PROXY_SCHEMA_VERSION: i64 = 5;
 
 type DatabaseJob = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
@@ -186,6 +187,7 @@ CREATE TABLE IF NOT EXISTS model_providers (
     extra_body_json TEXT NOT NULL DEFAULT 'null',
     prompt_cache_json TEXT NOT NULL DEFAULT '{}',
     cache_capabilities_json TEXT NOT NULL DEFAULT 'null',
+    proxy_url TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -254,22 +256,50 @@ fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
         [BASE_SCHEMA_VERSION],
         |row| row.get::<_, bool>(0),
     )?;
-    if applied {
-        return Ok(());
+    if !applied {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA_SQL)?;
+        tx.execute(
+            "INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (?1, ?2, ?3)",
+            params![
+                BASE_SCHEMA_VERSION,
+                "base_schema_v1",
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        tx.commit()?;
     }
 
-    let tx = conn.transaction()?;
-    tx.execute_batch(SCHEMA_SQL)?;
-    tx.execute(
-        "INSERT INTO app_schema_migrations (version, name, applied_at)
-         VALUES (?1, ?2, ?3)",
-        params![
-            BASE_SCHEMA_VERSION,
-            "base_schema_v1",
-            Utc::now().to_rfc3339()
-        ],
+    let proxy_applied = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM app_schema_migrations WHERE version = ?1
+        )",
+        [PROVIDER_PROXY_SCHEMA_VERSION],
+        |row| row.get::<_, bool>(0),
     )?;
-    tx.commit()?;
+    if !proxy_applied {
+        let tx = conn.transaction()?;
+        let has_column = tx
+            .prepare("PRAGMA table_info(model_providers)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "proxy_url");
+        if !has_column {
+            tx.execute("ALTER TABLE model_providers ADD COLUMN proxy_url TEXT", [])?;
+        }
+        tx.execute(
+            "INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (?1, ?2, ?3)",
+            params![
+                PROVIDER_PROXY_SCHEMA_VERSION,
+                "model_provider_proxy_url_v5",
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -291,7 +321,7 @@ pub fn open_data_dir(data_dir: &Path) -> AppResult<Connection> {
 pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
     let mut stmt = conn.prepare(
         "SELECT id, provider_type, name, base_url, api_key, models_json,
-                model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, created_at, updated_at
+                model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, proxy_url, created_at, updated_at
          FROM model_providers
          ORDER BY created_at ASC, id ASC",
     )?;
@@ -307,8 +337,9 @@ pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
             extra_body_json: row.get(7)?,
             prompt_cache_json: row.get(8)?,
             cache_capabilities_json: row.get(9)?,
-            created_at: row.get(10)?,
-            updated_at: row.get(11)?,
+            proxy_url: row.get(10)?,
+            created_at: row.get(11)?,
+            updated_at: row.get(12)?,
         })
     })?;
 
@@ -329,8 +360,8 @@ pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) 
     conn.execute(
         "INSERT INTO model_providers (
             id, provider_type, name, base_url, api_key, models_json,
-            model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, proxy_url, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(id) DO UPDATE SET
             provider_type = excluded.provider_type,
             name = excluded.name,
@@ -341,6 +372,7 @@ pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) 
             extra_body_json = excluded.extra_body_json,
             prompt_cache_json = excluded.prompt_cache_json,
             cache_capabilities_json = excluded.cache_capabilities_json,
+            proxy_url = excluded.proxy_url,
             updated_at = excluded.updated_at",
         params![
             provider.id.to_string(),
@@ -353,6 +385,7 @@ pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) 
             extra_body_json,
             prompt_cache_json,
             cache_capabilities_json,
+            provider.proxy_url,
             provider.created_at.to_rfc3339(),
             provider.updated_at.to_rfc3339(),
         ],
@@ -378,6 +411,7 @@ struct ProviderRow {
     extra_body_json: String,
     prompt_cache_json: String,
     cache_capabilities_json: String,
+    proxy_url: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -408,6 +442,7 @@ fn row_to_provider(row: ProviderRow) -> AppResult<ModelProvider> {
         extra_body,
         prompt_cache,
         cache_capabilities,
+        proxy_url: row.proxy_url,
         created_at,
         updated_at,
     })

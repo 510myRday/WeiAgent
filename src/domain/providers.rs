@@ -58,6 +58,13 @@ pub struct ModelProvider {
     pub prompt_cache: PromptCacheConfig,
     #[serde(default)]
     pub cache_capabilities: Option<ProviderCacheCapabilities>,
+    /// Upstream proxy for this provider's LLM traffic. Supports HTTP and SOCKS proxy URLs.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::domain::ip_proxies::serialize_optional_proxy_url"
+    )]
+    pub proxy_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -75,6 +82,8 @@ pub struct ModelProviderResponse {
     pub extra_body: serde_json::Value,
     pub prompt_cache: PromptCacheConfig,
     pub cache_capabilities: Option<ProviderCacheCapabilities>,
+    #[serde(serialize_with = "crate::domain::ip_proxies::serialize_optional_proxy_url")]
+    pub proxy_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -93,6 +102,7 @@ impl From<&ModelProvider> for ModelProviderResponse {
             extra_body: provider.extra_body.clone(),
             prompt_cache: provider.prompt_cache.clone(),
             cache_capabilities: provider.cache_capabilities.clone(),
+            proxy_url: provider.proxy_url.clone(),
             created_at: provider.created_at,
             updated_at: provider.updated_at,
         }
@@ -119,6 +129,8 @@ pub struct CreateModelProviderRequest {
     pub prompt_cache: PromptCacheConfig,
     #[serde(default)]
     pub cache_capabilities: Option<ProviderCacheCapabilities>,
+    #[serde(default)]
+    pub proxy_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +141,8 @@ pub struct FetchProviderModelsRequest {
     pub api_key: String,
     #[serde(default)]
     pub extra_body: serde_json::Value,
+    #[serde(default)]
+    pub proxy_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +156,16 @@ pub struct UpdateModelProviderRequest {
     pub extra_body: Option<serde_json::Value>,
     pub prompt_cache: Option<PromptCacheConfig>,
     pub cache_capabilities: Option<Option<ProviderCacheCapabilities>>,
+    /// Missing = unchanged, null = clear, string = set.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub proxy_url: Option<Option<String>>,
+}
+
+fn deserialize_double_option<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(deserializer)?))
 }
 
 #[cfg(test)]

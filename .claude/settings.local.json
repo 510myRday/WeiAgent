@@ -63,7 +63,12 @@
       "Bash(rustfmt --edition 2024 src/tools/web_search/providers/jina.rs)",
       "Bash(cd \"d:\\\\Code_Save\\\\rust\\\\WeiAgent\" && grep -n \"is_dev\\\\|dev_mode\\\\|--dev\\\\|args\\(\\)\" src/main.rs | head -10; ls -la \"C:\\\\Users\\\\Administrator\\\\.WeiAgent\" 2>/dev/null | head -15)",
       "Read(//c/Users/Administrator/.WeiAgent/**)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(grep -n \"from '\\\\.\\\\./i18n'\\\\|from '\\\\.\\\\./\\\\.\\\\./i18n'\" -r \"d:\\\\Code_Save\\\\rust\\\\WeiAgent\\\\frontend\\\\src\")",
+      "Bash(git -C \"d:\\\\Code_Save\\\\rust\\\\WeiAgent\" status --short)",
+      "Bash(git -C \"d:\\\\Code_Save\\\\rust\\\\WeiAgent\" diff --stat src/app/handlers/providers.rs src/domain/providers.rs)",
+      "Bash(git -C \"d:\\\\Code_Save\\\\rust\\\\WeiAgent\" diff src/domain/providers.rs)",
+      "Bash(npx vitest *)"
     ]
   }
 }

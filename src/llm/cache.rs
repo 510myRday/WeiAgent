@@ -199,6 +199,7 @@ mod tests {
                 ..Default::default()
             },
             cache_capabilities: None,
+            proxy_url: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

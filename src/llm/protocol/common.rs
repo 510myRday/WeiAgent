@@ -108,6 +108,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
         )?;
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let url = self.adapter.completion_url(provider, agent, false);
+        let client = self.http.client_for(provider.proxy_url.as_deref())?;
         let log_enabled = self.http.log_enabled();
         // Redacting + pretty-printing the full request (which can embed large
         // base64 images) is only worth it when payload logging is on.
@@ -126,7 +127,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             .http
             .retry_send(&options, || {
                 self.adapter
-                    .authenticated_post(self.http.client(), &url, &api_key, &request)
+                    .authenticated_post(&client, &url, &api_key, &request)
             })
             .await
         {
@@ -255,6 +256,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
         )?;
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
         let url = self.adapter.completion_url(provider, agent, true);
+        let client = self.http.client_for(provider.proxy_url.as_deref())?;
         let log_enabled = self.http.log_enabled();
         let request_json = if log_enabled {
             request_json_for_log(&request)
@@ -271,7 +273,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             .http
             .retry_send(&options, || {
                 self.adapter
-                    .authenticated_post(self.http.client(), &url, &api_key, &request)
+                    .authenticated_post(&client, &url, &api_key, &request)
             })
             .await
         {
@@ -339,6 +341,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
 
     async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {
         let api_key = self.http.api_key(&provider.api_key)?.to_string();
+        let client = self.http.client_for(provider.proxy_url.as_deref())?;
         let mut url = self.adapter.models_url(provider);
         let mut models = Vec::new();
         let mut pages = 0_u8;
@@ -348,7 +351,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             let response = tokio::time::timeout(
                 DEFAULT_MODEL_LIST_TIMEOUT,
                 self.adapter
-                    .authenticated_get(self.http.client(), &url, &api_key)
+                    .authenticated_get(&client, &url, &api_key)
                     .send(),
             )
             .await

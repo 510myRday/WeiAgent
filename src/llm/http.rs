@@ -1,5 +1,6 @@
 use std::{
-    sync::Arc,
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -28,6 +29,15 @@ const MAX_SSE_LINE_BUFFER_BYTES: usize = 1024 * 1024;
 pub(crate) const DEFAULT_MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_LOG_TRUNCATION_MARKER: &str = "[LLM stream log middle truncated]";
 
+/// LLM traffic can be routed through a per-provider proxy. Clients are cached
+/// by their normalized proxy URL so connection pools survive across requests.
+const MAX_CACHED_PROXY_CLIENTS: usize = 32;
+
+fn proxy_client_cache() -> &'static Mutex<HashMap<String, reqwest::Client>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 #[derive(Clone)]
 pub struct LlmHttp {
     client: reqwest::Client,
@@ -47,8 +57,35 @@ impl LlmHttp {
         self
     }
 
-    pub fn client(&self) -> &reqwest::Client {
-        &self.client
+    /// Resolve the client for a provider: the shared direct client when no
+    /// proxy is configured, otherwise a cached client bound to that proxy.
+    pub fn client_for(&self, proxy_url: Option<&str>) -> AppResult<reqwest::Client> {
+        let Some(proxy) = proxy_url
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| crate::domain::ip_proxies::proxy_url_with_remote_dns(value).into_owned())
+        else {
+            return Ok(self.client.clone());
+        };
+
+        if let Ok(guard) = proxy_client_cache().lock()
+            && let Some(client) = guard.get(&proxy)
+        {
+            return Ok(client.clone());
+        }
+        let proxy_config = reqwest::Proxy::all(&proxy)
+            .map_err(|error| AppError::Llm(format!("failed to configure LLM proxy: {error}")))?;
+        let client = reqwest::Client::builder()
+            .proxy(proxy_config)
+            .build()
+            .map_err(|error| AppError::Llm(format!("failed to build LLM HTTP client: {error}")))?;
+        if let Ok(mut guard) = proxy_client_cache().lock() {
+            if guard.len() >= MAX_CACHED_PROXY_CLIENTS {
+                guard.clear();
+            }
+            guard.insert(proxy, client.clone());
+        }
+        Ok(client)
     }
 
     pub fn logger(&self) -> Option<Arc<LlmLogger>> {

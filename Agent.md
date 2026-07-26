@@ -332,6 +332,14 @@ Agent 响应会额外返回后端保存的内置身份信息：
 - 更新 Provider 模型列表时，会校验当前关联该 Provider 的所有 Agent 使用的模型仍在新列表中
 - 删除 Provider 时，如果有 Agent 仍关联它，拒绝删除
 
+### Provider 访问代理（proxy_url）
+
+- `ModelProvider` 增加可选字段 `proxy_url`：该提供商全部 LLM 流量（complete / stream / list_models）经此代理发出；与搜索源 `proxy_url` 同一套规则——只允许 `http(s)://`、`socks4(a)://`、`socks5(h)://`、`socks://` 前缀，序列化时经 `serialize_optional_proxy_url` 把 `socks5://` 归一化为 `socks5h://`（远端 DNS）
+- 存储：`model_providers` 表新增 `proxy_url TEXT` 列（迁移版本 5，`model_provider_proxy_url_v5`，`PRAGMA table_info` 判重后 `ALTER TABLE`），空串/空白在写入前归一为 `NULL`
+- 更新语义：`UpdateModelProviderRequest.proxy_url` 使用双层 `Option`（缺省=不变，`null`=清除，字符串=设置）；前端 PUT 始终显式携带该字段（值或 `null`），保证清除生效
+- 传输层：`LlmHttp::client_for(proxy_url)` 按归一化代理 URL 缓存 `reqwest::Client`（进程级 `OnceLock<Mutex<HashMap>>`，上限 32 个后清空重建），无代理时复用共享直连 client；`POST /api/model-providers/models` 的临时请求也支持 `proxy_url`
+- 前端：提供商编辑页「连接信息」新增访问代理选择器，复用搜索工具的 `ProxyPickerDialog`（只能从 IP 代理页已保存且可用的代理中选择，含跳转 IP 代理设置按钮）；`proxy_url` 走 ProviderForm 自动保存管线
+
 ## 第二阶段聊天特性
 
 ### 会话标题自动生成

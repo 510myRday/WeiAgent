@@ -29,6 +29,7 @@ export type ProviderForm = {
   modelsText: string;
   modelConfigs: ModelConfig[];
   extraBodyText: string;
+  proxy_url: string | null;
 };
 
 export const defaultProviderForm: ProviderForm = {
@@ -39,6 +40,7 @@ export const defaultProviderForm: ProviderForm = {
   modelsText: '',
   modelConfigs: [],
   extraBodyText: '',
+  proxy_url: null,
 };
 
 export function providerTemplateToForm(template: ProviderTemplate, name: string): ProviderForm {
@@ -196,6 +198,7 @@ export function providerToForm(provider: ModelProvider): ProviderForm {
     modelsText: provider.models.join('\n'),
     modelConfigs: syncModelConfigs(provider.models, provider.model_configs ?? []),
     extraBodyText: formatExtraBodyText(provider.extra_body),
+    proxy_url: provider.proxy_url ?? null,
   };
 }
 
@@ -243,6 +246,8 @@ export function buildProviderPayload(
     extra_body: parsedExtraBody.status === 'valid'
       ? parsedExtraBody.value
       : {},
+    // Explicit null clears the proxy on PUT (missing field would leave it unchanged).
+    proxy_url: form.proxy_url?.trim() || null,
   };
 
   if (
@@ -266,6 +271,7 @@ export function serializeProviderForm(form: ProviderForm): string {
     models,
     model_configs: syncModelConfigs(models, form.modelConfigs),
     extra_body_text: form.extraBodyText.trim(),
+    proxy_url: form.proxy_url?.trim() || null,
   });
 }
 
@@ -278,6 +284,7 @@ export function formFromSerializedSnapshot(serialized: string): ProviderForm {
     models: string[];
     model_configs: ModelConfig[];
     extra_body_text: string;
+    proxy_url?: string | null;
   };
   return {
     provider_type: snap.provider_type,
@@ -288,6 +295,7 @@ export function formFromSerializedSnapshot(serialized: string): ProviderForm {
     modelConfigs: snap.model_configs ?? [],
     // Keep the exact extra-body text the user saved (not server pretty-print).
     extraBodyText: snap.extra_body_text ?? '',
+    proxy_url: snap.proxy_url ?? null,
   };
 }
 
