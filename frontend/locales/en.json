@@ -366,6 +366,30 @@
         "name": "SiliconFlow",
         "description": "Connect to the multi-model inference service on SiliconCloud."
       },
+      "modelscope": {
+        "name": "ModelScope",
+        "description": "Connect to the API-Inference model service on the ModelScope community."
+      },
+      "volcengine": {
+        "name": "Volcengine Ark",
+        "description": "Connect to Doubao and partner models on the Volcengine Ark platform."
+      },
+      "hunyuan": {
+        "name": "Tencent Hunyuan",
+        "description": "Connect to Tencent Hunyuan's OpenAI-compatible model service."
+      },
+      "qianfan": {
+        "name": "Baidu Qianfan",
+        "description": "Connect to models on the Baidu AI Cloud Qianfan platform."
+      },
+      "longcat": {
+        "name": "LongCat",
+        "description": "Connect to official models on Meituan's LongCat platform."
+      },
+      "mimo": {
+        "name": "Xiaomi MiMo",
+        "description": "Connect to official models on the Xiaomi MiMo open platform."
+      },
       "stepfun": {
         "name": "StepFun",
         "description": "Connect to official models on the StepFun platform."
@@ -377,6 +401,10 @@
       "minimax": {
         "name": "MiniMax",
         "description": "Connect to official models on the MiniMax platform."
+      },
+      "zai": {
+        "name": "Z.ai",
+        "description": "Connect to models on Z.ai, Zhipu's international platform."
       },
       "opencode": {
         "name": "OpenCode Zen",

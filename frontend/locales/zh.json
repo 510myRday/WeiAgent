@@ -636,6 +636,30 @@
         "name": "硅基流动",
         "description": "连接 SiliconCloud 提供的多模型推理服务。"
       },
+      "modelscope": {
+        "name": "魔搭社区",
+        "description": "连接魔搭社区 ModelScope 的 API-Inference 模型服务。"
+      },
+      "volcengine": {
+        "name": "火山引擎",
+        "description": "连接火山方舟平台的豆包及第三方模型服务。"
+      },
+      "hunyuan": {
+        "name": "腾讯混元",
+        "description": "连接腾讯混元大模型的 OpenAI 兼容服务。"
+      },
+      "qianfan": {
+        "name": "百度千帆",
+        "description": "连接百度智能云千帆平台的模型服务。"
+      },
+      "longcat": {
+        "name": "美团龙猫",
+        "description": "连接美团 LongCat 开放平台的官方模型服务。"
+      },
+      "mimo": {
+        "name": "小米 MiMo",
+        "description": "连接小米 MiMo 开放平台的官方模型服务。"
+      },
       "stepfun": {
         "name": "阶跃星辰",
         "description": "连接阶跃星辰开放平台的官方模型服务。"
@@ -647,6 +671,10 @@
       "minimax": {
         "name": "MiniMax",
         "description": "连接 MiniMax 开放平台的官方模型服务。"
+      },
+      "zai": {
+        "name": "Z.ai",
+        "description": "连接智谱海外版 Z.ai 的模型服务。"
       },
       "opencode": {
         "name": "OpenCode Zen",

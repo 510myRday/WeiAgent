@@ -19,6 +19,7 @@ import { PanelShell } from '../../components/layout';
 import { AutoSaveIndicator, AvatarPopover, Button, FormField, IconButton, PaneHeader, useFeedback } from '../../components/ui';
 import { TerminalToolSettings } from '../settings/TerminalToolSettings';
 import { userErrorMessage } from '../../utils/userError';
+import { compareNames, sortByName } from '../../utils/sort';
 
 interface AgentsPanelProps {
   agents: Agent[];
@@ -604,7 +605,7 @@ export function AgentsPanel({
                           required
                         >
                           <option value="">{t('agentConfig.placeholder_provider')}</option>
-                          {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                          {sortByName(providers).map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
                         </select>
                       </FormField>
                       <FormField
@@ -625,7 +626,7 @@ export function AgentsPanel({
                           required
                         >
                           <option value="">{t('agentConfig.placeholder_model')}</option>
-                          {selectedAgentProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}
+                          {[...(selectedAgentProvider?.models ?? [])].sort(compareNames).map((model) => <option key={model} value={model}>{model}</option>)}
                         </select>
                       </FormField>
                     </div>

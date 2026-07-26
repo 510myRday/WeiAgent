@@ -1,11 +1,13 @@
+import type { ComponentProps } from 'react';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
-import type { AppSettings } from '../../types';
+import type { AppSettings, ModelProvider } from '../../types';
 import { I18nProvider } from '../../i18n';
 import { FeedbackProvider } from '../../components/ui';
 import { SettingsPanel } from './SettingsPanel';
+import { clearNewProviderDraft } from './settings-panel/newProviderDraft';
 
 vi.mock('../../api', () => ({
   fetchModels: vi.fn().mockResolvedValue([]),
@@ -30,7 +32,46 @@ const settings: AppSettings = {
 
 beforeEach(() => {
   localStorage.setItem('weiagent-locale', 'zh');
+  clearNewProviderDraft();
 });
+
+const existingProvider: ModelProvider = {
+  id: 'provider-1',
+  provider_type: 'openai_compatible',
+  name: '已有提供商',
+  base_url: 'https://api.example.com/v1',
+  has_api_key: true,
+  masked_api_key: 'sk-****',
+  models: ['gpt-test'],
+  model_configs: [],
+  extra_body: null,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+};
+
+function panelTree(overrides: Partial<ComponentProps<typeof SettingsPanel>> = {}) {
+  return (
+    <I18nProvider>
+      <FeedbackProvider>
+        <SettingsPanel
+          settingsForm={settings}
+          onSettingsFormChange={() => {}}
+          onSettingsSave={vi.fn().mockResolvedValue(settings)}
+          providers={[]}
+          activeProviderId=""
+          initialSection="providers"
+          onProviderChange={() => {}}
+          onProviderAdd={vi.fn()}
+          onProviderEdit={vi.fn()}
+          onProviderRemove={vi.fn()}
+          onOpenMain={() => {}}
+          onBackToList={() => {}}
+          {...overrides}
+        />
+      </FeedbackProvider>
+    </I18nProvider>
+  );
+}
 
 test('provider templates populate and lock fixed connection fields while custom stays editable', async () => {
   const user = userEvent.setup();
@@ -72,7 +113,7 @@ test('provider templates populate and lock fixed connection fields while custom 
   const openAiTemplate = screen.getByRole('button', { name: /OpenAI 官方 API/ });
   expect(openAiTemplate).toBeInTheDocument();
   expect(openAiTemplate.querySelector('img')).toHaveAttribute('src', '/model-providers/openai.svg');
-  expect(templateGrid!.querySelectorAll('img')).toHaveLength(14);
+  expect(templateGrid!.querySelectorAll('img')).toHaveLength(21);
   expect(screen.getByRole('button', { name: /Google Gemini API/ })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: /Anthropic 官方 API/ })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: /Kimi 开放平台/ })).toBeInTheDocument();
@@ -82,9 +123,16 @@ test('provider templates populate and lock fixed connection fields while custom 
     ['阿里云百炼', '/model-providers/alibaba-bailian.svg', 'https://dashscope.aliyuncs.com/compatible-mode/v1'],
     ['OpenRouter', '/model-providers/openrouter.svg', 'https://openrouter.ai/api/v1'],
     ['硅基流动', '/model-providers/siliconflow.svg', 'https://api.siliconflow.cn/v1'],
+    ['魔搭社区', '/model-providers/modelscope.svg', 'https://api-inference.modelscope.cn/v1'],
+    ['火山引擎', '/model-providers/volcengine.svg', 'https://ark.cn-beijing.volces.com/api/v3'],
+    ['腾讯混元', '/model-providers/hunyuan.svg', 'https://api.hunyuan.cloud.tencent.com/v1'],
+    ['百度千帆', '/model-providers/baidu-qianfan.svg', 'https://qianfan.baidubce.com/v2'],
+    ['美团龙猫', '/model-providers/longcat.svg', 'https://api.longcat.chat/openai'],
+    ['小米 MiMo', '/model-providers/xiaomi-mimo.svg', 'https://api.xiaomimimo.com/v1'],
     ['阶跃星辰', '/model-providers/stepfun.svg', 'https://api.stepfun.com/v1'],
     ['xAI Grok', '/model-providers/grok.svg', 'https://api.x.ai/v1'],
     ['MiniMax', '/model-providers/minimax.svg', 'https://api.minimaxi.com/v1'],
+    ['Z\\.ai', '/model-providers/zai.svg', 'https://api.z.ai/api/paas/v4'],
     ['OpenCode Zen', '/model-providers/opencode.svg', 'https://opencode.ai/zen/v1'],
   ] as const;
   for (const [name, iconPath, url] of newTemplates) {
@@ -123,4 +171,43 @@ test('provider templates populate and lock fixed connection fields while custom 
   expect(apiMode).toBeEnabled();
   expect(baseUrl).toHaveValue('https://api.openai.com/v1');
   expect(baseUrl).toBeEnabled();
+});
+
+test('unsaved new-provider draft is restored after the panel unmounts and remounts', async () => {
+  const user = userEvent.setup();
+  const first = render(panelTree());
+
+  await user.type(screen.getByLabelText(/^名称/), '草稿提供商');
+  await user.type(screen.getByLabelText(/^API Key/), 'sk-draft-key');
+  await user.type(screen.getByLabelText(/^模型 ID/), 'model-a,model-b');
+
+  first.unmount();
+  render(panelTree());
+
+  expect(screen.getByLabelText(/^名称/)).toHaveValue('草稿提供商');
+  expect(screen.getByLabelText(/^API Key/)).toHaveValue('sk-draft-key');
+  expect(screen.getByLabelText(/^模型 ID/)).toHaveValue('model-a,model-b');
+  expect(screen.getByText('model-a')).toBeInTheDocument();
+});
+
+test('switching to an existing provider discards the new-provider draft', async () => {
+  const user = userEvent.setup();
+  const onProviderChange = vi.fn();
+  const view = render(panelTree({ providers: [existingProvider], onProviderChange }));
+
+  await user.type(screen.getByLabelText(/^名称/), '草稿提供商');
+  await user.selectOptions(screen.getByLabelText('当前提供商'), 'provider-1');
+  expect(onProviderChange).toHaveBeenCalledWith('provider-1');
+
+  view.rerender(panelTree({
+    providers: [existingProvider],
+    onProviderChange,
+    activeProviderId: 'provider-1',
+  }));
+  await waitFor(() => expect(screen.getByLabelText(/^名称/)).toHaveValue('已有提供商'));
+
+  view.unmount();
+  render(panelTree({ providers: [existingProvider], onProviderChange }));
+
+  expect(screen.getByLabelText(/^名称/)).toHaveValue('');
 });

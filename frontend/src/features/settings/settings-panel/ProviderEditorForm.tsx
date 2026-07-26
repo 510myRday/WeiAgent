@@ -138,11 +138,8 @@ export function ProviderEditorForm({
               </IconButton>
             </div>
           </FormField>
-          <FormField
-            label={t('provider.proxyUrl')}
-            htmlFor="provider-proxy"
-            hint={t('provider.proxyUrlDesc')}
-          >
+          <FormField label={t('provider.proxyUrl')} htmlFor="provider-proxy">
+            <p className="form-field-hint">{t('provider.proxyUrlDesc')}</p>
             <button
               id="provider-proxy"
               type="button"

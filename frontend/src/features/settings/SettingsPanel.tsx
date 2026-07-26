@@ -23,8 +23,14 @@ import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
 import { AutoSaveIndicator, Button, FormField, ListItem, PaneHeader, useFeedback } from '../../components/ui';
 import { userErrorMessage } from '../../utils/userError';
+import { sortByName } from '../../utils/sort';
 import { IpProxySettings } from './IpProxySettings';
 import { ProxyPickerDialog } from './web-search/ProxyPickerDialog';
+import {
+  clearNewProviderDraft,
+  loadNewProviderDraft,
+  saveNewProviderDraft,
+} from './settings-panel/newProviderDraft';
 import { protocolPresetByType, providerTemplateById } from './settings-panel/providerTemplates';
 import type { ProviderTemplateId } from './settings-panel/providerTemplates';
 import {
@@ -91,7 +97,9 @@ export function SettingsPanel({
   const { t } = useI18n();
   const { confirm, toast } = useFeedback();
   const [activeSection, setActiveSection] = useState<SettingsSection>('runtime');
-  const [providerForm, setProviderForm] = useState(defaultProviderForm);
+  const [providerForm, setProviderForm] = useState(
+    () => loadNewProviderDraft()?.form ?? defaultProviderForm,
+  );
   const [isSubmittingProvider, setIsSubmittingProvider] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
@@ -99,9 +107,13 @@ export function SettingsPanel({
   const [autoSaveStatus, setAutoSaveStatus] = useState<RuntimeAutoSaveStatus>('idle');
   const [providerDirty, setProviderDirty] = useState(false);
   const [providerAutoSaveStatus, setProviderAutoSaveStatus] = useState<ProviderAutoSaveStatus>('idle');
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(
+    () => Boolean(loadNewProviderDraft()?.form.extraBodyText.trim()),
+  );
   const [providerTemplateDialogOpen, setProviderTemplateDialogOpen] = useState(false);
-  const [selectedProviderTemplateId, setSelectedProviderTemplateId] = useState<ProviderTemplateId>('custom');
+  const [selectedProviderTemplateId, setSelectedProviderTemplateId] = useState<ProviderTemplateId>(
+    () => loadNewProviderDraft()?.templateId ?? 'custom',
+  );
   const [pendingProviderTemplateId, setPendingProviderTemplateId] = useState<ProviderTemplateId | null>(null);
   const [proxyCount, setProxyCount] = useState(0);
   const [ipProxies, setIpProxies] = useState<IpProxy[]>([]);
@@ -212,12 +224,13 @@ export function SettingsPanel({
     }
 
     if (!activeProvider) {
-      setProviderForm(defaultProviderForm);
+      const draft = loadNewProviderDraft();
+      setProviderForm(draft?.form ?? defaultProviderForm);
       setShowApiKey(false);
       setProviderDirty(false);
       setProviderAutoSaveStatus('idle');
-      setAdvancedOpen(false);
-      setSelectedProviderTemplateId('custom');
+      setAdvancedOpen(Boolean(draft?.form.extraBodyText.trim()));
+      setSelectedProviderTemplateId(draft?.templateId ?? 'custom');
       return;
     }
     const nextForm = providerToForm(activeProvider);
@@ -243,6 +256,15 @@ export function SettingsPanel({
     setSelectedProviderTemplateId(template.id);
     setPendingProviderTemplateId(null);
   }, [activeProviderId, pendingProviderTemplateId, t]);
+
+  // Mirror the unsaved "create provider" form into a module-level draft so it
+  // survives navigating to other pages before the user clicks create. The draft
+  // is discarded when an existing provider is selected, a template is picked,
+  // or creation succeeds.
+  useEffect(() => {
+    if (activeProviderId || pendingProviderTemplateId) return;
+    saveNewProviderDraft({ form: providerForm, templateId: selectedProviderTemplateId });
+  }, [activeProviderId, pendingProviderTemplateId, providerForm, selectedProviderTemplateId]);
 
   // Seed persisted snapshot once settings become valid (initial load / external refresh).
   useEffect(() => {
@@ -525,6 +547,9 @@ export function SettingsPanel({
   }
 
   function handleProviderChange(id: string) {
+    if (id) {
+      clearNewProviderDraft();
+    }
     if (providerSaveTimerRef.current !== undefined) {
       window.clearTimeout(providerSaveTimerRef.current);
       providerSaveTimerRef.current = undefined;
@@ -535,6 +560,7 @@ export function SettingsPanel({
 
   function handleProviderTemplateSelect(templateId: ProviderTemplateId) {
     setProviderTemplateDialogOpen(false);
+    clearNewProviderDraft();
     setPendingProviderTemplateId(templateId);
     if (activeProviderId) {
       handleProviderChange('');
@@ -555,6 +581,7 @@ export function SettingsPanel({
     setIsSubmittingProvider(true);
     try {
       await onProviderAdd(payload);
+      clearNewProviderDraft();
       toast.success(t('notification.providerCreated'));
       setProviderForm((current) => ({ ...current, api_key: '' }));
     } catch (cause) {
@@ -774,7 +801,7 @@ export function SettingsPanel({
                     {!activeProvider ? (
                       <option value="">{t('provider.newTitle')}</option>
                     ) : null}
-                    {providers.map((provider) => (
+                    {sortByName(providers).map((provider) => (
                       <option key={provider.id} value={provider.id}>
                         {provider.name}
                       </option>

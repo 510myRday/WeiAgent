@@ -3,6 +3,7 @@ import { memo } from 'react';
 import type { AppSettings, ModelProvider } from '../../../types';
 import { useI18n } from '../../../i18n';
 import { FormField } from '../../../components/ui';
+import { compareNames, sortByName } from '../../../utils/sort';
 import { clampCompressThreshold } from './settingsPanelUtils';
 
 interface RuntimeSectionProps {
@@ -151,7 +152,7 @@ export const AgentSection = memo(function AgentSection({ settingsForm, providers
           }}
         >
           <option value="">{t('settings.conversationTitleDisabled')}</option>
-          {providers.map((provider) => (
+          {sortByName(providers).map((provider) => (
             <option key={provider.id} value={provider.id}>{provider.name}</option>
           ))}
         </select>
@@ -165,7 +166,7 @@ export const AgentSection = memo(function AgentSection({ settingsForm, providers
           disabled={!settingsForm.conversation_title_provider_id}
         >
           <option value="">{t('settings.conversationTitleModelPlaceholder')}</option>
-          {(providers.find((provider) => provider.id === settingsForm.conversation_title_provider_id)?.models ?? []).map((model) => (
+          {[...(providers.find((provider) => provider.id === settingsForm.conversation_title_provider_id)?.models ?? [])].sort(compareNames).map((model) => (
             <option key={model} value={model}>{model}</option>
           ))}
         </select>

@@ -167,17 +167,24 @@
 }
 
 .provider-template-option--bailian,
-.provider-template-option--minimax {
+.provider-template-option--minimax,
+.provider-template-option--mimo {
   --provider-template-accent: var(--color-warning);
 }
 
 .provider-template-option--openrouter,
 .provider-template-option--grok,
-.provider-template-option--opencode {
+.provider-template-option--opencode,
+.provider-template-option--longcat,
+.provider-template-option--zai {
   --provider-template-accent: var(--color-text-soft);
 }
 
-.provider-template-option--siliconflow {
+.provider-template-option--siliconflow,
+.provider-template-option--modelscope,
+.provider-template-option--volcengine,
+.provider-template-option--hunyuan,
+.provider-template-option--qianfan {
   --provider-template-accent: var(--color-info);
 }
 
@@ -297,6 +304,10 @@
   gap: 14px;
   padding-top: 18px;
   border-top: 1px solid var(--border-subtle);
+}
+
+.provider-connection-grid > .form-field > .form-field-hint {
+  margin: -3px 0 -2px;
 }
 
 .provider-field-actions {

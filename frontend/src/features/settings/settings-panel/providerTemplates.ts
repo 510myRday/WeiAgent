@@ -19,6 +19,13 @@ export type ProviderTemplateId =
   | 'bailian'
   | 'openrouter'
   | 'siliconflow'
+  | 'modelscope'
+  | 'volcengine'
+  | 'hunyuan'
+  | 'qianfan'
+  | 'longcat'
+  | 'mimo'
+  | 'zai'
   | 'stepfun'
   | 'grok'
   | 'minimax'
@@ -150,6 +157,60 @@ export const PROVIDER_TEMPLATES: ProviderTemplate[] = [
     fixed: true,
   },
   {
+    id: 'modelscope',
+    labelKey: 'provider.template.modelscope.name',
+    descriptionKey: 'provider.template.modelscope.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://api-inference.modelscope.cn/v1',
+    iconPath: '/model-providers/modelscope.svg',
+    fixed: true,
+  },
+  {
+    id: 'volcengine',
+    labelKey: 'provider.template.volcengine.name',
+    descriptionKey: 'provider.template.volcengine.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    iconPath: '/model-providers/volcengine.svg',
+    fixed: true,
+  },
+  {
+    id: 'hunyuan',
+    labelKey: 'provider.template.hunyuan.name',
+    descriptionKey: 'provider.template.hunyuan.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
+    iconPath: '/model-providers/hunyuan.svg',
+    fixed: true,
+  },
+  {
+    id: 'qianfan',
+    labelKey: 'provider.template.qianfan.name',
+    descriptionKey: 'provider.template.qianfan.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://qianfan.baidubce.com/v2',
+    iconPath: '/model-providers/baidu-qianfan.svg',
+    fixed: true,
+  },
+  {
+    id: 'longcat',
+    labelKey: 'provider.template.longcat.name',
+    descriptionKey: 'provider.template.longcat.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://api.longcat.chat/openai',
+    iconPath: '/model-providers/longcat.svg',
+    fixed: true,
+  },
+  {
+    id: 'mimo',
+    labelKey: 'provider.template.mimo.name',
+    descriptionKey: 'provider.template.mimo.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://api.xiaomimimo.com/v1',
+    iconPath: '/model-providers/xiaomi-mimo.svg',
+    fixed: true,
+  },
+  {
     id: 'stepfun',
     labelKey: 'provider.template.stepfun.name',
     descriptionKey: 'provider.template.stepfun.description',
@@ -192,6 +253,15 @@ export const PROVIDER_TEMPLATES: ProviderTemplate[] = [
     providerType: 'openai_compatible',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     iconPath: '/model-providers/zhipu.svg',
+    fixed: true,
+  },
+  {
+    id: 'zai',
+    labelKey: 'provider.template.zai.name',
+    descriptionKey: 'provider.template.zai.description',
+    providerType: 'openai_compatible',
+    baseUrl: 'https://api.z.ai/api/paas/v4',
+    iconPath: '/model-providers/zai.svg',
     fixed: true,
   },
   {

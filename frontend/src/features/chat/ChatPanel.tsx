@@ -26,6 +26,7 @@ import { ChatAgentSelect } from './ChatAgentSelect';
 import { MessageAvatar, MessageList, type MessageListHandle } from './MessageList';
 import { MessageTimeline, type MessageTimelineItem } from './MessageTimeline';
 import { userErrorMessage } from '../../utils/userError';
+import { compareNames, sortByName } from '../../utils/sort';
 
 interface ChatPanelProps {
   agents: Agent[];
@@ -148,8 +149,8 @@ export function ChatPanel({
   );
   const supportsImages = activeModelConfig?.multimodal === true;
   const supportsThinking = activeModelConfig?.thinking === true;
-  const modelOptions = useMemo<ModelOption[]>(() => providers.flatMap((provider) =>
-    provider.models.map((model) => ({
+  const modelOptions = useMemo<ModelOption[]>(() => sortByName(providers).flatMap((provider) =>
+    [...provider.models].sort(compareNames).map((model) => ({
       value: JSON.stringify([provider.id, model]),
       providerId: provider.id,
       modelId: model,

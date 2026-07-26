@@ -68,7 +68,24 @@
       "Bash(git -C \"d:\\\\Code_Save\\\\rust\\\\WeiAgent\" status --short)",
       "Bash(git -C \"d:\\\\Code_Save\\\\rust\\\\WeiAgent\" diff --stat src/app/handlers/providers.rs src/domain/providers.rs)",
       "Bash(git -C \"d:\\\\Code_Save\\\\rust\\\\WeiAgent\" diff src/domain/providers.rs)",
-      "Bash(npx vitest *)"
+      "Bash(npx vitest *)",
+      "Bash(curl -sL --max-time 30 \"https://unpkg.com/@lobehub/icons-static-svg/icons/modelscope-color.svg\" -o \"d:\\\\Code_Save\\\\rust\\\\WeiAgent\\\\frontend\\\\public\\\\model-providers\\\\modelscope.svg\")",
+      "Bash(curl -sL --max-time 30 \"https://unpkg.com/@lobehub/icons-static-svg/icons/volcengine-color.svg\" -o \"d:\\\\Code_Save\\\\rust\\\\WeiAgent\\\\frontend\\\\public\\\\model-providers\\\\volcengine.svg\")",
+      "Bash(npx eslint *)",
+      "Bash(echo \"eslint exit: $?\")",
+      "Bash(curl -sL --max-time 30 \"https://data.jsdelivr.com/v1/packages/npm/@lobehub/icons-static-svg\")",
+      "Bash(curl -sL --max-time 40 \"https://data.jsdelivr.com/v1/package/npm/@lobehub/icons-static-svg/flat\")",
+      "Bash(curl -sL --max-time 40 \"https://data.jsdelivr.com/v1/package/npm/@lobehub/icons-static-svg/flat\" -o /tmp/lobe-files.json -w \"http=%{http_code} size=%{size_download}\\\\n\")",
+      "Read(//tmp/**)",
+      "Bash(curl -sL --max-time 30 \"https://unpkg.com/@lobehub/icons-static-svg/icons/hunyuan-color.svg\" -o hunyuan.svg)",
+      "Bash(curl -sL --max-time 30 \"https://unpkg.com/@lobehub/icons-static-svg/icons/baiducloud-color.svg\" -o baidu-qianfan.svg)",
+      "Bash(curl -sL --max-time 30 \"https://unpkg.com/@lobehub/icons-static-svg/icons/longcat-color.svg\" -o longcat.svg)",
+      "Bash(curl -sL --max-time 30 \"https://unpkg.com/@lobehub/icons-static-svg/icons/xiaomimimo.svg\" -o xiaomi-mimo.svg)",
+      "Bash(curl -sL --max-time 30 \"https://unpkg.com/@lobehub/icons-static-svg/icons/zai.svg\" -o zai.svg)",
+      "Read(//d/Code_Save/rust/mcp_gateway_rust/**)",
+      "Read(//d/Code_Save/rust/mcp_gateway_rust/mcp-gateway/crates/gateway-http/src/skills/builtin/**)",
+      "Read(//d/Code_Save/rust/mcp_gateway_rust/mcp-gateway/crates/gateway-http/src/skills/**)",
+      "Read(//d/Code_Save/rust/mcp_gateway_rust/mcp-gateway/crates/gateway-http/src/**)"
     ]
   }
 }
