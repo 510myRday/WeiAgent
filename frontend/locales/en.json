@@ -299,7 +299,7 @@
     "outputPrice": "Output",
     "cacheWritePrice": "Cache write",
     "cacheReadPrice": "Cache read",
-    "priceUnit": "Prices are in USD per million tokens. Leave blank when unset. Context is in tokens and defaults to 128000 (128K).",
+    "priceUnit": "Prices are in USD per million tokens. Leave blank when unset. Context is in tokens and defaults to 128000 (128K). On Anthropic providers, models with a context of 1000000 or more automatically send the 1M-context beta header (context-1m-2025-08-07).",
     "modelsPlaceholder": "Enter one model ID per line",
     "modelsRequired": "Required: add at least one model",
     "fetchModels": "Fetch Models",

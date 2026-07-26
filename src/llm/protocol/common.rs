@@ -44,6 +44,7 @@ pub(crate) trait ProtocolAdapter: Clone + Send + Sync + 'static {
         url: &str,
         api_key: &str,
         body: &Value,
+        provider: &ModelProvider,
     ) -> RequestBuilder;
 
     fn authenticated_get(&self, http: &reqwest::Client, url: &str, api_key: &str)
@@ -127,7 +128,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             .http
             .retry_send(&options, || {
                 self.adapter
-                    .authenticated_post(&client, &url, &api_key, &request)
+                    .authenticated_post(&client, &url, &api_key, &request, provider)
             })
             .await
         {
@@ -273,7 +274,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             .http
             .retry_send(&options, || {
                 self.adapter
-                    .authenticated_post(&client, &url, &api_key, &request)
+                    .authenticated_post(&client, &url, &api_key, &request, provider)
             })
             .await
         {

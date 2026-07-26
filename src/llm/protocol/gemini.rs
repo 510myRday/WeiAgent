@@ -68,6 +68,7 @@ impl ProtocolAdapter for GeminiAdapter {
         url: &str,
         api_key: &str,
         body: &Value,
+        _provider: &ModelProvider,
     ) -> RequestBuilder {
         http.post(url).json(body).header("x-goog-api-key", api_key)
     }

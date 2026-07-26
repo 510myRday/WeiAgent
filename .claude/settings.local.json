@@ -85,7 +85,10 @@
       "Read(//d/Code_Save/rust/mcp_gateway_rust/**)",
       "Read(//d/Code_Save/rust/mcp_gateway_rust/mcp-gateway/crates/gateway-http/src/skills/builtin/**)",
       "Read(//d/Code_Save/rust/mcp_gateway_rust/mcp-gateway/crates/gateway-http/src/skills/**)",
-      "Read(//d/Code_Save/rust/mcp_gateway_rust/mcp-gateway/crates/gateway-http/src/**)"
+      "Read(//d/Code_Save/rust/mcp_gateway_rust/mcp-gateway/crates/gateway-http/src/**)",
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "Bash(python -c \"import json; json.load\\(open\\('frontend/locales/zh.json', encoding='utf-8'\\)\\); json.load\\(open\\('frontend/locales/en.json', encoding='utf-8'\\)\\); print\\('locales OK'\\)\")"
     ]
   }
 }

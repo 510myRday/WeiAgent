@@ -569,7 +569,7 @@
     "outputPrice": "输出",
     "cacheWritePrice": "缓存写入",
     "cacheReadPrice": "缓存读取",
-    "priceUnit": "价格单位：美元 / 百万 tokens。留空表示暂未设置。上下文单位：tokens，默认 128000（128K）。",
+    "priceUnit": "价格单位：美元 / 百万 tokens。留空表示暂未设置。上下文单位：tokens，默认 128000（128K）。Anthropic 接口的模型上下文设为 1000000 及以上时，请求会自动携带 1M 上下文 beta 标头（context-1m-2025-08-07）。",
     "modelsPlaceholder": "每行输入一个模型 ID",
     "modelsRequired": "必填，请至少配置一个模型",
     "fetchModels": "获取模型",

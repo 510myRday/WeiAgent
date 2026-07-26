@@ -19,6 +19,11 @@ use crate::{
 };
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+/// Beta flag that enables the 1M-token context window on models where it is
+/// opt-in (Sonnet 4 / 4.5, Opus 4.1). Models that already default to 1M
+/// (4.6+ / 5 family) accept the flag as a no-op, so gating purely on the
+/// configured context size is safe.
+const CONTEXT_1M_BETA: &str = "context-1m-2025-08-07";
 
 #[derive(Clone, Copy)]
 pub(crate) struct AnthropicAdapter;
@@ -57,11 +62,17 @@ impl ProtocolAdapter for AnthropicAdapter {
         url: &str,
         api_key: &str,
         body: &Value,
+        provider: &ModelProvider,
     ) -> RequestBuilder {
-        http.post(url)
+        let mut request = http
+            .post(url)
             .json(body)
             .header("x-api-key", api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-version", ANTHROPIC_VERSION);
+        if context_1m_enabled(provider, body["model"].as_str().unwrap_or_default()) {
+            request = request.header("anthropic-beta", CONTEXT_1M_BETA);
+        }
+        request
     }
 
     fn authenticated_get(
@@ -297,6 +308,16 @@ fn build_anthropic_request(
             "output_config",
         ],
     )
+}
+
+/// True when the user configured this model with a 1M-or-larger context
+/// window, which requires the `context-1m-2025-08-07` beta on the wire.
+fn context_1m_enabled(provider: &ModelProvider, model_id: &str) -> bool {
+    provider
+        .model_configs
+        .iter()
+        .find(|config| config.model_id == model_id)
+        .is_some_and(|config| config.context_size >= 1_000_000)
 }
 
 fn supports_adaptive_thinking(model_id: &str) -> bool {
@@ -608,6 +629,51 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    #[test]
+    fn context_1m_beta_header_follows_configured_context_size() {
+        let mut provider = test_provider();
+        provider.model_configs = vec![crate::domain::ModelConfig {
+            model_id: "test-model".to_string(),
+            multimodal: false,
+            thinking: false,
+            context_size: 1_000_000,
+            input_price: None,
+            output_price: None,
+            cache_write_price: None,
+            cache_read_price: None,
+        }];
+        let client = reqwest::Client::new();
+        let url = "http://localhost/v1/messages";
+        let body = json!({"model": "test-model"});
+
+        let request = AnthropicAdapter
+            .authenticated_post(&client, url, "key", &body, &provider)
+            .build()
+            .unwrap();
+        assert_eq!(
+            request.headers().get("anthropic-beta").unwrap(),
+            "context-1m-2025-08-07"
+        );
+        assert_eq!(
+            request.headers().get("anthropic-version").unwrap(),
+            ANTHROPIC_VERSION
+        );
+
+        provider.model_configs[0].context_size = 200_000;
+        let request = AnthropicAdapter
+            .authenticated_post(&client, url, "key", &body, &provider)
+            .build()
+            .unwrap();
+        assert!(request.headers().get("anthropic-beta").is_none());
+
+        provider.model_configs[0].context_size = 1_000_000;
+        let request = AnthropicAdapter
+            .authenticated_post(&client, url, "key", &json!({"model": "other-model"}), &provider)
+            .build()
+            .unwrap();
+        assert!(request.headers().get("anthropic-beta").is_none());
     }
 
     #[test]

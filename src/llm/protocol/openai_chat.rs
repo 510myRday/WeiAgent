@@ -58,6 +58,7 @@ impl ProtocolAdapter for OpenAiChatAdapter {
         url: &str,
         api_key: &str,
         body: &Value,
+        _provider: &ModelProvider,
     ) -> RequestBuilder {
         bearer_post(http, url, api_key, body)
     }
