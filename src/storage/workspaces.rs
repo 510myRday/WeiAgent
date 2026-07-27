@@ -14,11 +14,9 @@ use crate::{
 const BUILTIN_MASTER_NAME: &str = "Master";
 const BUILTIN_MASTER_DESCRIPTION: &str =
     "Coordinates tasks, delegates work, and drives complex jobs to completion.";
-const WEB_SEARCH_POLICY_V1: &str = "## Web Search Policy V1\n\
-Use web search when the user requests browsing, current information, source links, precise attribution, or information likely to have changed.\n\n\
-Use fast for simple lookups, balanced for current facts and comparisons, and deep for comprehensive research, conflicting claims, or explicit deep investigation. For research, issue complementary query rewrites in one call, retry empty searches with materially different wording, and use multiple independent source groups.\n\n\
-Use web_search_sources before custom source selection. Search APIs return evidence candidates. AI research syntheses are useful hypotheses and query directions, but are unverified and never count as independent evidence.\n\n\
-Open the most relevant original pages with web_extract, prefer primary sources, and verify important or disputed claims with independent evidence. Cite the original page using a Markdown link placed next to the supported claim.";
+const WEB_SEARCH_POLICY: &str = "Use web search for current or source-backed information, verify important claims with original pages, and cite the supporting links.";
+const TASK_PLANNING_POLICY: &str = "## Task Planning Policy\n\
+Task planning is mandatory when enabled. Before calling any tool other than task_planning, create or update the active plan with task_planning and obtain its planning_id. Every non-planning tool call must include the current conversation's planning_id; never invent, reuse, or omit it. Keep the plan synchronized with actual progress, and mark tasks completed as work finishes.";
 
 impl Store {
     pub async fn read_agent_workspace(&self, id: Uuid) -> AppResult<AgentWorkspace> {
@@ -48,19 +46,16 @@ impl Store {
         // Runtime identity: which agent is handling this turn.
         let agent_identity = format!(
             "## Agent\n\
-当前处理本轮对话的智能体（接收用户消息、调用工具并回复）：\n\
+The agent handling this conversation receives user messages, calls tools, and replies:\n\
 - Name: {}\n\
 - ID: {}",
             agent.name, agent.id
         );
-        // Calendar date only (local TZ). Stable within a day for prompt cache;
-        // intentionally not a timestamp. Worded as authoritative "today" so models
-        // do not fall back to older years from training/knowledge cutoffs.
+        // Use the local system date as today's authoritative date, without a timestamp.
         let runtime_date = format!(
             "## Runtime\n\
-本机本地时区的权威日历日（仅日期，不含时刻）。此为当前对话的“今天”，必须以此为准；不得沿用训练数据、知识截止日期或旧语境中更早的年份/日期假设。\n\
-- Date: {}\n\
-- Trust: absolute. If any prior belief conflicts with this date, discard that belief.",
+The current local system date is today's date and is authoritative.\n\
+- Date: {}",
             crate::tools::prompt::today_date()
         );
         let agent_sections = join_prompt_sections([
@@ -69,7 +64,12 @@ impl Store {
             ("Instructions", workspace.instructions.as_str()),
         ]);
         let web_search_policy = if tools_config.web_search.enabled {
-            WEB_SEARCH_POLICY_V1
+            WEB_SEARCH_POLICY
+        } else {
+            ""
+        };
+        let task_planning_policy = if tools_config.task_planning.enabled {
+            TASK_PLANNING_POLICY
         } else {
             ""
         };
@@ -78,6 +78,7 @@ impl Store {
             agent_identity.as_str(),
             runtime_date.as_str(),
             web_search_policy,
+            task_planning_policy,
             agent_sections.as_str(),
         ]
         .into_iter()

@@ -1119,16 +1119,22 @@ pub async fn execute_terminal(
     if !config.enabled {
         return ToolResult::Blocked {
             reason: "Terminal tool is disabled".to_string(),
+            code: None,
+            details: None,
         };
     }
     if request.command.trim().is_empty() {
         return ToolResult::Blocked {
             reason: "Command cannot be empty".to_string(),
+            code: None,
+            details: None,
         };
     }
     if request.command.len() > 8_000 {
         return ToolResult::Blocked {
             reason: "Command is too long".to_string(),
+            code: None,
+            details: None,
         };
     }
 
@@ -1146,7 +1152,11 @@ pub async fn execute_terminal(
             return ToolResult::Error { message };
         }
         Err(WorkspaceResolutionError::Blocked(reason)) => {
-            return ToolResult::Blocked { reason };
+            return ToolResult::Blocked {
+                reason,
+                code: None,
+                details: None,
+            };
         }
     };
 
@@ -1169,12 +1179,16 @@ pub async fn execute_terminal(
         return ToolResult::Blocked {
             reason: "Codex Windows sandbox cannot provide a PTY. Use tty=false for a short non-interactive command, or request full access with a justification when an interactive terminal is required."
                 .to_string(),
+            code: None,
+            details: None,
         };
     }
     if cfg!(windows) && access == TerminalAccess::Sandbox && request.background.unwrap_or(false) {
         return ToolResult::Blocked {
             reason: "Codex Windows sandbox does not support observable background or interactive sessions. Run this as a short foreground command, or request full access with a justification for long-lived work."
                 .to_string(),
+            code: None,
+            details: None,
         };
     }
     let process_id = Uuid::new_v4().to_string();
@@ -2197,7 +2211,7 @@ mod tests {
             &manager,
         )
         .await;
-        let ToolResult::Blocked { reason } = result else {
+        let ToolResult::Blocked { reason, .. } = result else {
             panic!("expected Windows sandbox background command to be blocked: {result:?}");
         };
         assert!(reason.contains("foreground"));

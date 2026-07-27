@@ -104,6 +104,8 @@ pub struct AgentToolsConfig {
     pub web_search: WebSearchToolConfig,
     #[serde(default)]
     pub evidence_storage: EvidenceStorageConfig,
+    #[serde(default)]
+    pub task_planning: TaskPlanningToolConfig,
 }
 
 impl Default for AgentToolsConfig {
@@ -113,7 +115,21 @@ impl Default for AgentToolsConfig {
             terminal: TerminalToolConfig::default(),
             web_search: WebSearchToolConfig::default(),
             evidence_storage: EvidenceStorageConfig::default(),
+            task_planning: TaskPlanningToolConfig::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TaskPlanningToolConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for TaskPlanningToolConfig {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -889,6 +905,8 @@ pub struct AgentToolsOverrides {
     pub terminal: TerminalToolOverrides,
     #[serde(default)]
     pub web_search: WebSearchToolOverrides,
+    #[serde(default)]
+    pub task_planning: TaskPlanningToolOverrides,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -916,6 +934,13 @@ pub struct WebSearchToolOverrides {
     pub max_results: Option<u32>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TaskPlanningToolOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentToolsSettings {
     pub defaults: AgentToolsConfig,
@@ -934,6 +959,7 @@ impl Default for AgentToolsOverrides {
             max_llm_iterations: None,
             terminal: TerminalToolOverrides::default(),
             web_search: WebSearchToolOverrides::default(),
+            task_planning: TaskPlanningToolOverrides::default(),
         }
     }
 }
@@ -985,6 +1011,12 @@ impl AgentToolsOverrides {
                 sources: defaults.web_search.sources.clone(),
             },
             evidence_storage: defaults.evidence_storage.clone(),
+            task_planning: TaskPlanningToolConfig {
+                enabled: self
+                    .task_planning
+                    .enabled
+                    .unwrap_or(defaults.task_planning.enabled),
+            },
         }
     }
 
@@ -1003,6 +1035,9 @@ impl AgentToolsOverrides {
             web_search: WebSearchToolOverrides {
                 enabled: Some(config.web_search.enabled),
                 max_results: Some(config.web_search.max_results),
+            },
+            task_planning: TaskPlanningToolOverrides {
+                enabled: Some(config.task_planning.enabled),
             },
         }
     }
@@ -1152,6 +1187,24 @@ mod tests {
         value.as_object_mut().unwrap().remove("evidence_storage");
         let parsed: AgentToolsConfig = serde_json::from_value(value).unwrap();
         assert_eq!(parsed.evidence_storage, EvidenceStorageConfig::default());
+    }
+
+    #[test]
+    fn task_planning_defaults_to_enabled_and_agent_override_is_inherited() {
+        let defaults = AgentToolsConfig::default();
+        assert!(defaults.task_planning.enabled);
+
+        let overrides = AgentToolsOverrides::default();
+        assert_eq!(overrides.task_planning.enabled, None);
+        assert!(overrides.apply_to(&defaults).task_planning.enabled);
+
+        let overrides = AgentToolsOverrides {
+            task_planning: TaskPlanningToolOverrides {
+                enabled: Some(false),
+            },
+            ..AgentToolsOverrides::default()
+        };
+        assert!(!overrides.apply_to(&defaults).task_planning.enabled);
     }
 
     #[test]
@@ -1410,6 +1463,10 @@ pub enum ToolResult {
     },
     Blocked {
         reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
     },
     PendingApproval {
         command: String,

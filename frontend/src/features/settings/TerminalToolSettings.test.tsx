@@ -55,6 +55,9 @@ const toolDefaults = {
     retention_days: 30,
     max_total_mb: 200,
   },
+  task_planning: {
+    enabled: true,
+  },
 };
 
 function renderSettings() {

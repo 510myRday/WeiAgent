@@ -360,6 +360,9 @@ export type AgentToolsConfig = {
   };
   web_search: WebSearchToolConfig;
   evidence_storage: EvidenceStorageConfig;
+  task_planning: {
+    enabled: boolean;
+  };
 };
 
 export type AgentToolsOverrides = {
@@ -376,6 +379,9 @@ export type AgentToolsOverrides = {
     enabled?: boolean;
     max_results?: number;
   };
+  task_planning: {
+    enabled?: boolean;
+  };
 };
 
 export type AgentToolsSettings = {
@@ -383,6 +389,28 @@ export type AgentToolsSettings = {
   overrides: AgentToolsOverrides;
   effective: AgentToolsConfig;
 };
+
+export type TaskPlan = {
+  conversation_id: string;
+  planning_id: string;
+  conversation_message_id: string | null;
+  explanation?: string;
+  plan: Array<{
+    step: string;
+    status: 'pending' | 'in_progress' | 'completed';
+  }>;
+  created_at: string;
+  updated_at: string;
+  active: boolean;
+};
+
+export function readTaskPlan(conversationId: string): Promise<TaskPlan | null> {
+  return request<TaskPlan | null>(`/api/conversations/${conversationId}/task-plan`);
+}
+
+export function clearTaskPlan(conversationId: string): Promise<void> {
+  return request<void>(`/api/conversations/${conversationId}/task-plan`, { method: 'DELETE' });
+}
 
 export type CodexRuntimeStatus = {
   supported: boolean;

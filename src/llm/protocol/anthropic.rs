@@ -671,7 +671,13 @@ mod tests {
 
         provider.model_configs[0].context_size = 1_000_000;
         let request = AnthropicAdapter
-            .authenticated_post(&client, url, "key", &json!({"model": "other-model"}), &provider)
+            .authenticated_post(
+                &client,
+                url,
+                "key",
+                &json!({"model": "other-model"}),
+                &provider,
+            )
             .build()
             .unwrap();
         assert!(request.headers().get("anthropic-beta").is_none());

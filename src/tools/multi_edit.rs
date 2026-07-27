@@ -282,6 +282,8 @@ pub async fn execute_multi_edit(
         return ToolResult::Blocked {
             reason: "File edit tool is disabled because the terminal tool group is disabled"
                 .to_string(),
+            code: None,
+            details: None,
         };
     }
 
@@ -301,7 +303,13 @@ pub async fn execute_multi_edit(
         allow_outside_workspace,
     ) {
         Ok(workspace) => workspace,
-        Err(message) => return ToolResult::Blocked { reason: message },
+        Err(message) => {
+            return ToolResult::Blocked {
+                reason: message,
+                code: None,
+                details: None,
+            };
+        }
     };
 
     let affected = match collect_affected_paths(&workspace.cwd, &operations) {
@@ -310,7 +318,11 @@ pub async fn execute_multi_edit(
     };
 
     if let Err(reason) = enforce_path_policy(&affected, &workspace.roots, allow_outside_workspace) {
-        return ToolResult::Blocked { reason };
+        return ToolResult::Blocked {
+            reason,
+            code: None,
+            details: None,
+        };
     }
 
     let context_granted = has_multi_edit_grant(config, &workspace, request.args.cwd.as_deref());
@@ -1765,7 +1777,7 @@ mod tests {
         .await;
 
         match result {
-            ToolResult::Blocked { reason } => {
+            ToolResult::Blocked { reason, .. } => {
                 assert!(reason.contains("outside the configured workspace roots"));
                 assert!(reason.contains("require_escalated"));
             }

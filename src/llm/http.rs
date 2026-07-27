@@ -135,7 +135,11 @@ impl LlmHttp {
                 }
                 Ok(Err(error)) => {
                     keys.note_failure();
-                    last_error = Some(AppError::Llm(with_key_label(keys, &key, &error.to_string())));
+                    last_error = Some(AppError::Llm(with_key_label(
+                        keys,
+                        &key,
+                        &error.to_string(),
+                    )));
                 }
                 Err(_) => {
                     keys.note_failure();

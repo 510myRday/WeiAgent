@@ -586,6 +586,8 @@ mod tests {
             .unwrap();
         let mut tools_config = crate::domain::AgentToolsConfig::default();
         tools_config.terminal.enabled = true;
+        // These tests exercise terminal behavior independently of planning.
+        tools_config.task_planning.enabled = false;
         tools_config.terminal.permission_mode = crate::domain::TerminalPermissionMode::FullAccess;
         tools_config.terminal.allowed_cwd_roots = vec![root.to_string_lossy().to_string()];
         store
@@ -1306,6 +1308,8 @@ mod tests {
             .unwrap();
         let mut tools_config = crate::domain::AgentToolsConfig::default();
         tools_config.terminal.enabled = true;
+        // These tests exercise streaming terminal behavior independently of planning.
+        tools_config.task_planning.enabled = false;
         tools_config.terminal.permission_mode = crate::domain::TerminalPermissionMode::FullAccess;
         tools_config.terminal.allowed_cwd_roots = vec![root.to_string_lossy().to_string()];
         store

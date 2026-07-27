@@ -101,6 +101,18 @@
     "ariaLabel": "对话",
     "scrollToBottom": "滚动到最新消息",
     "timeline": "时间定位",
+    "taskPlan": "当前计划",
+    "taskPlanOpen": "查看当前计划",
+    "taskPlanRefresh": "刷新计划",
+    "taskPlanClear": "清理计划",
+    "taskPlanClearConfirm": "清理后，后续工具调用需要重新创建计划。",
+    "taskPlanEmpty": "当前会话暂无活跃计划",
+    "taskPlanLoading": "正在加载计划...",
+    "taskPlanProgress": "已完成 {completed}/{total}",
+    "taskPlanUpdated": "更新于 {time}",
+    "taskPlanStatusPending": "待处理",
+    "taskPlanStatusInProgress": "进行中",
+    "taskPlanStatusCompleted": "已完成",
     "addImage": "添加图片",
     "removeImage": "移除图片",
     "pastedImage": "粘贴的图片",
@@ -415,6 +427,20 @@
         "network_error": "网络错误",
         "error": "检测异常"
       }
+    },
+    "taskPlanning": {
+      "name": "任务规划",
+      "description": "为复杂任务维护 todo 列表，并要求其他工具沿用有效的计划 ID。",
+      "defaultsTitle": "任务规划默认设置",
+      "defaultsDesc": "控制全局会话是否要求先创建任务计划。",
+      "agentConfigTitle": "任务规划配置",
+      "agentConfigDesc": "控制这个智能体是否在工具调用前执行任务规划。",
+      "enabled": "启用任务规划",
+      "enabledDesc": "启用后，其他工具调用需要携带当前会话的 planning_id。",
+      "loading": "加载任务规划配置...",
+      "loadFailed": "任务规划配置加载失败",
+      "saveFailed": "任务规划配置保存失败",
+      "agentRequired": "缺少要配置的智能体"
     }
   },
   "settings": {

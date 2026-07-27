@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowLeft, Globe, ShieldCheck, Terminal } from 'lucide-react';
+import { ArrowLeft, Globe, ListChecks, ShieldCheck, Terminal } from 'lucide-react';
 
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
@@ -7,6 +7,7 @@ import { PanelShell } from '../../components/layout';
 import { Button, ListItem, PaneHeader } from '../../components/ui';
 import { TerminalToolSettings } from '../settings/TerminalToolSettings';
 import { WebSearchToolSettings } from '../settings/WebSearchToolSettings';
+import { TaskPlanningToolSettings } from '../settings/TaskPlanningToolSettings';
 
 interface ToolsPanelProps {
   agents: Agent[];
@@ -15,7 +16,7 @@ interface ToolsPanelProps {
   onOpenIpProxies: () => void;
 }
 
-type ToolKey = 'terminal' | 'web_search';
+type ToolKey = 'terminal' | 'web_search' | 'task_planning';
 
 const toolDefs: {
   key: ToolKey;
@@ -37,6 +38,13 @@ const toolDefs: {
     isBuiltin: true,
     getLabel: (t) => t('tools.webSearch.name'),
     getDesc: (t) => t('tools.webSearch.description'),
+  },
+  {
+    key: 'task_planning',
+    icon: ListChecks,
+    isBuiltin: true,
+    getLabel: (t) => t('tools.taskPlanning.name'),
+    getDesc: (t) => t('tools.taskPlanning.description'),
   },
 ];
 
@@ -87,6 +95,7 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList, onOpenIpProxies }
           />
           {activeTool === 'terminal' ? <TerminalToolSettings scope="defaults" agents={agents} onOpenIpProxies={onOpenIpProxies} /> : null}
           {activeTool === 'web_search' ? <WebSearchToolSettings scope="defaults" agents={agents} onOpenIpProxies={onOpenIpProxies} /> : null}
+          {activeTool === 'task_planning' ? <TaskPlanningToolSettings scope="defaults" agents={agents} /> : null}
         </div>
       )}
     />

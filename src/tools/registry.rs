@@ -16,6 +16,7 @@ use crate::{
             MULTI_EDIT_GRANT_COMMAND, MULTI_EDIT_TOOL_NAME, MultiEditFileArgs, MultiEditRequest,
             execute_multi_edit,
         },
+        task_planning::{TASK_PLANNING_TOOL_NAME, TaskPlanningTool},
         terminal::{
             ExecuteTerminalRequest, MAX_SESSION_WAIT_MS, SandboxPermissions, TerminalManager,
             TerminalSessionAction, execute_terminal, process_read_to_result,
@@ -81,6 +82,7 @@ impl ToolRegistry {
         registry.register(WebExtractTool);
         registry.register(WebSearchTool);
         registry.register(WebSearchSourcesTool);
+        registry.register(TaskPlanningTool);
         registry
     }
 
@@ -100,6 +102,13 @@ impl ToolRegistry {
             .filter(|tool| tool.is_enabled(config))
             .map(|tool| tool.definition(config))
             .collect();
+        if config.task_planning.enabled {
+            for definition in &mut definitions {
+                if definition.function.name != TASK_PLANNING_TOOL_NAME {
+                    add_planning_id_parameter(definition);
+                }
+            }
+        }
         // Tool order is part of the model prompt prefix; keep it stable across
         // HashMap seeds and process restarts so provider prompt caches can match.
         definitions.sort_by(|left, right| left.function.name.cmp(&right.function.name));
@@ -120,9 +129,58 @@ impl ToolRegistry {
         if !tool.is_enabled(&context.tools_config) {
             return ToolResult::Blocked {
                 reason: format!("Tool '{name}' is disabled"),
+                code: None,
+                details: None,
             };
         }
-        tool.execute(arguments, context).await
+        let mut tool_arguments = arguments;
+        if context.tools_config.task_planning.enabled && name != TASK_PLANNING_TOOL_NAME {
+            let planning_argument = tool_arguments
+                .get("planning_id")
+                .or_else(|| tool_arguments.get("planningId"));
+            let planning_id = planning_argument
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let active_plan = context
+                .store
+                .read_task_plan(context.conversation_id)
+                .await
+                .ok()
+                .flatten();
+            let valid = planning_id
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .zip(active_plan.as_ref().map(|plan| plan.planning_id))
+                .is_some_and(|(provided, active)| provided == active);
+            if !valid {
+                let invalid_argument = planning_argument.is_some_and(|value| {
+                    !value.is_null()
+                        && !value
+                            .as_str()
+                            .is_some_and(|planning_id| !planning_id.trim().is_empty())
+                });
+                let code = if planning_id.is_some() || invalid_argument {
+                    "PlanningIdInvalid"
+                } else {
+                    "PlanningRequired"
+                };
+                return ToolResult::Blocked {
+                    reason: "请先调用 task_planning 创建计划，并将返回的 planning_id 传入本工具。"
+                        .to_string(),
+                    code: Some(code.to_string()),
+                    details: Some(serde_json::json!({
+                        "tool": name,
+                        "planning_id": planning_id,
+                        "required_argument": "planning_id"
+                    })),
+                };
+            }
+            if let Some(object) = tool_arguments.as_object_mut() {
+                object.remove("planning_id");
+                object.remove("planningId");
+            }
+        }
+        tool.execute(tool_arguments, context).await
     }
 }
 
@@ -429,6 +487,8 @@ impl AgentTool for TerminalSessionTool {
         {
             return ToolResult::Blocked {
                 reason: "The process belongs to another agent run".to_string(),
+                code: None,
+                details: None,
             };
         }
         let cursor = args.cursor.unwrap_or(0);
@@ -733,7 +793,7 @@ impl AgentTool for WebSearchTool {
     fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
         tool_definition(
             "web_search",
-            "Search one or more complementary web sources in parallel. Returns deduplicated evidence candidates, per-source diagnostics, and separately labeled AI research syntheses. Use web_extract on important URLs before citing them.",
+            "Use for browsing, current information, source links, precise attribution, or information likely to have changed. Search complementary sources in parallel and return deduplicated evidence candidates, per-source diagnostics, and separately labeled AI research syntheses. Use fast for simple lookups, balanced for current facts and comparisons, and deep for comprehensive research or conflicting claims. For research, use complementary query rewrites, multiple independent source groups, and materially different retries when a search is empty. AI research syntheses are hypotheses and query directions, not verified evidence or independent sources; use web_extract on important URLs before citing them.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -849,7 +909,7 @@ impl AgentTool for WebSearchSourcesTool {
     fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
         tool_definition(
             "web_search_sources",
-            "List the currently configured web search sources, their roles, strengths, limitations, cost/latency tiers, evidence type, independence group, capabilities, and health. Use before custom source selection; source state is dynamic and is intentionally not embedded in the stable web_search schema.",
+            "List the currently configured web search sources, their roles, strengths, limitations, cost/latency tiers, evidence type, independence group, capabilities, and health. Use this before custom source selection so searches can use appropriate independent source groups; source state is dynamic and is intentionally not embedded in the stable web_search schema.",
             serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -892,7 +952,7 @@ impl AgentTool for WebExtractTool {
     fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
         tool_definition(
             "web_extract",
-            "Open one to five public HTTP(S) URLs. Uses local extraction first, then configured URL-content providers when local content is blocked, dynamic, or low quality. Stores direct evidence, returns focused excerpts, and labels Grok SSO fallback output as AI-derived.",
+            "Open one to five public HTTP(S) URLs for source verification. Prefer the most relevant original or primary pages, especially for important or disputed claims. Verify important or disputed claims with independent evidence, then cite the original page with a Markdown link next to the supported claim. Uses local extraction first, then configured URL-content providers when local content is blocked, dynamic, or low quality. Stores direct evidence, returns focused excerpts, and labels Grok SSO fallback output as AI-derived.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -953,7 +1013,7 @@ impl AgentTool for WebExtractTool {
         execution.result
     }
 }
-fn tool_definition(name: &str, description: &str, parameters: Value) -> ToolDefinition {
+pub(crate) fn tool_definition(name: &str, description: &str, parameters: Value) -> ToolDefinition {
     ToolDefinition {
         kind: "function".to_string(),
         function: FunctionDefinition {
@@ -961,6 +1021,36 @@ fn tool_definition(name: &str, description: &str, parameters: Value) -> ToolDefi
             description: description.to_string(),
             parameters,
         },
+    }
+}
+
+fn add_planning_id_parameter(definition: &mut ToolDefinition) {
+    let Some(schema) = definition.function.parameters.as_object_mut() else {
+        return;
+    };
+    let Some(properties) = schema
+        .entry("properties")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+    else {
+        return;
+    };
+    properties.insert(
+        "planning_id".to_string(),
+        serde_json::json!({
+            "type": "string",
+            "description": "Required when task planning is enabled. Use the planning_id returned by task_planning."
+        }),
+    );
+    let required = schema
+        .entry("required")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Some(required) = required.as_array_mut()
+        && !required
+            .iter()
+            .any(|value| value.as_str() == Some("planning_id"))
+    {
+        required.push(Value::String("planning_id".to_string()));
     }
 }
 
@@ -1184,8 +1274,11 @@ mod tests {
         MAX_TERMINAL_COMMAND_BYTES, ToolRegistry, normalize_optional_cwd,
         unsupported_host_shell_syntax,
     };
-    use crate::domain::AgentToolsConfig;
+    use crate::domain::{AgentToolsConfig, TaskPlanItem, TaskPlanItemStatus, ToolResult};
     use crate::tools::terminal::MAX_SESSION_WAIT_MS;
+    use serde_json::json;
+    use std::sync::Arc;
+    use uuid::Uuid;
 
     #[test]
     fn blank_cwd_uses_the_default_workspace() {
@@ -1359,7 +1452,8 @@ mod tests {
         assert!(names.contains(&"execute_terminal"));
         assert!(names.contains(&"terminal_session"));
         assert!(names.contains(&"multi_edit_file"));
-        assert_eq!(names.len(), 6);
+        assert!(names.contains(&"task_planning"));
+        assert_eq!(names.len(), 7);
 
         config.terminal.enabled = false;
         let terminal_disabled = ToolRegistry::with_builtin_tools()
@@ -1371,8 +1465,28 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            vec!["web_extract", "web_search", "web_search_sources"]
+            vec![
+                "task_planning",
+                "web_extract",
+                "web_search",
+                "web_search_sources"
+            ]
         );
+
+        config.task_planning.enabled = false;
+        let disabled = ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .unwrap();
+        assert!(
+            !disabled
+                .iter()
+                .any(|definition| definition.function.name == "task_planning")
+        );
+        assert!(disabled.iter().all(|definition| {
+            definition.function.parameters["properties"]
+                .get("planning_id")
+                .is_none()
+        }));
     }
 
     #[test]
@@ -1412,6 +1526,85 @@ mod tests {
     }
 
     #[test]
+    fn web_search_schemas_carry_the_research_workflow_guidance() {
+        let mut config = AgentToolsConfig::default();
+        config.web_search.enabled = true;
+        let definitions = ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .unwrap();
+        let definition = |name: &str| {
+            definitions
+                .iter()
+                .find(|item| item.function.name == name)
+                .unwrap()
+        };
+
+        let search = definition("web_search");
+        assert!(search.function.description.contains("current information"));
+        assert!(
+            search
+                .function
+                .description
+                .contains("multiple independent source groups")
+        );
+        assert!(
+            search
+                .function
+                .description
+                .contains("AI research syntheses are hypotheses")
+        );
+        assert!(search.function.description.contains("query directions"));
+        assert!(
+            search
+                .function
+                .description
+                .contains("use web_extract on important URLs")
+        );
+        assert!(
+            search.function.parameters["properties"]["mode"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("deep")
+        );
+
+        let sources = definition("web_search_sources");
+        assert!(
+            sources
+                .function
+                .description
+                .contains("custom source selection")
+        );
+        assert!(
+            sources
+                .function
+                .description
+                .contains("independent source groups")
+        );
+
+        let extract = definition("web_extract");
+        assert!(extract.function.description.contains("source verification"));
+        assert!(
+            extract
+                .function
+                .description
+                .contains("original or primary pages")
+        );
+        assert!(
+            extract
+                .function
+                .description
+                .contains("independent evidence")
+        );
+        assert!(extract.function.description.contains("Markdown link"));
+        assert!(
+            extract.function.parameters["properties"]["urls"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("Prefer primary sources")
+        );
+    }
+
+    #[test]
     fn tool_definitions_are_sorted_by_name() {
         let mut config = AgentToolsConfig::default();
         config.terminal.enabled = true;
@@ -1427,6 +1620,7 @@ mod tests {
             vec![
                 "execute_terminal",
                 "multi_edit_file",
+                "task_planning",
                 "terminal_session",
                 "web_extract",
                 "web_search",
@@ -1477,7 +1671,120 @@ mod tests {
         );
         assert_eq!(
             multi.function.parameters["required"],
-            serde_json::json!(["operations"])
+            serde_json::json!(["operations", "planning_id"])
         );
+    }
+
+    #[test]
+    fn planning_is_injected_into_non_planning_tool_schemas() {
+        let mut config = AgentToolsConfig::default();
+        config.terminal.enabled = true;
+        let definitions = ToolRegistry::with_builtin_tools()
+            .definitions(&config)
+            .unwrap();
+
+        for definition in definitions {
+            let name = definition.function.name;
+            let properties = &definition.function.parameters["properties"];
+            let required = definition.function.parameters["required"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if name == "task_planning" {
+                assert!(
+                    definition
+                        .function
+                        .description
+                        .contains("Before using any other tool")
+                );
+                assert!(
+                    serde_json::to_string(&definition.function.parameters)
+                        .unwrap()
+                        .is_ascii()
+                );
+                assert_eq!(
+                    definition.function.parameters["properties"]["item"]["oneOf"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    2
+                );
+                assert!(!required.iter().any(|value| value == "planning_id"));
+            } else {
+                assert!(properties.get("planning_id").is_some(), "{name}");
+                assert!(
+                    required.iter().any(|value| value == "planning_id"),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn planning_gate_returns_stable_codes_for_missing_and_invalid_ids() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::storage::Store::new(temp_dir.path()).await.unwrap());
+        let context = |conversation_id| super::ToolExecutionContext {
+            agent_id: Uuid::new_v4(),
+            conversation_id,
+            call_id: "test-call".to_string(),
+            tools_config: AgentToolsConfig::default(),
+            store: store.clone(),
+            terminal_manager: crate::tools::terminal::TerminalManager::new_for_tests(),
+            approval_manager: Arc::new(crate::tools::approval::ApprovalManager::new()),
+            event_sender: None,
+            web_search_provenance: Default::default(),
+        };
+        let registry = ToolRegistry::with_builtin_tools();
+        let conversation_id = Uuid::new_v4();
+
+        let result = registry
+            .execute("web_search_sources", json!({}), context(conversation_id))
+            .await;
+        let ToolResult::Blocked {
+            reason,
+            code,
+            details,
+        } = result
+        else {
+            panic!("expected missing planning id to be blocked");
+        };
+        assert_eq!(
+            reason,
+            "请先调用 task_planning 创建计划，并将返回的 planning_id 传入本工具。"
+        );
+        assert_eq!(code.as_deref(), Some("PlanningRequired"));
+        assert_eq!(details.unwrap()["required_argument"], "planning_id");
+
+        let plan = store
+            .create_task_plan(
+                conversation_id,
+                None,
+                vec![TaskPlanItem {
+                    step: "Use the tool".to_string(),
+                    status: TaskPlanItemStatus::InProgress,
+                }],
+            )
+            .await
+            .unwrap();
+        let other_conversation = Uuid::new_v4();
+        let result = registry
+            .execute(
+                "web_search_sources",
+                json!({"planning_id": plan.planning_id}),
+                context(other_conversation),
+            )
+            .await;
+        let ToolResult::Blocked { code, .. } = result else {
+            panic!("expected cross-conversation planning id to be blocked");
+        };
+        assert_eq!(code.as_deref(), Some("PlanningIdInvalid"));
+
+        let mut disabled_context = context(conversation_id);
+        disabled_context.tools_config.task_planning.enabled = false;
+        let result = registry
+            .execute("web_search_sources", json!({}), disabled_context)
+            .await;
+        assert!(matches!(result, ToolResult::Completed { .. }));
     }
 }

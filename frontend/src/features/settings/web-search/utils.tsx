@@ -127,6 +127,9 @@ export function mergeToolsConfig(defaults: AgentToolsConfig, overrides: AgentToo
       enabled: overrides.web_search?.enabled ?? defaults.web_search.enabled,
       max_results: overrides.web_search?.max_results ?? defaults.web_search.max_results,
     },
+    task_planning: {
+      enabled: overrides.task_planning?.enabled ?? defaults.task_planning.enabled,
+    },
   };
 }
 

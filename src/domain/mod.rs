@@ -5,6 +5,7 @@ pub mod ip_proxies;
 pub mod providers;
 pub mod runtime;
 pub mod settings;
+pub mod task_planning;
 pub mod tools;
 
 pub use agents::{
@@ -32,11 +33,12 @@ pub use runtime::{
     CodexRuntimeSource, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus,
 };
 pub use settings::AppSettings;
+pub use task_planning::{TaskPlan, TaskPlanItem, TaskPlanItemStatus};
 pub use tools::{
     AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision, ApprovalRequest,
     ApprovalResponse, EvidenceStorageConfig, PendingApproval, ProcessInfo, ProcessStatus,
-    TerminalApprovalGrant, TerminalPermissionMode, TerminalToolConfig, ToolResult,
-    WebSearchCostTier, WebSearchKeySelection, WebSearchKeyStatusRecord, WebSearchLatencyTier,
-    WebSearchProviderKind, WebSearchSourceCapabilities, WebSearchSourceConfig, WebSearchSourceRole,
-    WebSearchToolConfig, WebSearchToolOverrides,
+    TaskPlanningToolConfig, TerminalApprovalGrant, TerminalPermissionMode, TerminalToolConfig,
+    ToolResult, WebSearchCostTier, WebSearchKeySelection, WebSearchKeyStatusRecord,
+    WebSearchLatencyTier, WebSearchProviderKind, WebSearchSourceCapabilities,
+    WebSearchSourceConfig, WebSearchSourceRole, WebSearchToolConfig, WebSearchToolOverrides,
 };

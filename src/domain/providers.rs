@@ -115,10 +115,7 @@ impl From<&ModelProvider> for ModelProviderResponse {
             provider_type: provider.provider_type.clone(),
             name: provider.name.clone(),
             base_url: provider.base_url.clone(),
-            has_api_key: provider
-                .api_keys
-                .iter()
-                .any(|key| !key.trim().is_empty()),
+            has_api_key: provider.api_keys.iter().any(|key| !key.trim().is_empty()),
             masked_api_keys: provider
                 .api_keys
                 .iter()
@@ -260,7 +257,10 @@ mod tests {
     fn merge_api_keys_keeps_masked_entries_and_appends_new_keys() {
         let existing = keys(&["sk-alpha-1111", "sk-beta-2222"]);
         let merged = merge_api_keys(&existing, &keys(&["****1111", "****2222", " sk-new-3333 "]));
-        assert_eq!(merged, keys(&["sk-alpha-1111", "sk-beta-2222", "sk-new-3333"]));
+        assert_eq!(
+            merged,
+            keys(&["sk-alpha-1111", "sk-beta-2222", "sk-new-3333"])
+        );
     }
 
     #[test]
@@ -279,7 +279,10 @@ mod tests {
         let applied = merge_api_keys(&original, &submitted);
         // Retry of the same payload against the already-updated pool.
         let retried = merge_api_keys(&applied, &submitted);
-        assert_eq!(applied, keys(&["sk-alpha-1111", "sk-gamma-3333", "sk-new-4444"]));
+        assert_eq!(
+            applied,
+            keys(&["sk-alpha-1111", "sk-gamma-3333", "sk-new-4444"])
+        );
         assert_eq!(retried, applied);
     }
 

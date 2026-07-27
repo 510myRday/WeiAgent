@@ -10,20 +10,23 @@ use super::sql_util::{
 use uuid::Uuid;
 
 use crate::domain::tools::{
-    TerminalToolOverrides, WebContentExtractionConfig, WebSearchKeyOperation,
+    TaskPlanningToolOverrides, TerminalToolOverrides, WebContentExtractionConfig,
+    WebSearchKeyOperation,
 };
 use crate::{
     domain::{
         AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, EvidenceStorageConfig,
-        TerminalApprovalGrant, TerminalPermissionMode, TerminalToolConfig, WebSearchKeySelection,
-        WebSearchKeyStatusRecord, WebSearchProviderKind, WebSearchSourceConfig,
-        WebSearchToolConfig, WebSearchToolOverrides,
+        TaskPlanningToolConfig, TerminalApprovalGrant, TerminalPermissionMode, TerminalToolConfig,
+        WebSearchKeySelection, WebSearchKeyStatusRecord, WebSearchProviderKind,
+        WebSearchSourceConfig, WebSearchToolConfig, WebSearchToolOverrides,
     },
     error::{AppError, AppResult},
     storage::store::Store,
 };
 
-const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 2;
+// Migration versions share one application-wide namespace with conversations
+// and provider migrations, so task planning must use the next free version.
+const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 8;
 
 const TOOL_SETTINGS_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS tool_settings (
@@ -60,6 +63,8 @@ CREATE TABLE IF NOT EXISTS tool_settings (
         CHECK (evidence_retention_days IS NULL OR evidence_retention_days > 0),
     evidence_max_total_mb INTEGER
         CHECK (evidence_max_total_mb IS NULL OR evidence_max_total_mb > 0),
+    task_planning_enabled INTEGER
+        CHECK (task_planning_enabled IS NULL OR task_planning_enabled IN (0, 1)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (scope_type, scope_id),
@@ -83,6 +88,7 @@ CREATE TABLE IF NOT EXISTS tool_settings (
             AND evidence_storage_enabled IS NOT NULL
             AND evidence_retention_days IS NOT NULL
             AND evidence_max_total_mb IS NOT NULL
+            AND task_planning_enabled IS NOT NULL
         )
         OR
         (
@@ -114,6 +120,18 @@ CREATE TABLE IF NOT EXISTS tool_terminal_approval_grants (
 
 CREATE INDEX IF NOT EXISTS idx_tool_terminal_grants_expiry
     ON tool_terminal_approval_grants(expires_at);
+
+CREATE TABLE IF NOT EXISTS task_plans (
+    planning_id TEXT PRIMARY KEY NOT NULL,
+    conversation_id TEXT NOT NULL,
+    conversation_message_id TEXT REFERENCES conversation_messages(id) ON DELETE CASCADE,
+    explanation TEXT,
+    plan_json TEXT NOT NULL
+        CHECK (json_valid(plan_json) AND json_type(plan_json) = 'array'),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS tool_web_search_sources (
     source_id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(source_id)) > 0),
@@ -522,21 +540,135 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
         [TOOL_SETTINGS_SCHEMA_VERSION],
         |row| row.get::<_, bool>(0),
     )?;
+    conn.execute_batch(TOOL_SETTINGS_SCHEMA_SQL)?;
+    if !column_exists(conn, "tool_settings", "task_planning_enabled")? {
+        conn.execute(
+            "ALTER TABLE tool_settings ADD COLUMN task_planning_enabled INTEGER",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE tool_settings
+             SET task_planning_enabled = CASE
+                 WHEN scope_type = 'default' THEN 1
+                 ELSE NULL
+             END",
+            [],
+        )?;
+    }
+    conn.execute(
+        "UPDATE tool_settings SET task_planning_enabled = 1
+         WHERE scope_type = 'default' AND scope_id = 'default' AND task_planning_enabled IS NULL",
+        [],
+    )?;
+    migrate_task_plans_schema(conn)?;
+    ensure_task_plan_indexes(conn)?;
+    let legacy_applied = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM app_schema_migrations WHERE version = 2
+        )",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !legacy_applied {
+        conn.execute(
+            "INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (2, ?1, ?2)",
+            params!["tool_settings_compact_v2", Utc::now().to_rfc3339()],
+        )?;
+    }
+    let task_planning_v7_applied = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM app_schema_migrations WHERE version = 7
+        )",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !task_planning_v7_applied {
+        conn.execute(
+            "INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (7, ?1, ?2)",
+            params!["tool_settings_task_planning_v7", Utc::now().to_rfc3339()],
+        )?;
+    }
     if applied {
         return Ok(());
     }
-
-    conn.execute_batch(TOOL_SETTINGS_SCHEMA_SQL)?;
     conn.execute(
         "INSERT INTO app_schema_migrations (version, name, applied_at)
          VALUES (?1, ?2, ?3)",
         params![
             TOOL_SETTINGS_SCHEMA_VERSION,
-            "tool_settings_compact_v2",
+            "tool_settings_task_planning_v8",
             Utc::now().to_rfc3339()
         ],
     )?;
     Ok(())
+}
+
+fn migrate_task_plans_schema(conn: &Connection) -> AppResult<()> {
+    if !column_exists(conn, "task_plans", "conversation_message_id")?
+        || !column_exists(conn, "task_plans", "active")?
+    {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE task_plans_v8 (
+                planning_id TEXT PRIMARY KEY NOT NULL,
+                conversation_id TEXT NOT NULL,
+                conversation_message_id TEXT REFERENCES conversation_messages(id) ON DELETE CASCADE,
+                explanation TEXT,
+                plan_json TEXT NOT NULL
+                    CHECK (json_valid(plan_json) AND json_type(plan_json) = 'array'),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
+            ) WITHOUT ROWID;
+            ",
+        )?;
+        tx.execute(
+            "INSERT INTO task_plans_v8 (
+                planning_id, conversation_id, conversation_message_id,
+                explanation, plan_json, created_at, updated_at, active
+             )
+             SELECT planning_id, conversation_id, NULL, explanation, plan_json,
+                    created_at, updated_at,
+                    CASE
+                        WHEN json_array_length(plan_json) > 0
+                         AND NOT EXISTS (
+                             SELECT 1 FROM json_each(task_plans.plan_json)
+                             WHERE json_extract(json_each.value, '$.status') != 'completed'
+                         )
+                        THEN 0
+                        ELSE 1
+                    END
+             FROM task_plans",
+            [],
+        )?;
+        tx.execute("DROP TABLE task_plans", [])?;
+        tx.execute("ALTER TABLE task_plans_v8 RENAME TO task_plans", [])?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
+fn ensure_task_plan_indexes(conn: &Connection) -> AppResult<()> {
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_plans_one_active_conversation
+             ON task_plans(conversation_id) WHERE active = 1;
+         CREATE INDEX IF NOT EXISTS idx_task_plans_conversation_updated
+             ON task_plans(conversation_id, updated_at DESC);",
+    )?;
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> AppResult<bool> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        if row? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn compact_default_exists(conn: &Connection) -> AppResult<bool> {
@@ -561,9 +693,10 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
             web_search_timeout_ms, web_search_key_selection, web_extract_remote_enabled,
             web_extract_max_remote_attempts, web_extract_allow_grok_fallback,
             evidence_storage_enabled, evidence_retention_days, evidence_max_total_mb,
+            task_planning_enabled,
             created_at, updated_at
          ) VALUES (
-            'default', 'default', 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16
+             'default', 'default', 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17
          )
          ON CONFLICT(scope_type, scope_id) DO UPDATE SET
             config_version = 1,
@@ -579,10 +712,11 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
             web_extract_remote_enabled = excluded.web_extract_remote_enabled,
             web_extract_max_remote_attempts = excluded.web_extract_max_remote_attempts,
             web_extract_allow_grok_fallback = excluded.web_extract_allow_grok_fallback,
-            evidence_storage_enabled = excluded.evidence_storage_enabled,
-            evidence_retention_days = excluded.evidence_retention_days,
-            evidence_max_total_mb = excluded.evidence_max_total_mb,
-            updated_at = excluded.updated_at",
+             evidence_storage_enabled = excluded.evidence_storage_enabled,
+             evidence_retention_days = excluded.evidence_retention_days,
+             evidence_max_total_mb = excluded.evidence_max_total_mb,
+             task_planning_enabled = excluded.task_planning_enabled,
+             updated_at = excluded.updated_at",
         params![
             i64::from(config.max_llm_iterations),
             bool_to_i64(config.terminal.enabled),
@@ -605,6 +739,7 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
                 config.evidence_storage.max_total_mb,
                 "evidence_max_total_mb"
             )?,
+            bool_to_i64(config.task_planning.enabled),
             now,
         ],
     )?;
@@ -700,10 +835,11 @@ fn write_agent_overrides_conn(
             terminal_enabled, terminal_permission_mode, terminal_default_timeout_ms,
             terminal_allowed_cwd_roots_json, web_search_enabled, web_search_max_results,
             web_search_timeout_ms, web_search_key_selection, evidence_storage_enabled,
-            evidence_retention_days, evidence_max_total_mb, created_at, updated_at
+            evidence_retention_days, evidence_max_total_mb, task_planning_enabled,
+            created_at, updated_at
          ) VALUES (
-            'agent', ?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-            NULL, NULL, NULL, NULL, NULL, ?9, ?9
+             'agent', ?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+             NULL, NULL, NULL, NULL, NULL, ?9, ?10, ?10
          )
          ON CONFLICT(scope_type, scope_id) DO UPDATE SET
             config_version = 1,
@@ -716,10 +852,11 @@ fn write_agent_overrides_conn(
             web_search_max_results = excluded.web_search_max_results,
             web_search_timeout_ms = NULL,
             web_search_key_selection = NULL,
-            evidence_storage_enabled = NULL,
-            evidence_retention_days = NULL,
-            evidence_max_total_mb = NULL,
-            updated_at = excluded.updated_at",
+             evidence_storage_enabled = NULL,
+             evidence_retention_days = NULL,
+             evidence_max_total_mb = NULL,
+             task_planning_enabled = excluded.task_planning_enabled,
+             updated_at = excluded.updated_at",
         params![
             agent_id,
             overrides.max_llm_iterations.map(i64::from),
@@ -737,6 +874,7 @@ fn write_agent_overrides_conn(
             roots_json,
             overrides.web_search.enabled.map(bool_to_i64),
             overrides.web_search.max_results.map(i64::from),
+            overrides.task_planning.enabled.map(bool_to_i64),
             now,
         ],
     )?;
@@ -780,6 +918,7 @@ struct DefaultSettingsRow {
     evidence_storage_enabled: i64,
     evidence_retention_days: i64,
     evidence_max_total_mb: i64,
+    task_planning_enabled: i64,
 }
 
 fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsConfig>> {
@@ -790,7 +929,8 @@ fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsC
                     web_search_enabled, web_search_max_results, web_search_timeout_ms,
                     web_search_key_selection, web_extract_remote_enabled,
                     web_extract_max_remote_attempts, web_extract_allow_grok_fallback,
-                    evidence_storage_enabled, evidence_retention_days, evidence_max_total_mb
+                    evidence_storage_enabled, evidence_retention_days, evidence_max_total_mb,
+                    task_planning_enabled
              FROM tool_settings
              WHERE scope_type = 'default' AND scope_id = 'default'",
             [],
@@ -811,6 +951,7 @@ fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsC
                     evidence_storage_enabled: row.get(12)?,
                     evidence_retention_days: row.get(13)?,
                     evidence_max_total_mb: row.get(14)?,
+                    task_planning_enabled: row.get(15)?,
                 })
             },
         )
@@ -857,6 +998,9 @@ fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsC
             retention_days: i64_to_u32(row.evidence_retention_days, "evidence_retention_days")?,
             max_total_mb: i64_to_u64(row.evidence_max_total_mb, "evidence_max_total_mb")?,
         },
+        task_planning: TaskPlanningToolConfig {
+            enabled: i64_to_bool(row.task_planning_enabled, "task_planning_enabled")?,
+        },
     }))
 }
 
@@ -868,6 +1012,7 @@ struct AgentSettingsRow {
     terminal_allowed_cwd_roots_json: Option<String>,
     web_search_enabled: Option<i64>,
     web_search_max_results: Option<i64>,
+    task_planning_enabled: Option<i64>,
 }
 
 fn read_agent_overrides_conn(
@@ -879,7 +1024,7 @@ fn read_agent_overrides_conn(
         .query_row(
             "SELECT max_llm_iterations, terminal_enabled, terminal_permission_mode,
                     terminal_default_timeout_ms, terminal_allowed_cwd_roots_json,
-                    web_search_enabled, web_search_max_results
+                    web_search_enabled, web_search_max_results, task_planning_enabled
              FROM tool_settings
              WHERE scope_type = 'agent' AND scope_id = ?1",
             [&agent_id],
@@ -892,6 +1037,7 @@ fn read_agent_overrides_conn(
                     terminal_allowed_cwd_roots_json: row.get(4)?,
                     web_search_enabled: row.get(5)?,
                     web_search_max_results: row.get(6)?,
+                    task_planning_enabled: row.get(7)?,
                 })
             },
         )
@@ -935,6 +1081,12 @@ fn read_agent_overrides_conn(
             max_results: row
                 .web_search_max_results
                 .map(|value| i64_to_u32(value, "web_search_max_results"))
+                .transpose()?,
+        },
+        task_planning: TaskPlanningToolOverrides {
+            enabled: row
+                .task_planning_enabled
+                .map(|value| i64_to_bool(value, "task_planning_enabled"))
                 .transpose()?,
         },
     }))
@@ -1100,6 +1252,7 @@ fn agent_overrides_are_empty(overrides: &AgentToolsOverrides) -> bool {
         && overrides.terminal.allowed_cwd_roots.is_none()
         && overrides.web_search.enabled.is_none()
         && overrides.web_search.max_results.is_none()
+        && overrides.task_planning.enabled.is_none()
 }
 
 fn permission_mode_as_str(mode: &TerminalPermissionMode) -> &'static str {

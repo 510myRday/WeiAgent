@@ -22,6 +22,7 @@ use crate::{
         types::{ChatCompletionOutput, StreamEvent, ToolCall, ToolCallFunction, ToolDefinition},
     },
     tools::registry::{ToolExecutionContext, ToolExecutionEvent},
+    tools::task_planning::TASK_PLANNING_TOOL_NAME,
 };
 
 const STREAM_SAVE_INTERVAL: Duration = Duration::from_secs(2);
@@ -1226,8 +1227,32 @@ async fn persist_tool_result(
             std::slice::from_ref(&tool_message),
         )
         .await?;
+    if let Some(planning_id) = task_plan_id_from_result(result) {
+        state
+            .store
+            .associate_task_plan_with_message(
+                tool_message.conversation_id,
+                planning_id,
+                tool_message.id,
+            )
+            .await?;
+    }
     messages.push(tool_message);
     Ok(())
+}
+
+fn task_plan_id_from_result(result: &ToolResult) -> Option<Uuid> {
+    let ToolResult::Completed { stdout, .. } = result else {
+        return None;
+    };
+    let value = serde_json::from_str::<Value>(stdout).ok()?;
+    if value.get("tool").and_then(Value::as_str) != Some(TASK_PLANNING_TOOL_NAME) {
+        return None;
+    }
+    value
+        .get("planning_id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
 }
 
 fn partial_assistant(

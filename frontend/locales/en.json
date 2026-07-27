@@ -101,6 +101,18 @@
     "ariaLabel": "Conversation",
     "scrollToBottom": "Scroll to latest message",
     "timeline": "Message timeline",
+    "taskPlan": "Current plan",
+    "taskPlanOpen": "View current plan",
+    "taskPlanRefresh": "Refresh plan",
+    "taskPlanClear": "Clear plan",
+    "taskPlanClearConfirm": "After clearing, the next tool call must create a new plan.",
+    "taskPlanEmpty": "No active plan in this conversation",
+    "taskPlanLoading": "Loading plan...",
+    "taskPlanProgress": "Completed {completed}/{total}",
+    "taskPlanUpdated": "Updated {time}",
+    "taskPlanStatusPending": "Pending",
+    "taskPlanStatusInProgress": "In progress",
+    "taskPlanStatusCompleted": "Completed",
     "addImage": "Add image",
     "removeImage": "Remove image",
     "pastedImage": "Pasted image",
@@ -734,6 +746,20 @@
         "network_error": "Network error",
         "error": "Check error"
       }
+    },
+    "taskPlanning": {
+      "name": "Task Planning",
+      "description": "Maintain a todo list for complex work and require a valid plan ID for other tools.",
+      "defaultsTitle": "Default task planning settings",
+      "defaultsDesc": "Control whether sessions must create a task plan before using tools.",
+      "agentConfigTitle": "Task planning configuration",
+      "agentConfigDesc": "Control whether this agent plans before calling tools.",
+      "enabled": "Enable task planning",
+      "enabledDesc": "When enabled, other tools require the current conversation planning_id.",
+      "loading": "Loading task planning settings...",
+      "loadFailed": "Task planning settings failed to load",
+      "saveFailed": "Task planning settings failed to save",
+      "agentRequired": "No agent was provided for tool configuration"
     }
   },
   "model": {

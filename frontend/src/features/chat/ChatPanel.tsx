@@ -1,10 +1,12 @@
 import { useRef, useEffect, useCallback, useMemo, useState, memo } from 'react';
 import {
-  ArrowLeft,
-  LoaderCircle,
-  Pin,
-  Plus,
-  Trash2,
+    ArrowLeft,
+    LoaderCircle,
+    ListChecks,
+    Pin,
+    Plus,
+    RefreshCw,
+    Trash2,
 } from 'lucide-react';
 import type {
   Agent,
@@ -16,7 +18,7 @@ import type {
   UiMessageItem,
   UpdateAgentPayload,
 } from '../../types';
-import { approveToolCall } from '../../api';
+import { approveToolCall, clearTaskPlan, readTaskPlan, type TaskPlan } from '../../api';
 import { useI18n } from '../../i18n';
 import { useConversations, usePageVisibility } from '../../hooks';
 import { AgentListItem, agentDisplayName } from '../../components/AgentListItem';
@@ -115,6 +117,9 @@ export function ChatPanel({
   const [conversationFilter, setConversationFilter] = useState('');
   const [pinningConversationIds, setPinningConversationIds] = useState<Set<string>>(() => new Set());
   const [activeTimelineMessageIndex, setActiveTimelineMessageIndex] = useState<number | null>(null);
+  const [taskPlan, setTaskPlan] = useState<TaskPlan | null>(null);
+  const [isTaskPlanOpen, setIsTaskPlanOpen] = useState(false);
+  const [isTaskPlanLoading, setIsTaskPlanLoading] = useState(false);
   const isPageVisible = usePageVisibility();
 
   const conversationSearchRef = useRef<HTMLInputElement>(null);
@@ -174,6 +179,39 @@ export function ChatPanel({
   const activeConversation = activeAgent
     ? conversations.find((conversation) => conversation.id === activeConversationId)
     : undefined;
+
+  const refreshTaskPlan = useCallback(async () => {
+    if (!activeConversationId) {
+      setTaskPlan(null);
+      return;
+    }
+    setIsTaskPlanLoading(true);
+    try {
+      setTaskPlan(await readTaskPlan(activeConversationId));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('chat.taskPlanLoading'));
+    } finally {
+      setIsTaskPlanLoading(false);
+    }
+  }, [activeConversationId, t, toast]);
+
+  useEffect(() => {
+    setIsTaskPlanOpen(false);
+    void refreshTaskPlan();
+  }, [activeConversationId, messages.length, refreshTaskPlan]);
+
+  async function handleClearTaskPlan() {
+    if (!activeConversationId) return;
+    const confirmed = await confirm({
+      title: t('chat.taskPlanClear'),
+      message: t('chat.taskPlanClearConfirm'),
+      confirmLabel: t('chat.taskPlanClear'),
+      tone: 'warning',
+    });
+    if (!confirmed) return;
+    await clearTaskPlan(activeConversationId);
+    setTaskPlan(null);
+  }
   const filteredConversations = useMemo(() => {
     const query = conversationFilter.trim().toLowerCase();
     return conversations.filter((conversation) =>
@@ -698,9 +736,29 @@ export function ChatPanel({
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
+              <IconButton
+                type="button"
+                variant="ghost"
+                label={t('chat.taskPlanOpen')}
+                title={t('chat.taskPlanOpen')}
+                onClick={() => setIsTaskPlanOpen((current) => !current)}
+                disabled={!activeConversationId || isTaskPlanLoading}
+              >
+                <ListChecks size={17} />
+              </IconButton>
             </div>
           ) : null}
         </header>
+        {isTaskPlanOpen ? (
+          <TaskPlanPanel
+            plan={taskPlan}
+            isLoading={isTaskPlanLoading}
+            locale={locale}
+            onRefresh={() => void refreshTaskPlan()}
+            onClear={() => void handleClearTaskPlan()}
+            t={t}
+          />
+        ) : null}
         <MessageList
           ref={messageListRef}
           conversationId={activeConversationId}
@@ -753,6 +811,62 @@ export function ChatPanel({
         />
       </section>
     </>
+  );
+}
+
+function TaskPlanPanel({
+  plan,
+  isLoading,
+  locale,
+  onRefresh,
+  onClear,
+  t,
+}: {
+  plan: TaskPlan | null;
+  isLoading: boolean;
+  locale: 'zh' | 'en';
+  onRefresh: () => void;
+  onClear: () => void;
+  t: (path: string, params?: Record<string, string | number>) => string;
+}) {
+  const completed = plan?.plan.filter((item) => item.status === 'completed').length ?? 0;
+  const total = plan?.plan.length ?? 0;
+  const updatedAt = plan ? new Date(plan.updated_at).toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US') : '';
+  return (
+    <section className="task-plan-panel" aria-label={t('chat.taskPlan')}>
+      <div className="task-plan-panel__header">
+        <div>
+          <strong>{t('chat.taskPlan')}</strong>
+          {plan ? <code>{plan.planning_id}</code> : null}
+        </div>
+        <div className="task-plan-panel__actions">
+          <IconButton type="button" variant="ghost" label={t('chat.taskPlanRefresh')} title={t('chat.taskPlanRefresh')} onClick={onRefresh} disabled={isLoading}>
+            <RefreshCw size={15} />
+          </IconButton>
+          {plan ? <IconButton type="button" variant="ghost" label={t('chat.taskPlanClear')} title={t('chat.taskPlanClear')} onClick={onClear}><Trash2 size={15} /></IconButton> : null}
+        </div>
+      </div>
+      {isLoading ? <p className="task-plan-panel__empty">{t('chat.taskPlanLoading')}</p> : null}
+      {!isLoading && !plan ? <p className="task-plan-panel__empty">{t('chat.taskPlanEmpty')}</p> : null}
+      {!isLoading && plan ? (
+        <>
+          {plan.explanation ? <p className="task-plan-panel__explanation">{plan.explanation}</p> : null}
+          <div className="task-plan-panel__meta">
+            <span>{t('chat.taskPlanProgress', { completed, total })}</span>
+            <span>{t('chat.taskPlanUpdated', { time: updatedAt })}</span>
+          </div>
+          <ol className="task-plan-panel__list">
+            {plan.plan.map((item, index) => (
+              <li key={`${index}-${item.step}`} className={`task-plan-item task-plan-item--${item.status}`}>
+                <span className="task-plan-item__index">{index + 1}</span>
+                <span className="task-plan-item__step">{item.step}</span>
+                <span className="task-plan-item__status">{t(`chat.taskPlanStatus${item.status === 'in_progress' ? 'InProgress' : item.status === 'completed' ? 'Completed' : 'Pending'}`)}</span>
+              </li>
+            ))}
+          </ol>
+        </>
+      ) : null}
+    </section>
   );
 }
 function ConversationRowImpl({

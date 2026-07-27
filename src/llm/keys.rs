@@ -100,18 +100,18 @@ impl ApiKeyCycle {
             // Retry within the same request: sweep to the following key.
             Some(last) => (last + 1) % len,
             None => match self.strategy {
-                ApiKeyStrategy::Failover => self
-                    .with_cursor(|cursor| cursor.sticky)
-                    .unwrap_or_default()
-                    % len,
-                ApiKeyStrategy::RoundRobin => self
-                    .with_cursor(|cursor| {
+                ApiKeyStrategy::Failover => {
+                    self.with_cursor(|cursor| cursor.sticky).unwrap_or_default() % len
+                }
+                ApiKeyStrategy::RoundRobin => {
+                    self.with_cursor(|cursor| {
                         let index = cursor.round_robin;
                         cursor.round_robin = cursor.round_robin.wrapping_add(1);
                         index
                     })
                     .unwrap_or_default()
-                    % len,
+                        % len
+                }
                 ApiKeyStrategy::Random => random_index(len),
             },
         };
@@ -177,12 +177,7 @@ mod tests {
     fn round_robin_rotates_across_requests() {
         let provider = provider(ApiKeyStrategy::RoundRobin, &["k1", "k2", "k3"]);
         let picks: Vec<String> = (0..4)
-            .map(|_| {
-                ApiKeyCycle::new(&provider)
-                    .unwrap()
-                    .next_key()
-                    .to_string()
-            })
+            .map(|_| ApiKeyCycle::new(&provider).unwrap().next_key().to_string())
             .collect();
         assert_eq!(picks, ["k1", "k2", "k3", "k1"]);
     }

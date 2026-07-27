@@ -532,6 +532,18 @@ export function TerminalToolSettings({
     updateOverrides({ ...overrides, terminal: nextTerminal });
   }
 
+  function updateTaskPlanning(enabled: boolean) {
+    if (!config) return;
+    if (scope === 'defaults') {
+      updateGlobalConfig({ ...config, task_planning: { enabled } });
+    } else if (overrides) {
+      updateOverrides({
+        ...overrides,
+        task_planning: { ...overrides.task_planning, enabled },
+      });
+    }
+  }
+
   function setMaxIterationsInherited(inherited: boolean) {
     if (!overrides || !config) return;
     const next = { ...overrides };
@@ -718,6 +730,34 @@ export function TerminalToolSettings({
               >
                 <Pencil size={17} />
               </IconButton>
+            </div>
+          </div>
+          <div className="agent-tool-row">
+            <div className="agent-tool-row__body">
+              <div className="agent-tool-row__title">
+                <strong>{t('tools.taskPlanning.name')}</strong>
+                <span className="mini-status-badge">
+                  <ShieldCheck size={12} />
+                  {t('tools.builtinBadge')}
+                </span>
+              </div>
+              <small>{t('tools.taskPlanning.description')}</small>
+              <span className="agent-tool-row__source">
+                {overrides?.task_planning?.enabled === undefined
+                  ? t('tools.inheritsDefault')
+                  : t('tools.agentOverride')}
+              </span>
+            </div>
+            <div className="agent-tool-row__actions">
+              <label className="toggle-switch" title={config.task_planning.enabled ? t('tools.enabled') : t('tools.disabled')}>
+                <input
+                  type="checkbox"
+                  aria-label={t('tools.taskPlanning.enabled')}
+                  checked={config.task_planning.enabled}
+                  onChange={(event) => updateTaskPlanning(event.target.checked)}
+                />
+                <span className="toggle-slider" />
+              </label>
             </div>
           </div>
         </div>

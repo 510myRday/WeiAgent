@@ -8,6 +8,7 @@ pub mod llm_logs;
 mod providers;
 mod sql_util;
 mod store;
+mod task_plans;
 mod tool_settings;
 mod validation;
 mod workspaces;
@@ -27,6 +28,7 @@ pub(super) const WORKSPACE_INSTRUCTIONS: &str = "instructions.md";
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
+    use rusqlite::params;
     use uuid::Uuid;
 
     use super::*;
@@ -59,7 +61,7 @@ mod tests {
             .prepare(
                 "SELECT name FROM sqlite_master
                  WHERE type = 'table'
-                   AND name LIKE 'tool_%'
+                   AND (name LIKE 'tool_%' OR name = 'task_plans')
                  ORDER BY name",
             )
             .unwrap();
@@ -86,6 +88,7 @@ mod tests {
         );
         assert!(defaults.terminal.enabled);
         assert!(defaults.web_search.enabled);
+        assert!(defaults.task_planning.enabled);
         assert_eq!(
             defaults
                 .web_search
@@ -112,15 +115,79 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(migration_versions, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(migration_versions, vec![1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(
             tool_table_names(&conn),
             vec![
+                "task_plans",
                 "tool_settings",
                 "tool_terminal_approval_grants",
                 "tool_web_search_api_keys",
                 "tool_web_search_sources",
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn upgrades_legacy_task_plans_before_creating_active_indexes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let conversation_id = Uuid::new_v4();
+        let planning_id = Uuid::new_v4();
+        let now = Utc::now().to_rfc3339();
+        let conn = db::open_data_dir(temp_dir.path()).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE task_plans (
+                conversation_id TEXT PRIMARY KEY NOT NULL,
+                planning_id TEXT NOT NULL UNIQUE,
+                explanation TEXT,
+                plan_json TEXT NOT NULL
+                    CHECK (json_valid(plan_json) AND json_type(plan_json) = 'array'),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            ) WITHOUT ROWID;",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO task_plans (
+                conversation_id, planning_id, explanation, plan_json, created_at, updated_at
+             ) VALUES (?1, ?2, 'Legacy plan', ?3, ?4, ?4)",
+            params![
+                conversation_id.to_string(),
+                planning_id.to_string(),
+                r#"[{"step":"Legacy task","status":"pending"}]"#,
+                now,
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let _store = Store::new(temp_dir.path()).await.unwrap();
+        let conn = db::open_data_dir(temp_dir.path()).unwrap();
+        let columns = conn
+            .prepare("PRAGMA table_info(task_plans)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|column| column == "active"));
+        assert_eq!(
+            conn.query_row(
+                "SELECT active FROM task_plans WHERE planning_id = ?1",
+                [planning_id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        assert!(
+            conn.query_row(
+                "SELECT 1 FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_task_plans_one_active_conversation'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok()
         );
     }
 
@@ -1055,13 +1122,21 @@ mod tests {
             .unwrap();
         assert!(prompt.starts_with("## Environment"));
         assert!(prompt.contains("## Agent"));
-        assert!(prompt.contains("当前处理本轮对话的智能体"));
+        assert!(prompt.contains(
+            "The agent handling this conversation receives user messages, calls tools, and replies:"
+        ));
         assert!(prompt.contains(&format!("- Name: {}", stored.name)));
         assert!(prompt.contains(&format!("- ID: {}", stored.id)));
         assert!(prompt.contains("## Runtime"));
+        assert!(prompt.contains("## Task Planning Policy"));
+        assert!(prompt.contains(
+            "Every non-planning tool call must include the current conversation's planning_id"
+        ));
         assert!(prompt.contains(&format!("- Date: {}", crate::tools::prompt::today_date())));
-        assert!(prompt.contains("必须以此为准"));
-        assert!(prompt.contains("Trust: absolute"));
+        assert!(
+            prompt.contains("The current local system date is today's date and is authoritative.")
+        );
+        assert!(!prompt.contains("Trust: absolute"));
         assert!(prompt.contains("## Personality"));
         assert!(prompt.find("## Environment").unwrap() < prompt.find("## Agent").unwrap());
         assert!(prompt.find("## Agent").unwrap() < prompt.find("## Runtime").unwrap());
@@ -1074,21 +1149,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(prompt, again);
-        assert!(prompt.contains("## Web Search Policy V1"));
+        assert!(prompt.contains(
+            "Use web search for current or source-backed information, verify important claims with original pages, and cite the supporting links."
+        ));
 
         tools_config.web_search.enabled = false;
         let no_search_prompt = store
             .build_agent_system_prompt(&stored, &tools_config)
             .await
             .unwrap();
-        assert!(!no_search_prompt.contains("Web Search Policy V1"));
+        assert!(!no_search_prompt.contains(
+            "Use web search for current or source-backed information, verify important claims with original pages, and cite the supporting links."
+        ));
+        assert!(no_search_prompt.contains("Task Planning Policy"));
 
+        tools_config.task_planning.enabled = false;
+        let no_planning_prompt = store
+            .build_agent_system_prompt(&stored, &tools_config)
+            .await
+            .unwrap();
+        assert!(!no_planning_prompt.contains("Task Planning Policy"));
+
+        tools_config.task_planning.enabled = true;
         tools_config.web_search.enabled = true;
         let search_prompt = store
             .build_agent_system_prompt(&stored, &tools_config)
             .await
             .unwrap();
-        assert!(search_prompt.contains("## Web Search Policy V1"));
+        assert!(search_prompt.contains(
+            "Use web search for current or source-backed information, verify important claims with original pages, and cite the supporting links."
+        ));
         let search_hash = crate::llm::cache::system_prompt_hash(&search_prompt);
         tools_config.web_search.sources[0].api_keys = vec!["dynamic-key".to_string()];
         tools_config.web_search.sources[0].priority = 999;

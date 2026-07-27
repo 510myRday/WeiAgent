@@ -240,6 +240,26 @@ pub async fn read_conversation_usage(
     ))
 }
 
+pub async fn read_task_plan(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+) -> AppResult<Json<Option<crate::domain::TaskPlan>>> {
+    state.store.get_conversation(conversation_id).await?;
+    Ok(Json(state.store.read_task_plan(conversation_id).await?))
+}
+
+pub async fn clear_task_plan(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+) -> AppResult<()> {
+    state.store.get_conversation(conversation_id).await?;
+    state
+        .store
+        .deactivate_task_plan(conversation_id, None)
+        .await?;
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ConversationMessagesQuery {
     before: Option<Uuid>,
