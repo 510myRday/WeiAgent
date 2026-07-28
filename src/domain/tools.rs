@@ -50,6 +50,8 @@ fn default_timeout_ms() -> u64 {
 
 pub const DEFAULT_MAX_LLM_ITERATIONS: u32 = 99;
 pub const MAX_LLM_ITERATIONS: u32 = 999;
+pub const DEFAULT_TASK_PLAN_PROGRESS_INTERVAL: u32 = 3;
+pub const MAX_TASK_PLAN_PROGRESS_INTERVAL: u32 = 999;
 pub const DEFAULT_WEB_SEARCH_MAX_RESULTS: u32 = 5;
 pub const MAX_WEB_SEARCH_RESULTS: u32 = 20;
 pub const DEFAULT_WEB_SEARCH_TIMEOUT_MS: u64 = 15_000;
@@ -125,12 +127,21 @@ impl Default for AgentToolsConfig {
 pub struct TaskPlanningToolConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default = "default_task_plan_progress_interval")]
+    pub progress_interval: u32,
 }
 
 impl Default for TaskPlanningToolConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            progress_interval: DEFAULT_TASK_PLAN_PROGRESS_INTERVAL,
+        }
     }
+}
+
+fn default_task_plan_progress_interval() -> u32 {
+    DEFAULT_TASK_PLAN_PROGRESS_INTERVAL
 }
 
 impl AgentToolsConfig {
@@ -939,6 +950,8 @@ pub struct WebSearchToolOverrides {
 pub struct TaskPlanningToolOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_interval: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1016,6 +1029,10 @@ impl AgentToolsOverrides {
                     .task_planning
                     .enabled
                     .unwrap_or(defaults.task_planning.enabled),
+                progress_interval: self
+                    .task_planning
+                    .progress_interval
+                    .unwrap_or(defaults.task_planning.progress_interval),
             },
         }
     }
@@ -1038,6 +1055,7 @@ impl AgentToolsOverrides {
             },
             task_planning: TaskPlanningToolOverrides {
                 enabled: Some(config.task_planning.enabled),
+                progress_interval: Some(config.task_planning.progress_interval),
             },
         }
     }
@@ -1193,14 +1211,26 @@ mod tests {
     fn task_planning_defaults_to_enabled_and_agent_override_is_inherited() {
         let defaults = AgentToolsConfig::default();
         assert!(defaults.task_planning.enabled);
+        assert_eq!(
+            defaults.task_planning.progress_interval,
+            DEFAULT_TASK_PLAN_PROGRESS_INTERVAL
+        );
 
         let overrides = AgentToolsOverrides::default();
         assert_eq!(overrides.task_planning.enabled, None);
         assert!(overrides.apply_to(&defaults).task_planning.enabled);
+        assert_eq!(
+            overrides
+                .apply_to(&defaults)
+                .task_planning
+                .progress_interval,
+            DEFAULT_TASK_PLAN_PROGRESS_INTERVAL
+        );
 
         let overrides = AgentToolsOverrides {
             task_planning: TaskPlanningToolOverrides {
                 enabled: Some(false),
+                progress_interval: None,
             },
             ..AgentToolsOverrides::default()
         };

@@ -1,12 +1,15 @@
 import { useRef, useEffect, useCallback, useMemo, useState, memo } from 'react';
 import {
-    ArrowLeft,
-    LoaderCircle,
-    ListChecks,
-    Pin,
-    Plus,
-    RefreshCw,
-    Trash2,
+  ArrowLeft,
+  CheckCircle2,
+  ChevronDown,
+  Circle,
+  CircleDot,
+  LoaderCircle,
+  ListChecks,
+  Pin,
+  Plus,
+  Trash2,
 } from 'lucide-react';
 import type {
   Agent,
@@ -18,7 +21,7 @@ import type {
   UiMessageItem,
   UpdateAgentPayload,
 } from '../../types';
-import { approveToolCall, clearTaskPlan, readTaskPlan, type TaskPlan } from '../../api';
+import { approveToolCall, readTaskPlans, type TaskPlan } from '../../api';
 import { useI18n } from '../../i18n';
 import { useConversations, usePageVisibility } from '../../hooks';
 import { AgentListItem, agentDisplayName } from '../../components/AgentListItem';
@@ -117,7 +120,7 @@ export function ChatPanel({
   const [conversationFilter, setConversationFilter] = useState('');
   const [pinningConversationIds, setPinningConversationIds] = useState<Set<string>>(() => new Set());
   const [activeTimelineMessageIndex, setActiveTimelineMessageIndex] = useState<number | null>(null);
-  const [taskPlan, setTaskPlan] = useState<TaskPlan | null>(null);
+  const [taskPlans, setTaskPlans] = useState<TaskPlan[]>([]);
   const [isTaskPlanOpen, setIsTaskPlanOpen] = useState(false);
   const [isTaskPlanLoading, setIsTaskPlanLoading] = useState(false);
   const isPageVisible = usePageVisibility();
@@ -127,6 +130,7 @@ export function ChatPanel({
   const modelSaveTimerRef = useRef<number | undefined>(undefined);
   const modelSaveRequestRef = useRef(0);
   const pendingModelSaveRef = useRef<PendingModelSave | null>(null);
+  const taskPlanRequestRef = useRef(0);
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const conversationAgentIdKey = useMemo(() => {
@@ -180,38 +184,44 @@ export function ChatPanel({
     ? conversations.find((conversation) => conversation.id === activeConversationId)
     : undefined;
 
-  const refreshTaskPlan = useCallback(async () => {
+  const refreshTaskPlan = useCallback(async (silent = false) => {
+    const requestId = ++taskPlanRequestRef.current;
     if (!activeConversationId) {
-      setTaskPlan(null);
+      setTaskPlans([]);
+      setIsTaskPlanLoading(false);
       return;
     }
-    setIsTaskPlanLoading(true);
+    if (!silent) setIsTaskPlanLoading(true);
     try {
-      setTaskPlan(await readTaskPlan(activeConversationId));
+      const plans = await readTaskPlans(activeConversationId);
+      if (requestId === taskPlanRequestRef.current) setTaskPlans(plans);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('chat.taskPlanLoading'));
+      if (!silent && requestId === taskPlanRequestRef.current) {
+        toast.error(error instanceof Error ? error.message : t('chat.taskPlanLoading'));
+      }
     } finally {
-      setIsTaskPlanLoading(false);
+      if (requestId === taskPlanRequestRef.current) setIsTaskPlanLoading(false);
     }
   }, [activeConversationId, t, toast]);
 
   useEffect(() => {
+    setTaskPlans([]);
     setIsTaskPlanOpen(false);
     void refreshTaskPlan();
+  }, [activeConversationId, refreshTaskPlan]);
+
+  useEffect(() => {
+    if (!activeConversationId || !isPageVisible || !isSending) return;
+    const refresh = () => void refreshTaskPlan(true);
+    const timer = window.setInterval(refresh, 1200);
+    return () => window.clearInterval(timer);
+  }, [activeConversationId, isPageVisible, isSending, refreshTaskPlan]);
+
+  useEffect(() => {
+    if (!activeConversationId || messages.length === 0) return;
+    void refreshTaskPlan(true);
   }, [activeConversationId, messages.length, refreshTaskPlan]);
 
-  async function handleClearTaskPlan() {
-    if (!activeConversationId) return;
-    const confirmed = await confirm({
-      title: t('chat.taskPlanClear'),
-      message: t('chat.taskPlanClearConfirm'),
-      confirmLabel: t('chat.taskPlanClear'),
-      tone: 'warning',
-    });
-    if (!confirmed) return;
-    await clearTaskPlan(activeConversationId);
-    setTaskPlan(null);
-  }
   const filteredConversations = useMemo(() => {
     const query = conversationFilter.trim().toLowerCase();
     return conversations.filter((conversation) =>
@@ -736,29 +746,9 @@ export function ChatPanel({
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
-              <IconButton
-                type="button"
-                variant="ghost"
-                label={t('chat.taskPlanOpen')}
-                title={t('chat.taskPlanOpen')}
-                onClick={() => setIsTaskPlanOpen((current) => !current)}
-                disabled={!activeConversationId || isTaskPlanLoading}
-              >
-                <ListChecks size={17} />
-              </IconButton>
             </div>
           ) : null}
         </header>
-        {isTaskPlanOpen ? (
-          <TaskPlanPanel
-            plan={taskPlan}
-            isLoading={isTaskPlanLoading}
-            locale={locale}
-            onRefresh={() => void refreshTaskPlan()}
-            onClear={() => void handleClearTaskPlan()}
-            t={t}
-          />
-        ) : null}
         <MessageList
           ref={messageListRef}
           conversationId={activeConversationId}
@@ -790,85 +780,170 @@ export function ChatPanel({
           />
         ) : null}
 
-        <ChatComposer
-          disabled={isComposerDisabled}
-          placeholder={composerPlaceholder}
-          draftKey={`${activeAgent?.id ?? 'none'}:${activeConversationId || 'new'}`}
-          isSending={isSending}
-          isSavingModel={isSavingModel}
-          isModelSavePending={isModelSavePending}
-          isStreamMode={isStreamMode}
-          onStreamModeChange={setIsStreamMode}
-          supportsImages={supportsImages}
-          supportsThinking={supportsThinking}
-          thinkingLevel={thinkingLevel}
-          onThinkingLevelChange={setThinkingLevel}
-          usage={conversationUsage}
-          contextSize={activeModelConfig?.context_size ?? 128000}
-          onUnsupportedImage={handleUnsupportedImage}
-          onSend={handleSendMessage}
-          onStop={cancelActiveSend}
-        />
+        <div className={`chat-composer-stack${activeConversationId ? ' has-task-plan' : ''}`}>
+          {activeConversationId ? (
+            <TaskPlanPanel
+              plans={taskPlans}
+              isLoading={isTaskPlanLoading}
+              isOpen={isTaskPlanOpen}
+              onToggle={() => setIsTaskPlanOpen((current) => !current)}
+              t={t}
+            />
+          ) : null}
+          <ChatComposer
+            disabled={isComposerDisabled}
+            placeholder={composerPlaceholder}
+            draftKey={`${activeAgent?.id ?? 'none'}:${activeConversationId || 'new'}`}
+            isSending={isSending}
+            isSavingModel={isSavingModel}
+            isModelSavePending={isModelSavePending}
+            isStreamMode={isStreamMode}
+            onStreamModeChange={setIsStreamMode}
+            supportsImages={supportsImages}
+            supportsThinking={supportsThinking}
+            thinkingLevel={thinkingLevel}
+            onThinkingLevelChange={setThinkingLevel}
+            usage={conversationUsage}
+            contextSize={activeModelConfig?.context_size ?? 128000}
+            onUnsupportedImage={handleUnsupportedImage}
+            onSend={handleSendMessage}
+            onStop={cancelActiveSend}
+          />
+        </div>
       </section>
     </>
   );
 }
 
 function TaskPlanPanel({
-  plan,
+  plans,
   isLoading,
-  locale,
-  onRefresh,
-  onClear,
+  isOpen,
+  onToggle,
   t,
 }: {
-  plan: TaskPlan | null;
+  plans: TaskPlan[];
   isLoading: boolean;
-  locale: 'zh' | 'en';
-  onRefresh: () => void;
-  onClear: () => void;
+  isOpen: boolean;
+  onToggle: () => void;
   t: (path: string, params?: Record<string, string | number>) => string;
 }) {
-  const completed = plan?.plan.filter((item) => item.status === 'completed').length ?? 0;
-  const total = plan?.plan.length ?? 0;
-  const updatedAt = plan ? new Date(plan.updated_at).toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US') : '';
+  const currentPlan = plans[0];
+  const completed = currentPlan?.plan.filter((item) => item.status === 'completed').length ?? 0;
+  const total = currentPlan?.plan.length ?? 0;
+
   return (
-    <section className="task-plan-panel" aria-label={t('chat.taskPlan')}>
-      <div className="task-plan-panel__header">
-        <div>
-          <strong>{t('chat.taskPlan')}</strong>
-          {plan ? <code>{plan.planning_id}</code> : null}
+    <section className={`task-plan-panel${isOpen ? ' is-open' : ''}`} aria-label={t('tools.taskPlanning.name')}>
+      <button
+        type="button"
+        className="task-plan-panel__summary"
+        aria-expanded={isOpen}
+        onClick={onToggle}
+      >
+        <span className="task-plan-panel__summary-icon" aria-hidden="true"><ListChecks size={16} /></span>
+          <span className="task-plan-panel__summary-copy">
+            <strong>{t('tools.taskPlanning.name')}</strong>
+          {plans.length > 0 ? (
+            <span
+              className="task-plan-panel__count-badge"
+              title={t('chat.taskPlanHistoryCount', { count: plans.length })}
+              aria-label={t('chat.taskPlanHistoryCount', { count: plans.length })}
+            >
+              {plans.length}
+            </span>
+            ) : null}
+          </span>
+          {currentPlan ? (
+            <span
+              className="task-plan-panel__summary-progress"
+              aria-label={t('chat.taskPlanCurrentProgress', { completed, total })}
+            >
+              <span className="task-plan-panel__progress-count">
+                {t('chat.taskPlanCurrentProgress', { completed, total })}
+              </span>
+              <span className="task-plan-panel__progress-track" aria-hidden="true">
+                {currentPlan.plan.map((item, index) => (
+                  <span
+                    key={`${currentPlan.planning_id}-progress-${index}`}
+                    className={item.status === 'completed' ? 'is-completed' : undefined}
+                  />
+                ))}
+              </span>
+            </span>
+          ) : null}
+          <ChevronDown className="task-plan-panel__chevron" size={17} aria-hidden="true" />
+      </button>
+      {isOpen ? (
+        <div className="task-plan-panel__details">
+          {isLoading ? <p className="task-plan-panel__empty">{t('chat.taskPlanLoading')}</p> : null}
+          {!isLoading && plans.length === 0 ? <p className="task-plan-panel__empty">{t('chat.taskPlanEmpty')}</p> : null}
+          {!isLoading && plans.length > 0 ? (
+            <div className="task-plan-panel__scroll">
+              <div className="task-plan-history">
+                {plans.map((plan, index) => (
+                  <TaskPlanHistoryCard
+                    key={plan.planning_id}
+                    plan={plan}
+                    planNumber={plans.length - index}
+                    t={t}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
-        <div className="task-plan-panel__actions">
-          <IconButton type="button" variant="ghost" label={t('chat.taskPlanRefresh')} title={t('chat.taskPlanRefresh')} onClick={onRefresh} disabled={isLoading}>
-            <RefreshCw size={15} />
-          </IconButton>
-          {plan ? <IconButton type="button" variant="ghost" label={t('chat.taskPlanClear')} title={t('chat.taskPlanClear')} onClick={onClear}><Trash2 size={15} /></IconButton> : null}
-        </div>
-      </div>
-      {isLoading ? <p className="task-plan-panel__empty">{t('chat.taskPlanLoading')}</p> : null}
-      {!isLoading && !plan ? <p className="task-plan-panel__empty">{t('chat.taskPlanEmpty')}</p> : null}
-      {!isLoading && plan ? (
-        <>
-          {plan.explanation ? <p className="task-plan-panel__explanation">{plan.explanation}</p> : null}
-          <div className="task-plan-panel__meta">
-            <span>{t('chat.taskPlanProgress', { completed, total })}</span>
-            <span>{t('chat.taskPlanUpdated', { time: updatedAt })}</span>
-          </div>
-          <ol className="task-plan-panel__list">
-            {plan.plan.map((item, index) => (
-              <li key={`${index}-${item.step}`} className={`task-plan-item task-plan-item--${item.status}`}>
-                <span className="task-plan-item__index">{index + 1}</span>
-                <span className="task-plan-item__step">{item.step}</span>
-                <span className="task-plan-item__status">{t(`chat.taskPlanStatus${item.status === 'in_progress' ? 'InProgress' : item.status === 'completed' ? 'Completed' : 'Pending'}`)}</span>
-              </li>
-            ))}
-          </ol>
-        </>
       ) : null}
     </section>
   );
 }
+
+function TaskPlanHistoryCard({
+  plan,
+  planNumber,
+  t,
+}: {
+  plan: TaskPlan;
+  planNumber: number;
+  t: (path: string, params?: Record<string, string | number>) => string;
+}) {
+  return (
+    <article className="task-plan-history__card">
+      <div className="task-plan-history__title-row">
+        <span className="task-plan-history__number" aria-label={`第 ${planNumber} 个任务`}>{planNumber}</span>
+        <h3 className="task-plan-history__title">{plan.explanation || t('tools.taskPlanning.name')}</h3>
+        <time className="task-plan-history__time" dateTime={plan.created_at}>
+          {formatTaskPlanStartTime(plan.created_at)}
+        </time>
+      </div>
+      <ol className="task-plan-panel__list">
+        {plan.plan.map((item, index) => (
+          <li key={`${plan.planning_id}-${index}-${item.step}`} className={`task-plan-item task-plan-item--${item.status}`}>
+            <span className="task-plan-item__index">{index + 1}</span>
+            <span
+              className="task-plan-item__step"
+              title={item.step}
+              aria-label={t(`chat.taskPlanStatus${item.status === 'in_progress' ? 'InProgress' : item.status === 'completed' ? 'Completed' : 'Pending'}`)}
+            >
+              {item.step}
+            </span>
+            <span className="task-plan-item__status-icon" aria-hidden="true">
+              {item.status === 'completed' ? <CheckCircle2 size={17} /> : item.status === 'in_progress' ? <CircleDot size={17} /> : <Circle size={17} />}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </article>
+  );
+}
+
+function formatTaskPlanStartTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 function ConversationRowImpl({
   conversation,
   active,

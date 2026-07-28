@@ -13,8 +13,8 @@ use uuid::Uuid;
 use crate::{
     app::{AppState, chat::PreparedChat},
     domain::{
-        ChatMessage, ChatMessageStatus, ChatRole, ModelUsage, TerminalPermissionMode, TokenUsage,
-        ToolResult,
+        ChatMessage, ChatMessageStatus, ChatRole, ModelUsage, TaskPlan, TaskPlanItemStatus,
+        TerminalPermissionMode, TokenUsage, ToolResult,
     },
     error::{AppError, AppResult},
     llm::{
@@ -107,7 +107,23 @@ struct AgentRuntime<'a> {
 struct ToolBudget {
     seen_call_ids: HashSet<String>,
     total_calls: usize,
+    task_plan_tool_iterations: usize,
     web_search_provenance: crate::tools::web_search::evidence::WebSearchProvenanceCache,
+}
+
+impl ToolBudget {
+    fn task_plan_progress_due(&mut self, has_active_plan: bool, interval: usize) -> bool {
+        if !has_active_plan {
+            self.task_plan_tool_iterations = 0;
+            return false;
+        }
+        self.task_plan_tool_iterations += 1;
+        self.task_plan_tool_iterations >= interval
+    }
+
+    fn reset_task_plan_progress(&mut self) {
+        self.task_plan_tool_iterations = 0;
+    }
 }
 
 /// Per-run compaction inputs, loaded once instead of re-reading settings and
@@ -259,6 +275,16 @@ pub async fn run_agent(
         if iteration >= max_llm_iterations {
             break;
         }
+        let has_active_task_plan = if runtime.prepared.tools_config.task_planning.enabled {
+            runtime
+                .state
+                .store
+                .read_task_plan(user_message.conversation_id)
+                .await?
+                .is_some()
+        } else {
+            false
+        };
         let tools = frozen_tools.clone();
         ensure_messages_within_context(&runtime, &mut messages, tools.as_deref(), &mut compaction)
             .await?;
@@ -321,6 +347,16 @@ pub async fn run_agent(
             emit(&events, AgentRunEvent::Assistant(assistant_message.clone())).await?;
         }
         messages.push(assistant_message);
+        let append_task_plan_progress = tool_budget.task_plan_progress_due(
+            has_active_task_plan,
+            runtime
+                .prepared
+                .tools_config
+                .task_planning
+                .progress_interval
+                .clamp(1, crate::domain::tools::MAX_TASK_PLAN_PROGRESS_INTERVAL)
+                as usize,
+        );
         if let Err(error) = execute_tool_calls(
             runtime.state,
             runtime.prepared,
@@ -329,11 +365,15 @@ pub async fn run_agent(
             &mut tool_budget,
             runtime.events,
             iteration,
+            append_task_plan_progress,
         )
         .await
         {
             persist_run_failure(&runtime, &error).await;
             return Err(error);
+        }
+        if append_task_plan_progress {
+            tool_budget.reset_task_plan_progress();
         }
 
         iteration += 1;
@@ -462,7 +502,9 @@ async fn execute_tool_calls(
     budget: &mut ToolBudget,
     events: &Option<mpsc::Sender<AgentRunEvent>>,
     iteration: usize,
+    append_task_plan_progress: bool,
 ) -> AppResult<()> {
+    let call_count = tool_calls.len();
     for (index, call) in tool_calls.into_iter().enumerate() {
         refresh_live_terminal_config(state, prepared).await?;
         let parsed_arguments = serde_json::from_str::<Value>(&call.function.arguments);
@@ -512,73 +554,50 @@ async fn execute_tool_calls(
             budget.total_calls += 1;
             None
         };
-        if let Some(message) = validation_error {
-            let result = ToolResult::Error { message };
-            persist_tool_result(state, prepared, messages, &call.id, &result).await?;
-            emit(
-                events,
-                AgentRunEvent::ToolResult {
-                    call_id: call.id,
-                    result,
-                },
-            )
-            .await?;
-            continue;
-        }
-        let arguments = match parsed_arguments {
-            Ok(Value::Object(map)) => Value::Object(map),
-            Ok(other) => {
-                let result = ToolResult::Error {
+        let result = if let Some(message) = validation_error {
+            ToolResult::Error { message }
+        } else {
+            match parsed_arguments {
+                Ok(Value::Object(map)) => {
+                    let context = ToolExecutionContext {
+                        agent_id: prepared.agent.id,
+                        conversation_id: prepared.user_message.conversation_id,
+                        call_id: call.id.clone(),
+                        tools_config: prepared.tools_config.clone(),
+                        store: state.store.clone(),
+                        terminal_manager: state.terminal_manager.clone(),
+                        approval_manager: state.approval_manager.clone(),
+                        event_sender: None,
+                        web_search_provenance: budget.web_search_provenance.clone(),
+                    };
+                    execute_tool_with_events(
+                        state,
+                        &call.function.name,
+                        Value::Object(map),
+                        context,
+                        events,
+                        iteration,
+                    )
+                    .await
+                }
+                Ok(other) => ToolResult::Error {
                     message: format!("Invalid tool arguments: expected a JSON object, got {other}"),
-                };
-                persist_tool_result(state, prepared, messages, &call.id, &result).await?;
-                emit(
-                    events,
-                    AgentRunEvent::ToolResult {
-                        call_id: call.id,
-                        result,
-                    },
-                )
-                .await?;
-                continue;
-            }
-            Err(error) => {
-                let result = ToolResult::Error {
+                },
+                Err(error) => ToolResult::Error {
                     message: format!("Invalid tool arguments: {error}"),
-                };
-                persist_tool_result(state, prepared, messages, &call.id, &result).await?;
-                emit(
-                    events,
-                    AgentRunEvent::ToolResult {
-                        call_id: call.id,
-                        result,
-                    },
-                )
-                .await?;
-                continue;
+                },
             }
         };
-
-        let context = ToolExecutionContext {
-            agent_id: prepared.agent.id,
-            conversation_id: prepared.user_message.conversation_id,
-            call_id: call.id.clone(),
-            tools_config: prepared.tools_config.clone(),
-            store: state.store.clone(),
-            terminal_manager: state.terminal_manager.clone(),
-            approval_manager: state.approval_manager.clone(),
-            event_sender: None,
-            web_search_provenance: budget.web_search_provenance.clone(),
+        let result = if append_task_plan_progress && index + 1 == call_count {
+            append_task_plan_progress_to_result(
+                state,
+                prepared.user_message.conversation_id,
+                result,
+            )
+            .await?
+        } else {
+            result
         };
-        let result = execute_tool_with_events(
-            state,
-            &call.function.name,
-            arguments,
-            context,
-            events,
-            iteration,
-        )
-        .await;
         emit(
             events,
             AgentRunEvent::ToolResult {
@@ -590,6 +609,74 @@ async fn execute_tool_calls(
         persist_tool_result(state, prepared, messages, &call.id, &result).await?;
     }
     Ok(())
+}
+
+async fn append_task_plan_progress_to_result(
+    state: &AppState,
+    conversation_id: Uuid,
+    mut result: ToolResult,
+) -> AppResult<ToolResult> {
+    let plan = match state.store.read_task_plan(conversation_id).await? {
+        Some(plan) => Some(plan),
+        None => state
+            .store
+            .read_task_plans(conversation_id)
+            .await?
+            .into_iter()
+            .next(),
+    };
+    let Some(plan) = plan else {
+        return Ok(result);
+    };
+    let notice = format_task_plan_progress(&plan);
+    match &mut result {
+        ToolResult::Completed { stdout, .. } => append_progress_to_stdout(stdout, &notice),
+        ToolResult::Running { message, .. } => message.push_str(&notice),
+        ToolResult::Blocked { reason, .. } => reason.push_str(&notice),
+        ToolResult::Rejected { reason } => reason.push_str(&notice),
+        ToolResult::Error { message } => message.push_str(&notice),
+        ToolResult::PendingApproval { .. } => {}
+    }
+    Ok(result)
+}
+
+fn append_progress_to_stdout(stdout: &mut String, notice: &str) {
+    if let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(stdout.as_str()) {
+        object.insert(
+            "task_plan_progress".to_string(),
+            Value::String(notice.trim().to_string()),
+        );
+        *stdout = Value::Object(object).to_string();
+    } else {
+        stdout.push_str(notice);
+    }
+}
+
+fn format_task_plan_progress(plan: &TaskPlan) -> String {
+    let current = plan
+        .plan
+        .iter()
+        .find(|item| item.status == TaskPlanItemStatus::InProgress)
+        .map(|item| item.step.as_str())
+        .unwrap_or("无");
+    let steps = plan
+        .plan
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let item_status = match &item.status {
+                TaskPlanItemStatus::Pending => "待处理",
+                TaskPlanItemStatus::InProgress => "进行中",
+                TaskPlanItemStatus::Completed => "已完成",
+            };
+            format!("{}. [{}] {}", index + 1, item_status, item.step)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "\n\n【任务规划进度提醒】\n当前进度：\n{steps}\n当前步骤：{current}\n请只判断当前步骤是否完成：如果当前步骤已完成，请立即调用 task_planning 将当前步骤更新为 completed；如果当前步骤尚未完成，请继续执行当前步骤，不要开始其他计划步骤。"
+    )
 }
 
 async fn refresh_live_terminal_config(
@@ -1408,5 +1495,55 @@ mod tests {
     #[test]
     fn trim_chars_keeps_short_text() {
         assert_eq!(trim_chars("abc", 10), "abc");
+    }
+
+    #[test]
+    fn task_plan_progress_counter_starts_after_plan_creation_and_resets() {
+        let mut budget = ToolBudget::default();
+        assert!(!budget.task_plan_progress_due(false, 3));
+        assert!(!budget.task_plan_progress_due(true, 3));
+        assert!(!budget.task_plan_progress_due(true, 3));
+        assert!(budget.task_plan_progress_due(true, 3));
+        budget.reset_task_plan_progress();
+        assert!(!budget.task_plan_progress_due(true, 3));
+    }
+
+    #[test]
+    fn task_plan_progress_is_added_without_corrupting_json_stdout() {
+        let mut stdout = json!({"tool": "example", "status": "completed"}).to_string();
+        append_progress_to_stdout(&mut stdout, "\n\nprogress");
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["tool"], "example");
+        assert_eq!(value["task_plan_progress"], "progress");
+    }
+
+    #[test]
+    fn task_plan_progress_focuses_only_on_current_step() {
+        let plan = TaskPlan {
+            conversation_id: Uuid::new_v4(),
+            planning_id: Uuid::new_v4(),
+            conversation_message_id: None,
+            explanation: None,
+            plan: vec![
+                crate::domain::TaskPlanItem {
+                    step: "实现功能".to_string(),
+                    status: TaskPlanItemStatus::InProgress,
+                },
+                crate::domain::TaskPlanItem {
+                    step: "运行测试".to_string(),
+                    status: TaskPlanItemStatus::Pending,
+                },
+            ],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            active: true,
+        };
+        let notice = format_task_plan_progress(&plan);
+        assert!(notice.contains("当前步骤：实现功能"));
+        assert!(notice.contains("请只判断当前步骤是否完成"));
+        assert!(notice.contains("立即调用 task_planning 将当前步骤更新为 completed"));
+        assert!(notice.contains("继续执行当前步骤，不要开始其他计划步骤"));
+        assert!(!notice.contains("下一步："));
+        assert!(!notice.contains("\n是否完成："));
     }
 }

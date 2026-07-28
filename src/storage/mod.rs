@@ -89,6 +89,7 @@ mod tests {
         assert!(defaults.terminal.enabled);
         assert!(defaults.web_search.enabled);
         assert!(defaults.task_planning.enabled);
+        assert_eq!(defaults.task_planning.progress_interval, 3);
         assert_eq!(
             defaults
                 .web_search
@@ -115,7 +116,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(migration_versions, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert_eq!(
             tool_table_names(&conn),
             vec![
@@ -361,15 +362,18 @@ mod tests {
         let mut defaults = store.read_tool_defaults().await.unwrap();
         defaults.max_llm_iterations = 12;
         defaults.terminal.default_timeout_ms = 45_000;
+        defaults.task_planning.progress_interval = 5;
         store.update_tool_defaults(defaults).await.unwrap();
 
         let inherited = store.read_agent_tools_settings(agent.id).await.unwrap();
         assert_eq!(inherited.effective.max_llm_iterations, 12);
         assert_eq!(inherited.effective.terminal.default_timeout_ms, 45_000);
+        assert_eq!(inherited.effective.task_planning.progress_interval, 5);
         assert_eq!(inherited.overrides.max_llm_iterations, None);
 
         let mut overrides = inherited.overrides;
         overrides.terminal.enabled = Some(false);
+        overrides.task_planning.progress_interval = Some(7);
         let updated = store
             .update_agent_tools_overrides(agent.id, overrides)
             .await
@@ -377,6 +381,7 @@ mod tests {
         assert!(!updated.effective.terminal.enabled);
         assert_eq!(updated.effective.max_llm_iterations, 12);
         assert_eq!(updated.effective.terminal.default_timeout_ms, 45_000);
+        assert_eq!(updated.effective.task_planning.progress_interval, 7);
 
         let mut explicit_empty_roots = updated.overrides;
         explicit_empty_roots.terminal.allowed_cwd_roots = Some(Vec::new());

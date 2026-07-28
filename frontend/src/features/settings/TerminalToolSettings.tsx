@@ -20,6 +20,7 @@ import { updateToolProcessCache, useBeforeUnloadGuard, usePageVisibility } from 
 import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../components/ui';
 import { PermissionModeControl, type PermissionMode } from './PermissionModeControl';
 import { WebSearchToolSettings } from './WebSearchToolSettings';
+import { TaskPlanningToolSettings } from './TaskPlanningToolSettings';
 import { mergeToolsConfig } from './web-search/utils';
 
 interface TerminalToolSettingsProps {
@@ -31,7 +32,7 @@ interface TerminalToolSettingsProps {
 
 type OverrideField = 'permission_mode' | 'default_timeout_ms' | 'allowed_cwd_roots';
 export type TerminalAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
-type AgentToolView = 'list' | 'terminal' | 'web_search';
+type AgentToolView = 'list' | 'terminal' | 'web_search' | 'task_planning';
 type PendingSave =
   | {
     contextKey: string;
@@ -535,7 +536,7 @@ export function TerminalToolSettings({
   function updateTaskPlanning(enabled: boolean) {
     if (!config) return;
     if (scope === 'defaults') {
-      updateGlobalConfig({ ...config, task_planning: { enabled } });
+      updateGlobalConfig({ ...config, task_planning: { ...config.task_planning, enabled } });
     } else if (overrides) {
       updateOverrides({
         ...overrides,
@@ -758,6 +759,15 @@ export function TerminalToolSettings({
                 />
                 <span className="toggle-slider" />
               </label>
+              <IconButton
+                type="button"
+                variant="ghost"
+                className="agent-tool-edit"
+                onClick={() => setAgentToolView('task_planning')}
+                label={t('tools.editTool')}
+              >
+                <Pencil size={17} />
+              </IconButton>
             </div>
           </div>
         </div>
@@ -772,6 +782,16 @@ export function TerminalToolSettings({
         agentId={agentId}
         onBack={() => setAgentToolView('list')}
         onOpenIpProxies={onOpenIpProxies}
+      />
+    );
+  }
+
+  if (isAgentScope && agentToolView === 'task_planning') {
+    return (
+      <TaskPlanningToolSettings
+        scope="agent"
+        agentId={agentId}
+        onBack={() => setAgentToolView('list')}
       />
     );
   }

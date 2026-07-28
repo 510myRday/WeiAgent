@@ -2887,7 +2887,7 @@
   background: transparent;
   font-size: var(--font-size-body);
   font-weight: var(--font-weight-emphasis);
-  text-align: right;
+  text-align: left;
   outline: none;
 }
 

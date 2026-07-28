@@ -2,19 +2,19 @@ use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     },
     time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::Deserialize;
-use serde_json::{Value, json};
-use tokio::sync::{Mutex, Notify, mpsc};
+use serde_json::{json, Value};
+use tokio::sync::{mpsc, Mutex, Notify};
 use uuid::Uuid;
 
 use crate::{
@@ -23,7 +23,7 @@ use crate::{
     tools::{
         codex_app_server::{CodexAppServer, CodexNotification},
         runtime::{CodexExecutable, CodexRuntimeManager},
-        shell::{HostShellKind, selected_host_shell},
+        shell::{selected_host_shell, HostShellKind},
     },
 };
 
@@ -118,16 +118,23 @@ struct CodexTerminalBackend {
     app_server: Arc<CodexAppServer>,
     execution_paths: DashMap<String, CodexExecutionPath>,
     sandbox_processes: DashMap<String, Arc<SandboxProcess>>,
+    host_processes: DashMap<String, Arc<HostProcess>>,
 }
 
 struct SandboxProcess {
     pid: u32,
 }
 
+struct HostProcess {
+    pid: u32,
+    stdin: Mutex<Option<tokio::process::ChildStdin>>,
+}
+
 #[derive(Clone, Copy)]
 enum CodexExecutionPath {
     AppServer,
     WindowsSandboxCli,
+    HostProcess,
 }
 
 impl CodexTerminalBackend {
@@ -137,6 +144,7 @@ impl CodexTerminalBackend {
             runtime,
             execution_paths: DashMap::new(),
             sandbox_processes: DashMap::new(),
+            host_processes: DashMap::new(),
         }
     }
 
@@ -314,10 +322,142 @@ impl CodexTerminalBackend {
         Ok(status.code().unwrap_or(-1))
     }
 
+    async fn execute_host_process(
+        &self,
+        request: &BackendExecRequest,
+        output: &mpsc::Sender<BackendOutput>,
+    ) -> AppResult<i32> {
+        use tokio::io::AsyncReadExt;
+
+        let argv = build_codex_shell_argv(&request.command, &request.cwd);
+        let (program, args) = argv
+            .split_first()
+            .ok_or_else(|| AppError::Process("Host command was empty".to_string()))?;
+        let mut std_command = std::process::Command::new(program);
+        std_command
+            .args(args)
+            .current_dir(&request.cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            std_command.process_group(0);
+        }
+        let mut command = tokio::process::Command::from(std_command);
+        command.kill_on_drop(false);
+        self.runtime
+            .apply_runtime_environment(&mut command, "codex_full_access")
+            .await;
+        let mut child = command
+            .spawn()
+            .map_err(|error| AppError::Process(format!("failed to start host command: {error}")))?;
+        let pid = child
+            .id()
+            .ok_or_else(|| AppError::Process("Windows host process has no pid".to_string()))?;
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        self.host_processes.insert(
+            request.process_id.clone(),
+            Arc::new(HostProcess {
+                pid,
+                stdin: Mutex::new(stdin),
+            }),
+        );
+
+        let stdout_task = stdout.map(|mut stdout| {
+            let output = output.clone();
+            tokio::spawn(async move {
+                let mut buffer = [0_u8; 8192];
+                loop {
+                    match stdout.read(&mut buffer).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            if output
+                                .send(BackendOutput {
+                                    stream: OutputStream::Stdout,
+                                    data: buffer[..read].to_vec(),
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+        });
+        let stderr_task = stderr.map(|mut stderr| {
+            let output = output.clone();
+            tokio::spawn(async move {
+                let mut buffer = [0_u8; 8192];
+                loop {
+                    match stderr.read(&mut buffer).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            if output
+                                .send(BackendOutput {
+                                    stream: OutputStream::Stderr,
+                                    data: buffer[..read].to_vec(),
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+        });
+
+        let status = match tokio::time::timeout(
+            Duration::from_millis(MAX_PROCESS_LIFETIME_MS),
+            child.wait(),
+        )
+        .await
+        {
+            Ok(status) => status?,
+            Err(_) => {
+                terminate_host_process_group(pid).await?;
+                let _ = child.wait().await;
+                self.host_processes.remove(&request.process_id);
+                return Err(AppError::Process(
+                    "Host command exceeded one hour".to_string(),
+                ));
+            }
+        };
+        if let Some(task) = stdout_task {
+            let _ = task.await;
+        }
+        if let Some(task) = stderr_task {
+            let _ = task.await;
+        }
+        self.host_processes.remove(&request.process_id);
+        Ok(status.code().unwrap_or(-1))
+    }
+
     async fn sandbox_process(&self, process_id: &str) -> Option<Arc<SandboxProcess>> {
         for _ in 0..20 {
             if let Some(process) = self
                 .sandbox_processes
+                .get(process_id)
+                .map(|entry| entry.value().clone())
+            {
+                return Some(process);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        None
+    }
+
+    async fn host_process(&self, process_id: &str) -> Option<Arc<HostProcess>> {
+        for _ in 0..20 {
+            if let Some(process) = self
+                .host_processes
                 .get(process_id)
                 .map(|entry| entry.value().clone())
             {
@@ -356,6 +496,8 @@ impl TerminalBackend for CodexTerminalBackend {
     ) -> AppResult<i32> {
         let path = if cfg!(windows) && request.access == TerminalAccess::Sandbox {
             CodexExecutionPath::WindowsSandboxCli
+        } else if request.access == TerminalAccess::FullAccess {
+            CodexExecutionPath::HostProcess
         } else {
             CodexExecutionPath::AppServer
         };
@@ -366,6 +508,7 @@ impl TerminalBackend for CodexTerminalBackend {
             CodexExecutionPath::WindowsSandboxCli => {
                 self.execute_windows_sandbox(&request, &output).await
             }
+            CodexExecutionPath::HostProcess => self.execute_host_process(&request, &output).await,
         };
         self.execution_paths.remove(&request.process_id);
         result
@@ -377,6 +520,22 @@ impl TerminalBackend for CodexTerminalBackend {
                 "Codex Windows sandbox commands are non-interactive; stdin continuation requires an approved full-access session"
                     .to_string(),
             )),
+            Some(CodexExecutionPath::HostProcess) => {
+                use tokio::io::AsyncWriteExt;
+
+                let process = self.host_process(process_id).await.ok_or_else(|| {
+                    AppError::Process(format!("host process '{process_id}' was not found"))
+                })?;
+                let mut stdin = process.stdin.lock().await;
+                if let Some(writer) = stdin.as_mut() {
+                    writer.write_all(data).await?;
+                    writer.flush().await?;
+                }
+                if close_stdin {
+                    *stdin = None;
+                }
+                Ok(())
+            }
             _ => {
                 self.request_process_control(
                     "command/exec/write",
@@ -399,11 +558,13 @@ impl TerminalBackend for CodexTerminalBackend {
                         "Codex sandbox process '{process_id}' was not found"
                     ))
                 })?;
-                tokio::process::Command::new("taskkill")
-                    .args(["/PID", &process.pid.to_string(), "/T", "/F"])
-                    .output()
-                    .await?;
-                Ok(())
+                terminate_host_process_group(process.pid).await
+            }
+            Some(CodexExecutionPath::HostProcess) => {
+                let process = self.host_process(process_id).await.ok_or_else(|| {
+                    AppError::Process(format!("host process '{process_id}' was not found"))
+                })?;
+                terminate_host_process_group(process.pid).await
             }
             _ => {
                 self.request_process_control(
@@ -430,6 +591,44 @@ impl TerminalBackend for CodexTerminalBackend {
                 )
                 .await
             }
+        }
+    }
+}
+
+async fn terminate_host_process_group(pid: u32) -> AppResult<()> {
+    #[cfg(windows)]
+    {
+        let status = tokio::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .await?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(AppError::Process(format!(
+                "taskkill failed for Windows process tree rooted at {pid} with status {status}"
+            )))
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        let group = format!("-{pid}");
+        let term = tokio::process::Command::new("kill")
+            .args(["-TERM", &group])
+            .status()
+            .await?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let kill = tokio::process::Command::new("kill")
+            .args(["-KILL", &group])
+            .status()
+            .await?;
+        if term.success() || kill.success() {
+            Ok(())
+        } else {
+            Err(AppError::Process(format!(
+                "failed to terminate Unix process group rooted at {pid}"
+            )))
         }
     }
 }

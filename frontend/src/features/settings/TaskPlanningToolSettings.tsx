@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, RefreshCw } from 'lucide-react';
 
 import type { Agent } from '../../types';
 import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings } from '../../api';
@@ -10,16 +10,18 @@ import {
   updateToolDefaults,
 } from '../../api';
 import { useI18n } from '../../i18n';
-import { Button } from '../../components/ui';
+import { Button, useFeedback } from '../../components/ui';
 
 interface TaskPlanningToolSettingsProps {
   scope: 'defaults' | 'agent';
   agentId?: string;
   agents?: Agent[];
+  onBack?: () => void;
 }
 
-export function TaskPlanningToolSettings({ scope, agentId }: TaskPlanningToolSettingsProps) {
+export function TaskPlanningToolSettings({ scope, agentId, onBack }: TaskPlanningToolSettingsProps) {
   const { t } = useI18n();
+  const { confirm } = useFeedback();
   const [config, setConfig] = useState<AgentToolsConfig | null>(null);
   const [settings, setSettings] = useState<AgentToolsSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -49,8 +51,14 @@ export function TaskPlanningToolSettings({ scope, agentId }: TaskPlanningToolSet
 
   const effective = scope === 'defaults' ? config : settings?.effective;
   const enabled = Boolean(effective?.task_planning?.enabled);
+  const progressInterval = Math.min(
+    999,
+    Math.max(1, effective?.task_planning?.progress_interval || 3),
+  );
+  const progressIntervalInherited = scope === 'agent'
+    && settings?.overrides.task_planning.progress_interval === undefined;
 
-  async function toggle(nextEnabled: boolean) {
+  async function updateTaskPlanning(patch: { enabled?: boolean; progress_interval?: number }) {
     if (!effective || saving) return;
     setSaving(true);
     setError('');
@@ -58,7 +66,7 @@ export function TaskPlanningToolSettings({ scope, agentId }: TaskPlanningToolSet
       if (scope === 'defaults') {
         const saved = await updateToolDefaults({
           ...config!,
-          task_planning: { enabled: nextEnabled },
+          task_planning: { ...config!.task_planning, ...patch },
         });
         setConfig(saved);
       } else if (agentId && settings) {
@@ -66,7 +74,7 @@ export function TaskPlanningToolSettings({ scope, agentId }: TaskPlanningToolSet
           ...settings.overrides,
           task_planning: {
             ...settings.overrides.task_planning,
-            enabled: nextEnabled,
+            ...patch,
           },
         };
         const saved = await updateAgentToolsConfig(agentId, overrides);
@@ -79,35 +87,100 @@ export function TaskPlanningToolSettings({ scope, agentId }: TaskPlanningToolSet
     }
   }
 
+  async function handleEnabledChange(nextEnabled: boolean) {
+    if (nextEnabled) {
+      await updateTaskPlanning({ enabled: true });
+      return;
+    }
+
+    const confirmed = await confirm({
+      title: t('tools.taskPlanning.disableTitle'),
+      message: t('tools.taskPlanning.disableConfirm'),
+      confirmLabel: t('tools.taskPlanning.disableConfirmLabel'),
+      tone: 'warning',
+    });
+    if (confirmed) await updateTaskPlanning({ enabled: false });
+  }
+
+  function setProgressIntervalInherited(inherited: boolean) {
+    if (!settings || !effective || scope !== 'agent' || saving) return;
+    const taskPlanning = { ...settings.overrides.task_planning };
+    if (inherited) {
+      delete taskPlanning.progress_interval;
+    } else {
+      taskPlanning.progress_interval = progressInterval;
+    }
+    void updateTaskPlanning(taskPlanning);
+  }
+
   if (loading) return <div className="terminal-loading-state"><div className="loading-spinner" /><p>{t('tools.taskPlanning.loading')}</p></div>;
   if (!effective) return <div className="terminal-loading-state"><p>{error || t('tools.taskPlanning.loadFailed')}</p><Button variant="secondary" type="button" onClick={() => window.location.reload()} icon={<RefreshCw size={15} />}>{t('common.retry')}</Button></div>;
 
   return (
-    <div className="terminal-tool-settings-v2">
-      <div className="tool-config-heading">
-        <div>
-          <h2>{scope === 'defaults' ? t('tools.taskPlanning.defaultsTitle') : t('tools.taskPlanning.agentConfigTitle')}</h2>
-          <p>{scope === 'defaults' ? t('tools.taskPlanning.defaultsDesc') : t('tools.taskPlanning.agentConfigDesc')}</p>
-        </div>
-      </div>
-      <section className="settings-section">
-        <div className="card-header">
-          <h3>{t('tools.taskPlanning.name')}</h3>
-          <span className="mini-status-badge"><ShieldCheck size={12} />{t('tools.builtinBadge')}</span>
-        </div>
-        <p className="card-description">{t('tools.taskPlanning.description')}</p>
-        <div className="setting-row">
-          <div className="setting-info">
-            <label>{t('tools.taskPlanning.enabled')}</label>
-            <p className="setting-desc">{t('tools.taskPlanning.enabledDesc')}</p>
+    <div className={`terminal-tool-settings-v2 ${scope === 'agent' ? 'is-agent-scope' : 'is-default-scope'}`}>
+      {scope === 'agent' ? (
+        <div className="tool-config-heading">
+          {onBack ? (
+            <Button
+              variant="ghost"
+              type="button"
+              onClick={onBack}
+              icon={<ArrowLeft size={17} />}
+            >
+              {t('tools.backToList')}
+            </Button>
+          ) : null}
+          <div>
+            <h2>{t('tools.taskPlanning.agentConfigTitle')}</h2>
+            <p>{t('tools.taskPlanning.agentConfigDesc')}</p>
           </div>
-          <label className="toggle-switch" title={enabled ? t('tools.enabled') : t('tools.disabled')}>
-            <input type="checkbox" checked={enabled} disabled={saving} onChange={(event) => void toggle(event.target.checked)} aria-label={t('tools.taskPlanning.enabled')} />
-            <span className="toggle-slider" />
-          </label>
         </div>
-        {error ? <p className="error-text" role="alert">{error}</p> : null}
-      </section>
+      ) : null}
+      <div className="terminal-settings-form">
+        <section className="settings-card basic-settings-card">
+          <div className="card-header">
+            <h3>{t('tools.taskPlanning.basicSettings')}</h3>
+          </div>
+          <div className="card-body">
+            <div className="setting-row">
+              <div className="setting-info">
+                <label>{t('tools.taskPlanning.enabled')}</label>
+                <p className="setting-desc">{t('tools.taskPlanning.enabledDesc')}</p>
+              </div>
+              <label className="toggle-switch" title={enabled ? t('tools.enabled') : t('tools.disabled')}>
+                <input type="checkbox" checked={enabled} disabled={saving} onChange={(event) => void handleEnabledChange(event.target.checked)} aria-label={t('tools.taskPlanning.enabled')} />
+                <span className="toggle-slider" />
+              </label>
+            </div>
+            <div className="setting-row">
+              <div className="setting-info">
+                <label>{t('tools.taskPlanning.progressInterval')}</label>
+                <p className="setting-desc">{t('tools.taskPlanning.progressIntervalDesc')}</p>
+              </div>
+              {scope === 'agent' ? (
+                <label className="inherit-control">
+                  <input type="checkbox" checked={progressIntervalInherited} disabled={saving} onChange={(event) => setProgressIntervalInherited(event.target.checked)} />
+                  <span>{t('tools.terminal.inheritDefault')}</span>
+                </label>
+              ) : null}
+              <div className="timeout-input">
+                <input
+                  type="number"
+                  min={1}
+                  max={999}
+                  disabled={saving || progressIntervalInherited}
+                  value={progressInterval}
+                  onChange={(event) => void updateTaskPlanning({
+                    progress_interval: Math.min(999, Math.max(1, Number(event.target.value) || 1)),
+                  })}
+                />
+                <span>{t('tools.taskPlanning.rounds')}</span>
+              </div>
+            </div>
+            {error ? <p className="error-text" role="alert">{error}</p> : null}
+          </div>
+        </section>
+      </div>
     </div>
   );
 }

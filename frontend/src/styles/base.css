@@ -100,7 +100,17 @@ select:hover {
 }
 
 input[type='number'] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+  text-align: left;
   font-variant-numeric: tabular-nums;
+}
+
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 input:focus,

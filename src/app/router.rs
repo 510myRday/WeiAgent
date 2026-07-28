@@ -122,7 +122,11 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
         )
         .route(
             "/api/conversations/{conversation_id}/task-plan",
-            get(conversations::read_task_plan).delete(conversations::clear_task_plan),
+            get(conversations::read_task_plan),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/task-plans",
+            get(conversations::read_task_plans),
         )
         .route("/api/assets/local", get(assets::read_local_asset))
         .route(

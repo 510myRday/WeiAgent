@@ -10,6 +10,7 @@ use super::sql_util::{
 use uuid::Uuid;
 
 use crate::domain::tools::{
+    DEFAULT_TASK_PLAN_PROGRESS_INTERVAL, MAX_TASK_PLAN_PROGRESS_INTERVAL,
     TaskPlanningToolOverrides, TerminalToolOverrides, WebContentExtractionConfig,
     WebSearchKeyOperation,
 };
@@ -26,7 +27,7 @@ use crate::{
 
 // Migration versions share one application-wide namespace with conversations
 // and provider migrations, so task planning must use the next free version.
-const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 8;
+const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 9;
 
 const TOOL_SETTINGS_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS tool_settings (
@@ -65,6 +66,8 @@ CREATE TABLE IF NOT EXISTS tool_settings (
         CHECK (evidence_max_total_mb IS NULL OR evidence_max_total_mb > 0),
     task_planning_enabled INTEGER
         CHECK (task_planning_enabled IS NULL OR task_planning_enabled IN (0, 1)),
+    task_planning_progress_interval INTEGER
+        CHECK (task_planning_progress_interval IS NULL OR task_planning_progress_interval BETWEEN 1 AND 999),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (scope_type, scope_id),
@@ -89,6 +92,7 @@ CREATE TABLE IF NOT EXISTS tool_settings (
             AND evidence_retention_days IS NOT NULL
             AND evidence_max_total_mb IS NOT NULL
             AND task_planning_enabled IS NOT NULL
+            AND task_planning_progress_interval IS NOT NULL
         )
         OR
         (
@@ -555,10 +559,32 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
             [],
         )?;
     }
+    if !column_exists(conn, "tool_settings", "task_planning_progress_interval")? {
+        conn.execute(
+            "ALTER TABLE tool_settings ADD COLUMN task_planning_progress_interval INTEGER
+             CHECK (task_planning_progress_interval IS NULL OR task_planning_progress_interval BETWEEN 1 AND 999)",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE tool_settings
+             SET task_planning_progress_interval = CASE
+                 WHEN scope_type = 'default' THEN ?1
+                 ELSE NULL
+             END",
+            [i64::from(DEFAULT_TASK_PLAN_PROGRESS_INTERVAL)],
+        )?;
+    }
     conn.execute(
-        "UPDATE tool_settings SET task_planning_enabled = 1
+        "UPDATE tool_settings SET task_planning_enabled = 1,
+                task_planning_progress_interval = COALESCE(task_planning_progress_interval, ?1)
          WHERE scope_type = 'default' AND scope_id = 'default' AND task_planning_enabled IS NULL",
-        [],
+        [i64::from(DEFAULT_TASK_PLAN_PROGRESS_INTERVAL)],
+    )?;
+    conn.execute(
+        "UPDATE tool_settings SET task_planning_progress_interval = ?1
+         WHERE scope_type = 'default' AND scope_id = 'default'
+           AND task_planning_progress_interval IS NULL",
+        [i64::from(DEFAULT_TASK_PLAN_PROGRESS_INTERVAL)],
     )?;
     migrate_task_plans_schema(conn)?;
     ensure_task_plan_indexes(conn)?;
@@ -590,6 +616,20 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
             params!["tool_settings_task_planning_v7", Utc::now().to_rfc3339()],
         )?;
     }
+    let task_planning_v8_applied = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM app_schema_migrations WHERE version = 8
+        )",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !task_planning_v8_applied {
+        conn.execute(
+            "INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (8, ?1, ?2)",
+            params!["tool_settings_task_planning_v8", Utc::now().to_rfc3339()],
+        )?;
+    }
     if applied {
         return Ok(());
     }
@@ -598,7 +638,7 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
          VALUES (?1, ?2, ?3)",
         params![
             TOOL_SETTINGS_SCHEMA_VERSION,
-            "tool_settings_task_planning_v8",
+            "tool_settings_task_planning_v9",
             Utc::now().to_rfc3339()
         ],
     )?;
@@ -693,10 +733,10 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
             web_search_timeout_ms, web_search_key_selection, web_extract_remote_enabled,
             web_extract_max_remote_attempts, web_extract_allow_grok_fallback,
             evidence_storage_enabled, evidence_retention_days, evidence_max_total_mb,
-            task_planning_enabled,
+            task_planning_enabled, task_planning_progress_interval,
             created_at, updated_at
          ) VALUES (
-             'default', 'default', 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17
+             'default', 'default', 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18
          )
          ON CONFLICT(scope_type, scope_id) DO UPDATE SET
             config_version = 1,
@@ -716,6 +756,7 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
              evidence_retention_days = excluded.evidence_retention_days,
              evidence_max_total_mb = excluded.evidence_max_total_mb,
              task_planning_enabled = excluded.task_planning_enabled,
+             task_planning_progress_interval = excluded.task_planning_progress_interval,
              updated_at = excluded.updated_at",
         params![
             i64::from(config.max_llm_iterations),
@@ -740,6 +781,10 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
                 "evidence_max_total_mb"
             )?,
             bool_to_i64(config.task_planning.enabled),
+            i64::from(config.task_planning.progress_interval.clamp(
+                1,
+                MAX_TASK_PLAN_PROGRESS_INTERVAL,
+            )),
             now,
         ],
     )?;
@@ -835,11 +880,12 @@ fn write_agent_overrides_conn(
             terminal_enabled, terminal_permission_mode, terminal_default_timeout_ms,
             terminal_allowed_cwd_roots_json, web_search_enabled, web_search_max_results,
             web_search_timeout_ms, web_search_key_selection, evidence_storage_enabled,
-            evidence_retention_days, evidence_max_total_mb, task_planning_enabled,
+            evidence_retention_days, evidence_max_total_mb,
+            task_planning_enabled, task_planning_progress_interval,
             created_at, updated_at
          ) VALUES (
              'agent', ?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-             NULL, NULL, NULL, NULL, NULL, ?9, ?10, ?10
+             NULL, NULL, NULL, NULL, NULL, ?9, ?10, ?11, ?11
          )
          ON CONFLICT(scope_type, scope_id) DO UPDATE SET
             config_version = 1,
@@ -856,6 +902,7 @@ fn write_agent_overrides_conn(
              evidence_retention_days = NULL,
              evidence_max_total_mb = NULL,
              task_planning_enabled = excluded.task_planning_enabled,
+             task_planning_progress_interval = excluded.task_planning_progress_interval,
              updated_at = excluded.updated_at",
         params![
             agent_id,
@@ -875,6 +922,10 @@ fn write_agent_overrides_conn(
             overrides.web_search.enabled.map(bool_to_i64),
             overrides.web_search.max_results.map(i64::from),
             overrides.task_planning.enabled.map(bool_to_i64),
+            overrides
+                .task_planning
+                .progress_interval
+                .map(|value| i64::from(value.clamp(1, MAX_TASK_PLAN_PROGRESS_INTERVAL))),
             now,
         ],
     )?;
@@ -919,6 +970,7 @@ struct DefaultSettingsRow {
     evidence_retention_days: i64,
     evidence_max_total_mb: i64,
     task_planning_enabled: i64,
+    task_planning_progress_interval: i64,
 }
 
 fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsConfig>> {
@@ -930,7 +982,7 @@ fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsC
                     web_search_key_selection, web_extract_remote_enabled,
                     web_extract_max_remote_attempts, web_extract_allow_grok_fallback,
                     evidence_storage_enabled, evidence_retention_days, evidence_max_total_mb,
-                    task_planning_enabled
+                    task_planning_enabled, task_planning_progress_interval
              FROM tool_settings
              WHERE scope_type = 'default' AND scope_id = 'default'",
             [],
@@ -952,6 +1004,7 @@ fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsC
                     evidence_retention_days: row.get(13)?,
                     evidence_max_total_mb: row.get(14)?,
                     task_planning_enabled: row.get(15)?,
+                    task_planning_progress_interval: row.get(16)?,
                 })
             },
         )
@@ -1000,6 +1053,10 @@ fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsC
         },
         task_planning: TaskPlanningToolConfig {
             enabled: i64_to_bool(row.task_planning_enabled, "task_planning_enabled")?,
+            progress_interval: i64_to_u32(
+                row.task_planning_progress_interval,
+                "task_planning_progress_interval",
+            )?,
         },
     }))
 }
@@ -1013,6 +1070,7 @@ struct AgentSettingsRow {
     web_search_enabled: Option<i64>,
     web_search_max_results: Option<i64>,
     task_planning_enabled: Option<i64>,
+    task_planning_progress_interval: Option<i64>,
 }
 
 fn read_agent_overrides_conn(
@@ -1024,7 +1082,8 @@ fn read_agent_overrides_conn(
         .query_row(
             "SELECT max_llm_iterations, terminal_enabled, terminal_permission_mode,
                     terminal_default_timeout_ms, terminal_allowed_cwd_roots_json,
-                    web_search_enabled, web_search_max_results, task_planning_enabled
+                    web_search_enabled, web_search_max_results,
+                    task_planning_enabled, task_planning_progress_interval
              FROM tool_settings
              WHERE scope_type = 'agent' AND scope_id = ?1",
             [&agent_id],
@@ -1038,6 +1097,7 @@ fn read_agent_overrides_conn(
                     web_search_enabled: row.get(5)?,
                     web_search_max_results: row.get(6)?,
                     task_planning_enabled: row.get(7)?,
+                    task_planning_progress_interval: row.get(8)?,
                 })
             },
         )
@@ -1087,6 +1147,10 @@ fn read_agent_overrides_conn(
             enabled: row
                 .task_planning_enabled
                 .map(|value| i64_to_bool(value, "task_planning_enabled"))
+                .transpose()?,
+            progress_interval: row
+                .task_planning_progress_interval
+                .map(|value| i64_to_u32(value, "task_planning_progress_interval"))
                 .transpose()?,
         },
     }))
@@ -1253,6 +1317,7 @@ fn agent_overrides_are_empty(overrides: &AgentToolsOverrides) -> bool {
         && overrides.web_search.enabled.is_none()
         && overrides.web_search.max_results.is_none()
         && overrides.task_planning.enabled.is_none()
+        && overrides.task_planning.progress_interval.is_none()
 }
 
 fn permission_mode_as_str(mode: &TerminalPermissionMode) -> &'static str {

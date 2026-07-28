@@ -2,6 +2,19 @@
   margin-bottom: 22px;
 }
 
+@media (min-width: 921px) {
+  /* Keep tool content aligned when only some tool pages need a scrollbar. */
+  .tools-panel .config-main > * {
+    margin-right: auto;
+    margin-left: max(
+      0px,
+      calc(
+        (100vw - var(--rail-width) - var(--list-width) - var(--content-max-width) - (2 * var(--page-inline-padding))) / 2
+      )
+    );
+  }
+}
+
 .terminal-tool-settings-v2 {
   min-width: 0;
 }

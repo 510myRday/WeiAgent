@@ -362,6 +362,7 @@ export type AgentToolsConfig = {
   evidence_storage: EvidenceStorageConfig;
   task_planning: {
     enabled: boolean;
+    progress_interval: number;
   };
 };
 
@@ -381,6 +382,7 @@ export type AgentToolsOverrides = {
   };
   task_planning: {
     enabled?: boolean;
+    progress_interval?: number;
   };
 };
 
@@ -408,8 +410,8 @@ export function readTaskPlan(conversationId: string): Promise<TaskPlan | null> {
   return request<TaskPlan | null>(`/api/conversations/${conversationId}/task-plan`);
 }
 
-export function clearTaskPlan(conversationId: string): Promise<void> {
-  return request<void>(`/api/conversations/${conversationId}/task-plan`, { method: 'DELETE' });
+export function readTaskPlans(conversationId: string): Promise<TaskPlan[]> {
+  return request<TaskPlan[]>(`/api/conversations/${conversationId}/task-plans`);
 }
 
 export type CodexRuntimeStatus = {

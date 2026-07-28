@@ -16,6 +16,7 @@ use crate::tools::web_search::types::{
 };
 
 const DEFAULT_MODE: &str = "fast";
+const CONNECTIVITY_PROBE_PROMPT: &str = "Reply with exactly: PON";
 const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
 // Prefer remote/manual 70-byte x-statsig-id; if unavailable, use frontend failure fallback (x0:TypeError...).
 // Public remote signer is optional only if credential sets statsig_signer explicitly.
@@ -68,8 +69,16 @@ pub async fn search(
     options: GrokSearchOptions<'_>,
 ) -> Result<ProviderSearchOutput, ProviderError> {
     let prompt = build_search_prompt(request);
-    let parsed =
-        execute_prompt(client, control_client, base_url, api_key, &prompt, options).await?;
+    let parsed = execute_prompt(
+        client,
+        control_client,
+        base_url,
+        api_key,
+        &prompt,
+        options,
+        false,
+    )
+    .await?;
     map_hits(
         parsed,
         &request.query,
@@ -87,9 +96,41 @@ pub async fn extract(
     options: GrokSearchOptions<'_>,
 ) -> Result<ProviderExtractOutput, ProviderError> {
     let prompt = build_extract_prompt(request);
-    let parsed =
-        execute_prompt(client, control_client, base_url, api_key, &prompt, options).await?;
+    let parsed = execute_prompt(
+        client,
+        control_client,
+        base_url,
+        api_key,
+        &prompt,
+        options,
+        false,
+    )
+    .await?;
     map_extract(parsed, request)
+}
+
+/// Lightweight authenticated-chat probe used by the Key settings screen.
+/// It keeps the full Grok session, cookie, Statsig, proxy and anti-bot path,
+/// while disabling web search so a connectivity check does not wait for a
+/// search result or consume a search operation.
+pub async fn probe(
+    client: &wreq::Client,
+    control_client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    options: GrokSearchOptions<'_>,
+) -> Result<(), ProviderError> {
+    execute_prompt(
+        client,
+        control_client,
+        base_url,
+        api_key,
+        CONNECTIVITY_PROBE_PROMPT,
+        options,
+        true,
+    )
+    .await
+    .map(|_| ())
 }
 
 async fn execute_prompt(
@@ -99,6 +140,7 @@ async fn execute_prompt(
     api_key: &str,
     prompt: &str,
     options: GrokSearchOptions<'_>,
+    disable_search: bool,
 ) -> Result<ParsedChat, ProviderError> {
     let mut cred = parse_credential(api_key).map_err(|error| error.into_provider_error(api_key))?;
     if cred.sso.is_empty() {
@@ -109,7 +151,7 @@ async fn execute_prompt(
 
     let base = base_url.trim_end_matches('/');
     let endpoint = format!("{base}/rest/app-chat/conversations/new");
-    let body = build_web_chat_payload(prompt, DEFAULT_MODE);
+    let body = build_web_chat_payload(prompt, DEFAULT_MODE, disable_search);
     // API traffic proxy is applied on wreq client in web_search::mod; also used for statsig signer egress.
     let proxy = super::grok_support::normalize_optional_url(options.proxy_url);
 
@@ -533,7 +575,7 @@ fn build_extract_prompt(request: &ProviderExtractRequest) -> String {
     )
 }
 
-fn build_web_chat_payload(message: &str, mode: &str) -> Value {
+fn build_web_chat_payload(message: &str, mode: &str, disable_search: bool) -> Value {
     json!({
         "collectionIds": [],
         "disabledConnectorIds": [],
@@ -546,7 +588,7 @@ fn build_web_chat_payload(message: &str, mode: &str) -> Value {
             "viewportWidth": 2056
         },
         "disableMemory": true,
-        "disableSearch": false,
+        "disableSearch": disable_search,
         "disableSelfHarmShortCircuit": false,
         "disableTextFollowUps": true,
         "enableImageGeneration": false,

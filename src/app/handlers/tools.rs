@@ -311,25 +311,7 @@ pub async fn delete_web_search_key(
         })
         .transpose()?
         .unwrap_or(request.key_index);
-    if key_index >= source.api_keys.len() {
-        return Err(AppError::BadRequest(
-            "web search key index is out of range".to_string(),
-        ));
-    }
-    let removed_key = source.api_keys[key_index].clone();
-    let was_officially_blocked = source
-        .key_statuses
-        .get(key_index)
-        .and_then(Option::as_ref)
-        .is_some_and(|record| record.status == "officially_blocked");
-    if was_officially_blocked {
-        source.remember_blocked_api_key(&removed_key);
-    }
-    source.api_keys.remove(key_index);
-    if key_index < source.key_statuses.len() {
-        source.key_statuses.remove(key_index);
-    }
-    source.key_statuses.truncate(source.api_keys.len());
+    let _removed_key = remove_web_search_key_at(source, key_index)?;
     let source_id = source.id.clone();
 
     let saved = state.store.update_tool_defaults(config).await?;
@@ -342,6 +324,39 @@ pub async fn delete_web_search_key(
         .ok_or_else(|| AppError::BadRequest("web search source not found".to_string()))?;
 
     Ok(Json(DeleteWebSearchKeyResponse { source_id, source }))
+}
+
+fn remove_web_search_key_at(
+    source: &mut WebSearchSourceConfig,
+    key_index: usize,
+) -> AppResult<String> {
+    if key_index >= source.api_keys.len() {
+        return Err(AppError::BadRequest(
+            "web search key index is out of range".to_string(),
+        ));
+    }
+
+    let removed_key = source.api_keys.remove(key_index);
+    let was_officially_blocked = source
+        .key_statuses
+        .get(key_index)
+        .and_then(Option::as_ref)
+        .is_some_and(|record| record.status == "officially_blocked");
+    if was_officially_blocked {
+        source.remember_blocked_api_key(&removed_key);
+    }
+
+    // Both status arrays are position-aligned with api_keys. Removing only the
+    // search status would make extraction status belong to the wrong key.
+    if key_index < source.key_statuses.len() {
+        source.key_statuses.remove(key_index);
+    }
+    if key_index < source.extract_key_statuses.len() {
+        source.extract_key_statuses.remove(key_index);
+    }
+    source.key_statuses.truncate(source.api_keys.len());
+    source.extract_key_statuses.truncate(source.api_keys.len());
+    Ok(removed_key)
 }
 
 pub async fn check_web_search_keys(
@@ -423,30 +438,33 @@ pub async fn check_web_search_keys(
             WebSearchProviderKind::Tavily => {
                 tavily::search(&control_client, &base_url, api_key, &check_request)
                     .await
+                    .map(|_| ())
                     .map_err(|error| error.message().to_string())
             }
             WebSearchProviderKind::Exa => {
                 exa::search(&control_client, &base_url, api_key, &check_request)
                     .await
+                    .map(|_| ())
                     .map_err(|error| error.message().to_string())
             }
             WebSearchProviderKind::Jina => {
                 jina::search(&control_client, &base_url, api_key, &check_request)
                     .await
+                    .map(|_| ())
                     .map_err(|error| error.message().to_string())
             }
             WebSearchProviderKind::Firecrawl => {
                 firecrawl::search(&control_client, &base_url, api_key, &check_request)
                     .await
+                    .map(|_| ())
                     .map_err(|error| error.message().to_string())
             }
             WebSearchProviderKind::Grok => match grok_client.as_ref() {
-                Some(Ok(client)) => grok::search(
+                Some(Ok(client)) => grok::probe(
                     client,
                     &control_client,
                     &base_url,
                     api_key,
-                    &check_request,
                     grok::GrokSearchOptions {
                         source_id: &source_id,
                         proxy_url,
@@ -639,4 +657,62 @@ pub async fn stop_tool_process(
         .await?
         .map(Json)
         .ok_or(AppError::NotFound)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(status: &str, detail: &str) -> Option<WebSearchKeyStatusRecord> {
+        Some(WebSearchKeyStatusRecord {
+            status: status.to_string(),
+            detail: detail.to_string(),
+            checked_at: "2026-07-28T00:00:00Z".to_string(),
+        })
+    }
+
+    #[test]
+    fn removing_middle_key_keeps_search_and_extract_statuses_aligned() {
+        let mut source = crate::domain::tools::WebSearchToolConfig::default()
+            .sources
+            .into_iter()
+            .find(|source| source.id == "grok")
+            .expect("default Grok source");
+        source.api_keys = vec![
+            "key-a".to_string(),
+            "key-b".to_string(),
+            "key-c".to_string(),
+        ];
+        source.key_statuses = vec![
+            status("normal", "search-a"),
+            status("anti_bot", "search-b"),
+            status("quota_limited", "search-c"),
+        ];
+        source.extract_key_statuses = vec![
+            status("normal", "extract-a"),
+            status("error", "extract-b"),
+            status("service_error", "extract-c"),
+        ];
+
+        assert_eq!(remove_web_search_key_at(&mut source, 1).unwrap(), "key-b");
+        assert_eq!(source.api_keys, ["key-a", "key-c"]);
+        assert_eq!(
+            source
+                .key_statuses
+                .iter()
+                .flatten()
+                .map(|record| record.detail.as_str())
+                .collect::<Vec<_>>(),
+            ["search-a", "search-c"]
+        );
+        assert_eq!(
+            source
+                .extract_key_statuses
+                .iter()
+                .flatten()
+                .map(|record| record.detail.as_str())
+                .collect::<Vec<_>>(),
+            ["extract-a", "extract-c"]
+        );
+    }
 }

@@ -248,16 +248,12 @@ pub async fn read_task_plan(
     Ok(Json(state.store.read_task_plan(conversation_id).await?))
 }
 
-pub async fn clear_task_plan(
+pub async fn read_task_plans(
     State(state): State<AppState>,
     Path(conversation_id): Path<Uuid>,
-) -> AppResult<()> {
+) -> AppResult<Json<Vec<crate::domain::TaskPlan>>> {
     state.store.get_conversation(conversation_id).await?;
-    state
-        .store
-        .deactivate_task_plan(conversation_id, None)
-        .await?;
-    Ok(())
+    Ok(Json(state.store.read_task_plans(conversation_id).await?))
 }
 
 #[derive(Debug, Deserialize)]

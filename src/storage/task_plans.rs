@@ -4,96 +4,114 @@ use uuid::Uuid;
 
 use crate::{
     domain::{TaskPlan, TaskPlanItem},
-    error::AppResult,
+    error::{AppError, AppResult},
 };
+
+fn task_plan_from_row(
+    row: &rusqlite::Row<'_>,
+    conversation_id: Uuid,
+) -> rusqlite::Result<TaskPlan> {
+    let (
+        planning_id,
+        conversation_message_id,
+        explanation,
+        plan_json,
+        created_at,
+        updated_at,
+        active,
+    ) = (
+        row.get::<_, String>(0)?,
+        row.get::<_, Option<String>>(1)?,
+        row.get::<_, Option<String>>(2)?,
+        row.get::<_, String>(3)?,
+        row.get::<_, String>(4)?,
+        row.get::<_, String>(5)?,
+        row.get::<_, i64>(6)?,
+    );
+
+    Ok(TaskPlan {
+        conversation_id,
+        planning_id: Uuid::parse_str(&planning_id).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        conversation_message_id: conversation_message_id
+            .map(|value| {
+                Uuid::parse_str(&value).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })
+            .transpose()?,
+        explanation,
+        plan: serde_json::from_str(&plan_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        created_at: DateTime::parse_from_rfc3339(&created_at)
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?
+            .with_timezone(&Utc),
+        updated_at: DateTime::parse_from_rfc3339(&updated_at)
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?
+            .with_timezone(&Utc),
+        active: active != 0,
+    })
+}
 
 impl super::Store {
     pub async fn read_task_plan(&self, conversation_id: Uuid) -> AppResult<Option<TaskPlan>> {
         self.database
             .call(move |conn| {
-                let row = conn
-                    .query_row(
-                        "SELECT planning_id, conversation_message_id, explanation, plan_json,
-                                created_at, updated_at, active
-                         FROM task_plans
-                         WHERE conversation_id = ?1 AND active = 1
-                         ORDER BY updated_at DESC
-                         LIMIT 1",
-                        [conversation_id.to_string()],
-                        |row| {
-                            Ok((
-                                row.get::<_, String>(0)?,
-                                row.get::<_, Option<String>>(1)?,
-                                row.get::<_, Option<String>>(2)?,
-                                row.get::<_, String>(3)?,
-                                row.get::<_, String>(4)?,
-                                row.get::<_, String>(5)?,
-                                row.get::<_, i64>(6)?,
-                            ))
-                        },
-                    )
-                    .optional()?;
-                row.map(
-                    |(
-                        planning_id,
-                        conversation_message_id,
-                        explanation,
-                        plan_json,
-                        created_at,
-                        updated_at,
-                        active,
-                    )| {
-                        Ok(TaskPlan {
-                            conversation_id,
-                            planning_id: Uuid::parse_str(&planning_id).map_err(|error| {
-                                rusqlite::Error::FromSqlConversionFailure(
-                                    0,
-                                    rusqlite::types::Type::Text,
-                                    Box::new(error),
-                                )
-                            })?,
-                            conversation_message_id: conversation_message_id
-                                .map(|value| {
-                                    Uuid::parse_str(&value).map_err(|error| {
-                                        rusqlite::Error::FromSqlConversionFailure(
-                                            1,
-                                            rusqlite::types::Type::Text,
-                                            Box::new(error),
-                                        )
-                                    })
-                                })
-                                .transpose()?,
-                            explanation,
-                            plan: serde_json::from_str(&plan_json).map_err(|error| {
-                                rusqlite::Error::FromSqlConversionFailure(
-                                    0,
-                                    rusqlite::types::Type::Text,
-                                    Box::new(error),
-                                )
-                            })?,
-                            created_at: DateTime::parse_from_rfc3339(&created_at)
-                                .map_err(|error| {
-                                    rusqlite::Error::FromSqlConversionFailure(
-                                        0,
-                                        rusqlite::types::Type::Text,
-                                        Box::new(error),
-                                    )
-                                })?
-                                .with_timezone(&Utc),
-                            updated_at: DateTime::parse_from_rfc3339(&updated_at)
-                                .map_err(|error| {
-                                    rusqlite::Error::FromSqlConversionFailure(
-                                        0,
-                                        rusqlite::types::Type::Text,
-                                        Box::new(error),
-                                    )
-                                })?
-                                .with_timezone(&Utc),
-                            active: active != 0,
-                        })
-                    },
+                Ok(conn.query_row(
+                    "SELECT planning_id, conversation_message_id, explanation, plan_json,
+                            created_at, updated_at, active
+                     FROM task_plans
+                     WHERE conversation_id = ?1 AND active = 1
+                     ORDER BY updated_at DESC
+                     LIMIT 1",
+                    [conversation_id.to_string()],
+                    |row| task_plan_from_row(row, conversation_id),
                 )
-                .transpose()
+                .optional()?)
+            })
+            .await
+    }
+
+    pub async fn read_task_plans(&self, conversation_id: Uuid) -> AppResult<Vec<TaskPlan>> {
+        self.database
+            .call(move |conn| {
+                let mut statement = conn.prepare(
+                    "SELECT planning_id, conversation_message_id, explanation, plan_json,
+                            created_at, updated_at, active
+                     FROM task_plans
+                     WHERE conversation_id = ?1
+                     ORDER BY updated_at DESC, created_at DESC",
+                )?;
+                let rows = statement.query_map([conversation_id.to_string()], |row| {
+                    task_plan_from_row(row, conversation_id)
+                })?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
             })
             .await
     }
@@ -111,11 +129,24 @@ impl super::Store {
         self.database
             .call(move |conn| {
                 let tx = conn.unchecked_transaction()?;
-                tx.execute(
-                    "UPDATE task_plans SET active = 0
-                     WHERE conversation_id = ?1 AND active = 1",
-                    [conversation_id.to_string()],
-                )?;
+                let active_plan = tx
+                    .query_row(
+                        "SELECT planning_id, conversation_message_id, explanation, plan_json,
+                                created_at, updated_at, active
+                         FROM task_plans
+                         WHERE conversation_id = ?1 AND active = 1
+                         ORDER BY updated_at DESC
+                         LIMIT 1",
+                        [conversation_id.to_string()],
+                        |row| task_plan_from_row(row, conversation_id),
+                    )
+                    .optional()?;
+                if let Some(active_plan) = active_plan {
+                    let active_plan_json = serde_json::to_string(&active_plan)?;
+                    return Err(AppError::Conflict(format!(
+                        "An active task plan already exists for this conversation. Do not create a new plan yet. Inspect the existing tasks and statuses. If all tasks are actually complete, use set_status to mark any remaining tasks as completed. If any task is still incomplete and the user has not decided to abandon it, ask the user whether to continue the existing plan. Only after the user confirms they do not want to continue may you mark the remaining tasks completed with set_status and create a new plan. active_task_plan={active_plan_json}"
+                    )));
+                }
                 tx.execute(
                     "INSERT INTO task_plans (
                         planning_id, conversation_id, conversation_message_id,
@@ -384,6 +415,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn creating_a_plan_rejects_an_existing_active_plan_with_details() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = crate::storage::Store::new(temp_dir.path()).await.unwrap();
+        let conversation_id = Uuid::new_v4();
+        store
+            .create_task_plan(
+                conversation_id,
+                Some("Existing objective".to_string()),
+                vec![
+                    item("First task", TaskPlanItemStatus::Completed),
+                    item("Second task", TaskPlanItemStatus::InProgress),
+                    item("Third task", TaskPlanItemStatus::Pending),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let result = store
+            .create_task_plan(
+                conversation_id,
+                Some("New objective".to_string()),
+                vec![item("New task", TaskPlanItemStatus::InProgress)],
+            )
+            .await;
+        let Err(AppError::Conflict(message)) = result else {
+            panic!("expected an active plan conflict");
+        };
+        assert!(message.contains("Existing objective"));
+        assert!(message.contains("First task"));
+        assert!(message.contains("in_progress"));
+        assert!(message.contains("Third task"));
+        assert_eq!(store.read_task_plans(conversation_id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn task_plan_history_is_retained_and_cascades_from_its_message() {
         let temp_dir = tempfile::tempdir().unwrap();
         let store = crate::storage::Store::new(temp_dir.path()).await.unwrap();
@@ -427,6 +493,10 @@ mod tests {
             .unwrap();
         assert_eq!(count_plans(&store, first.planning_id).await, 1);
         assert_eq!(count_plans(&store, second.planning_id).await, 1);
+        let history = store.read_task_plans(conversation_id).await.unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].planning_id, second.planning_id);
+        assert_eq!(history[1].planning_id, first.planning_id);
 
         store
             .database()

@@ -147,6 +147,39 @@
     padding: 10px 12px max(10px, env(safe-area-inset-bottom, 0px));
   }
 
+  .task-plan-panel {
+    width: 100%;
+    padding-inline: 16px;
+  }
+
+  .task-plan-panel__summary-progress {
+    width: min(132px, 32vw);
+    flex: 0 1 132px;
+  }
+
+  .task-plan-panel__progress-track {
+    width: auto;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .task-plan-panel__details {
+    padding-inline: 18px;
+  }
+
+  .task-plan-panel__scroll {
+    margin-right: 0;
+    padding-right: 0;
+  }
+
+  .task-plan-item {
+    grid-template-columns: 18px minmax(0, 1fr) 20px;
+  }
+
+  .task-plan-panel__list {
+    margin-inline: 16px;
+  }
+
   .composer-box {
     min-height: 0;
   }
