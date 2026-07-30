@@ -278,7 +278,7 @@ fn parse_task_planning_args(arguments: Value) -> Result<TaskPlanningArgs, String
             if let Some(item) = arguments.get("item") {
                 if item.is_string() {
                     return Err(
-                        "task_planning item must be a JSON integer, not a string. Use `\"item\": 1`, not `\"item\": \"1\"`.".to_string(),
+                        "task_planning item must be a JSON integer or an array of JSON integers, not a string. Use `\"item\": 1` or `\"item\": [1, 2]`, not quoted JSON.".to_string(),
                     );
                 }
                 if item
@@ -302,24 +302,29 @@ fn normalize_task_planning_arguments(mut arguments: Value) -> Value {
     let Some(item) = object.get_mut("item") else {
         return arguments;
     };
+    normalize_task_planning_item(item);
+    arguments
+}
+
+fn normalize_task_planning_item(item: &mut Value) {
     match item {
         Value::String(value) => {
             if let Ok(index) = value.trim().parse::<usize>() {
                 *item = json!(index);
+            } else if let Ok(mut parsed) = serde_json::from_str::<Value>(value.trim())
+                && parsed.is_array()
+            {
+                normalize_task_planning_item(&mut parsed);
+                *item = parsed;
             }
         }
         Value::Array(items) => {
             for item in items {
-                if let Value::String(value) = item
-                    && let Ok(index) = value.trim().parse::<usize>()
-                {
-                    *item = json!(index);
-                }
+                normalize_task_planning_item(item);
             }
         }
         _ => {}
     }
-    arguments
 }
 
 async fn read_matching_plan(context: &ToolExecutionContext, planning_id: Uuid) -> Option<TaskPlan> {
@@ -558,6 +563,49 @@ mod tests {
         };
         let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         assert_eq!(result["plan"][0]["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn task_planning_accepts_a_stringified_item_array() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(temp_dir.path()).await.unwrap());
+        let conversation_id = Uuid::new_v4();
+        let tool = TaskPlanningTool;
+        let created = tool
+            .execute(
+                serde_json::json!({
+                    "action": "create",
+                    "explanation": "Test stringified item array compatibility",
+                    "plan": [
+                        {"step": "First", "status": "in_progress"},
+                        {"step": "Second", "status": "pending"}
+                    ]
+                }),
+                context(store.clone(), conversation_id),
+            )
+            .await;
+        let ToolResult::Completed { stdout, .. } = created else {
+            panic!("expected plan creation to succeed");
+        };
+        let created: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "action": "set_status",
+                    "planning_id": created["planning_id"],
+                    "item": "[1, 2]",
+                    "status": "completed"
+                }),
+                context(store, conversation_id),
+            )
+            .await;
+
+        let ToolResult::Completed { stdout, .. } = result else {
+            panic!("expected a stringified item array to be normalized");
+        };
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(result["plan"][0]["status"], "completed");
+        assert_eq!(result["plan"][1]["status"], "completed");
     }
 
     #[tokio::test]

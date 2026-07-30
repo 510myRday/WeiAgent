@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
@@ -16,6 +16,14 @@ use crate::{
 use super::supporting_runtime;
 use super::terminal::TerminalEnvironment;
 
+#[derive(Clone, Copy)]
+struct BundledTool {
+    file_name: &'static str,
+    bytes: &'static [u8],
+}
+
+include!(concat!(env!("OUT_DIR"), "/bundled_ripgrep.rs"));
+
 /// Detects and manages optional local development tools used by terminal tasks.
 ///
 /// This service deliberately has no required executable. The terminal uses the
@@ -26,6 +34,7 @@ pub struct EnvironmentRuntimeManager {
     status: RwLock<EnvironmentRuntimeStatus>,
     latest_check_lock: Mutex<()>,
     active_install: RwLock<Option<RuntimeComponentKind>>,
+    bundled_ripgrep: OnceLock<Option<PathBuf>>,
 }
 
 impl EnvironmentRuntimeManager {
@@ -44,6 +53,7 @@ impl EnvironmentRuntimeManager {
             status: RwLock::new(empty_status()),
             latest_check_lock: Mutex::new(()),
             active_install: RwLock::new(None),
+            bundled_ripgrep: OnceLock::new(),
         })
     }
 
@@ -175,8 +185,44 @@ impl EnvironmentRuntimeStatus {
 #[async_trait]
 impl TerminalEnvironment for EnvironmentRuntimeManager {
     async fn managed_bin_paths(&self) -> Vec<PathBuf> {
-        supporting_runtime::managed_bin_paths(&self.runtimes_root).await
+        let mut paths = Vec::new();
+        if let Some(path) = self
+            .bundled_ripgrep
+            .get_or_init(|| materialize_bundled_ripgrep(&self.runtimes_root))
+            .clone()
+        {
+            if let Some(parent) = path.parent() {
+                paths.push(parent.to_path_buf());
+            }
+        }
+        paths.extend(supporting_runtime::managed_bin_paths(&self.runtimes_root).await);
+        paths
     }
+}
+
+fn materialize_bundled_ripgrep(runtimes_root: &Path) -> Option<PathBuf> {
+    let tool = BUNDLED_RIPGREP?;
+    let tool_dir = runtimes_root.join("ripgrep");
+    let tool_path = tool_dir.join(tool.file_name);
+
+    let should_write = std::fs::read(&tool_path)
+        .map(|existing| existing != tool.bytes)
+        .unwrap_or(true);
+    if should_write {
+        std::fs::create_dir_all(&tool_dir).ok()?;
+        std::fs::write(&tool_path, tool.bytes).ok()?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(&tool_path).ok()?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&tool_path, permissions).ok()?;
+    }
+
+    Some(tool_path)
 }
 
 fn supported_components() -> [RuntimeComponentKind; 4] {
@@ -217,5 +263,22 @@ mod tests {
     fn supported_components_exclude_terminal_backend() {
         assert_eq!(supported_components().len(), 4);
         assert!(supported_components().contains(&RuntimeComponentKind::Node));
+    }
+
+    #[test]
+    fn materializes_the_bundled_ripgrep_for_the_current_target() {
+        let Some(tool) = BUNDLED_RIPGREP else {
+            return;
+        };
+        let root = tempfile::tempdir().expect("create runtime temp directory");
+        let path = materialize_bundled_ripgrep(root.path()).expect("materialize ripgrep");
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(tool.file_name)
+        );
+        assert_eq!(
+            std::fs::read(path).expect("read materialized ripgrep"),
+            tool.bytes
+        );
     }
 }

@@ -6,9 +6,12 @@ use std::{
 };
 
 const WINDOWS_ICON: &str = "design/weiagent-logo-final/weiagent-app-icon.ico";
+const BUNDLED_RIPGREP_ROOT: &str = ".tools/bundled-ripgrep";
 
 fn main() {
     println!("cargo:rerun-if-changed={WINDOWS_ICON}");
+    println!("cargo:rerun-if-changed={BUNDLED_RIPGREP_ROOT}");
+    println!("cargo:rerun-if-env-changed=WEIAGENT_BUNDLED_RG_PATH");
     println!("cargo:rerun-if-changed=frontend/src");
     println!("cargo:rerun-if-changed=frontend/public");
     println!("cargo:rerun-if-changed=frontend/locales");
@@ -18,6 +21,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=WEIAGENT_FORCE_FRONTEND_BUILD");
 
     embed_windows_resources();
+    generate_bundled_ripgrep();
 
     let frontend_dir = Path::new("frontend");
     let dist_index = frontend_dir.join("dist").join("index.html");
@@ -43,6 +47,49 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=frontend/dist");
+}
+
+fn generate_bundled_ripgrep() {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
+    let generated = out_dir.join("bundled_ripgrep.rs");
+    let target = env::var("TARGET").expect("TARGET is set by Cargo");
+    let default_path =
+        Path::new(BUNDLED_RIPGREP_ROOT)
+            .join(&target)
+            .join(if target.contains("windows") {
+                "rg.exe"
+            } else {
+                "rg"
+            });
+    let path = env::var_os("WEIAGENT_BUNDLED_RG_PATH")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .unwrap_or(default_path);
+
+    if !path.is_file() {
+        println!("cargo:warning=no bundled ripgrep asset for target {target}; using the host PATH");
+        fs::write(
+            generated,
+            "const BUNDLED_RIPGREP: Option<BundledTool> = None;\n",
+        )
+        .expect("write bundled ripgrep metadata");
+        return;
+    }
+
+    println!("cargo:rerun-if-changed={}", path.display());
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .expect("bundled ripgrep path has a UTF-8 file name");
+    let path_literal = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.clone())
+        .to_string_lossy()
+        .replace('\\', "/");
+    let source = format!(
+        "const BUNDLED_RIPGREP: Option<BundledTool> = Some(BundledTool {{ file_name: {file_name:?}, bytes: include_bytes!(r#\"{path_literal}\"#) }});\n"
+    );
+    fs::write(generated, source).expect("write bundled ripgrep metadata");
 }
 
 fn embed_windows_resources() {
