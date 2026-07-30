@@ -14,7 +14,7 @@ The project does not publish 32-bit x86 or ARMv7 builds.
 
 ## Managed environments
 
-- Codex Client, Node.js, uv, and Python use upstream native release assets.
+- Node.js, uv, and Python use upstream native release assets.
   Linux Node.js and uv downloads distinguish glibc from musl.
 - Git uses MinGit on Windows. On macOS, installation uses Homebrew. On Linux,
   installation uses the detected distribution package manager: apt, dnf, yum,

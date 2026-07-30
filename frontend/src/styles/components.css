@@ -3365,6 +3365,46 @@
   color: var(--text-terminal-error);
 }
 
+.terminal-session-console {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.terminal-session-console__output {
+  min-height: 96px;
+  margin-top: 0;
+  cursor: text;
+}
+
+.terminal-session-console__input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.terminal-session-console__input input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-pane);
+  color: var(--color-text);
+  padding: 7px 9px;
+}
+
+@media (max-width: 720px) {
+  .terminal-session-console__input {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .terminal-session-console__input input {
+    flex-basis: 100%;
+  }
+}
+
 .tool-process-row small {
   display: block;
   min-width: 0;

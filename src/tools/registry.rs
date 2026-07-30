@@ -14,7 +14,7 @@ use crate::{
         approval::ApprovalManager,
         multi_edit::{
             MULTI_EDIT_GRANT_COMMAND, MULTI_EDIT_TOOL_NAME, MultiEditFileArgs, MultiEditRequest,
-            execute_multi_edit,
+            execute_multi_edit, parse_multi_edit_file_args,
         },
         task_planning::{TASK_PLANNING_TOOL_NAME, TaskPlanningTool},
         terminal::{
@@ -224,7 +224,7 @@ impl AgentTool for ExecuteTerminalTool {
                     },
                     "cwd": {
                         "type": "string",
-                        "description": "Existing working directory. Omit to use the default workspace; relative paths resolve from it. If the requested directory is outside the configured sandbox roots, set sandbox_permissions=require_escalated and provide justification so the user can approve access."
+                        "description": "Existing working directory. Omit to use the default workspace; relative paths resolve from it. If the requested directory is outside the configured workspace roots, the server automatically asks the user before execution. sandbox_permissions=require_escalated with justification may also be used to describe the requested expanded access."
                     },
                     "timeout_ms": {
                         "type": "integer",
@@ -234,16 +234,16 @@ impl AgentTool for ExecuteTerminalTool {
                     },
                     "background": {
                         "type": "boolean",
-                        "description": "If true, start immediately as a managed background process and return process_id without waiting. Use only for long-lived servers/watchers/dev services. Leave false (default) for ordinary short commands. Windows sandbox mode blocks background sessions; request approved full access for long-lived work there."
+                        "description": "If true, start immediately as a managed background process and return process_id without waiting. Use only for long-lived servers/watchers/dev services. Leave false (default) for ordinary short commands."
                     },
                     "tty": {
                         "type": "boolean",
-                        "description": "Allocate a Codex PTY for a genuinely interactive command. Use for REPLs, interactive CLIs, or software that requires a terminal. Leave false for ordinary commands. Windows sandbox sessions are non-interactive and cannot use PTY or continued stdin; request full access when either is required."
+                        "description": "Request a PTY for a genuinely interactive command. Use for REPLs, interactive CLIs, or software that requires a terminal. Leave false for ordinary commands."
                     },
                     "sandbox_permissions": {
                         "type": "string",
                         "enum": ["use_default", "require_escalated"],
-                        "description": "Execution privilege request. use_default follows the server's current policy. For any cwd outside the configured sandbox roots, use require_escalated and provide a justification; the server may request approval. Example: {\"sandbox_permissions\":\"require_escalated\",\"justification\":\"access is required for the requested workspace\"}."
+                        "description": "Execution privilege request. use_default follows the server's current policy. The server automatically requests approval for a cwd outside the configured workspace roots. Use require_escalated with a justification when expanded access is explicitly requested."
                     },
                     "justification": {
                         "type": "string",
@@ -354,7 +354,7 @@ impl AgentTool for ExecuteTerminalTool {
             approval_id,
             command.clone(),
             approval_cwd,
-            "codex_full_access",
+            "local_shell",
             "full_access",
             justification,
             background.unwrap_or(false),
@@ -589,7 +589,7 @@ struct MultiEditFileTool;
 impl AgentTool for MultiEditFileTool {
     fn definition(&self, config: &AgentToolsConfig) -> ToolDefinition {
         let description = format!(
-            "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated before anything is written; on failure files are left unchanged. Result warnings (for example possibly unbalanced delimiters) do not block the write; inspect them before continuing. For an edit, read the current file first when it is not already in context, keep each old_string short but unique, and put all replacements for one path in one edit operation. To fully rewrite an existing file, use a single create operation with overwrite=true instead of many edits. operations must be a JSON array, never quoted JSON text. Order edits so a later old_string never targets text produced by an earlier new_string; such edits are rejected. In TS/JS template strings write ${{...}} exactly; do not escape the dollar sign as \\${{...}}. In-workspace edits may require approval under request_approval. Paths outside the configured workspace roots must set sandbox_permissions=require_escalated with a short justification so the user can approve; do not bypass multi_edit_file via shell when an outside-root edit is needed.{}",
+            "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated before anything is written; on failure files are left unchanged. Result warnings (for example possibly unbalanced delimiters) do not block the write; inspect them before continuing. For an edit, read the current file first when it is not already in context, keep each old_string short but unique, and put all replacements for one path in one edit operation. To fully rewrite an existing file, use a single create operation with overwrite=true instead of many edits. `operations` must be a JSON array, and each object inside it must include its own `type` field: `edit`, `create`, `delete`, or `move`; `type` is not a top-level field. Order edits so a later old_string never targets text produced by an earlier new_string; such edits are rejected. In TS/JS template strings write ${{...}} exactly; do not escape the dollar sign as \\${{...}}. In-workspace edits may require approval under request_approval. Paths outside the configured workspace roots must set sandbox_permissions=require_escalated with a short justification so the user can approve; do not bypass multi_edit_file via shell when an outside-root edit is needed.{}",
             configured_working_directories_guidance(config)
         );
         tool_definition(
@@ -603,12 +603,12 @@ impl AgentTool for MultiEditFileTool {
                         "type": "array",
                         "minItems": 1,
                         "maxItems": 32,
-                        "description": "Preferred ordered file operations. A path may appear only once per call. Pass a JSON array, not a quoted JSON string.",
+                        "description": "Preferred ordered file operations. A path may appear only once per call. Pass a JSON array, not a quoted JSON string. Each array object must include its own type field; type belongs inside operations[], not at the top level.",
                         "items": {
                             "oneOf": [
                                 {
                                     "type": "object",
-                                    "description": "Apply exact text replacements inside one existing file.",
+                                    "description": "Apply exact text replacements inside one existing file. Include type=edit in this object.",
                                     "additionalProperties": false,
                                     "required": ["type", "path", "edits"],
                                     "properties": {
@@ -635,7 +635,7 @@ impl AgentTool for MultiEditFileTool {
                                 },
                                 {
                                     "type": "object",
-                                    "description": "Create a new file, or fully rewrite an existing one with overwrite=true.",
+                                    "description": "Create a new file, or fully rewrite an existing one with overwrite=true. Include type=create in this object.",
                                     "additionalProperties": false,
                                     "required": ["type", "path", "content"],
                                     "properties": {
@@ -647,7 +647,7 @@ impl AgentTool for MultiEditFileTool {
                                 },
                                 {
                                     "type": "object",
-                                    "description": "Delete one file. Directories are refused.",
+                                    "description": "Delete one file. Directories are refused. Include type=delete in this object.",
                                     "additionalProperties": false,
                                     "required": ["type", "path"],
                                     "properties": {
@@ -657,7 +657,7 @@ impl AgentTool for MultiEditFileTool {
                                 },
                                 {
                                     "type": "object",
-                                    "description": "Move or rename one file. Directories are refused.",
+                                    "description": "Move or rename one file. Directories are refused. Include type=move in this object.",
                                     "additionalProperties": false,
                                     "required": ["type", "from", "to"],
                                     "properties": {
@@ -695,13 +695,9 @@ impl AgentTool for MultiEditFileTool {
     }
 
     async fn execute(&self, arguments: Value, context: ToolExecutionContext) -> ToolResult {
-        let args: MultiEditFileArgs = match serde_json::from_value(arguments) {
+        let args: MultiEditFileArgs = match parse_multi_edit_file_args(arguments) {
             Ok(args) => args,
-            Err(error) => {
-                return ToolResult::Error {
-                    message: format!("Invalid multi_edit_file arguments: {error}"),
-                };
-            }
+            Err(message) => return ToolResult::Error { message },
         };
         let cwd = match normalize_optional_cwd(args.cwd.clone()) {
             Ok(cwd) => cwd,
@@ -1375,7 +1371,7 @@ mod tests {
             terminal.function.parameters["properties"]["tty"]["description"]
                 .as_str()
                 .unwrap()
-                .contains("Codex PTY")
+                .contains("PTY")
         );
     }
 

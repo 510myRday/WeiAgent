@@ -1,18 +1,21 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, Download, Folder, FolderOpen, LoaderCircle, Pencil, Plus, RefreshCw, ShieldCheck, Square, Trash2 } from 'lucide-react';
+import { ArrowLeft, Download, Folder, FolderOpen, LoaderCircle, Pencil, Plus, RefreshCw, Send, ShieldCheck, Square, Trash2, X } from 'lucide-react';
 
-import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, ToolProcessInfo } from '../../api';
+import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, EnvironmentRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, ToolProcessInfo } from '../../api';
 import {
-  installRuntimeComponent,
+  installEnvironmentComponent,
+  interruptTerminalSession,
   listToolProcesses,
   pickDirectory,
   readAgentToolsConfig,
-  readCodexRuntime,
+  readEnvironmentRuntime,
   readToolDefaults,
-  refreshRuntimeComponent,
+  refreshEnvironmentComponent,
+  resizeTerminalSession,
   stopToolProcess,
   updateAgentToolsConfig,
   updateToolDefaults,
+  writeTerminalSession,
 } from '../../api';
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
@@ -66,7 +69,7 @@ export function TerminalToolSettings({
   const contextKey = scope === 'defaults' ? 'defaults' : `agent:${agentId ?? ''}`;
   const [defaults, setDefaults] = useState<AgentToolsConfig | null>(null);
   const [agentSettings, setAgentSettings] = useState<AgentToolsSettings | null>(null);
-  const [runtime, setRuntime] = useState<CodexRuntimeStatus | null>(null);
+  const [runtime, setRuntime] = useState<EnvironmentRuntimeStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [configLoadError, setConfigLoadError] = useState('');
   const [runtimeLoadError, setRuntimeLoadError] = useState('');
@@ -80,6 +83,8 @@ export function TerminalToolSettings({
   const [processLoadError, setProcessLoadError] = useState('');
   const [processRequestKey, setProcessRequestKey] = useState(0);
   const [isStoppingProcess, setIsStoppingProcess] = useState('');
+  const [isSendingToProcess, setIsSendingToProcess] = useState('');
+  const [sessionInputs, setSessionInputs] = useState<Record<string, string>>({});
   const [rootInput, setRootInput] = useState('');
   const [isPickingRoot, setIsPickingRoot] = useState(false);
   const isPageVisible = usePageVisibility();
@@ -155,7 +160,7 @@ export function TerminalToolSettings({
         : Promise.reject(new Error(t('tools.terminal.agentRequired')));
     const load = Promise.allSettled([
       configRequest,
-      readCodexRuntime().then((next) => {
+      readEnvironmentRuntime().then((next) => {
         if (!cancelled) setRuntime(next);
       }),
     ]);
@@ -240,7 +245,7 @@ export function TerminalToolSettings({
     let failureCount = 0;
     const refresh = async () => {
       try {
-        const next = await readCodexRuntime();
+        const next = await readEnvironmentRuntime();
         if (cancelled) return;
         failureCount = 0;
         setRuntime(next);
@@ -409,7 +414,7 @@ export function TerminalToolSettings({
     setIsRetryingRuntime(true);
     setRuntimeLoadError('');
     try {
-      setRuntime(await readCodexRuntime());
+      setRuntime(await readEnvironmentRuntime());
     } catch (error) {
       const message = error instanceof Error ? error.message : t('tools.terminal.runtimeRefreshFailed');
       setRuntimeLoadError(message);
@@ -432,11 +437,55 @@ export function TerminalToolSettings({
     }
   }
 
+  async function handleSendToSession(process: ToolProcessInfo, submit = false) {
+    const value = sessionInputs[process.process_id] ?? '';
+    if (!value && !submit) return;
+    setIsSendingToProcess(process.process_id);
+    try {
+      const next = await writeTerminalSession(
+        process.process_id,
+        process.agent_id,
+        `${value}${submit ? (navigator.userAgent.includes('Windows') ? '\r\n' : '\n') : ''}`,
+      );
+      updateToolProcessCache(next);
+      setProcesses((current) => current.map((item) => item.process_id === process.process_id ? next : item));
+      setSessionInputs((current) => ({ ...current, [process.process_id]: '' }));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('tools.terminal.sessionSendFailed'));
+    } finally {
+      setIsSendingToProcess('');
+    }
+  }
+
+  async function handleInterruptSession(process: ToolProcessInfo) {
+    try {
+      const next = await interruptTerminalSession(process.process_id, process.agent_id);
+      updateToolProcessCache(next);
+      setProcesses((current) => current.map((item) => item.process_id === process.process_id ? next : item));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('tools.terminal.sessionInterruptFailed'));
+    }
+  }
+
+  async function handleResizeSession(process: ToolProcessInfo, element: HTMLPreElement) {
+    const styles = window.getComputedStyle(element);
+    const fontSize = Number.parseFloat(styles.fontSize) || 13;
+    const lineHeight = Number.parseFloat(styles.lineHeight) || fontSize * 1.4;
+    const cols = Math.max(20, Math.floor(element.clientWidth / (fontSize * 0.6)));
+    const rows = Math.max(5, Math.floor(element.clientHeight / lineHeight));
+    try {
+      const next = await resizeTerminalSession(process.process_id, process.agent_id, rows, cols);
+      updateToolProcessCache(next);
+    } catch {
+      // A process may finish while the view is resizing.
+    }
+  }
+
   async function handleInstallRuntime(component: RuntimeComponentStatus) {
     const wasUpdate = component.available;
     setInstallingRuntimeComponent(component.kind);
     try {
-      const next = await installRuntimeComponent(component.kind);
+      const next = await installEnvironmentComponent(component.kind);
       setRuntime(next);
       const nextComponent = normalizeRuntimeComponents(next)
         .find((item) => item.kind === component.kind);
@@ -459,7 +508,7 @@ export function TerminalToolSettings({
       installWatchRef.current = null;
       toast.error(error instanceof Error ? error.message : t('tools.terminal.runtimeInstallFailed'));
       try {
-        setRuntime(await readCodexRuntime());
+        setRuntime(await readEnvironmentRuntime());
       } catch {
         // Keep the original installation failure as the visible error.
       }
@@ -471,7 +520,7 @@ export function TerminalToolSettings({
   async function handleRefreshRuntime(component: RuntimeComponentKind) {
     setRefreshingRuntimeComponent(component);
     try {
-      setRuntime(await refreshRuntimeComponent(component));
+      setRuntime(await refreshEnvironmentComponent(component));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('tools.terminal.runtimeRefreshFailed'));
     } finally {
@@ -632,8 +681,7 @@ export function TerminalToolSettings({
   const isAgentScope = scope === 'agent';
   const maxIterationsInherited = isAgentScope && overrides?.max_llm_iterations === undefined;
   const fieldInherited = (field: OverrideField) => isAgentScope && overrides?.terminal[field] === undefined;
-  const sandboxAvailable = runtime?.available === true;
-  const terminalUnavailable = !sandboxAvailable;
+  const environmentDetected = runtime?.available === true;
   const runtimeComponents = normalizeRuntimeComponents(runtime);
   const normalizedRootInput = rootInput.trim();
   const rootAlreadyAdded = terminal.allowed_cwd_roots.includes(normalizedRootInput);
@@ -671,7 +719,6 @@ export function TerminalToolSettings({
                   type="checkbox"
                   aria-label={t('tools.terminal.enabled')}
                   checked={terminal.enabled}
-                  disabled={terminalUnavailable}
                   onChange={(event) => updateTerminal({ enabled: event.target.checked })}
                 />
                 <span className="toggle-slider" />
@@ -834,7 +881,7 @@ export function TerminalToolSettings({
             <div className="setting-row">
               <div className="setting-info"><label>{t('tools.terminal.enabled')}</label><p className="setting-desc">{t('tools.terminal.enabledDesc')}</p></div>
               <label className="toggle-switch">
-                <input type="checkbox" aria-label={t('tools.terminal.enabled')} checked={terminal.enabled} disabled={terminalUnavailable} onChange={(event) => updateTerminal({ enabled: event.target.checked })} />
+                <input type="checkbox" aria-label={t('tools.terminal.enabled')} checked={terminal.enabled} onChange={(event) => updateTerminal({ enabled: event.target.checked })} />
                 <span className="toggle-slider" />
               </label>
             </div>
@@ -878,7 +925,7 @@ export function TerminalToolSettings({
             requestApprovalDescription={t('tools.terminal.requestApprovalDesc')}
             fullAccessLabel={t('tools.terminal.fullAccess')}
             fullAccessDescription={t('tools.terminal.fullAccessDesc')}
-            requestApprovalDisabled={fieldInherited('permission_mode') || !sandboxAvailable}
+            requestApprovalDisabled={fieldInherited('permission_mode')}
             fullAccessDisabled={fieldInherited('permission_mode')}
             onChange={handlePermissionModeChange}
           />
@@ -943,7 +990,7 @@ export function TerminalToolSettings({
         <div className="card-header">
           <div className="settings-section-title">
             <h3>{t('tools.terminal.runtimeTitle')}</h3>
-            <p>{sandboxAvailable ? t('tools.terminal.runtimeReadyDesc') : t('tools.terminal.runtimeMissingDesc')}</p>
+            <p>{environmentDetected ? t('tools.terminal.runtimeReadyDesc') : t('tools.terminal.runtimeMissingDesc')}</p>
           </div>
         </div>
         <div className="card-body runtime-card__body">
@@ -1036,6 +1083,39 @@ export function TerminalToolSettings({
                   >
                     {process.stdout ? <pre className="tool-card__output">{process.stdout}</pre> : null}
                     {process.stderr ? <pre className="tool-card__error">{process.stderr}</pre> : null}
+                    {process.tty && process.status === 'running' ? (
+                      <div className="terminal-session-console">
+                        <pre
+                          className="terminal-session-console__output tool-card__output"
+                          onDoubleClick={(event) => void handleResizeSession(process, event.currentTarget)}
+                        >{process.stdout || t('tools.terminal.sessionWaiting')}</pre>
+                        <div className="terminal-session-console__input">
+                          <input
+                            value={sessionInputs[process.process_id] ?? ''}
+                            placeholder={t('tools.terminal.sessionInputPlaceholder')}
+                            disabled={isSendingToProcess === process.process_id}
+                            onChange={(event) => setSessionInputs((current) => ({ ...current, [process.process_id]: event.target.value }))}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                void handleSendToSession(process, true);
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="tool-process-action"
+                            disabled={isSendingToProcess === process.process_id}
+                            onClick={() => void handleSendToSession(process)}
+                          >
+                            <Send size={13} /> {t('tools.terminal.sessionSend')}
+                          </button>
+                          <button type="button" className="tool-process-action" onClick={() => void handleInterruptSession(process)}>
+                            <X size={13} /> {t('tools.terminal.sessionInterrupt')}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </ToolRecordRow>
                 ))}
               </div>
@@ -1048,21 +1128,9 @@ export function TerminalToolSettings({
   );
 }
 
-function normalizeRuntimeComponents(runtime: CodexRuntimeStatus | null): RuntimeComponentStatus[] {
+function normalizeRuntimeComponents(runtime: EnvironmentRuntimeStatus | null): RuntimeComponentStatus[] {
   if (runtime?.components?.length) return runtime.components;
   return [
-    {
-      kind: 'codex',
-      available: runtime?.available === true,
-      required: true,
-      managed_installed: runtime?.managed_installed === true,
-      installing: runtime?.installing === true,
-      source: runtime?.source,
-      detected_version: runtime?.detected_version,
-      target_version: runtime?.target_version,
-      update_available: runtime?.update_available === true,
-      error: runtime?.error,
-    },
     ...(['node', 'python', 'uv', 'git'] as const).map((kind) => ({
       kind,
       available: false,
@@ -1092,7 +1160,6 @@ function RuntimeComponentRow({
   t: (key: string, values?: Record<string, string | number>) => string;
 }) {
   const icon = {
-    codex: '/tool-icons/openai.svg',
     node: '/tool-icons/nodejs.svg',
     python: '/tool-icons/python.svg',
     uv: '/tool-icons/uv.svg',

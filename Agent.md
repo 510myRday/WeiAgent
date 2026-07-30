@@ -102,10 +102,9 @@ WeiAgent/
 │   │       └── openai_compatible.rs  # OpenAI 兼容客户端实现（含重试）
 │   ├── tools/
 │   │   ├── registry.rs       # ToolRegistry、AgentTool、内置工具注册
-│   │   ├── terminal.rs       # Codex 终端执行、会话、输出和后台进程管理
+│   │   ├── terminal.rs       # 本地终端执行、会话、输出和后台进程管理
 │   │   └── web_search/       # 网络搜索：调度、Key 池、多搜索源适配与证据抽取
-│   │   ├── codex_app_server.rs # Codex app-server JSON-RPC 连接
-│   │   ├── runtime.rs        # Codex CLI 发现、下载、校验和隔离环境
+│   │   ├── runtime.rs        # Node.js/Python/uv/Git 环境检测、下载和更新
 │   │   ├── approval.rs       # 审批管理和自动 TTL 过期
 │   │   └── prompt.rs         # 终端环境和权限策略提示
 │   └── storage/
@@ -138,7 +137,7 @@ WeiAgent/
     │   ├── personality.md
     │   ├── memory.md
     │   └── instructions.md
-    ├── runtimes/              # WeiAgent 托管的 Codex 运行时和隔离 CODEX_HOME
+    ├── runtimes/              # WeiAgent 托管的开发环境组件
     └── conversations/{conversation_id}.json
 ```
 
@@ -369,13 +368,13 @@ Agent 响应会额外返回后端保存的内置身份信息：
 - Agent 模板：继续增加更多内置 Agent 或可导入模板
 ## 第三阶段：终端工具系统
 
-终端工具复用 Codex CLI 的 OS 沙箱与 app-server 终端能力，并由 WeiAgent 管理人工审批、后台记录和会话续写；不使用 Docker，也不提供自动审批。
+终端工具由 WeiAgent 直接启动本机 Shell，并由 WeiAgent 管理人工审批、后台记录和会话续写。Windows 使用 PowerShell 7、Windows PowerShell 或 CMD，macOS 和 Linux 使用 POSIX `sh`。
 
 ### 权限模式
 
-- `request_approval`：普通命令通过 Codex OS sandbox helper 的 `:workspace`/`workspaceWrite` 策略执行。工作区内写入自动完成，网络和工作区外写入被沙箱拒绝。
-- `full_access`：命令通过 Codex app-server 的 `command/exec` 以完整宿主权限执行，不产生审批提示。
-- 模型只有显式设置 `sandbox_permissions = "require_escalated"` 并提供 `justification` 时，才会在 `request_approval` 模式下请求人工批准。
+- `request_approval`：工作区和配置目录内的命令直接执行；访问其他位置或请求扩展权限时先进入人工审批。
+- `full_access`：命令直接使用本机权限执行，不产生审批提示。
+- `request_approval` 模式会由后端自动检测工作目录是否超出配置范围并触发人工批准；模型也可以显式设置 `sandbox_permissions = "require_escalated"` 并提供 `justification` 来请求扩展权限。
 - 用户可允许一次、记住 24 小时或拒绝。记忆授权精确绑定命令和工作目录。
 
 ### 工具配置
@@ -405,18 +404,18 @@ User Message
   -> LLM Function Calling
   -> execute_terminal
   -> use_default
-       -> Codex OS sandbox helper
-       -> workspace write / network denied
+       -> local shell process in configured workspace roots
+       -> outside roots: approval_required SSE
   -> require_escalated
        -> approval_required SSE
        -> user approve
-       -> Codex app-server full-access session
+       -> approved local shell process
   -> tool_result
   -> role=tool message
   -> follow-up LLM response
 ```
 
-生产环境中，WeiAgent 只负责启动 Codex CLI/app-server 并发送结构化执行请求，不直接绕过 Codex 来执行模型命令。Codex 会在其控制的执行链路中启动 WeiAgent 已探测的本机 Shell：Windows 依次选择 PowerShell 7 (`pwsh.exe`)、Windows PowerShell (`powershell.exe`) 和 CMD (`cmd.exe`)，macOS 和 Linux 使用 POSIX `sh`。Shell 是命令解释器，但沙箱策略、进程生命周期、stdin/stdout 和终止控制均由 Codex 路径承载。
+WeiAgent 直接启动已探测的本机 Shell，并统一承载命令解释、进程生命周期、stdin/stdout 和终止控制。
 
 ### 终端能力
 
@@ -427,8 +426,8 @@ User Message
 - `cwd` 省略、空字符串或 `.` 时始终使用 WeiAgent 数据目录下独立的 `workspace` 文件夹（开发模式为 `data/workspace`，生产模式默认为 `%USERPROFILE%\.WeiAgent\workspace`），不受 `allowed_cwd_roots` 是否配置或排列顺序影响；该目录启动时若不存在会自动创建。`allowed_cwd_roots` 是额外的可操作目录，显式设置 `cwd` 可将其中某个目录选为命令和相对路径的基准；非空 `cwd` 必须是已存在目录，不允许失败后静默切换到猜测路径
 - `allowed_cwd_roots` 非空时，`execute_terminal` 与 `multi_edit_file` 的模型 schema 会列出这些用户配置的额外工作目录，作为任务相关时的候选位置提示；文案明确它们不替代默认 workspace，也不是完整的可访问路径清单，完整权限或经批准的操作仍可使用其他路径
 - 实际执行器、终端工具定义、系统环境提示和命令示例共用同一个 Shell 探测结果，避免 PowerShell、CMD 与 POSIX 语法混用
-- 支持 Codex PTY、stdin 续写、Ctrl+C/EOF、终止和尺寸调整；后台或超时转后台后返回 `process_id`
-- Windows 的 Codex unelevated 沙箱是上游例外：只允许短时、非交互、前台命令；后台、stdin 续写、PTY 和超时转后台必须请求完整权限
+- 支持 stdin 续写、Ctrl+C/EOF 和终止；后台或超时转后台后返回 `process_id`
+- 当前本地进程后端支持 Windows、macOS 和 Linux；PTY resize 作为后续本地终端增强项保留接口
 - 普通前台命令只在执行期间由进程管理器捕获输出，完成后立即移除，不出现在后台进程列表
 - 只有显式 `background: true` 或超过前台等待时间的任务会进入后台进程列表
 - stdout/stderr 各保留最后 1MB，返回模型时限制为最后 64KB
@@ -437,20 +436,13 @@ User Message
 - 单轮最多 8 个工具调用，单次 Agent run 最多 256 个，最长运行 60 分钟
 - LLM 工具循环默认 99 轮，可配置最大 999 轮；耗尽后执行一次无工具总结
 - 同一会话只允许一个活跃 Agent run
-- 完整权限和非 Windows 沙箱会话支持交互续写；Windows 沙箱保持非交互，以避免 Codex 上游不支持的伪会话
+- 本地 Shell 会话支持 stdin 续写；Windows、macOS 和 Linux 统一走本地进程后端
 
-### Codex 终端运行时
+### 开发环境运行时
 
-- `WEIAGENT_CODEX_BIN` 显式指定的兼容版本优先；否则 WeiAgent 在托管版本和系统 Codex 中选择版本较高的一份。
-- 全局工具页可以查看、刷新、安装或更新托管 Codex 运行时；启动时使用本地状态，后台刷新 npm Registry 的稳定版信息并缓存 24 小时。
-- 安装时优先使用 npm Registry 的当前稳定版及对应 OS/CPU 原生包；查询失败且没有可用缓存时回退到 Codex CLI `0.137.0`，不要求用户安装 Node.js 或 npm。
-- Codex CLI `0.137.0` 是当前最低兼容版本；更旧的系统安装不会被选用。
-- 托管包覆盖 Windows x64/ARM64、Linux x64/ARM64、macOS x64/Apple Silicon；三系统 CI 持续执行前端构建、Rust 测试和 Clippy。
-- 下载过程流式写入临时文件，限制最大体积，使用 Registry 提供的 SHA-512 integrity 校验后安全解包，并通过版本检查和 app-server 初始化握手后再启用。
-- 托管运行时安装到 `data/runtimes/codex/{version}/{platform}`，独立 `CODEX_HOME` 保存到 `data/runtimes/codex-home`。
-- Codex 运行时不可用时不会向模型暴露终端工具，也不会自动降级为直接宿主执行。
-- Windows 沙箱命令复用用户 Codex 的默认 `CODEX_HOME` 沙箱设置；app-server 使用 WeiAgent 隔离的 `CODEX_HOME`，且启动环境会移除无关敏感变量。
-- Codex CLI 采用 Apache-2.0 许可证，第三方归属信息见 `THIRD_PARTY_NOTICES.md`。
+- 全局工具页继续检测、刷新、安装和更新 Node.js、Python、uv、Git。
+- 组件状态通过本地探测和缓存的最新版本信息展示。
+- 托管组件安装到 `data/runtimes`，终端启动时直接继承本机 Shell 环境，并优先使用已托管组件的 bin 目录。
 
 ### 验证
 

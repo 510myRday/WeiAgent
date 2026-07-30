@@ -25,10 +25,10 @@ pub struct TerminalToolConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalPermissionMode {
-    /// Routine work runs in the local OS sandbox. Full host access requires user approval.
+    /// Routine work uses the configured workspace roots. Expanded host access requires approval.
     #[default]
     RequestApproval,
-    /// Codex runs commands with full host access and no approval prompts.
+    /// Local commands run with full host access and no approval prompts.
     FullAccess,
 }
 

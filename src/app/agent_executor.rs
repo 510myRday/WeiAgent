@@ -494,6 +494,7 @@ async fn finalize_after_budget(
     Ok(assistant_message)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_tool_calls(
     state: &AppState,
     prepared: &mut PreparedChat,

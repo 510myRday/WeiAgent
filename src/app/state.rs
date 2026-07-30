@@ -5,7 +5,7 @@ use crate::{
     llm::registry::DynLlmRegistry,
     storage::{LlmLogger, Store},
     tools::{
-        approval::ApprovalManager, registry::ToolRegistry, runtime::CodexRuntimeManager,
+        approval::ApprovalManager, registry::ToolRegistry, runtime::EnvironmentRuntimeManager,
         terminal::TerminalManager,
     },
 };
@@ -18,7 +18,7 @@ pub struct AppState {
     pub llm_logger: Arc<LlmLogger>,
     pub terminal_manager: Arc<TerminalManager>,
     pub approval_manager: Arc<ApprovalManager>,
-    pub codex_runtime: Arc<CodexRuntimeManager>,
+    pub environment_runtime: Arc<EnvironmentRuntimeManager>,
     pub tool_registry: Arc<ToolRegistry>,
     pub run_manager: Arc<RunManager>,
 }

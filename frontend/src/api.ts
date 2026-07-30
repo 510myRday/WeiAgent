@@ -414,7 +414,7 @@ export function readTaskPlans(conversationId: string): Promise<TaskPlan[]> {
   return request<TaskPlan[]>(`/api/conversations/${conversationId}/task-plans`);
 }
 
-export type CodexRuntimeStatus = {
+export type EnvironmentRuntimeStatus = {
   supported: boolean;
   available: boolean;
   managed_installed: boolean;
@@ -430,7 +430,7 @@ export type CodexRuntimeStatus = {
 };
 
 export type RuntimeComponentStatus = {
-  kind: 'codex' | 'node' | 'python' | 'uv' | 'git';
+  kind: 'node' | 'python' | 'uv' | 'git';
   available: boolean;
   required: boolean;
   managed_installed: boolean;
@@ -460,7 +460,7 @@ export type ToolProcessInfo = {
   started_at: string;
   finished_at?: string;
   duration_ms: number;
-  runtime: 'codex_sandbox' | 'codex_full_access';
+  runtime: 'local_shell' | 'full_access';
   tty: boolean;
   output_cursor: number;
 };
@@ -585,8 +585,8 @@ export function updateAgentToolsConfig(
   });
 }
 
-export function readCodexRuntime(): Promise<CodexRuntimeStatus> {
-  return request<CodexRuntimeStatus>('/api/tools/codex-runtime');
+export function readEnvironmentRuntime(): Promise<EnvironmentRuntimeStatus> {
+  return request<EnvironmentRuntimeStatus>('/api/tools/environment-runtime');
 }
 
 export function pickDirectory(initialDirectory?: string): Promise<PickDirectoryResponse> {
@@ -602,12 +602,12 @@ export function pickDirectory(initialDirectory?: string): Promise<PickDirectoryR
 }
 
 
-export async function installRuntimeComponent(
+export async function installEnvironmentComponent(
   component: RuntimeComponentKind,
-): Promise<CodexRuntimeStatus> {
+): Promise<EnvironmentRuntimeStatus> {
   const abortHandle = createAbortSignal(15 * 60 * 1000);
   try {
-    const response = await fetch(`/api/tools/runtime/${component}`, {
+    const response = await fetch(`/api/tools/environment-runtime/${component}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...apiAuthorizationHeaders() },
       signal: abortHandle.signal,
@@ -615,16 +615,16 @@ export async function installRuntimeComponent(
     if (!response.ok) {
       throw new Error(await readError(response));
     }
-    return response.json() as Promise<CodexRuntimeStatus>;
+    return response.json() as Promise<EnvironmentRuntimeStatus>;
   } finally {
     abortHandle.dispose();
   }
 }
 
-export function refreshRuntimeComponent(
+export function refreshEnvironmentComponent(
   component: RuntimeComponentKind,
-): Promise<CodexRuntimeStatus> {
-  return request<CodexRuntimeStatus>(`/api/tools/runtime/${component}/refresh`, {
+): Promise<EnvironmentRuntimeStatus> {
+  return request<EnvironmentRuntimeStatus>(`/api/tools/environment-runtime/${component}/refresh`, {
     method: 'POST',
   });
 }
@@ -653,6 +653,43 @@ export function stopToolProcess(processId: string, agentId: string): Promise<Too
   return request<ToolProcessInfo>(`/api/tools/processes/${encodeURIComponent(processId)}?agent_id=${encodeURIComponent(agentId)}`, {
     method: 'DELETE',
   });
+}
+
+export function writeTerminalSession(
+  processId: string,
+  agentId: string,
+  data: string,
+  closeStdin = false,
+): Promise<ToolProcessInfo> {
+  return request<ToolProcessInfo>(
+    `/api/terminal/sessions/${encodeURIComponent(processId)}/input?agent_id=${encodeURIComponent(agentId)}`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ data, close_stdin: closeStdin }),
+    },
+  );
+}
+
+export function interruptTerminalSession(processId: string, agentId: string): Promise<ToolProcessInfo> {
+  return request<ToolProcessInfo>(
+    `/api/terminal/sessions/${encodeURIComponent(processId)}/interrupt?agent_id=${encodeURIComponent(agentId)}`,
+    { method: 'POST' },
+  );
+}
+
+export function resizeTerminalSession(
+  processId: string,
+  agentId: string,
+  rows: number,
+  cols: number,
+): Promise<ToolProcessInfo> {
+  return request<ToolProcessInfo>(
+    `/api/terminal/sessions/${encodeURIComponent(processId)}/resize?agent_id=${encodeURIComponent(agentId)}`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ rows, cols }),
+    },
+  );
 }
 export function readConversationMessages(
   conversationId: string,

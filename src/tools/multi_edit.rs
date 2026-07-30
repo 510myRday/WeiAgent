@@ -273,6 +273,76 @@ pub struct MultiEditRequest {
     pub approved: bool,
 }
 
+pub fn parse_multi_edit_file_args(
+    arguments: serde_json::Value,
+) -> Result<MultiEditFileArgs, String> {
+    let arguments = normalize_multi_edit_arguments(arguments);
+    match serde_json::from_value(arguments.clone()) {
+        Ok(args) => Ok(args),
+        Err(_) => {
+            if let Some(index) = missing_operation_type(&arguments) {
+                return Err(format!(
+                    "multi_edit_file operations[{index}] is missing required field `type`. Put `type` inside each operation object, for example {{\"type\":\"edit\",\"path\":\"src/file.rs\",\"edits\":[{{\"old_string\":\"old\",\"new_string\":\"new\"}}]}}."
+                ));
+            }
+            Err("Invalid multi_edit_file arguments. Use operations as an array of objects; each operation needs type=edit, create, delete, or move, plus its operation-specific fields.".to_string())
+        }
+    }
+}
+
+fn normalize_multi_edit_arguments(mut arguments: serde_json::Value) -> serde_json::Value {
+    let Some(object) = arguments.as_object_mut() else {
+        return arguments;
+    };
+    let Some(operations) = object
+        .get_mut("operations")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return arguments;
+    };
+    for operation in operations {
+        let serde_json::Value::Object(operation) = operation else {
+            continue;
+        };
+        if operation.contains_key("type") {
+            continue;
+        }
+        let inferred_type = if operation.contains_key("path") && operation.contains_key("edits") {
+            Some("edit")
+        } else if operation.contains_key("path") && operation.contains_key("content") {
+            Some("create")
+        } else if operation.contains_key("from") && operation.contains_key("to") {
+            Some("move")
+        } else {
+            None
+        };
+        if let Some(inferred_type) = inferred_type {
+            operation.insert(
+                "type".to_string(),
+                serde_json::Value::String(inferred_type.to_string()),
+            );
+        }
+    }
+    arguments
+}
+
+fn missing_operation_type(arguments: &serde_json::Value) -> Option<usize> {
+    arguments
+        .get("operations")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|operations| {
+            operations
+                .iter()
+                .enumerate()
+                .find_map(|(index, operation)| {
+                    operation
+                        .as_object()
+                        .filter(|operation| !operation.contains_key("type"))
+                        .map(|_| index + 1)
+                })
+        })
+}
+
 pub async fn execute_multi_edit(
     request: &MultiEditRequest,
     config: &TerminalToolConfig,
@@ -1485,6 +1555,34 @@ mod tests {
             args.operations[0],
             MultiEditFileOperation::Edit { .. }
         ));
+    }
+
+    #[test]
+    fn infers_unambiguous_operation_type_when_model_omits_it() {
+        let args = parse_multi_edit_file_args(serde_json::json!({
+            "operations": [{
+                "path": "a.txt",
+                "edits": [{"old_string": "old", "new_string": "new"}]
+            }]
+        }))
+        .expect("edit type should be inferred from path and edits");
+
+        assert!(matches!(
+            args.operations[0],
+            MultiEditFileOperation::Edit { .. }
+        ));
+    }
+
+    #[test]
+    fn explains_where_missing_operation_type_belongs() {
+        let error = parse_multi_edit_file_args(serde_json::json!({
+            "operations": [{"path": "a.txt"}]
+        }))
+        .expect_err("an ambiguous operation should require type");
+
+        assert!(error.contains("operations[1]"));
+        assert!(error.contains("type"));
+        assert!(error.contains("\"type\":\"edit\""));
     }
 
     #[test]

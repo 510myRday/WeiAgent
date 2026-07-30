@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
@@ -47,7 +47,7 @@ impl AgentTool for TaskPlanningTool {
     fn definition(&self, _config: &AgentToolsConfig) -> crate::llm::types::ToolDefinition {
         super::registry::tool_definition(
             TASK_PLANNING_TOOL_NAME,
-            "Create and maintain the active task plan for the current conversation. When creating a plan, include a clear explanation of the user's requirements, objective, completion criteria, and key constraints so it can be reused in task summaries. Keep the plan updated as work progresses.",
+            "Create and maintain the active task plan for the current conversation. Before using any other tool, create a plan when the task has multiple steps or meaningful dependencies. When creating a plan, include a clear explanation of the user's requirements, objective, completion criteria, and key constraints so it can be reused in task summaries. Keep the plan updated as work progresses.",
             json!({
                 "type": "object",
                 "properties": {
@@ -92,7 +92,8 @@ impl AgentTool for TaskPlanningTool {
                         "oneOf": [
                             {
                                 "type": "integer",
-                                "minimum": 1
+                                "minimum": 1,
+                                "description": "A 1-based task index as a JSON number, for example 1. Do not quote it as a string."
                             },
                             {
                                 "type": "array",
@@ -101,10 +102,11 @@ impl AgentTool for TaskPlanningTool {
                                 "items": {
                                     "type": "integer",
                                     "minimum": 1
-                                }
+                                },
+                                "description": "A non-empty array of 1-based task indexes as JSON numbers, for example [1, 2]. Do not quote the indexes as strings."
                             }
                         ],
-                        "description": "A 1-based task index or an array of indexes. Arrays let set_status update multiple tasks in one call. Required for set_status."
+                        "description": "A 1-based task index or an array of indexes. Arrays let set_status update multiple tasks in one call. Required for set_status. The value must be a JSON integer or an array of JSON integers, not a quoted string."
                     },
                     "status": {
                         "type": "string",
@@ -118,13 +120,13 @@ impl AgentTool for TaskPlanningTool {
                         "properties": {
                             "action": {"enum": ["create"]}
                         },
-                        "required": ["action", "explanation"]
+                        "required": ["action", "explanation", "plan"]
                     },
                     {
                         "properties": {
                             "action": {"enum": ["set_status"]}
                         },
-                        "required": ["action"]
+                        "required": ["action", "planning_id", "item", "status"]
                     }
                 ],
                 "additionalProperties": false
@@ -137,13 +139,9 @@ impl AgentTool for TaskPlanningTool {
     }
 
     async fn execute(&self, arguments: Value, context: ToolExecutionContext) -> ToolResult {
-        let args = match serde_json::from_value::<TaskPlanningArgs>(arguments) {
+        let args = match parse_task_planning_args(arguments) {
             Ok(args) => args,
-            Err(error) => {
-                return ToolResult::Error {
-                    message: format!("Invalid task_planning arguments: {error}"),
-                };
-            }
+            Err(message) => return ToolResult::Error { message },
         };
         match args.action {
             TaskPlanningAction::Create => {
@@ -158,6 +156,9 @@ impl AgentTool for TaskPlanningTool {
                     };
                 };
                 if let Err(message) = validate_plan(&args.plan) {
+                    return ToolResult::Error { message };
+                }
+                if let Err(message) = validate_initial_plan(&args.plan) {
                     return ToolResult::Error { message };
                 }
                 match context
@@ -219,15 +220,13 @@ impl AgentTool for TaskPlanningTool {
                         .plan
                         .iter()
                         .any(|entry| entry.status == TaskPlanItemStatus::InProgress)
-                {
-                    if let Some(next) = plan
+                    && let Some(next) = plan
                         .plan
                         .iter_mut()
                         .skip(last_item)
                         .find(|entry| entry.status == TaskPlanItemStatus::Pending)
-                    {
-                        next.status = TaskPlanItemStatus::InProgress;
-                    }
+                {
+                    next.status = TaskPlanItemStatus::InProgress;
                 }
                 if let Err(message) = validate_plan(&plan.plan) {
                     return ToolResult::Error { message };
@@ -269,6 +268,58 @@ impl AgentTool for TaskPlanningTool {
             }
         }
     }
+}
+
+fn parse_task_planning_args(arguments: Value) -> Result<TaskPlanningArgs, String> {
+    let arguments = normalize_task_planning_arguments(arguments);
+    match serde_json::from_value::<TaskPlanningArgs>(arguments.clone()) {
+        Ok(args) => Ok(args),
+        Err(_) => {
+            if let Some(item) = arguments.get("item") {
+                if item.is_string() {
+                    return Err(
+                        "task_planning item must be a JSON integer, not a string. Use `\"item\": 1`, not `\"item\": \"1\"`.".to_string(),
+                    );
+                }
+                if item
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(Value::is_string))
+                {
+                    return Err(
+                        "task_planning item must be a JSON integer or an array of JSON integers. Use `\"item\": [1, 2]`, not an array of quoted strings.".to_string(),
+                    );
+                }
+            }
+            Err("Invalid task_planning arguments. For set_status, provide planning_id, item (a 1-based JSON integer or array of integers), and status (pending, in_progress, or completed).".to_string())
+        }
+    }
+}
+
+fn normalize_task_planning_arguments(mut arguments: Value) -> Value {
+    let Some(object) = arguments.as_object_mut() else {
+        return arguments;
+    };
+    let Some(item) = object.get_mut("item") else {
+        return arguments;
+    };
+    match item {
+        Value::String(value) => {
+            if let Ok(index) = value.trim().parse::<usize>() {
+                *item = json!(index);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                if let Value::String(value) = item
+                    && let Ok(index) = value.trim().parse::<usize>()
+                {
+                    *item = json!(index);
+                }
+            }
+        }
+        _ => {}
+    }
+    arguments
 }
 
 async fn read_matching_plan(context: &ToolExecutionContext, planning_id: Uuid) -> Option<TaskPlan> {
@@ -348,6 +399,28 @@ fn validate_plan(plan: &[TaskPlanItem]) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_initial_plan(plan: &[TaskPlanItem]) -> Result<(), String> {
+    if plan
+        .first()
+        .is_none_or(|item| item.status != TaskPlanItemStatus::InProgress)
+    {
+        return Err(
+            "task_planning create requires the first item to have status in_progress".to_string(),
+        );
+    }
+    if plan
+        .iter()
+        .skip(1)
+        .any(|item| item.status != TaskPlanItemStatus::Pending)
+    {
+        return Err(
+            "task_planning create requires all items after the first to have status pending"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn plan_all_completed(plan: &[TaskPlanItem]) -> bool {
     !plan.is_empty()
         && plan
@@ -422,6 +495,12 @@ mod tests {
                 .unwrap()
                 .contains("action is create")
         );
+        assert!(
+            definition.function.parameters["properties"]["item"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("not a quoted string")
+        );
         let branches = definition.function.parameters["oneOf"].as_array().unwrap();
         assert!(branches.iter().any(|branch| {
             branch["required"]
@@ -433,6 +512,76 @@ mod tests {
                 .as_array()
                 .is_some_and(|required| !required.iter().any(|value| value == "explanation"))
         }));
+        assert!(branches.iter().any(|branch| {
+            branch["required"].as_array().is_some_and(|required| {
+                ["planning_id", "item", "status"]
+                    .iter()
+                    .all(|name| required.iter().any(|value| value == name))
+            })
+        }));
+    }
+
+    #[tokio::test]
+    async fn task_planning_accepts_a_numeric_string_item_index() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(temp_dir.path()).await.unwrap());
+        let conversation_id = Uuid::new_v4();
+        let tool = TaskPlanningTool;
+        let created = tool
+            .execute(
+                serde_json::json!({
+                    "action": "create",
+                    "explanation": "Test numeric string compatibility",
+                    "plan": [{"step": "First", "status": "in_progress"}]
+                }),
+                context(store.clone(), conversation_id),
+            )
+            .await;
+        let ToolResult::Completed { stdout, .. } = created else {
+            panic!("expected plan creation to succeed");
+        };
+        let created: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "action": "set_status",
+                    "planning_id": created["planning_id"],
+                    "item": "1",
+                    "status": "completed"
+                }),
+                context(store, conversation_id),
+            )
+            .await;
+
+        let ToolResult::Completed { stdout, .. } = result else {
+            panic!("expected a numeric string item index to be normalized");
+        };
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(result["plan"][0]["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn task_planning_explains_that_non_numeric_item_is_invalid() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(temp_dir.path()).await.unwrap());
+        let result = TaskPlanningTool
+            .execute(
+                serde_json::json!({
+                    "action": "set_status",
+                    "planning_id": Uuid::new_v4().to_string(),
+                    "item": "one",
+                    "status": "completed"
+                }),
+                context(store, Uuid::new_v4()),
+            )
+            .await;
+
+        let ToolResult::Error { message } = result else {
+            panic!("expected a non-numeric item index to be rejected");
+        };
+        assert!(message.contains("JSON integer"));
+        assert!(message.contains("not a string"));
+        assert!(!message.contains("untagged enum"));
     }
 
     #[tokio::test]
@@ -458,6 +607,33 @@ mod tests {
             };
             assert!(message.contains("explanation"));
         }
+    }
+
+    #[tokio::test]
+    async fn task_planning_create_requires_a_current_item() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(temp_dir.path()).await.unwrap());
+        let conversation_id = Uuid::new_v4();
+
+        let result = TaskPlanningTool
+            .execute(
+                serde_json::json!({
+                    "action": "create",
+                    "explanation": "Test plan",
+                    "plan": [
+                        {"step": "First", "status": "pending"},
+                        {"step": "Second", "status": "pending"}
+                    ]
+                }),
+                context(store, conversation_id),
+            )
+            .await;
+
+        let ToolResult::Error { message } = result else {
+            panic!("expected a plan without an in_progress item to be rejected");
+        };
+        assert!(message.contains("first item"));
+        assert!(message.contains("in_progress"));
     }
 
     #[tokio::test]

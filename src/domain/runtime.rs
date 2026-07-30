@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CodexRuntimeSource {
+pub enum RuntimeSource {
     Managed,
     Environment,
     System,
@@ -11,7 +11,6 @@ pub enum CodexRuntimeSource {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeComponentKind {
-    Codex,
     Node,
     Python,
     Uv,
@@ -25,7 +24,7 @@ pub struct RuntimeComponentStatus {
     pub required: bool,
     pub managed_installed: bool,
     pub installing: bool,
-    pub source: Option<CodexRuntimeSource>,
+    pub source: Option<RuntimeSource>,
     pub detected_version: Option<String>,
     pub target_version: Option<String>,
     pub update_available: bool,
@@ -33,7 +32,7 @@ pub struct RuntimeComponentStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CodexRuntimeStatus {
+pub struct EnvironmentRuntimeStatus {
     pub supported: bool,
     pub available: bool,
     pub managed_installed: bool,
@@ -41,7 +40,7 @@ pub struct CodexRuntimeStatus {
     pub target_version: String,
     pub update_available: bool,
     pub platform: Option<String>,
-    pub source: Option<CodexRuntimeSource>,
+    pub source: Option<RuntimeSource>,
     pub detected_version: Option<String>,
     pub executable: Option<String>,
     pub error: Option<String>,

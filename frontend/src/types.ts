@@ -320,7 +320,7 @@ export type ToolResultData = {
   output_cursor?: number;
   message?: string;
   reason?: string;
-  /** Actual runtime used: codex_sandbox / codex_full_access */
+  /** Execution backend used for the terminal command. */
   runtime?: string;
 };
 

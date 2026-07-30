@@ -30,7 +30,7 @@ pub use providers::{
     ModelProvider, ModelProviderResponse, ProviderType, UpdateModelProviderRequest, merge_api_keys,
 };
 pub use runtime::{
-    CodexRuntimeSource, CodexRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus,
+    EnvironmentRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, RuntimeSource,
 };
 pub use settings::AppSettings;
 pub use task_planning::{TaskPlan, TaskPlanItem, TaskPlanItemStatus};

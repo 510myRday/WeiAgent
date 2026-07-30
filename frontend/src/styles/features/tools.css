@@ -231,11 +231,6 @@
   object-fit: contain;
 }
 
-.runtime-component-row__icon.is-codex img {
-  width: 28px;
-  height: 28px;
-}
-
 .runtime-component-row__icon.is-node img {
   width: 29px;
   height: 33px;

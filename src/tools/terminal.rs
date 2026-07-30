@@ -1,30 +1,26 @@
 use std::{
     collections::VecDeque,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Deserialize;
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{Mutex, Notify, mpsc};
 use uuid::Uuid;
 
 use crate::{
     domain::{ProcessInfo, ProcessStatus, TerminalPermissionMode, TerminalToolConfig, ToolResult},
     error::{AppError, AppResult},
-    tools::{
-        codex_app_server::{CodexAppServer, CodexNotification},
-        runtime::{CodexExecutable, CodexRuntimeManager},
-        shell::{selected_host_shell, HostShellKind},
-    },
+    tools::shell::{HostShellKind, selected_host_shell},
 };
 
 pub const MAX_TERMINAL_TIMEOUT_MS: u64 = 120_000;
@@ -39,6 +35,11 @@ const MAX_RUNNING_PROCESSES_PER_AGENT: usize = 8;
 const MAX_PROCESS_LIFETIME_MS: u64 = 60 * 60 * 1_000;
 const MAX_RETAINED_PROCESSES: usize = 256;
 const OUTPUT_CHANNEL_CAPACITY: usize = 256;
+
+#[async_trait]
+pub trait TerminalEnvironment: Send + Sync {
+    async fn managed_bin_paths(&self) -> Vec<PathBuf>;
+}
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -73,19 +74,11 @@ pub struct ExecuteTerminalRequest {
     pub tool_call_id: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TerminalAccess {
-    Sandbox,
-    FullAccess,
-}
-
 #[derive(Debug, Clone)]
 struct BackendExecRequest {
     process_id: String,
     command: String,
-    workspace_root: PathBuf,
     cwd: PathBuf,
-    access: TerminalAccess,
     tty: bool,
 }
 
@@ -113,16 +106,10 @@ trait TerminalBackend: Send + Sync {
     async fn resize(&self, process_id: &str, rows: u16, cols: u16) -> AppResult<()>;
 }
 
-struct CodexTerminalBackend {
-    runtime: Arc<CodexRuntimeManager>,
-    app_server: Arc<CodexAppServer>,
-    execution_paths: DashMap<String, CodexExecutionPath>,
-    sandbox_processes: DashMap<String, Arc<SandboxProcess>>,
+struct LocalTerminalBackend {
+    environment: Arc<dyn TerminalEnvironment>,
     host_processes: DashMap<String, Arc<HostProcess>>,
-}
-
-struct SandboxProcess {
-    pid: u32,
+    pty_processes: DashMap<String, Arc<PtyProcess>>,
 }
 
 struct HostProcess {
@@ -130,196 +117,19 @@ struct HostProcess {
     stdin: Mutex<Option<tokio::process::ChildStdin>>,
 }
 
-#[derive(Clone, Copy)]
-enum CodexExecutionPath {
-    AppServer,
-    WindowsSandboxCli,
-    HostProcess,
+struct PtyProcess {
+    master: std::sync::Mutex<Box<dyn MasterPty + Send>>,
+    writer: Arc<std::sync::Mutex<Option<Box<dyn Write + Send>>>>,
+    child: std::sync::Mutex<Box<dyn PtyChild + Send + Sync>>,
 }
 
-impl CodexTerminalBackend {
-    fn new(runtime: Arc<CodexRuntimeManager>) -> Self {
+impl LocalTerminalBackend {
+    fn new(environment: Arc<dyn TerminalEnvironment>) -> Self {
         Self {
-            app_server: CodexAppServer::new(runtime.clone()),
-            runtime,
-            execution_paths: DashMap::new(),
-            sandbox_processes: DashMap::new(),
+            environment,
             host_processes: DashMap::new(),
+            pty_processes: DashMap::new(),
         }
-    }
-
-    async fn execute_command_exec(
-        &self,
-        request: &BackendExecRequest,
-        output: &mpsc::Sender<BackendOutput>,
-    ) -> AppResult<i32> {
-        let (command, sandbox_policy, tty) = build_codex_exec(request);
-        let runtime_label = match request.access {
-            TerminalAccess::Sandbox => "codex_sandbox",
-            TerminalAccess::FullAccess => "codex_full_access",
-        };
-        let mut notifications = self.app_server.subscribe();
-        let environment = self.runtime.environment_overrides(runtime_label).await;
-        let call = self.app_server.request(
-            "command/exec",
-            json!({
-                "command": command,
-                "processId": request.process_id,
-                "tty": tty,
-                "streamStdin": true,
-                "streamStdoutStderr": true,
-                "disableOutputCap": true,
-                "timeoutMs": MAX_PROCESS_LIFETIME_MS,
-                "cwd": os_command_path(&request.cwd),
-                "env": environment,
-                "size": tty.then_some(json!({ "rows": 24, "cols": 120 })),
-                "sandboxPolicy": sandbox_policy,
-            }),
-        );
-        tokio::pin!(call);
-        loop {
-            tokio::select! {
-                result = &mut call => {
-                    let result = result?;
-                    drain_codex_output(&mut notifications, &request.process_id, output).await?;
-                    let exit_code = result
-                        .get("exitCode")
-                        .and_then(Value::as_i64)
-                        .ok_or_else(|| AppError::Process(
-                            "Codex command/exec response did not contain exitCode".to_string()
-                        ))?;
-                    return Ok(exit_code as i32);
-                }
-                notification = notifications.recv() => {
-                    match notification {
-                        Ok(notification) => {
-                            forward_codex_output(notification, &request.process_id, output).await?;
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                            report_missed_output(output, count).await?;
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            return Err(AppError::Process(
-                                "Codex app-server notification channel closed".to_string(),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    async fn execute_windows_sandbox(
-        &self,
-        request: &BackendExecRequest,
-        output: &mpsc::Sender<BackendOutput>,
-    ) -> AppResult<i32> {
-        use tokio::io::AsyncReadExt;
-
-        let executable = self.runtime.executable().await.ok_or_else(|| {
-            AppError::Process(
-                "Codex runtime is unavailable. Install or refresh it in Terminal settings."
-                    .to_string(),
-            )
-        })?;
-        let argv = build_windows_sandbox_argv(request, &executable);
-        let (program, args) = argv
-            .split_first()
-            .ok_or_else(|| AppError::Process("Codex sandbox command was empty".to_string()))?;
-        let mut command = tokio::process::Command::new(program);
-        command
-            .args(args)
-            .current_dir(&request.workspace_root)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(false);
-        self.runtime
-            .apply_runtime_environment(&mut command, "codex_sandbox")
-            .await;
-        let mut child = command.spawn().map_err(|error| {
-            AppError::Process(format!("failed to start Codex sandbox: {error}"))
-        })?;
-        let pid = child
-            .id()
-            .ok_or_else(|| AppError::Process("Codex sandbox process has no pid".to_string()))?;
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        self.sandbox_processes
-            .insert(request.process_id.clone(), Arc::new(SandboxProcess { pid }));
-        let stdout_task = stdout.map(|mut stdout| {
-            let output = output.clone();
-            tokio::spawn(async move {
-                let mut buffer = [0_u8; 8192];
-                loop {
-                    match stdout.read(&mut buffer).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => {
-                            if output
-                                .send(BackendOutput {
-                                    stream: OutputStream::Stdout,
-                                    data: buffer[..read].to_vec(),
-                                })
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
-                }
-            })
-        });
-        let stderr_task = stderr.map(|mut stderr| {
-            let output = output.clone();
-            tokio::spawn(async move {
-                let mut buffer = [0_u8; 8192];
-                loop {
-                    match stderr.read(&mut buffer).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => {
-                            if output
-                                .send(BackendOutput {
-                                    stream: OutputStream::Stderr,
-                                    data: buffer[..read].to_vec(),
-                                })
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
-                }
-            })
-        });
-        let status = match tokio::time::timeout(
-            Duration::from_millis(MAX_PROCESS_LIFETIME_MS),
-            child.wait(),
-        )
-        .await
-        {
-            Ok(status) => status?,
-            Err(_) => {
-                let _ = tokio::process::Command::new("taskkill")
-                    .args(["/PID", &pid.to_string(), "/T", "/F"])
-                    .output()
-                    .await;
-                let _ = child.wait().await;
-                self.sandbox_processes.remove(&request.process_id);
-                return Err(AppError::Process(
-                    "Codex sandbox process exceeded one hour".to_string(),
-                ));
-            }
-        };
-        if let Some(task) = stdout_task {
-            let _ = task.await;
-        }
-        if let Some(task) = stderr_task {
-            let _ = task.await;
-        }
-        self.sandbox_processes.remove(&request.process_id);
-        Ok(status.code().unwrap_or(-1))
     }
 
     async fn execute_host_process(
@@ -329,7 +139,7 @@ impl CodexTerminalBackend {
     ) -> AppResult<i32> {
         use tokio::io::AsyncReadExt;
 
-        let argv = build_codex_shell_argv(&request.command, &request.cwd);
+        let argv = build_shell_argv(&request.command, &request.cwd);
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| AppError::Process("Host command was empty".to_string()))?;
@@ -347,9 +157,7 @@ impl CodexTerminalBackend {
         }
         let mut command = tokio::process::Command::from(std_command);
         command.kill_on_drop(false);
-        self.runtime
-            .apply_runtime_environment(&mut command, "codex_full_access")
-            .await;
+        apply_managed_path(&self.environment, &mut command).await;
         let mut child = command
             .spawn()
             .map_err(|error| AppError::Process(format!("failed to start host command: {error}")))?;
@@ -440,18 +248,72 @@ impl CodexTerminalBackend {
         Ok(status.code().unwrap_or(-1))
     }
 
-    async fn sandbox_process(&self, process_id: &str) -> Option<Arc<SandboxProcess>> {
-        for _ in 0..20 {
-            if let Some(process) = self
-                .sandbox_processes
-                .get(process_id)
-                .map(|entry| entry.value().clone())
-            {
-                return Some(process);
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        None
+    async fn execute_pty_process(
+        &self,
+        request: &BackendExecRequest,
+        output: &mpsc::Sender<BackendOutput>,
+    ) -> AppResult<i32> {
+        let argv = build_pty_shell_argv(&request.command, &request.cwd);
+        let (program, args) = argv
+            .split_first()
+            .ok_or_else(|| AppError::Process("Host command was empty".to_string()))?;
+        let mut command = CommandBuilder::new(program);
+        command.args(args);
+        command.cwd(&request.cwd);
+        apply_managed_path_to_pty(&self.environment, &mut command).await;
+
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|error| AppError::Process(format!("failed to open PTY: {error}")))?;
+        let child = pair
+            .slave
+            .spawn_command(command)
+            .map_err(|error| AppError::Process(format!("failed to start PTY command: {error}")))?;
+        // The slave handle belongs to the child side. Keeping it open in the parent can prevent
+        // ConPTY from completing input and shutdown on Windows.
+        drop(pair.slave);
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|error| AppError::Process(format!("failed to read PTY output: {error}")))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|error| AppError::Process(format!("failed to open PTY input: {error}")))?;
+        let process = Arc::new(PtyProcess {
+            master: std::sync::Mutex::new(pair.master),
+            writer: Arc::new(std::sync::Mutex::new(Some(writer))),
+            child: std::sync::Mutex::new(child),
+        });
+        self.pty_processes
+            .insert(request.process_id.clone(), process.clone());
+
+        let output = output.clone();
+        let reader_writer = Arc::downgrade(&process.writer);
+        let _reader_thread =
+            std::thread::spawn(move || read_pty_output(reader, output, reader_writer));
+
+        let wait_process = process.clone();
+        let status = tokio::task::spawn_blocking(move || {
+            let mut child = wait_process
+                .child
+                .lock()
+                .map_err(|_| AppError::Process("PTY child lock was poisoned".to_string()))?;
+            child.wait().map_err(|error| {
+                AppError::Process(format!("failed waiting for PTY command: {error}"))
+            })
+        })
+        .await
+        .map_err(|error| AppError::Process(format!("PTY wait task failed: {error}")))??;
+        close_pty_writer(&process);
+        self.pty_processes.remove(&request.process_id);
+        drop(process);
+        Ok(status.exit_code() as i32)
     }
 
     async fn host_process(&self, process_id: &str) -> Option<Arc<HostProcess>> {
@@ -468,130 +330,216 @@ impl CodexTerminalBackend {
         None
     }
 
-    async fn execution_path(&self, process_id: &str) -> Option<CodexExecutionPath> {
+    async fn pty_process(&self, process_id: &str) -> Option<Arc<PtyProcess>> {
         for _ in 0..20 {
-            if let Some(path) = self
-                .execution_paths
+            if let Some(process) = self
+                .pty_processes
                 .get(process_id)
-                .map(|entry| *entry.value())
+                .map(|entry| entry.value().clone())
             {
-                return Some(path);
+                return Some(process);
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         None
     }
-
-    async fn request_process_control(&self, method: &str, params: Value) -> AppResult<()> {
-        self.app_server.request(method, params).await.map(|_| ())
-    }
 }
 
 #[async_trait]
-impl TerminalBackend for CodexTerminalBackend {
+impl TerminalBackend for LocalTerminalBackend {
     async fn execute(
         &self,
         request: BackendExecRequest,
         output: mpsc::Sender<BackendOutput>,
     ) -> AppResult<i32> {
-        let path = if cfg!(windows) && request.access == TerminalAccess::Sandbox {
-            CodexExecutionPath::WindowsSandboxCli
-        } else if request.access == TerminalAccess::FullAccess {
-            CodexExecutionPath::HostProcess
+        if request.tty {
+            self.execute_pty_process(&request, &output).await
         } else {
-            CodexExecutionPath::AppServer
-        };
-        self.execution_paths
-            .insert(request.process_id.clone(), path);
-        let result = match path {
-            CodexExecutionPath::AppServer => self.execute_command_exec(&request, &output).await,
-            CodexExecutionPath::WindowsSandboxCli => {
-                self.execute_windows_sandbox(&request, &output).await
-            }
-            CodexExecutionPath::HostProcess => self.execute_host_process(&request, &output).await,
-        };
-        self.execution_paths.remove(&request.process_id);
-        result
+            self.execute_host_process(&request, &output).await
+        }
     }
 
     async fn write(&self, process_id: &str, data: &[u8], close_stdin: bool) -> AppResult<()> {
-        match self.execution_path(process_id).await {
-            Some(CodexExecutionPath::WindowsSandboxCli) => Err(AppError::BadRequest(
-                "Codex Windows sandbox commands are non-interactive; stdin continuation requires an approved full-access session"
-                    .to_string(),
-            )),
-            Some(CodexExecutionPath::HostProcess) => {
-                use tokio::io::AsyncWriteExt;
-
-                let process = self.host_process(process_id).await.ok_or_else(|| {
-                    AppError::Process(format!("host process '{process_id}' was not found"))
-                })?;
-                let mut stdin = process.stdin.lock().await;
-                if let Some(writer) = stdin.as_mut() {
-                    writer.write_all(data).await?;
-                    writer.flush().await?;
-                }
-                if close_stdin {
-                    *stdin = None;
-                }
-                Ok(())
-            }
-            _ => {
-                self.request_process_control(
-                    "command/exec/write",
-                    json!({
-                        "processId": process_id,
-                        "deltaBase64": (!data.is_empty()).then(|| BASE64_STANDARD.encode(data)),
-                        "closeStdin": close_stdin,
-                    }),
-                )
-                .await
-            }
+        if let Some(process) = self.pty_processes.get(process_id) {
+            return write_pty_process_async(process.value().clone(), data.to_vec(), close_stdin)
+                .await;
         }
+        if !self.host_processes.contains_key(process_id)
+            && let Some(process) = self.pty_process(process_id).await
+        {
+            return write_pty_process_async(process, data.to_vec(), close_stdin).await;
+        }
+        use tokio::io::AsyncWriteExt;
+
+        let process = self.host_process(process_id).await.ok_or_else(|| {
+            AppError::Process(format!("host process '{process_id}' was not found"))
+        })?;
+        let mut stdin = process.stdin.lock().await;
+        if let Some(writer) = stdin.as_mut() {
+            writer.write_all(data).await?;
+            writer.flush().await?;
+        }
+        if close_stdin {
+            *stdin = None;
+        }
+        Ok(())
     }
 
     async fn terminate(&self, process_id: &str) -> AppResult<()> {
-        match self.execution_path(process_id).await {
-            Some(CodexExecutionPath::WindowsSandboxCli) => {
-                let process = self.sandbox_process(process_id).await.ok_or_else(|| {
-                    AppError::Process(format!(
-                        "Codex sandbox process '{process_id}' was not found"
-                    ))
-                })?;
-                terminate_host_process_group(process.pid).await
-            }
-            Some(CodexExecutionPath::HostProcess) => {
-                let process = self.host_process(process_id).await.ok_or_else(|| {
-                    AppError::Process(format!("host process '{process_id}' was not found"))
-                })?;
-                terminate_host_process_group(process.pid).await
-            }
-            _ => {
-                self.request_process_control(
-                    "command/exec/terminate",
-                    json!({ "processId": process_id }),
-                )
-                .await
-            }
+        if let Some(process) = self.pty_processes.get(process_id) {
+            return terminate_pty_process_async(process.value().clone()).await;
         }
+        if !self.host_processes.contains_key(process_id)
+            && let Some(process) = self.pty_process(process_id).await
+        {
+            return terminate_pty_process_async(process).await;
+        }
+        let process = self.host_process(process_id).await.ok_or_else(|| {
+            AppError::Process(format!("host process '{process_id}' was not found"))
+        })?;
+        terminate_host_process_group(process.pid).await
     }
 
     async fn resize(&self, process_id: &str, rows: u16, cols: u16) -> AppResult<()> {
-        match self.execution_path(process_id).await {
-            Some(CodexExecutionPath::WindowsSandboxCli) => Err(AppError::BadRequest(
-                "Codex Windows sandbox sessions do not support PTY resize".to_string(),
-            )),
-            _ => {
-                self.request_process_control(
-                    "command/exec/resize",
-                    json!({
-                        "processId": process_id,
-                        "size": { "rows": rows, "cols": cols },
-                    }),
-                )
-                .await
+        let process = self.pty_process(process_id).await.ok_or_else(|| {
+            AppError::Process(format!("PTY process '{process_id}' was not found"))
+        })?;
+        tokio::task::spawn_blocking(move || resize_pty_process(&process, rows, cols))
+            .await
+            .map_err(|error| AppError::Process(format!("PTY resize task failed: {error}")))?
+    }
+}
+
+fn write_pty_process(process: &PtyProcess, data: &[u8], close_stdin: bool) -> AppResult<()> {
+    let mut writer = process
+        .writer
+        .lock()
+        .map_err(|_| AppError::Process("PTY writer lock was poisoned".to_string()))?;
+    if let Some(writer) = writer.as_mut() {
+        writer.write_all(data)?;
+        writer.flush()?;
+    }
+    if close_stdin {
+        *writer = None;
+    }
+    Ok(())
+}
+
+fn close_pty_writer(process: &PtyProcess) {
+    if let Ok(mut writer) = process.writer.lock() {
+        *writer = None;
+    }
+}
+
+async fn write_pty_process_async(
+    process: Arc<PtyProcess>,
+    data: Vec<u8>,
+    close_stdin: bool,
+) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || write_pty_process(&process, &data, close_stdin))
+        .await
+        .map_err(|error| AppError::Process(format!("PTY write task failed: {error}")))?
+}
+
+fn terminate_pty_process(process: &PtyProcess) -> AppResult<()> {
+    let mut child = process
+        .child
+        .lock()
+        .map_err(|_| AppError::Process("PTY child lock was poisoned".to_string()))?;
+    child.kill()?;
+    Ok(())
+}
+
+async fn terminate_pty_process_async(process: Arc<PtyProcess>) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || terminate_pty_process(&process))
+        .await
+        .map_err(|error| AppError::Process(format!("PTY terminate task failed: {error}")))?
+}
+
+fn resize_pty_process(process: &PtyProcess, rows: u16, cols: u16) -> AppResult<()> {
+    let master = process
+        .master
+        .lock()
+        .map_err(|_| AppError::Process("PTY master lock was poisoned".to_string()))?;
+    master
+        .resize(PtySize {
+            rows: rows.clamp(1, 500),
+            cols: cols.clamp(1, 500),
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| AppError::Process(format!("failed to resize PTY: {error}")))
+}
+
+async fn apply_managed_path(
+    environment: &Arc<dyn TerminalEnvironment>,
+    command: &mut tokio::process::Command,
+) {
+    let mut paths = environment.managed_bin_paths().await;
+    if let Some(current) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&current));
+    }
+    paths.dedup();
+    if let Ok(path) = std::env::join_paths(paths) {
+        command.env("PATH", path);
+    }
+}
+
+async fn apply_managed_path_to_pty(
+    environment: &Arc<dyn TerminalEnvironment>,
+    command: &mut CommandBuilder,
+) {
+    let mut paths = environment.managed_bin_paths().await;
+    if let Some(current) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&current));
+    }
+    paths.dedup();
+    if let Ok(path) = std::env::join_paths(paths) {
+        command.env("PATH", path);
+    }
+}
+
+fn read_pty_output(
+    mut reader: Box<dyn Read + Send>,
+    output: mpsc::Sender<BackendOutput>,
+    writer: std::sync::Weak<std::sync::Mutex<Option<Box<dyn Write + Send>>>>,
+) {
+    let mut buffer = [0_u8; 8192];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => {
+                respond_to_terminal_queries(&buffer[..read], &writer);
+                if output
+                    .blocking_send(BackendOutput {
+                        stream: OutputStream::Stdout,
+                        data: buffer[..read].to_vec(),
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
         }
+    }
+}
+
+fn respond_to_terminal_queries(
+    data: &[u8],
+    writer: &std::sync::Weak<std::sync::Mutex<Option<Box<dyn Write + Send>>>>,
+) {
+    if !data.windows(4).any(|window| window == b"\x1b[6n") {
+        return;
+    }
+    let Some(writer) = writer.upgrade() else {
+        return;
+    };
+    let Ok(mut writer) = writer.lock() else {
+        return;
+    };
+    if let Some(writer) = writer.as_mut() {
+        let _ = writer.write_all(b"\x1b[1;1R");
+        let _ = writer.flush();
     }
 }
 
@@ -633,111 +581,8 @@ async fn terminate_host_process_group(pid: u32) -> AppResult<()> {
     }
 }
 
-async fn report_missed_output(output: &mpsc::Sender<BackendOutput>, count: u64) -> AppResult<()> {
-    output
-        .send(BackendOutput {
-            stream: OutputStream::Stderr,
-            data: format!("\n[WeiAgent missed {count} Codex output events]\n").into_bytes(),
-        })
-        .await
-        .map_err(|_| AppError::Process("terminal output receiver closed".to_string()))
-}
-
-async fn drain_codex_output(
-    notifications: &mut tokio::sync::broadcast::Receiver<CodexNotification>,
-    process_id: &str,
-    output: &mpsc::Sender<BackendOutput>,
-) -> AppResult<()> {
-    loop {
-        match notifications.try_recv() {
-            Ok(notification) => forward_codex_output(notification, process_id, output).await?,
-            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(count)) => {
-                report_missed_output(output, count).await?;
-            }
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-            | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return Ok(()),
-        }
-    }
-}
-
-async fn forward_codex_output(
-    notification: CodexNotification,
-    process_id: &str,
-    output: &mpsc::Sender<BackendOutput>,
-) -> AppResult<()> {
-    if notification.method != "command/exec/outputDelta"
-        || notification.params["processId"].as_str() != Some(process_id)
-    {
-        return Ok(());
-    }
-    forward_encoded_output(&notification.params, output).await
-}
-
-async fn forward_encoded_output(
-    params: &Value,
-    output: &mpsc::Sender<BackendOutput>,
-) -> AppResult<()> {
-    let Some(encoded) = params["deltaBase64"].as_str() else {
-        return Ok(());
-    };
-    let data = BASE64_STANDARD.decode(encoded).map_err(|error| {
-        AppError::Process(format!("invalid output from Codex process: {error}"))
-    })?;
-    let stream = match params["stream"].as_str() {
-        Some("stderr") => OutputStream::Stderr,
-        _ => OutputStream::Stdout,
-    };
-    output
-        .send(BackendOutput { stream, data })
-        .await
-        .map_err(|_| AppError::Process("terminal output receiver closed".to_string()))
-}
-
-fn build_codex_exec(request: &BackendExecRequest) -> (Vec<String>, Value, bool) {
-    let policy = match request.access {
-        TerminalAccess::Sandbox => json!({
-            "type": "workspaceWrite",
-            "writableRoots": [request.workspace_root],
-            "networkAccess": false,
-        }),
-        TerminalAccess::FullAccess => json!({ "type": "dangerFullAccess" }),
-    };
-    (
-        build_codex_shell_argv(&request.command, &request.cwd),
-        policy,
-        request.tty,
-    )
-}
-
-fn build_windows_sandbox_argv(
-    request: &BackendExecRequest,
-    executable: &CodexExecutable,
-) -> Vec<String> {
-    let mut command = vec![executable.program.to_string_lossy().to_string()];
-    command.extend([
-        "-c".to_string(),
-        "windows.sandbox=\"unelevated\"".to_string(),
-        "-c".to_string(),
-        "features.remote_plugin=false".to_string(),
-        "-c".to_string(),
-        "features.plugins=false".to_string(),
-        "-c".to_string(),
-        "features.apps=false".to_string(),
-        "-c".to_string(),
-        "features.hooks=false".to_string(),
-        "sandbox".to_string(),
-        "--permissions-profile".to_string(),
-        ":workspace".to_string(),
-        "-C".to_string(),
-        os_command_path(&request.workspace_root),
-    ]);
-    command.extend(build_codex_shell_argv(&request.command, &request.cwd));
-    command
-}
-
-/// Builds the host-shell argv passed to Codex. Production code never spawns this argv directly;
-/// Codex app-server or `codex sandbox` owns the actual shell process and its permissions.
-fn build_codex_shell_argv(shell_command: &str, cwd: &Path) -> Vec<String> {
+/// Builds the native host-shell argv used by the local process backend.
+fn build_shell_argv(shell_command: &str, cwd: &Path) -> Vec<String> {
     let shell = selected_host_shell();
     match shell.kind() {
         #[cfg(windows)]
@@ -763,6 +608,10 @@ fn build_codex_shell_argv(shell_command: &str, cwd: &Path) -> Vec<String> {
             format!("cd -- {} && {}", quote_unix_path(cwd), shell_command),
         ],
     }
+}
+
+fn build_pty_shell_argv(shell_command: &str, cwd: &Path) -> Vec<String> {
+    build_shell_argv(shell_command, cwd)
 }
 
 pub struct TerminalManager {
@@ -962,9 +811,9 @@ impl OutputBuffer {
 }
 
 impl TerminalManager {
-    pub fn new(runtime: Arc<CodexRuntimeManager>) -> Arc<Self> {
+    pub fn new(environment: Arc<dyn TerminalEnvironment>) -> Arc<Self> {
         Arc::new(Self {
-            backend: Arc::new(CodexTerminalBackend::new(runtime)),
+            backend: Arc::new(LocalTerminalBackend::new(environment)),
             processes: DashMap::new(),
             spawn_lock: Mutex::new(()),
         })
@@ -1192,7 +1041,12 @@ impl TerminalManager {
         }
         record.stop_requested.store(true, Ordering::SeqCst);
         self.backend.terminate(id).await?;
-        Ok(self.wait_for_completion(id, Duration::from_secs(5)).await)
+        if let Some(info) = self.wait_for_completion(id, Duration::from_secs(5)).await
+            && info.status == ProcessStatus::Running
+        {
+            self.mark_stopped(&record).await;
+        }
+        Ok(Some(snapshot(&record).await))
     }
 
     pub async fn resize(&self, id: &str, rows: u16, cols: u16) -> AppResult<ProcessInfo> {
@@ -1255,6 +1109,17 @@ impl TerminalManager {
 
     fn record(&self, id: &str) -> Option<Arc<ProcessRecord>> {
         self.processes.get(id).map(|entry| entry.value().clone())
+    }
+
+    async fn mark_stopped(&self, record: &ProcessRecord) {
+        let mut state = record.state.lock().await;
+        if state.status == ProcessStatus::Running {
+            state.status = ProcessStatus::Stopped;
+            state.finished_at = Some(Utc::now());
+            state.duration_ms = Some(record.started_instant.elapsed().as_millis() as u64);
+        }
+        drop(state);
+        record.changed.notify_waiters();
     }
 
     async fn running_count(&self, agent_id: Option<Uuid>) -> usize {
@@ -1339,7 +1204,9 @@ pub async fn execute_terminal(
 
     let escalation_requested = request.sandbox_permissions == SandboxPermissions::RequireEscalated;
     let full_access_mode = config.permission_mode == TerminalPermissionMode::FullAccess;
-    let allow_outside_workspace = full_access_mode || escalation_requested;
+    let context_granted = config.has_context_grant(&request.command, request.cwd.as_deref());
+    let allow_outside_workspace =
+        full_access_mode || escalation_requested || context_granted || request.approved;
     let workspace = match resolve_workspace(
         request.cwd.as_deref(),
         config,
@@ -1350,6 +1217,12 @@ pub async fn execute_terminal(
         Err(WorkspaceResolutionError::Invalid(message)) => {
             return ToolResult::Error { message };
         }
+        Err(WorkspaceResolutionError::Outside) => {
+            return ToolResult::PendingApproval {
+                command: request.command.clone(),
+                approval_id: Uuid::new_v4().to_string(),
+            };
+        }
         Err(WorkspaceResolutionError::Blocked(reason)) => {
             return ToolResult::Blocked {
                 reason,
@@ -1359,8 +1232,6 @@ pub async fn execute_terminal(
         }
     };
 
-    let context_granted =
-        escalation_requested && config.has_context_grant(&request.command, request.cwd.as_deref());
     if !full_access_mode && escalation_requested && !context_granted && !request.approved {
         return ToolResult::PendingApproval {
             command: request.command.clone(),
@@ -1368,42 +1239,15 @@ pub async fn execute_terminal(
         };
     }
 
-    let access = if full_access_mode || escalation_requested {
-        TerminalAccess::FullAccess
-    } else {
-        TerminalAccess::Sandbox
-    };
     let tty = request.tty.unwrap_or(false);
-    if cfg!(windows) && access == TerminalAccess::Sandbox && tty {
-        return ToolResult::Blocked {
-            reason: "Codex Windows sandbox cannot provide a PTY. Use tty=false for a short non-interactive command, or request full access with a justification when an interactive terminal is required."
-                .to_string(),
-            code: None,
-            details: None,
-        };
-    }
-    if cfg!(windows) && access == TerminalAccess::Sandbox && request.background.unwrap_or(false) {
-        return ToolResult::Blocked {
-            reason: "Codex Windows sandbox does not support observable background or interactive sessions. Run this as a short foreground command, or request full access with a justification for long-lived work."
-                .to_string(),
-            code: None,
-            details: None,
-        };
-    }
     let process_id = Uuid::new_v4().to_string();
-    let runtime = match access {
-        TerminalAccess::Sandbox => "codex_sandbox",
-        TerminalAccess::FullAccess => "codex_full_access",
-    }
-    .to_string();
+    let runtime = "local_shell".to_string();
     if let Err(error) = manager
         .spawn(
             BackendExecRequest {
                 process_id: process_id.clone(),
                 command: request.command.clone(),
-                workspace_root: workspace.root.clone(),
                 cwd: workspace.cwd.clone(),
-                access,
                 tty,
             },
             ProcessMetadata {
@@ -1429,7 +1273,7 @@ pub async fn execute_terminal(
         lease.disarm();
         return ToolResult::Running {
             process_id,
-            message: format!("Command started in a Codex-managed background session ({runtime})"),
+            message: format!("Command started in a local background session ({runtime})"),
             stdout: String::new(),
             stderr: String::new(),
             duration_ms: 0,
@@ -1447,29 +1291,19 @@ pub async fn execute_terminal(
         .await
     {
         Some(info) if info.status == ProcessStatus::Running => {
-            if cfg!(windows) && access == TerminalAccess::Sandbox {
-                let _ = manager.terminate(&process_id).await;
-                manager.remove(&process_id);
-                ToolResult::Error {
-                    message: format!(
-                        "Codex Windows sandbox command exceeded {timeout_ms}ms and was stopped. Request full access with a justification for background or interactive work."
-                    ),
-                }
-            } else {
-                manager.promote_to_background(&process_id);
-                let cursor = info.output_cursor;
-                let (stdout, stderr) = truncate_terminal_output(info.stdout, info.stderr);
-                ToolResult::Running {
-                    process_id,
-                    message: format!(
-                        "Command exceeded {timeout_ms}ms and continues in a Codex-managed session"
-                    ),
-                    stdout,
-                    stderr,
-                    duration_ms: info.duration_ms,
-                    runtime: Some(runtime),
-                    output_cursor: cursor,
-                }
+            manager.promote_to_background(&process_id);
+            let cursor = info.output_cursor;
+            let (stdout, stderr) = truncate_terminal_output(info.stdout, info.stderr);
+            ToolResult::Running {
+                process_id,
+                message: format!(
+                    "Command exceeded {timeout_ms}ms and continues in a local session"
+                ),
+                stdout,
+                stderr,
+                duration_ms: info.duration_ms,
+                runtime: Some(runtime),
+                output_cursor: cursor,
             }
         }
         Some(info) => {
@@ -1556,13 +1390,13 @@ impl Drop for TerminalLease {
 }
 
 struct ResolvedWorkspace {
-    root: PathBuf,
     cwd: PathBuf,
 }
 
 #[derive(Debug)]
 enum WorkspaceResolutionError {
     Invalid(String),
+    Outside,
     Blocked(String),
 }
 
@@ -1622,15 +1456,9 @@ fn resolve_workspace(
         .find(|root| crate::fsutil::path_is_within(&canonical_cwd, root))
         .cloned();
     if matching_root.is_none() && !allow_outside_workspace {
-        return Err(WorkspaceResolutionError::Blocked(format!(
-            "Working directory '{}' is outside the configured Codex sandbox roots. Retry with sandbox_permissions='require_escalated' if the user asked to work there.",
-            canonical_cwd.display()
-        )));
+        return Err(WorkspaceResolutionError::Outside);
     }
-    Ok(ResolvedWorkspace {
-        root: matching_root.unwrap_or(default_root),
-        cwd: canonical_cwd,
-    })
+    Ok(ResolvedWorkspace { cwd: canonical_cwd })
 }
 
 async fn snapshot(record: &ProcessRecord) -> ProcessInfo {
@@ -1752,14 +1580,6 @@ fn windows_powershell_script(shell_command: &str, cwd: &Path) -> String {
 #[cfg(not(windows))]
 fn quote_unix_path(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
-}
-
-fn os_command_path(path: &Path) -> String {
-    if cfg!(windows) {
-        windows_command_path(path)
-    } else {
-        path.to_string_lossy().to_string()
-    }
 }
 
 fn windows_command_path(path: &Path) -> String {
@@ -1888,7 +1708,7 @@ impl TerminalBackend for TestTerminalBackend {
     ) -> AppResult<i32> {
         use tokio::io::AsyncReadExt;
 
-        let argv = build_codex_shell_argv(&request.command, &request.cwd);
+        let argv = build_shell_argv(&request.command, &request.cwd);
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| AppError::Process("test terminal command was empty".to_string()))?;
@@ -2018,6 +1838,15 @@ impl TerminalBackend for TestTerminalBackend {
 mod tests {
     use super::*;
 
+    struct EmptyTerminalEnvironment;
+
+    #[async_trait]
+    impl TerminalEnvironment for EmptyTerminalEnvironment {
+        async fn managed_bin_paths(&self) -> Vec<PathBuf> {
+            Vec::new()
+        }
+    }
+
     struct ImmediateOutputBackend;
 
     #[async_trait]
@@ -2059,7 +1888,7 @@ mod tests {
     #[test]
     fn selected_windows_shell_drives_the_executable_and_command_syntax() {
         let cwd = Path::new(r"D:\workspace path");
-        let argv = build_codex_shell_argv("Write-Output 'ok'", cwd);
+        let argv = build_shell_argv("Write-Output 'ok'", cwd);
         let shell = selected_host_shell();
 
         assert_eq!(Path::new(&argv[0]), shell.executable());
@@ -2137,6 +1966,85 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn pty_session_accepts_input_and_resize() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = TerminalManager::new(Arc::new(EmptyTerminalEnvironment));
+        let config = TerminalToolConfig {
+            permission_mode: TerminalPermissionMode::FullAccess,
+            allowed_cwd_roots: vec![root.path().to_string_lossy().to_string()],
+            ..TerminalToolConfig::default()
+        };
+        let command = match selected_host_shell().kind() {
+            #[cfg(windows)]
+            HostShellKind::PowerShell7 | HostShellKind::WindowsPowerShell => {
+                "$value = Read-Host value; Write-Output ('echo:' + $value)"
+            }
+            #[cfg(windows)]
+            HostShellKind::Cmd => "set /p value= & echo echo:%value%",
+            #[cfg(not(windows))]
+            HostShellKind::PosixSh => "read value; printf 'echo:%s\\n' \"$value\"",
+        };
+        let result = execute_terminal(
+            &ExecuteTerminalRequest {
+                command: command.to_string(),
+                cwd: None,
+                timeout_ms: Some(5_000),
+                background: Some(true),
+                tty: Some(true),
+                sandbox_permissions: SandboxPermissions::UseDefault,
+                approved: false,
+                agent_id: Uuid::new_v4(),
+                conversation_id: Uuid::new_v4(),
+                tool_call_id: "pty-session-test".to_string(),
+            },
+            &config,
+            root.path(),
+            &manager,
+        )
+        .await;
+        let ToolResult::Running { process_id, .. } = result else {
+            panic!("expected a running PTY session, got {result:?}");
+        };
+
+        let newline: &[u8] = if cfg!(windows) {
+            b"hello\r\n"
+        } else {
+            b"hello\n"
+        };
+        let resize_result =
+            tokio::time::timeout(Duration::from_secs(2), manager.resize(&process_id, 30, 100))
+                .await;
+        resize_result
+            .expect("PTY resize should return")
+            .expect("PTY resize should succeed");
+        let write_result = tokio::time::timeout(
+            Duration::from_secs(2),
+            manager.write(&process_id, newline, false),
+        )
+        .await;
+        if write_result.is_err() {
+            let _ = manager.terminate(&process_id).await;
+            panic!("PTY write should return");
+        }
+        write_result.unwrap().unwrap();
+        let info = manager
+            .wait_for_completion(&process_id, Duration::from_secs(5))
+            .await
+            .expect("PTY session should finish");
+        if info.status == ProcessStatus::Running {
+            let _ = manager.terminate(&process_id).await;
+            panic!("PTY session stayed running; output: {}", info.stdout);
+        }
+        assert_eq!(info.status, ProcessStatus::Completed);
+        assert!(
+            info.stdout.contains("echo:hello"),
+            "output: {}",
+            info.stdout
+        );
+        manager.remove(&process_id);
+    }
+
     #[test]
     fn empty_roots_use_explicit_default_workspace() {
         let data_dir = tempfile::tempdir().unwrap();
@@ -2149,7 +2057,6 @@ mod tests {
         };
         let expected = std::fs::canonicalize(data_dir.path()).unwrap();
 
-        assert_eq!(workspace.root, expected);
         assert_eq!(workspace.cwd, expected);
     }
 
@@ -2165,12 +2072,10 @@ mod tests {
         let expected_configured = std::fs::canonicalize(configured_root.path()).unwrap();
 
         let implicit = resolve_workspace(None, &config, default_workspace.path(), false).unwrap();
-        assert_eq!(implicit.root, expected_default);
         assert_eq!(implicit.cwd, expected_default);
 
         let relative =
             resolve_workspace(Some("."), &config, default_workspace.path(), false).unwrap();
-        assert_eq!(relative.root, expected_default);
         assert_eq!(relative.cwd, expected_default);
 
         let explicit = resolve_workspace(
@@ -2180,8 +2085,72 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(explicit.root, expected_configured);
         assert_eq!(explicit.cwd, expected_configured);
+    }
+
+    #[tokio::test]
+    async fn outside_workspace_requests_approval_with_default_permissions() {
+        let default_workspace = tempfile::tempdir().unwrap();
+        let outside_workspace = tempfile::tempdir().unwrap();
+        let manager = TerminalManager::new_for_tests();
+        let config = TerminalToolConfig::default();
+
+        let result = execute_terminal(
+            &ExecuteTerminalRequest {
+                command: "echo outside".to_string(),
+                cwd: Some(outside_workspace.path().display().to_string()),
+                timeout_ms: Some(5_000),
+                background: Some(false),
+                tty: Some(false),
+                sandbox_permissions: SandboxPermissions::UseDefault,
+                approved: false,
+                agent_id: Uuid::new_v4(),
+                conversation_id: Uuid::new_v4(),
+                tool_call_id: "outside-workspace-approval".to_string(),
+            },
+            &config,
+            default_workspace.path(),
+            &manager,
+        )
+        .await;
+
+        assert!(matches!(result, ToolResult::PendingApproval { .. }));
+    }
+
+    #[tokio::test]
+    async fn approved_outside_workspace_command_executes_with_default_permissions() {
+        let default_workspace = tempfile::tempdir().unwrap();
+        let outside_workspace = tempfile::tempdir().unwrap();
+        let manager = TerminalManager::new_for_tests();
+        let config = TerminalToolConfig::default();
+
+        let result = execute_terminal(
+            &ExecuteTerminalRequest {
+                command: "echo approved".to_string(),
+                cwd: Some(outside_workspace.path().display().to_string()),
+                timeout_ms: Some(5_000),
+                background: Some(false),
+                tty: Some(false),
+                sandbox_permissions: SandboxPermissions::UseDefault,
+                approved: true,
+                agent_id: Uuid::new_v4(),
+                conversation_id: Uuid::new_v4(),
+                tool_call_id: "approved-outside-workspace".to_string(),
+            },
+            &config,
+            default_workspace.path(),
+            &manager,
+        )
+        .await;
+
+        let ToolResult::Completed {
+            stdout, exit_code, ..
+        } = result
+        else {
+            panic!("approved outside-workspace command failed: {result:?}");
+        };
+        assert_eq!(exit_code, 0);
+        assert!(stdout.to_ascii_lowercase().contains("approved"));
     }
 
     #[test]
@@ -2290,9 +2259,7 @@ mod tests {
                 BackendExecRequest {
                     process_id: process_id.clone(),
                     command: "immediate".to_string(),
-                    workspace_root: root.path().to_path_buf(),
                     cwd: root.path().to_path_buf(),
-                    access: TerminalAccess::FullAccess,
                     tty: false,
                 },
                 ProcessMetadata {
@@ -2380,172 +2347,5 @@ mod tests {
             output.contains("Got:alpha"),
             "unexpected output: {output:?}"
         );
-    }
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn windows_sandbox_rejects_background_sessions() {
-        let root = tempfile::tempdir().unwrap();
-        let manager = TerminalManager::new_for_tests();
-        let config = TerminalToolConfig {
-            permission_mode: TerminalPermissionMode::RequestApproval,
-            allowed_cwd_roots: vec![root.path().to_string_lossy().to_string()],
-            ..TerminalToolConfig::default()
-        };
-        let result = execute_terminal(
-            &ExecuteTerminalRequest {
-                command: "echo background".to_string(),
-                cwd: None,
-                timeout_ms: Some(5_000),
-                background: Some(true),
-                tty: Some(false),
-                sandbox_permissions: SandboxPermissions::UseDefault,
-                approved: false,
-                agent_id: Uuid::new_v4(),
-                conversation_id: Uuid::new_v4(),
-                tool_call_id: "windows-sandbox-background".to_string(),
-            },
-            &config,
-            root.path(),
-            &manager,
-        )
-        .await;
-        let ToolResult::Blocked { reason, .. } = result else {
-            panic!("expected Windows sandbox background command to be blocked: {result:?}");
-        };
-        assert!(reason.contains("foreground"));
-        assert!(manager.list(None).await.is_empty());
-    }
-
-    #[tokio::test]
-    #[ignore = "requires an installed Codex runtime"]
-    async fn real_codex_backend_runs_full_access_and_sandbox_command() {
-        let data = std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join("weiagent-codex-integration-data");
-        let _ = std::fs::remove_dir_all(&data);
-        std::fs::create_dir_all(&data).unwrap();
-        let workspace = std::env::current_dir().unwrap();
-        let runtime = Arc::new(CodexRuntimeManager::new(&data).unwrap());
-        let status = runtime.initialize().await.unwrap();
-        assert!(
-            status.available,
-            "Codex runtime unavailable: {:?}",
-            status.error
-        );
-        let manager = TerminalManager::new(runtime.clone());
-
-        let full_config = TerminalToolConfig {
-            permission_mode: TerminalPermissionMode::FullAccess,
-            allowed_cwd_roots: vec![workspace.to_string_lossy().to_string()],
-            ..TerminalToolConfig::default()
-        };
-        let full = execute_terminal(
-            &ExecuteTerminalRequest {
-                command: "echo codex-full-access".to_string(),
-                cwd: None,
-                timeout_ms: Some(30_000),
-                background: Some(false),
-                tty: Some(false),
-                sandbox_permissions: SandboxPermissions::UseDefault,
-                approved: false,
-                agent_id: Uuid::new_v4(),
-                conversation_id: Uuid::new_v4(),
-                tool_call_id: "real-full".to_string(),
-            },
-            &full_config,
-            &workspace,
-            &manager,
-        )
-        .await;
-        let ToolResult::Completed { stdout, .. } = full else {
-            panic!("full access command failed: {full:?}");
-        };
-        assert!(stdout.contains("codex-full-access"));
-
-        let interactive_command = match selected_host_shell().kind() {
-            #[cfg(windows)]
-            HostShellKind::PowerShell7 | HostShellKind::WindowsPowerShell => {
-                "Write-Output 'Prompt'; $x=[Console]::In.ReadLine(); Write-Output ('Got:' + $x)"
-            }
-            #[cfg(windows)]
-            HostShellKind::Cmd => r#"cmd.exe /V:ON /D /S /C "set /p x=Prompt: & echo Got:!x!""#,
-            #[cfg(not(windows))]
-            HostShellKind::PosixSh => {
-                "printf 'Prompt\\n'; read value; printf 'Got:%s\\n' \"$value\""
-            }
-        };
-        let interactive = execute_terminal(
-            &ExecuteTerminalRequest {
-                command: interactive_command.to_string(),
-                cwd: None,
-                timeout_ms: Some(30_000),
-                background: Some(true),
-                tty: Some(false),
-                sandbox_permissions: SandboxPermissions::UseDefault,
-                approved: false,
-                agent_id: Uuid::new_v4(),
-                conversation_id: Uuid::new_v4(),
-                tool_call_id: "real-interactive".to_string(),
-            },
-            &full_config,
-            &workspace,
-            &manager,
-        )
-        .await;
-        let ToolResult::Running { process_id, .. } = interactive else {
-            panic!("full access interactive command did not start: {interactive:?}");
-        };
-        let (_, prompt, prompt_error, cursor) = manager
-            .read_since(&process_id, 0, Duration::from_secs(20))
-            .await
-            .unwrap();
-        assert!(
-            prompt.contains("Prompt"),
-            "unexpected interactive prompt: {prompt:?}, stderr: {prompt_error:?}"
-        );
-        manager.write(&process_id, b"alpha\n", false).await.unwrap();
-        let info = manager
-            .wait_for_completion(&process_id, Duration::from_secs(20))
-            .await
-            .unwrap();
-        assert_eq!(info.status, ProcessStatus::Completed);
-        let (_, output, error_output, _) = manager
-            .read_since(&process_id, cursor, Duration::ZERO)
-            .await
-            .unwrap();
-        assert!(
-            output.contains("Got:alpha"),
-            "unexpected interactive output: {output:?}, stderr: {error_output:?}"
-        );
-
-        let sandbox_config = TerminalToolConfig {
-            permission_mode: TerminalPermissionMode::RequestApproval,
-            allowed_cwd_roots: vec![workspace.to_string_lossy().to_string()],
-            ..TerminalToolConfig::default()
-        };
-        let sandbox = execute_terminal(
-            &ExecuteTerminalRequest {
-                command: "echo codex-sandbox".to_string(),
-                cwd: None,
-                timeout_ms: Some(30_000),
-                background: Some(false),
-                tty: Some(false),
-                sandbox_permissions: SandboxPermissions::UseDefault,
-                approved: false,
-                agent_id: Uuid::new_v4(),
-                conversation_id: Uuid::new_v4(),
-                tool_call_id: "real-sandbox".to_string(),
-            },
-            &sandbox_config,
-            &workspace,
-            &manager,
-        )
-        .await;
-        let ToolResult::Completed { stdout, .. } = sandbox else {
-            panic!("sandbox command failed: {sandbox:?}");
-        };
-        assert!(stdout.contains("codex-sandbox"));
     }
 }

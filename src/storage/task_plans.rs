@@ -83,17 +83,18 @@ impl super::Store {
     pub async fn read_task_plan(&self, conversation_id: Uuid) -> AppResult<Option<TaskPlan>> {
         self.database
             .call(move |conn| {
-                Ok(conn.query_row(
-                    "SELECT planning_id, conversation_message_id, explanation, plan_json,
+                Ok(conn
+                    .query_row(
+                        "SELECT planning_id, conversation_message_id, explanation, plan_json,
                             created_at, updated_at, active
                      FROM task_plans
                      WHERE conversation_id = ?1 AND active = 1
                      ORDER BY updated_at DESC
                      LIMIT 1",
-                    [conversation_id.to_string()],
-                    |row| task_plan_from_row(row, conversation_id),
-                )
-                .optional()?)
+                        [conversation_id.to_string()],
+                        |row| task_plan_from_row(row, conversation_id),
+                    )
+                    .optional()?)
             })
             .await
     }
@@ -446,7 +447,10 @@ mod tests {
         assert!(message.contains("First task"));
         assert!(message.contains("in_progress"));
         assert!(message.contains("Third task"));
-        assert_eq!(store.read_task_plans(conversation_id).await.unwrap().len(), 1);
+        assert_eq!(
+            store.read_task_plans(conversation_id).await.unwrap().len(),
+            1
+        );
     }
 
     #[tokio::test]

@@ -220,7 +220,7 @@ fn build_openai_responses_request(
         );
     }
     apply_openai_fields(&mut body, provider, &context);
-    // Codex treats the app conversation as its session and reuses this key for
+    // The app conversation is the session and reuses this key for
     // every turn, independent of optional provider cache settings.
     body.insert(
         "include".to_string(),

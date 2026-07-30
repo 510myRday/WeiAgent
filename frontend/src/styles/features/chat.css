@@ -902,6 +902,22 @@
   white-space: nowrap;
 }
 
+.message-tool__background-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 19px;
+  padding: 0 6px;
+  border: 1px solid var(--color-info-border);
+  border-radius: 999px;
+  background: var(--color-info-soft);
+  color: var(--color-info);
+  font-size: 11px;
+  font-weight: var(--font-weight-emphasis);
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .message-tool__pulse {
   width: 5px;
   height: 5px;

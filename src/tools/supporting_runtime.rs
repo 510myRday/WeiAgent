@@ -15,7 +15,7 @@ use tokio::{fs, io::AsyncWriteExt, process::Command};
 use uuid::Uuid;
 
 use crate::{
-    domain::{CodexRuntimeSource, RuntimeComponentKind, RuntimeComponentStatus},
+    domain::{RuntimeComponentKind, RuntimeComponentStatus, RuntimeSource},
     error::{AppError, AppResult},
 };
 
@@ -34,7 +34,7 @@ pub fn latest_version_cache_ttl() -> Duration {
 struct ProbeCandidate {
     program: PathBuf,
     args: &'static [&'static str],
-    source: CodexRuntimeSource,
+    source: RuntimeSource,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,9 +180,6 @@ async fn fetch_latest_component_version(
             .max()
             .map(|version| version.to_string())
             .ok_or_else(|| AppError::Process("no stable Git release was found".to_string())),
-        RuntimeComponentKind::Codex => Err(AppError::BadRequest(
-            "Codex version is managed by the terminal runtime manager".to_string(),
-        )),
     }
 }
 
@@ -258,9 +255,6 @@ pub async fn install_component(
             }
             install_python(runtimes_root, client).await
         }
-        RuntimeComponentKind::Codex => Err(AppError::BadRequest(
-            "Codex is managed by the terminal runtime manager".to_string(),
-        )),
     }
 }
 
@@ -278,7 +272,7 @@ async fn detect_component(
 ) -> RuntimeComponentStatus {
     let managed_installed = candidates
         .iter()
-        .any(|candidate| candidate.source == CodexRuntimeSource::Managed);
+        .any(|candidate| candidate.source == RuntimeSource::Managed);
     let mut last_error = None;
     for candidate in candidates {
         match probe_version(&candidate.program, candidate.args).await {
@@ -377,7 +371,7 @@ fn system_candidate(program: &'static str, args: &'static [&'static str]) -> Pro
     ProbeCandidate {
         program: PathBuf::from(program),
         args,
-        source: CodexRuntimeSource::System,
+        source: RuntimeSource::System,
     }
 }
 
@@ -388,7 +382,7 @@ async fn managed_programs(root: &Path, expected: &str) -> Vec<ProbeCandidate> {
         .map(|program| ProbeCandidate {
             program,
             args: &["--version"],
-            source: CodexRuntimeSource::Managed,
+            source: RuntimeSource::Managed,
         })
         .collect()
 }
@@ -1121,7 +1115,6 @@ fn component_cache_key(kind: RuntimeComponentKind) -> Option<&'static str> {
         RuntimeComponentKind::Python => Some("python"),
         RuntimeComponentKind::Uv => Some("uv"),
         RuntimeComponentKind::Git => Some("git"),
-        RuntimeComponentKind::Codex => None,
     }
 }
 
@@ -1158,7 +1151,7 @@ async fn write_component_latest_cache(
     version: &str,
 ) -> AppResult<()> {
     let path = component_latest_cache_path(cache_root, kind).ok_or_else(|| {
-        AppError::BadRequest("Codex version is managed by the terminal runtime manager".to_string())
+        AppError::BadRequest("component latest version cache key is unavailable".to_string())
     })?;
     let cache = ComponentLatestVersionCache {
         version: version.to_string(),

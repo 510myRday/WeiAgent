@@ -48,15 +48,15 @@ async fn main() -> AppResult<()> {
     )?);
     let llm_registry = Arc::new(DefaultLlmRegistry::new(llm_logger.clone()));
     let approval_manager = Arc::new(tools::approval::ApprovalManager::new());
-    let codex_runtime = Arc::new(tools::runtime::CodexRuntimeManager::new(&config.data_dir)?);
-    let runtime_status = codex_runtime.initialize().await?;
+    let environment_runtime = Arc::new(tools::runtime::EnvironmentRuntimeManager::new(
+        &config.data_dir,
+    )?);
+    let environment_status = environment_runtime.initialize().await?;
     tracing::info!(
-        available = runtime_status.available,
-        source = ?runtime_status.source,
-        version = ?runtime_status.detected_version,
-        "Codex runtime status"
+        components = environment_status.components.len(),
+        "Local environment status"
     );
-    let terminal_manager = tools::terminal::TerminalManager::new(codex_runtime.clone());
+    let terminal_manager = tools::terminal::TerminalManager::new(environment_runtime.clone());
     tokio::spawn(terminal_manager.clone().cleanup_loop());
     let tool_registry = Arc::new(tools::registry::ToolRegistry::with_builtin_tools());
     let state = AppState {
@@ -66,7 +66,7 @@ async fn main() -> AppResult<()> {
         llm_logger: llm_logger.clone(),
         terminal_manager,
         approval_manager,
-        codex_runtime,
+        environment_runtime,
         tool_registry,
         run_manager: Arc::new(app::RunManager::new()),
     };

@@ -10,8 +10,9 @@ use crate::{
     app::AppState,
     domain::{
         AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision,
-        ApprovalRequest, ApprovalResponse, CodexRuntimeStatus, ProcessInfo, RuntimeComponentKind,
-        WebSearchKeyStatusRecord, WebSearchProviderKind, WebSearchSourceConfig,
+        ApprovalRequest, ApprovalResponse, EnvironmentRuntimeStatus, ProcessInfo,
+        RuntimeComponentKind, WebSearchKeyStatusRecord, WebSearchProviderKind,
+        WebSearchSourceConfig,
     },
     error::{AppError, AppResult},
     tools::approval::ApprovalResolution,
@@ -519,25 +520,30 @@ pub async fn check_web_search_keys(
     Ok(Json(WebSearchKeyCheckResponse { source_id, results }))
 }
 
-pub async fn read_codex_runtime(
+pub async fn read_environment_runtime(
     State(state): State<AppState>,
-) -> AppResult<Json<CodexRuntimeStatus>> {
-    Ok(Json(state.codex_runtime.status().await))
+) -> AppResult<Json<EnvironmentRuntimeStatus>> {
+    Ok(Json(state.environment_runtime.status().await))
 }
 
-pub async fn install_runtime_component(
+pub async fn install_environment_component(
     State(state): State<AppState>,
     Path(component): Path<RuntimeComponentKind>,
-) -> AppResult<Json<CodexRuntimeStatus>> {
-    Ok(Json(state.codex_runtime.start_install(component).await?))
-}
-
-pub async fn refresh_runtime_component(
-    State(state): State<AppState>,
-    Path(component): Path<RuntimeComponentKind>,
-) -> AppResult<Json<CodexRuntimeStatus>> {
+) -> AppResult<Json<EnvironmentRuntimeStatus>> {
     Ok(Json(
-        state.codex_runtime.refresh_component(component).await?,
+        state.environment_runtime.start_install(component).await?,
+    ))
+}
+
+pub async fn refresh_environment_component(
+    State(state): State<AppState>,
+    Path(component): Path<RuntimeComponentKind>,
+) -> AppResult<Json<EnvironmentRuntimeStatus>> {
+    Ok(Json(
+        state
+            .environment_runtime
+            .refresh_component(component)
+            .await?,
     ))
 }
 
@@ -615,6 +621,19 @@ pub struct ProcessOwnerQuery {
     pub agent_id: Uuid,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TerminalInputRequest {
+    pub data: String,
+    #[serde(default)]
+    pub close_stdin: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TerminalResizeRequest {
+    pub rows: u16,
+    pub cols: u16,
+}
+
 pub async fn list_tool_processes(
     State(state): State<AppState>,
     Query(query): Query<ProcessListQuery>,
@@ -657,6 +676,89 @@ pub async fn stop_tool_process(
         .await?
         .map(Json)
         .ok_or(AppError::NotFound)
+}
+
+pub async fn list_terminal_sessions(
+    State(state): State<AppState>,
+    Query(query): Query<ProcessListQuery>,
+) -> AppResult<Json<Vec<ProcessInfo>>> {
+    list_tool_processes(State(state), Query(query)).await
+}
+
+pub async fn get_terminal_session(
+    State(state): State<AppState>,
+    Path(process_id): Path<String>,
+    Query(query): Query<ProcessOwnerQuery>,
+) -> AppResult<Json<ProcessInfo>> {
+    get_tool_process(State(state), Path(process_id), Query(query)).await
+}
+
+pub async fn write_terminal_session(
+    State(state): State<AppState>,
+    Path(process_id): Path<String>,
+    Query(query): Query<ProcessOwnerQuery>,
+    Json(request): Json<TerminalInputRequest>,
+) -> AppResult<Json<ProcessInfo>> {
+    let info = state
+        .terminal_manager
+        .get(&process_id)
+        .await
+        .ok_or(AppError::NotFound)?;
+    if info.agent_id != query.agent_id {
+        return Err(AppError::NotFound);
+    }
+    Ok(Json(
+        state
+            .terminal_manager
+            .write(&process_id, request.data.as_bytes(), request.close_stdin)
+            .await?,
+    ))
+}
+
+pub async fn resize_terminal_session(
+    State(state): State<AppState>,
+    Path(process_id): Path<String>,
+    Query(query): Query<ProcessOwnerQuery>,
+    Json(request): Json<TerminalResizeRequest>,
+) -> AppResult<Json<ProcessInfo>> {
+    let info = state
+        .terminal_manager
+        .get(&process_id)
+        .await
+        .ok_or(AppError::NotFound)?;
+    if info.agent_id != query.agent_id {
+        return Err(AppError::NotFound);
+    }
+    Ok(Json(
+        state
+            .terminal_manager
+            .resize(&process_id, request.rows, request.cols)
+            .await?,
+    ))
+}
+
+pub async fn interrupt_terminal_session(
+    State(state): State<AppState>,
+    Path(process_id): Path<String>,
+    Query(query): Query<ProcessOwnerQuery>,
+) -> AppResult<Json<ProcessInfo>> {
+    let info = state
+        .terminal_manager
+        .get(&process_id)
+        .await
+        .ok_or(AppError::NotFound)?;
+    if info.agent_id != query.agent_id {
+        return Err(AppError::NotFound);
+    }
+    Ok(Json(state.terminal_manager.interrupt(&process_id).await?))
+}
+
+pub async fn terminate_terminal_session(
+    State(state): State<AppState>,
+    Path(process_id): Path<String>,
+    Query(query): Query<ProcessOwnerQuery>,
+) -> AppResult<Json<ProcessInfo>> {
+    stop_tool_process(State(state), Path(process_id), Query(query)).await
 }
 
 #[cfg(test)]

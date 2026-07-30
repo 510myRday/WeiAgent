@@ -166,20 +166,40 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             "/api/tools/web-search-keys/delete",
             post(tools::delete_web_search_key),
         )
-        .route("/api/tools/codex-runtime", get(tools::read_codex_runtime))
         .route(
-            "/api/tools/runtime/{component}",
-            post(tools::install_runtime_component),
+            "/api/tools/environment-runtime",
+            get(tools::read_environment_runtime),
         )
         .route(
-            "/api/tools/runtime/{component}/refresh",
-            post(tools::refresh_runtime_component),
+            "/api/tools/environment-runtime/{component}",
+            post(tools::install_environment_component),
+        )
+        .route(
+            "/api/tools/environment-runtime/{component}/refresh",
+            post(tools::refresh_environment_component),
         )
         .route("/api/tools/approve", post(tools::approve_tool_call))
         .route("/api/tools/processes", get(tools::list_tool_processes))
         .route(
             "/api/tools/processes/{process_id}",
             get(tools::get_tool_process).delete(tools::stop_tool_process),
+        )
+        .route("/api/terminal/sessions", get(tools::list_terminal_sessions))
+        .route(
+            "/api/terminal/sessions/{process_id}",
+            get(tools::get_terminal_session).delete(tools::terminate_terminal_session),
+        )
+        .route(
+            "/api/terminal/sessions/{process_id}/input",
+            post(tools::write_terminal_session),
+        )
+        .route(
+            "/api/terminal/sessions/{process_id}/resize",
+            post(tools::resize_terminal_session),
+        )
+        .route(
+            "/api/terminal/sessions/{process_id}/interrupt",
+            post(tools::interrupt_terminal_session),
         )
         .route("/api/llm-logs", get(llm_logs::list_llm_logs))
         .route("/api/llm-logs/{log_id}", get(llm_logs::get_llm_log))

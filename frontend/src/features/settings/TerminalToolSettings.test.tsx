@@ -5,7 +5,7 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import {
   listToolProcesses,
   pickDirectory,
-  readCodexRuntime,
+  readEnvironmentRuntime,
   readToolDefaults,
 } from '../../api';
 import { FeedbackProvider } from '../../components/ui';
@@ -13,13 +13,13 @@ import { I18nProvider } from '../../i18n';
 import { TerminalToolSettings } from './TerminalToolSettings';
 
 vi.mock('../../api', () => ({
-  installRuntimeComponent: vi.fn(),
+  installEnvironmentComponent: vi.fn(),
   listToolProcesses: vi.fn(),
   pickDirectory: vi.fn(),
   readAgentToolsConfig: vi.fn(),
-  readCodexRuntime: vi.fn(),
+  readEnvironmentRuntime: vi.fn(),
   readToolDefaults: vi.fn(),
-  refreshRuntimeComponent: vi.fn(),
+  refreshEnvironmentComponent: vi.fn(),
   stopToolProcess: vi.fn(),
   updateAgentToolsConfig: vi.fn(),
   updateToolDefaults: vi.fn(),
@@ -75,7 +75,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.setItem('weiagent-locale', 'zh');
   vi.mocked(readToolDefaults).mockResolvedValue(structuredClone(toolDefaults));
-  vi.mocked(readCodexRuntime).mockResolvedValue({
+  vi.mocked(readEnvironmentRuntime).mockResolvedValue({
     supported: true,
     available: true,
     managed_installed: true,

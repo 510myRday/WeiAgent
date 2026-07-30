@@ -42,13 +42,13 @@ mod tests {
         },
         storage::{LlmLogger, Store},
         tools::{
-            approval::ApprovalManager, registry::ToolRegistry, runtime::CodexRuntimeManager,
+            approval::ApprovalManager, registry::ToolRegistry, runtime::EnvironmentRuntimeManager,
             terminal::TerminalManager,
         },
     };
 
-    fn test_codex_runtime(root: &std::path::Path) -> Arc<CodexRuntimeManager> {
-        Arc::new(CodexRuntimeManager::new_available_for_tests(root).unwrap())
+    fn test_environment_runtime(root: &std::path::Path) -> Arc<EnvironmentRuntimeManager> {
+        Arc::new(EnvironmentRuntimeManager::new(root).unwrap())
     }
 
     struct MockChatClient;
@@ -149,7 +149,7 @@ mod tests {
             ),
             terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
-            codex_runtime: test_codex_runtime(&temp_dir),
+            environment_runtime: test_environment_runtime(&temp_dir),
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         });
@@ -605,7 +605,7 @@ mod tests {
             llm_logger: Arc::new(LlmLogger::new(&root, false).unwrap()),
             terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
-            codex_runtime: test_codex_runtime(&root),
+            environment_runtime: test_environment_runtime(&root),
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         };
@@ -1326,7 +1326,7 @@ mod tests {
             llm_logger: Arc::new(LlmLogger::new(&root, false).unwrap()),
             terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
-            codex_runtime: test_codex_runtime(&root),
+            environment_runtime: test_environment_runtime(&root),
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         };

@@ -26,6 +26,10 @@ function isTerminalTool(name: string): boolean {
   return name === 'execute_terminal' || name === 'terminal_session';
 }
 
+function isBackgroundTerminal(tool: ToolCallState): boolean {
+  return tool.name === 'execute_terminal' && tool.arguments.background === true;
+}
+
 function statusLabel(
   tool: ToolCallState,
   t: (path: string, vars?: Record<string, string | number>) => string,
@@ -202,6 +206,9 @@ export function ToolDisclosure({
             <StatusIcon tool={displayTool} />
             <span className="message-tool__title">{label}</span>
             <code className="message-tool__name">{tool.name}</code>
+            {isBackgroundTerminal(tool) ? (
+              <span className="message-tool__background-badge">{t('toolCard.backgroundBadge')}</span>
+            ) : null}
             {isActive && elapsedSeconds > 0 ? (
               <span className="message-tool__elapsed">{t('toolCard.elapsed', { seconds: elapsedSeconds })}</span>
             ) : null}
