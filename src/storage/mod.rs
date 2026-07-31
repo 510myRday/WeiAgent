@@ -608,6 +608,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stores_provider_without_an_api_key_and_can_clear_a_key_pool() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
+        let provider = store
+            .create_model_provider(CreateModelProviderRequest {
+                name: "Anonymous provider".to_string(),
+                api_keys: Vec::new(),
+                models: vec!["public-model".to_string()],
+                ..provider_request("Anonymous provider", "public-model")
+            })
+            .await
+            .unwrap();
+
+        assert!(!provider.has_api_key);
+        assert!(provider.masked_api_keys.is_empty());
+        assert!(
+            store
+                .get_model_provider(provider.id)
+                .await
+                .unwrap()
+                .api_keys
+                .is_empty()
+        );
+
+        let with_key = store
+            .update_model_provider(
+                provider.id,
+                UpdateModelProviderRequest {
+                    provider_type: None,
+                    name: None,
+                    base_url: None,
+                    api_keys: Some(vec!["sk-temporary".to_string()]),
+                    key_strategy: None,
+                    models: None,
+                    model_configs: None,
+                    extra_body: None,
+                    prompt_cache: None,
+                    cache_capabilities: None,
+                    proxy_url: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(with_key.has_api_key);
+
+        let cleared = store
+            .update_model_provider(
+                provider.id,
+                UpdateModelProviderRequest {
+                    provider_type: None,
+                    name: None,
+                    base_url: None,
+                    api_keys: Some(Vec::new()),
+                    key_strategy: None,
+                    models: None,
+                    model_configs: None,
+                    extra_body: None,
+                    prompt_cache: None,
+                    cache_capabilities: None,
+                    proxy_url: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!cleared.has_api_key);
+        assert!(
+            store
+                .get_model_provider(provider.id)
+                .await
+                .unwrap()
+                .api_keys
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn validates_agent_provider_and_stores_conversations() {
         let temp_dir = tempfile::tempdir().unwrap();
         let store = Store::new(temp_dir.path()).await.unwrap();
@@ -660,6 +736,89 @@ mod tests {
                 .unwrap(),
             vec![message]
         );
+    }
+
+    #[tokio::test]
+    async fn repairs_missing_tool_outputs_idempotently() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
+        let agent = store
+            .list_agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.is_builtin)
+            .unwrap();
+        let conversation = store
+            .create_conversation(agent.id, CreateConversationRequest { title: None })
+            .await
+            .unwrap();
+        let assistant = ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: agent.id,
+            conversation_id: conversation.id,
+            role: ChatRole::Assistant,
+            content: String::new(),
+            reasoning_content: None,
+            openai_response_items: Vec::new(),
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: Some(serde_json::json!([
+                {
+                    "id": "call-missing",
+                    "type": "function",
+                    "function": {"name": "execute_terminal", "arguments": "{}"}
+                },
+                {
+                    "id": "call-complete",
+                    "type": "function",
+                    "function": {"name": "execute_terminal", "arguments": "{}"}
+                }
+            ])),
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        };
+        let completed = ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: agent.id,
+            conversation_id: conversation.id,
+            role: ChatRole::Tool,
+            content: serde_json::json!({"status": "completed"}).to_string(),
+            reasoning_content: None,
+            openai_response_items: Vec::new(),
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: Some("call-complete".to_string()),
+            attachments: Vec::new(),
+            usage: None,
+        };
+        store
+            .append_conversation_messages(conversation.id, &[assistant, completed])
+            .await
+            .unwrap();
+
+        store
+            .repair_incomplete_tool_calls(conversation.id)
+            .await
+            .unwrap();
+        store
+            .repair_incomplete_tool_calls(conversation.id)
+            .await
+            .unwrap();
+
+        let messages = store
+            .read_conversation_messages(conversation.id)
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 3);
+        let interrupted = messages.last().unwrap();
+        assert_eq!(interrupted.role, ChatRole::Tool);
+        assert_eq!(interrupted.tool_call_id.as_deref(), Some("call-missing"));
+        let result: serde_json::Value = serde_json::from_str(&interrupted.content).unwrap();
+        assert_eq!(result["status"], "interrupted");
+        assert!(result["reason"].as_str().unwrap().contains("interrupted"));
     }
 
     #[tokio::test]

@@ -1505,6 +1505,9 @@ pub enum ToolResult {
     Rejected {
         reason: String,
     },
+    Interrupted {
+        reason: String,
+    },
     Error {
         message: String,
     },

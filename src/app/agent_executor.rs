@@ -139,8 +139,10 @@ async fn ensure_messages_within_context(
     runtime: &AgentRuntime<'_>,
     messages: &mut Vec<ChatMessage>,
     tools: Option<&[ToolDefinition]>,
+    active_task_plan: Option<&crate::app::context_compress::ActiveTaskPlanContext>,
     compaction: &mut CompactionState,
 ) -> AppResult<()> {
+    crate::app::context_compress::refresh_active_task_plan_anchor(messages, active_task_plan);
     let fixed_tokens = if tools.is_some() {
         compaction.fixed_tokens_with_tools
     } else {
@@ -172,6 +174,7 @@ async fn ensure_messages_within_context(
         &runtime.prepared.system_prompt,
         &runtime.options,
         tools,
+        active_task_plan,
         messages.clone(),
         compaction.checkpoint.clone(),
         runtime.events.as_ref(),
@@ -275,19 +278,28 @@ pub async fn run_agent(
         if iteration >= max_llm_iterations {
             break;
         }
-        let has_active_task_plan = if runtime.prepared.tools_config.task_planning.enabled {
+        let active_task_plan = if runtime.prepared.tools_config.task_planning.enabled {
             runtime
                 .state
                 .store
                 .read_task_plan(user_message.conversation_id)
                 .await?
-                .is_some()
         } else {
-            false
+            None
         };
+        let active_task_plan_context = active_task_plan
+            .as_ref()
+            .map(crate::app::context_compress::ActiveTaskPlanContext::from_task_plan);
+        let has_active_task_plan = active_task_plan_context.is_some();
         let tools = frozen_tools.clone();
-        ensure_messages_within_context(&runtime, &mut messages, tools.as_deref(), &mut compaction)
-            .await?;
+        ensure_messages_within_context(
+            &runtime,
+            &mut messages,
+            tools.as_deref(),
+            active_task_plan_context.as_ref(),
+            &mut compaction,
+        )
+        .await?;
         emit(
             &events,
             AgentRunEvent::Phase {
@@ -399,6 +411,11 @@ pub async fn run_agent(
 }
 
 async fn persist_run_failure(runtime: &AgentRuntime<'_>, error: &AppError) {
+    let _ = runtime
+        .state
+        .store
+        .repair_incomplete_tool_calls(runtime.prepared.user_message.conversation_id)
+        .await;
     let assistant_message = ChatMessage {
         id: Uuid::new_v4(),
         agent_id: runtime.prepared.agent.id,
@@ -448,7 +465,26 @@ async fn finalize_after_budget(
     // Keep the budget notice in the in-memory LLM context only.
     messages.push(budget_notice);
 
-    ensure_messages_within_context(runtime, messages, None, compaction).await?;
+    let active_task_plan = if runtime.prepared.tools_config.task_planning.enabled {
+        runtime
+            .state
+            .store
+            .read_task_plan(runtime.prepared.user_message.conversation_id)
+            .await?
+    } else {
+        None
+    };
+    let active_task_plan_context = active_task_plan
+        .as_ref()
+        .map(crate::app::context_compress::ActiveTaskPlanContext::from_task_plan);
+    ensure_messages_within_context(
+        runtime,
+        messages,
+        None,
+        active_task_plan_context.as_ref(),
+        compaction,
+    )
+    .await?;
     emit(
         runtime.events,
         AgentRunEvent::Phase {
@@ -635,6 +671,7 @@ async fn append_task_plan_progress_to_result(
         ToolResult::Running { message, .. } => message.push_str(&notice),
         ToolResult::Blocked { reason, .. } => reason.push_str(&notice),
         ToolResult::Rejected { reason } => reason.push_str(&notice),
+        ToolResult::Interrupted { reason } => reason.push_str(&notice),
         ToolResult::Error { message } => message.push_str(&notice),
         ToolResult::PendingApproval { .. } => {}
     }

@@ -67,8 +67,10 @@ impl ProtocolAdapter for AnthropicAdapter {
         let mut request = http
             .post(url)
             .json(body)
-            .header("x-api-key", api_key)
             .header("anthropic-version", ANTHROPIC_VERSION);
+        if !api_key.trim().is_empty() {
+            request = request.header("x-api-key", api_key);
+        }
         if context_1m_enabled(provider, body["model"].as_str().unwrap_or_default()) {
             request = request.header("anthropic-beta", CONTEXT_1M_BETA);
         }
@@ -81,9 +83,12 @@ impl ProtocolAdapter for AnthropicAdapter {
         url: &str,
         api_key: &str,
     ) -> RequestBuilder {
-        http.get(url)
-            .header("x-api-key", api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
+        let request = http.get(url).header("anthropic-version", ANTHROPIC_VERSION);
+        if api_key.trim().is_empty() {
+            request
+        } else {
+            request.header("x-api-key", api_key)
+        }
     }
 
     fn parse_response(&self, value: &Value) -> AppResult<ChatCompletionOutput> {

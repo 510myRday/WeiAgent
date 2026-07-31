@@ -70,7 +70,12 @@ impl ProtocolAdapter for GeminiAdapter {
         body: &Value,
         _provider: &ModelProvider,
     ) -> RequestBuilder {
-        http.post(url).json(body).header("x-goog-api-key", api_key)
+        let request = http.post(url).json(body);
+        if api_key.trim().is_empty() {
+            request
+        } else {
+            request.header("x-goog-api-key", api_key)
+        }
     }
 
     fn authenticated_get(
@@ -79,7 +84,12 @@ impl ProtocolAdapter for GeminiAdapter {
         url: &str,
         api_key: &str,
     ) -> RequestBuilder {
-        http.get(url).header("x-goog-api-key", api_key)
+        let request = http.get(url);
+        if api_key.trim().is_empty() {
+            request
+        } else {
+            request.header("x-goog-api-key", api_key)
+        }
     }
 
     fn parse_response(&self, value: &Value) -> AppResult<ChatCompletionOutput> {

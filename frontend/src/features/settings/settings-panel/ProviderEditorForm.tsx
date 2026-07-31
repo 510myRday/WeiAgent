@@ -113,12 +113,12 @@ export function ProviderEditorForm({
                   {t('provider.template.locked')}
                 </span>
               ) : null}
-              <span className={`mini-status-badge${keyCount > 0 ? '' : ' is-required'}`}>
+              <span className="mini-status-badge">
                 {keyCount > 1
                   ? t('provider.keyPoolCount', { count: keyCount })
                   : keyCount === 1
                     ? t('provider.keyConfigured')
-                    : t('provider.keyRequired')}
+                    : t('provider.keyOptional')}
               </span>
             </div>
           )}
@@ -174,7 +174,7 @@ export function ProviderEditorForm({
             </button>
           </FormField>
           <div className="provider-api-keys-field">
-            <FormField label={t('provider.apiKey')} htmlFor="provider-api-key-input" required>
+            <FormField label={t('provider.apiKey')} htmlFor="provider-api-key-input">
               <div className="provider-key-add">
                 <div className="provider-secret-input">
                   <input
@@ -186,7 +186,6 @@ export function ProviderEditorForm({
                     onPaste={handleNewKeyPaste}
                     placeholder={t('provider.addKeyPlaceholder')}
                     disabled={isSubmittingProvider}
-                    required={keyCount === 0 && !newKeyText.trim()}
                   />
                   <IconButton
                     className="provider-secret-toggle"

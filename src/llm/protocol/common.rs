@@ -497,11 +497,21 @@ pub(crate) fn bearer_post(
     api_key: &str,
     body: &Value,
 ) -> RequestBuilder {
-    http.post(url).bearer_auth(api_key).json(body)
+    let request = http.post(url).json(body);
+    if api_key.trim().is_empty() {
+        request
+    } else {
+        request.bearer_auth(api_key)
+    }
 }
 
 pub(crate) fn bearer_get(http: &reqwest::Client, url: &str, api_key: &str) -> RequestBuilder {
-    http.get(url).bearer_auth(api_key)
+    let request = http.get(url);
+    if api_key.trim().is_empty() {
+        request
+    } else {
+        request.bearer_auth(api_key)
+    }
 }
 
 pub(crate) fn request_json_for_log(request: &Value) -> String {

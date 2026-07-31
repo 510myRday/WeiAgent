@@ -127,6 +127,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   const lastStreamScrollAtRef = useRef(0);
   const pendingAnchorKeyRef = useRef('');
   const followOutputRef = useRef(true);
+  const isAwayFromBottomRef = useRef(false);
   const wasSendingRef = useRef(isSending);
   const followConversationRef = useRef(conversationId);
   const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
@@ -161,11 +162,28 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     },
     getItemKey: (index) => rows[index]?.key ?? index,
     anchorTo: 'end',
-    followOnAppend: 'auto',
+    // Streamed content changes row measurements without changing the row
+    // count. Keep follow behavior in this component so a reader's scroll
+    // position is never overridden by the virtualizer's implicit follow.
+    followOnAppend: false,
     paddingEnd: isSending ? WAITING_SCROLL_PADDING : 0,
-    scrollEndThreshold: 120,
+    scrollEndThreshold: BOTTOM_POSITION_TOLERANCE,
     overscan: 6,
   });
+
+  useLayoutEffect(() => {
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
+      // Once the jump-to-latest button is visible, growing message bubbles
+      // must not rewrite the reader's current scroll position.
+      if (isAwayFromBottomRef.current) return false;
+
+      // Preserve the virtualizer's normal anchoring for items above the
+      // viewport while the conversation is following the live response.
+      return item.start < (instance.scrollOffset ?? 0)
+        && instance.scrollDirection !== 'backward';
+    };
+  }, [virtualizer]);
+
   const isInitialPositioning = Boolean(
     conversationId
     && !isLoading
@@ -182,12 +200,14 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   const updateScrollButtonVisibility = useCallback(() => {
     const element = scrollRef.current;
     if (!element) {
+      isAwayFromBottomRef.current = false;
       setIsAwayFromBottom(false);
       return;
     }
-    setIsAwayFromBottom(
-      element.scrollHeight > element.clientHeight + 8 && !isMessagesNearBottom(),
-    );
+    const isAwayFromBottom = element.scrollHeight > element.clientHeight + 8
+      && !isMessagesNearBottom();
+    isAwayFromBottomRef.current = isAwayFromBottom;
+    setIsAwayFromBottom(isAwayFromBottom);
   }, [isMessagesNearBottom]);
 
   const scheduleScrollButtonUpdate = useCallback(() => {
@@ -211,11 +231,16 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
         element.scrollTo({ top: maxScrollTop, behavior });
       }
     }
+    isAwayFromBottomRef.current = false;
     setIsAwayFromBottom(false);
   }, [isMessagesNearBottom, virtualizer]);
 
   const scheduleStreamScroll = useCallback((immediate = false) => {
-    if (!followOutputRef.current) return;
+    if (
+      !followOutputRef.current
+      || isAwayFromBottomRef.current
+      || !isMessagesNearBottom()
+    ) return;
 
     const now = Date.now();
     const elapsed = hasStreamScrolledRef.current
@@ -235,12 +260,16 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     if (pendingStreamScrollTimerRef.current !== undefined) return;
     pendingStreamScrollTimerRef.current = window.setTimeout(() => {
       pendingStreamScrollTimerRef.current = undefined;
-      if (!followOutputRef.current) return;
+      if (
+        !followOutputRef.current
+        || isAwayFromBottomRef.current
+        || !isMessagesNearBottom()
+      ) return;
       hasStreamScrolledRef.current = true;
       lastStreamScrollAtRef.current = Date.now();
       scrollToBottom(true);
     }, STREAM_SCROLL_THROTTLE_MS - elapsed);
-  }, [scrollToBottom]);
+  }, [isMessagesNearBottom, scrollToBottom]);
 
   useImperativeHandle(ref, () => ({
     scrollToMessage(messageIndex, behavior = 'smooth') {
@@ -316,6 +345,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
 
     if (conversationChanged || sendJustStarted) {
       followOutputRef.current = true;
+      isAwayFromBottomRef.current = false;
     }
 
     if (messages.length === 0 || !followOutputRef.current) return;
@@ -389,7 +419,20 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   }, [isLoadingOlderMessages, onLoadOlder, rows, virtualizer]);
 
   const handleScroll = useCallback(() => {
-    followOutputRef.current = isMessagesNearBottom();
+    const element = scrollRef.current;
+    if (element) {
+      const isAwayFromBottom = element.scrollHeight > element.clientHeight + 8
+        && !isMessagesNearBottom();
+      isAwayFromBottomRef.current = isAwayFromBottom;
+      followOutputRef.current = !isAwayFromBottom;
+
+      if (isAwayFromBottom) {
+        if (pendingStreamScrollTimerRef.current !== undefined) {
+          window.clearTimeout(pendingStreamScrollTimerRef.current);
+          pendingStreamScrollTimerRef.current = undefined;
+        }
+      }
+    }
     scheduleScrollButtonUpdate();
   }, [isMessagesNearBottom, scheduleScrollButtonUpdate]);
 

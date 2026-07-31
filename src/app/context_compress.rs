@@ -10,7 +10,8 @@ use uuid::Uuid;
 use crate::{
     domain::{
         Agent, ChatMessage, ChatMessageStatus, ChatRole, ContextCheckpoint, ModelProvider,
-        ProviderType, ThinkingLevel, settings::coerce_context_compress_threshold,
+        ProviderType, TaskPlan, TaskPlanItemStatus, ThinkingLevel,
+        settings::coerce_context_compress_threshold,
     },
     error::{AppError, AppResult},
     llm::{
@@ -32,7 +33,10 @@ const MAX_SUMMARY_MESSAGE_CHARS: usize = 4_000;
 const MAX_SUMMARY_TOOL_CHARS: usize = 2_000;
 /// Maximum summary characters kept in the checkpoint.
 const MAX_SUMMARY_CHARS: usize = 12_000;
+/// Keep the active plan compact while preserving it as a protected prefix.
+const MAX_ACTIVE_TASK_PLAN_CHARS: usize = 8_000;
 const SUMMARY_ANCHOR_PREFIX: &str = "[Conversation summary — auto-compacted]";
+const ACTIVE_TASK_PLAN_PREFIX: &str = "[Active task plan]";
 
 const COMPACTION_SYSTEM_PROMPT: &str = "\
 You are a context compaction engine.
@@ -131,10 +135,48 @@ pub struct CompactOutcome {
     pub estimated_tokens_after: u64,
 }
 
+/// Current task-plan state that must remain visible to the next model turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveTaskPlanContext {
+    pub planning_id: Uuid,
+    pub current_step: String,
+    pub steps: Vec<String>,
+}
+
+impl ActiveTaskPlanContext {
+    pub fn from_task_plan(plan: &TaskPlan) -> Self {
+        let current_step = plan
+            .plan
+            .iter()
+            .find(|item| item.status == TaskPlanItemStatus::InProgress)
+            .map(|item| item.step.clone())
+            .unwrap_or_else(|| "none".to_string());
+        let steps = plan
+            .plan
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let status = match item.status {
+                    TaskPlanItemStatus::Pending => "pending",
+                    TaskPlanItemStatus::InProgress => "in_progress",
+                    TaskPlanItemStatus::Completed => "completed",
+                };
+                format!("{}. [{}] {}", index + 1, status, item.step)
+            })
+            .collect();
+        Self {
+            planning_id: plan.planning_id,
+            current_step,
+            steps,
+        }
+    }
+}
+
 /// Build the LLM-facing message list from full history + optional checkpoint.
 pub fn build_llm_messages(
     history: &[ChatMessage],
     checkpoint: Option<&ContextCheckpoint>,
+    active_task_plan: Option<&ActiveTaskPlanContext>,
 ) -> Vec<ChatMessage> {
     let Some(checkpoint) = checkpoint else {
         return history.to_vec();
@@ -159,14 +201,18 @@ pub fn build_llm_messages(
         return history.to_vec();
     }
 
-    let summary_message = summary_anchor_message(covered, checkpoint);
+    let summary_message = summary_anchor_message(covered, checkpoint, active_task_plan);
     let mut out = Vec::with_capacity(tail.len() + 1);
     out.push(summary_message);
     out.extend(tail.iter().cloned().map(clear_message_usage));
     out
 }
 
-fn summary_anchor_message(covered: &[ChatMessage], checkpoint: &ContextCheckpoint) -> ChatMessage {
+fn summary_anchor_message(
+    covered: &[ChatMessage],
+    checkpoint: &ContextCheckpoint,
+    active_task_plan: Option<&ActiveTaskPlanContext>,
+) -> ChatMessage {
     let agent_id = covered
         .last()
         .map(|message| message.agent_id)
@@ -180,7 +226,7 @@ fn summary_anchor_message(covered: &[ChatMessage], checkpoint: &ContextCheckpoin
         agent_id,
         conversation_id,
         role: ChatRole::User,
-        content: format!("{SUMMARY_ANCHOR_PREFIX}\n{}", checkpoint.summary.trim()),
+        content: render_summary_anchor_content(&checkpoint.summary, active_task_plan),
         reasoning_content: None,
         openai_response_items: Vec::new(),
         status: ChatMessageStatus::Done,
@@ -190,6 +236,41 @@ fn summary_anchor_message(covered: &[ChatMessage], checkpoint: &ContextCheckpoin
         attachments: Vec::new(),
         usage: None,
     }
+}
+
+fn render_summary_anchor_content(
+    summary: &str,
+    active_task_plan: Option<&ActiveTaskPlanContext>,
+) -> String {
+    let summary = summary
+        .split(ACTIVE_TASK_PLAN_PREFIX)
+        .next()
+        .unwrap_or(summary)
+        .trim_end();
+    let Some(active_task_plan) = active_task_plan else {
+        return format!("{SUMMARY_ANCHOR_PREFIX}\n{summary}");
+    };
+    let steps = active_task_plan.steps.join("\n");
+    let plan = format!(
+        "{ACTIVE_TASK_PLAN_PREFIX}\nplanning_id: {}\ncurrent_step: {}\nsteps:\n{}",
+        active_task_plan.planning_id, active_task_plan.current_step, steps
+    );
+    let plan = truncate_chars(&plan, MAX_ACTIVE_TASK_PLAN_CHARS);
+    format!("{SUMMARY_ANCHOR_PREFIX}\n{summary}\n\n{plan}")
+}
+
+/// Refresh the protected anchor after a plan is created or its status changes.
+pub fn refresh_active_task_plan_anchor(
+    messages: &mut [ChatMessage],
+    active_task_plan: Option<&ActiveTaskPlanContext>,
+) {
+    let Some(anchor) = messages
+        .iter_mut()
+        .find(|message| message.content.starts_with(SUMMARY_ANCHOR_PREFIX))
+    else {
+        return;
+    };
+    anchor.content = render_summary_anchor_content(&anchor.content, active_task_plan);
 }
 
 fn estimate_messages_tokens(messages: &[ChatMessage]) -> u64 {
@@ -394,10 +475,12 @@ pub async fn ensure_within_threshold<T: Send>(
     system_prompt: &str,
     options: &RequestOptions,
     tools: Option<&[ToolDefinition]>,
-    messages: Vec<ChatMessage>,
+    active_task_plan: Option<&ActiveTaskPlanContext>,
+    mut messages: Vec<ChatMessage>,
     existing_checkpoint: Option<ContextCheckpoint>,
     cancel: Option<&tokio::sync::mpsc::Sender<T>>,
 ) -> AppResult<CompactOutcome> {
+    refresh_active_task_plan_anchor(&mut messages, active_task_plan);
     let fixed_prompt_tokens = fixed_request_tokens(system_prompt, tools);
     if fixed_prompt_tokens >= config.soft_limit_tokens() {
         return Err(AppError::BadRequest(format!(
@@ -425,6 +508,7 @@ pub async fn ensure_within_threshold<T: Send>(
         system_prompt,
         options,
         tools,
+        active_task_plan,
         &messages,
         existing_checkpoint.as_ref(),
         config,
@@ -441,6 +525,7 @@ pub async fn ensure_within_threshold<T: Send>(
                 config,
                 fixed_prompt_tokens,
                 before,
+                active_task_plan,
             ))
         }
     }
@@ -454,6 +539,7 @@ async fn compact_with_summary<T>(
     system_prompt: &str,
     options: &RequestOptions,
     tools: Option<&[ToolDefinition]>,
+    active_task_plan: Option<&ActiveTaskPlanContext>,
     messages: &[ChatMessage],
     existing_checkpoint: Option<&ContextCheckpoint>,
     config: &CompactionConfig,
@@ -471,6 +557,7 @@ where
             config,
             fixed_request_tokens(system_prompt, tools),
             before,
+            active_task_plan,
         ));
     }
 
@@ -541,7 +628,11 @@ where
         source_tokens_estimate: before,
     };
 
-    let mut rebuilt = vec![summary_anchor_message(covered, &checkpoint)];
+    let mut rebuilt = vec![summary_anchor_message(
+        covered,
+        &checkpoint,
+        active_task_plan,
+    )];
     rebuilt.extend(tail.iter().cloned().map(clear_message_usage));
 
     // If still oversized (huge tail), structurally trim the tail while keeping the summary.
@@ -578,6 +669,7 @@ fn compact_structurally(
     config: &CompactionConfig,
     fixed_prompt_tokens: u64,
     before: u64,
+    active_task_plan: Option<&ActiveTaskPlanContext>,
 ) -> CompactOutcome {
     let target = config
         .target_tokens_after_compact()
@@ -617,7 +709,11 @@ fn compact_structurally(
     } else {
         covered
     };
-    let mut rebuilt = vec![summary_anchor_message(covered_for_anchor, &checkpoint)];
+    let mut rebuilt = vec![summary_anchor_message(
+        covered_for_anchor,
+        &checkpoint,
+        active_task_plan,
+    )];
     rebuilt.extend(tail.iter().cloned().map(clear_message_usage));
     let rebuilt =
         trim_messages_to_token_budget(rebuilt, target, Some(checkpoint.covers_until_message_id));
@@ -864,21 +960,37 @@ fn force_fit_messages(
         if message.role == ChatRole::Tool {
             message.content = truncate_chars(&message.content, 800);
         }
-        compact_tool_call_arguments(message);
+        if required_prefix_id != Some(message.id) {
+            compact_tool_call_arguments(message);
+        }
     }
 
     while estimate_messages_tokens(&messages) > budget_tokens {
         let candidate = messages
             .iter()
             .enumerate()
-            .filter(|(_, message)| message.content.chars().count() > 16)
+            .filter(|(_, message)| {
+                let current = message.content.chars().count();
+                if current <= 16 {
+                    return false;
+                }
+                required_prefix_id != Some(message.id)
+                    || truncate_summary_anchor_preserving_plan(&message.content, current / 2)
+                        .chars()
+                        .count()
+                        < current
+            })
             .max_by_key(|(_, message)| message.content.chars().count())
             .map(|(index, _)| index);
         let Some(index) = candidate else {
             break;
         };
         let current = messages[index].content.chars().count();
-        messages[index].content = truncate_chars(&messages[index].content, current / 2);
+        messages[index].content = if required_prefix_id == Some(messages[index].id) {
+            truncate_summary_anchor_preserving_plan(&messages[index].content, current / 2)
+        } else {
+            truncate_chars(&messages[index].content, current / 2)
+        };
     }
 
     while estimate_messages_tokens(&messages) > budget_tokens && messages.len() > 2 {
@@ -900,6 +1012,19 @@ fn force_fit_messages(
     }
 
     messages
+}
+
+fn truncate_summary_anchor_preserving_plan(content: &str, max_chars: usize) -> String {
+    let Some(plan_start) = content.find(ACTIVE_TASK_PLAN_PREFIX) else {
+        return truncate_chars(content, max_chars);
+    };
+    let summary = content[..plan_start].trim_end();
+    let plan = content[plan_start..].trim_start();
+    let summary_budget = max_chars.saturating_sub(plan.chars().count().saturating_add(2));
+    if summary_budget == 0 {
+        return format!("{SUMMARY_ANCHOR_PREFIX}\n\n{plan}");
+    }
+    format!("{}\n\n{plan}", truncate_chars(summary, summary_budget))
 }
 
 fn compact_tool_call_arguments(message: &mut ChatMessage) {
@@ -1049,9 +1174,27 @@ mod tests {
             generation: 1,
             source_tokens_estimate: 100,
         };
-        let built = build_llm_messages(&[a, b, c.clone()], Some(&checkpoint));
+        let plan = ActiveTaskPlanContext {
+            planning_id: Uuid::new_v4(),
+            current_step: "Implement compaction".to_string(),
+            steps: vec![
+                "1. [in_progress] Implement compaction".to_string(),
+                "2. [pending] Run tests".to_string(),
+            ],
+        };
+        let built = build_llm_messages(&[a, b, c.clone()], Some(&checkpoint), Some(&plan));
         assert_eq!(built.len(), 2);
         assert!(built[0].content.contains("goal: ship compact"));
+        assert!(
+            built[0]
+                .content
+                .contains(&format!("planning_id: {}", plan.planning_id))
+        );
+        assert!(
+            built[0]
+                .content
+                .contains("current_step: Implement compaction")
+        );
         assert_eq!(built[1].id, c.id);
     }
 
@@ -1079,7 +1222,11 @@ mod tests {
             source_tokens_estimate: 95_000,
         };
 
-        let built = build_llm_messages(&[old_user, old_assistant, retained], Some(&checkpoint));
+        let built = build_llm_messages(
+            &[old_user, old_assistant, retained],
+            Some(&checkpoint),
+            None,
+        );
 
         assert!(built.iter().all(|message| message.usage.is_none()));
         assert!(projected_context_tokens(&built) < 1_000);
@@ -1136,7 +1283,7 @@ mod tests {
         }
         let before = projected_context_tokens(&messages);
         let config = test_config(8_000, DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT, 2_000);
-        let outcome = compact_structurally(messages, None, &config, 200, before);
+        let outcome = compact_structurally(messages, None, &config, 200, before, None);
         assert!(outcome.did_compact);
         assert!(outcome.estimated_tokens_after < before);
         assert!(outcome.checkpoint.is_some());
@@ -1195,5 +1342,35 @@ mod tests {
         assert_eq!(trimmed.first().map(|message| message.id), Some(summary_id));
         assert_eq!(trimmed.last().map(|message| message.id), Some(latest.id));
         assert!(estimate_messages_tokens(&trimmed) <= 800);
+    }
+
+    #[test]
+    fn emergency_trim_preserves_active_plan_inside_summary_anchor() {
+        let plan = ActiveTaskPlanContext {
+            planning_id: Uuid::new_v4(),
+            current_step: "Keep the plan ID".to_string(),
+            steps: vec!["1. [in_progress] Keep the plan ID".to_string()],
+        };
+        let summary = msg(
+            ChatRole::User,
+            &render_summary_anchor_content(&"s".repeat(4_000), Some(&plan)),
+        );
+        let summary_id = summary.id;
+        let latest = msg(ChatRole::User, &"latest".repeat(2_000));
+
+        let trimmed =
+            trim_messages_to_token_budget(vec![summary, latest.clone()], 800, Some(summary_id));
+
+        assert_eq!(trimmed.first().map(|message| message.id), Some(summary_id));
+        assert!(
+            trimmed[0]
+                .content
+                .contains(&format!("planning_id: {}", plan.planning_id))
+        );
+        assert!(
+            trimmed[0]
+                .content
+                .contains("current_step: Keep the plan ID")
+        );
     }
 }

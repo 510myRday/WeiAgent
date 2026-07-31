@@ -182,6 +182,14 @@ impl Store {
             .await
     }
 
+    pub async fn repair_incomplete_tool_calls(&self, conversation_id: Uuid) -> AppResult<()> {
+        self.database
+            .call(move |conn| {
+                conversation_db::repair_incomplete_tool_calls_conn(conn, conversation_id)
+            })
+            .await
+    }
+
     pub async fn read_context_checkpoint(
         &self,
         conversation_id: Uuid,

@@ -39,6 +39,14 @@ pub struct EnvironmentRuntimeManager {
 
 impl EnvironmentRuntimeManager {
     pub fn new(data_dir: impl AsRef<Path>) -> AppResult<Self> {
+        // Terminal child processes may change cwd before resolving PATH entries. Keep all
+        // managed runtime directories absolute so relative dev-mode data paths remain usable.
+        let data_dir = data_dir.as_ref();
+        let data_dir = if data_dir.is_absolute() {
+            data_dir.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(data_dir)
+        };
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(15 * 60))
@@ -48,7 +56,7 @@ impl EnvironmentRuntimeManager {
                 AppError::Process(format!("failed to build runtime client: {error}"))
             })?;
         Ok(Self {
-            runtimes_root: data_dir.as_ref().join("runtimes"),
+            runtimes_root: data_dir.join("runtimes"),
             client,
             status: RwLock::new(empty_status()),
             latest_check_lock: Mutex::new(()),
@@ -62,18 +70,23 @@ impl EnvironmentRuntimeManager {
         let status = self.refresh_local().await?;
         let manager = self.clone();
         tokio::spawn(async move {
+            manager.refresh_all_components().await;
             let mut ticker = tokio::time::interval(supporting_runtime::latest_version_cache_ttl());
             ticker.tick().await;
             loop {
                 ticker.tick().await;
-                for component in supported_components() {
-                    if let Err(error) = manager.refresh_component(component).await {
-                        tracing::warn!(?component, %error, "failed to refresh environment component");
-                    }
-                }
+                manager.refresh_all_components().await;
             }
         });
         Ok(status)
+    }
+
+    async fn refresh_all_components(&self) {
+        for component in supported_components() {
+            if let Err(error) = self.refresh_component(component).await {
+                tracing::warn!(?component, %error, "failed to refresh environment component");
+            }
+        }
     }
 
     pub async fn status(&self) -> EnvironmentRuntimeStatus {
@@ -102,7 +115,7 @@ impl EnvironmentRuntimeManager {
                     component_status.update_available = component_status
                         .detected_version
                         .as_deref()
-                        .map(|current| current != target)
+                        .map(|current| current != target.as_str())
                         .unwrap_or(false);
                     component_status.target_version = Some(target);
                     component_status.error = None;
@@ -147,7 +160,27 @@ impl EnvironmentRuntimeManager {
 
     async fn refresh_local(&self) -> AppResult<EnvironmentRuntimeStatus> {
         let active = *self.active_install.read().await;
-        let components = supporting_runtime::detect_components(&self.runtimes_root, active).await;
+        let previous = self.status.read().await.clone();
+        let mut components =
+            supporting_runtime::detect_components(&self.runtimes_root, active).await;
+        for component in &mut components {
+            component.target_version =
+                supporting_runtime::cached_component_version(&self.runtimes_root, component.kind)
+                    .await
+                    .or_else(|| {
+                        previous
+                            .components
+                            .iter()
+                            .find(|item| item.kind == component.kind)
+                            .and_then(|item| item.target_version.clone())
+                    });
+            component.update_available = component
+                .detected_version
+                .as_deref()
+                .zip(component.target_version.as_deref())
+                .map(|(current, target)| current != target)
+                .unwrap_or(false);
+        }
         let mut status = EnvironmentRuntimeStatus {
             supported: true,
             available: false,
@@ -280,5 +313,12 @@ mod tests {
             std::fs::read(path).expect("read materialized ripgrep"),
             tool.bytes
         );
+    }
+
+    #[test]
+    fn relative_data_directories_are_promoted_to_absolute_runtime_paths() {
+        let manager = EnvironmentRuntimeManager::new("data").expect("create runtime manager");
+
+        assert!(manager.runtimes_root.is_absolute());
     }
 }

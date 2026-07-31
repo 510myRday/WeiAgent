@@ -134,6 +134,7 @@ function statusFromToolResult(result: unknown): ToolCallStatus {
     || status === 'running'
     || status === 'blocked'
     || status === 'rejected'
+    || status === 'interrupted'
     || status === 'error'
     || status === 'pending_approval'
   ) {
@@ -1267,7 +1268,12 @@ export function useConversations({
 
   const createNewConversation = useCallback(
     async (agentId: string) => {
-      const existing = conversations.find(isEmptyConversation);
+      // A just-started run can still look empty until its first message is persisted.
+      // Do not reuse that conversation when the user explicitly starts another one.
+      const existing = conversations.find((conversation) => (
+        isEmptyConversation(conversation)
+        && (!isSending || conversation.id !== activeConversationId)
+      ));
       if (existing) {
         if (existing.id !== activeConversationId) selectConversation(existing.id);
         return existing;
@@ -1277,7 +1283,7 @@ export function useConversations({
       selectConversation(created.id);
       return created;
     },
-    [activeConversationId, conversations, newConversationTitle, selectConversation],
+    [activeConversationId, conversations, isSending, newConversationTitle, selectConversation],
   );
 
   const removeConversation = useCallback(

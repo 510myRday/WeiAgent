@@ -28,6 +28,7 @@ const toolCallStatusSchema = picklist([
   'completed',
   'blocked',
   'rejected',
+  'interrupted',
   'error',
 ]);
 const agentRunPhaseSchema = picklist([

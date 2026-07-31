@@ -31,7 +31,7 @@ impl Store {
         let provider_type = request.provider_type;
         let name = validate_non_empty("provider name", &request.name)?;
         let base_url = validate_non_empty("base_url", &request.base_url)?;
-        let api_keys = validate_api_keys(merge_api_keys(&[], &request.api_keys))?;
+        let api_keys = merge_api_keys(&[], &request.api_keys);
         let models = normalize_models(request.models)?;
         let model_configs = normalize_model_configs(&models, request.model_configs)?;
         validate_extra_body(&request.extra_body)?;
@@ -90,7 +90,7 @@ impl Store {
             provider.base_url = validate_non_empty("base_url", &base_url)?;
         }
         if let Some(submitted) = request.api_keys {
-            provider.api_keys = validate_api_keys(merge_api_keys(&provider.api_keys, &submitted))?;
+            provider.api_keys = merge_api_keys(&provider.api_keys, &submitted);
         }
         if let Some(key_strategy) = request.key_strategy {
             provider.key_strategy = key_strategy;
@@ -174,15 +174,6 @@ impl Store {
             .find(|provider| provider.id == id)
             .ok_or(AppError::NotFound)
     }
-}
-
-fn validate_api_keys(api_keys: Vec<String>) -> AppResult<Vec<String>> {
-    if api_keys.is_empty() {
-        return Err(AppError::BadRequest(
-            "at least one API key is required".to_string(),
-        ));
-    }
-    Ok(api_keys)
 }
 
 fn normalize_model_configs(

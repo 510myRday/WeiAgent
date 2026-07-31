@@ -288,7 +288,6 @@ export function buildProviderPayload(form: ProviderForm): ModelProviderPayload |
   if (
     !payload.name
     || !payload.base_url
-    || payload.api_keys.length === 0
     || payload.models.length === 0
   ) {
     return null;

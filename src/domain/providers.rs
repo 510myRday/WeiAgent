@@ -190,7 +190,9 @@ pub struct CreateModelProviderRequest {
     pub provider_type: ProviderType,
     pub name: String,
     pub base_url: String,
-    /// Plaintext keys; masked entries are only meaningful on update.
+    /// Plaintext keys; masked entries are only meaningful on update. An empty
+    /// list creates a provider that sends requests without an API key.
+    #[serde(default)]
     pub api_keys: Vec<String>,
     #[serde(default)]
     pub key_strategy: ApiKeyStrategy,
@@ -212,6 +214,7 @@ pub struct FetchProviderModelsRequest {
     #[serde(default)]
     pub provider_type: ProviderType,
     pub base_url: String,
+    #[serde(default)]
     pub api_key: String,
     #[serde(default)]
     pub extra_body: serde_json::Value,
@@ -225,7 +228,7 @@ pub struct UpdateModelProviderRequest {
     pub name: Option<String>,
     pub base_url: Option<String>,
     /// Missing = keys unchanged. Entries: masked = keep that stored key,
-    /// plaintext = new key; the merged pool must not end up empty.
+    /// plaintext = new key; an empty list clears the stored key pool.
     pub api_keys: Option<Vec<String>>,
     pub key_strategy: Option<ApiKeyStrategy>,
     pub models: Option<Vec<String>>,

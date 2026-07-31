@@ -476,8 +476,11 @@ export function ChatPanel({
 
   function handleNewConversation() {
     if (!activeAgent) return;
-    if (isSending) return;
-    if (activeConversation && activeConversation.message_count === 0) {
+    const isCurrentConversationEmpty = Boolean(
+      activeConversation && activeConversation.message_count === 0,
+    );
+    if (isSending) detachActiveRun();
+    if (!isSending && isCurrentConversationEmpty) {
       onOpenMain();
       return;
     }
@@ -588,7 +591,7 @@ export function ChatPanel({
         conversationSearchRef.current?.focus();
         return;
       }
-      if (commandKey && event.key.toLowerCase() === 'n' && activeAgent && !isSending) {
+      if (commandKey && event.key.toLowerCase() === 'n' && activeAgent) {
         event.preventDefault();
         handleNewConversation();
         return;
@@ -658,7 +661,7 @@ export function ChatPanel({
                 </IconButton>
               )}
               actions={(
-                <IconButton variant="ghost" type="button" onClick={handleNewConversation} disabled={isSending} label={t('conversation.create')}>
+                <IconButton variant="ghost" type="button" onClick={handleNewConversation} label={t('conversation.create')}>
                   <Plus size={17} />
                 </IconButton>
               )}

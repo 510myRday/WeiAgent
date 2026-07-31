@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::{
     domain::{ApiKeyStrategy, ModelProvider},
-    error::{AppError, AppResult},
+    error::AppResult,
 };
 
 /// Trying every key of a huge pool inside one request would multiply the
@@ -74,9 +74,14 @@ impl ApiKeyCycle {
             .filter(|key| !key.is_empty())
             .map(ToString::to_string)
             .collect();
-        if keys.is_empty() {
-            return Err(AppError::MissingApiKey);
-        }
+        // An empty pool represents an anonymous provider. Keeping one empty
+        // entry lets the existing retry path issue exactly one unauthenticated
+        // request while preserving key rotation for configured pools.
+        let keys = if keys.is_empty() {
+            vec![String::new()]
+        } else {
+            keys
+        };
         Ok(Self {
             provider_id,
             keys,
@@ -168,9 +173,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_pool_is_a_missing_key_error() {
-        let error = ApiKeyCycle::new(&provider(ApiKeyStrategy::Failover, &["  ", ""])).unwrap_err();
-        assert!(matches!(error, AppError::MissingApiKey));
+    fn empty_pool_uses_one_unauthenticated_attempt() {
+        let mut cycle = ApiKeyCycle::new(&provider(ApiKeyStrategy::Failover, &["  ", ""])).unwrap();
+        assert_eq!(cycle.next_key(), "");
+        assert!(!cycle.has_alternatives());
+        assert_eq!(cycle.attempt_budget(), 1);
     }
 
     #[test]

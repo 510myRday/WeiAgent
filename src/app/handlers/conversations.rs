@@ -392,6 +392,10 @@ pub async fn create_message_run(
                 (AgentRunStatus::Cancelled, None, Some(AgentRunEvent::Cancelled))
             }
         };
+        // A failed or cancelled run can leave an assistant tool call persisted
+        // just before its result. Keep the conversation protocol-complete even
+        // when the run future ended before its own cleanup could run.
+        let _ = store.repair_incomplete_tool_calls(conversation_id).await;
         if let Some(event) = outcome.2 {
             let _ = event_sender.send(event).await;
         }

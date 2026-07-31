@@ -1698,12 +1698,24 @@ mod tests {
                         .unwrap()
                         .is_ascii()
                 );
-                assert_eq!(
-                    definition.function.parameters["properties"]["item"]["oneOf"]
-                        .as_array()
-                        .unwrap()
-                        .len(),
-                    2
+                let item_variants = definition.function.parameters["properties"]["item"]["oneOf"]
+                    .as_array()
+                    .unwrap();
+                assert_eq!(item_variants.len(), 3);
+                assert!(
+                    item_variants
+                        .iter()
+                        .any(|variant| variant["type"] == "integer")
+                );
+                assert!(
+                    item_variants
+                        .iter()
+                        .any(|variant| variant["type"] == "array")
+                );
+                assert!(
+                    item_variants
+                        .iter()
+                        .any(|variant| variant["type"] == "string")
                 );
                 assert!(!required.iter().any(|value| value == "planning_id"));
             } else {

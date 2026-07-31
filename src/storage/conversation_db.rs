@@ -22,6 +22,8 @@ const CONVERSATIONS_SCHEMA_VERSION: i64 = 3;
 const RESPONSES_ITEMS_SCHEMA_VERSION: i64 = 4;
 const CONVERSATION_TITLE_CHAR_LIMIT: usize = 80;
 
+pub(super) const INTERRUPTED_TOOL_REASON: &str = "Tool execution was interrupted before a result was received. Do not assume it completed; retry the tool if needed.";
+
 const CONVERSATIONS_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY NOT NULL,
@@ -812,58 +814,83 @@ pub(super) fn fail_streaming_messages_conn(
             changed = true;
         }
     }
+    changed |= append_interrupted_tool_outputs(&tx, conversation_id, &messages)?;
+    if changed {
+        refresh_conversation_after_write(&tx, &conversation)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn repair_incomplete_tool_calls_conn(
+    conn: &mut Connection,
+    conversation_id: Uuid,
+) -> AppResult<()> {
+    let tx = conn.transaction()?;
+    let conversation = load_conversation(&tx, conversation_id)?;
+    let messages = load_messages(&tx, conversation_id)?;
+    if append_interrupted_tool_outputs(&tx, conversation_id, &messages)? {
+        refresh_conversation_after_write(&tx, &conversation)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn append_interrupted_tool_outputs(
+    tx: &Transaction<'_>,
+    conversation_id: Uuid,
+    messages: &[ChatMessage],
+) -> AppResult<bool> {
     let completed_call_ids = messages
         .iter()
         .filter(|message| message.role == ChatRole::Tool)
-        .filter_map(|message| message.tool_call_id.clone())
+        .filter_map(|message| message.tool_call_id.as_deref())
         .collect::<std::collections::HashSet<_>>();
+    let mut repaired_call_ids = std::collections::HashSet::new();
     let incomplete_calls = messages
         .iter()
         .filter(|message| message.role == ChatRole::Assistant)
         .flat_map(|message| {
-            let agent_id = message.agent_id;
             message
                 .tool_calls
                 .as_ref()
                 .and_then(serde_json::Value::as_array)
                 .into_iter()
                 .flatten()
-                .filter_map(move |call| {
+                .filter_map(|call| {
                     call.get("id")
                         .and_then(serde_json::Value::as_str)
-                        .map(|id| (agent_id, id.to_string()))
+                        .map(|id| (message.agent_id, id))
                 })
         })
-        .filter(|(_, call_id)| !completed_call_ids.contains(call_id))
+        .filter(|(_, call_id)| {
+            !completed_call_ids.contains(call_id)
+                && repaired_call_ids.insert((*call_id).to_string())
+        })
         .collect::<Vec<_>>();
+    let changed = !incomplete_calls.is_empty();
+
     for (agent_id, call_id) in incomplete_calls {
         let message = ChatMessage {
             id: Uuid::new_v4(),
             agent_id,
             conversation_id,
             role: ChatRole::Tool,
-            content: serde_json::json!({
-                "status": "rejected",
-                "reason": "Run cancelled"
-            })
-            .to_string(),
+            content: serde_json::to_string(&crate::domain::ToolResult::Interrupted {
+                reason: INTERRUPTED_TOOL_REASON.to_string(),
+            })?,
             reasoning_content: None,
             openai_response_items: Vec::new(),
             status: ChatMessageStatus::Done,
             created_at: Utc::now(),
             tool_calls: None,
-            tool_call_id: Some(call_id),
+            tool_call_id: Some(call_id.to_string()),
             attachments: Vec::new(),
             usage: None,
         };
-        insert_message(&tx, &conversation_id, &message)?;
-        changed = true;
+        insert_message(tx, &conversation_id, &message)?;
     }
-    if changed {
-        refresh_conversation_after_write(&tx, &conversation)?;
-    }
-    tx.commit()?;
-    Ok(())
+    Ok(changed)
 }
 
 pub(super) fn write_checkpoint_conn(

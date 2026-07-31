@@ -42,6 +42,7 @@ function statusLabel(
   }
   if (tool.status === 'blocked') return t('toolCard.blocked');
   if (tool.status === 'rejected') return t('toolCard.rejected');
+  if (tool.status === 'interrupted') return t('toolCard.interrupted');
   if (tool.status === 'error') return t('toolCard.executionError');
   if (tool.status === 'completed') {
     if (tool.result?.exit_code !== undefined && tool.result?.exit_code !== null) {
@@ -59,6 +60,7 @@ function statusTone(tool: ToolCallState): 'running' | 'approval' | 'done' | 'err
     tool.status === 'error'
     || tool.status === 'blocked'
     || tool.status === 'rejected'
+    || tool.status === 'interrupted'
     || (tool.status === 'completed' && (tool.result?.exit_code ?? 0) !== 0)
   ) {
     return 'error';
@@ -74,7 +76,7 @@ function StatusIcon({ tool }: { tool: ToolCallState }) {
     icon = <Loader2 size={15} className="animate-spin" aria-hidden="true" />;
   } else if (tool.status === 'pending_approval') {
     icon = <Hand size={15} aria-hidden="true" />;
-  } else if (tool.status === 'blocked' || tool.status === 'rejected') {
+  } else if (tool.status === 'blocked' || tool.status === 'rejected' || tool.status === 'interrupted') {
     icon = <XCircle size={15} aria-hidden="true" />;
   } else if (tone === 'error') {
     icon = <AlertTriangle size={15} aria-hidden="true" />;

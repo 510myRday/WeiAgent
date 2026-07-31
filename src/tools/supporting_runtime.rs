@@ -284,7 +284,7 @@ async fn detect_component(
                     managed_installed,
                     installing,
                     source: Some(candidate.source),
-                    detected_version: Some(version),
+                    detected_version: Some(normalize_detected_version(kind, &version)),
                     target_version: None,
                     update_available: false,
                     error: None,
@@ -335,6 +335,22 @@ async fn probe_version(program: &Path, args: &[&str]) -> Result<String, String> 
         return Err(format!("'{}' returned no version", program.display()));
     }
     Ok(version)
+}
+
+fn normalize_detected_version(kind: RuntimeComponentKind, version: &str) -> String {
+    let version = version.trim();
+    match kind {
+        RuntimeComponentKind::Node => version.trim_start_matches('v').to_string(),
+        RuntimeComponentKind::Python => version
+            .strip_prefix("Python ")
+            .unwrap_or(version)
+            .to_string(),
+        RuntimeComponentKind::Uv => version.strip_prefix("uv ").unwrap_or(version).to_string(),
+        RuntimeComponentKind::Git => version
+            .strip_prefix("git version ")
+            .unwrap_or(version)
+            .to_string(),
+    }
 }
 
 async fn node_candidates(root: &Path) -> Vec<ProbeCandidate> {
@@ -1145,6 +1161,17 @@ async fn read_component_latest_cache(
     Some(cache)
 }
 
+/// Returns the last known version even when it is stale so the UI can display it
+/// while a background lookup is in progress.
+pub async fn cached_component_version(
+    cache_root: &Path,
+    kind: RuntimeComponentKind,
+) -> Option<String> {
+    read_component_latest_cache(cache_root, kind)
+        .await
+        .map(|cache| cache.version)
+}
+
 async fn write_component_latest_cache(
     cache_root: &Path,
     kind: RuntimeComponentKind,
@@ -1213,6 +1240,26 @@ mod tests {
         assert_eq!(
             git_for_windows_package_version("v2.55.0.windows.3"),
             Some("2.55.0.3".to_string())
+        );
+    }
+
+    #[test]
+    fn detected_versions_are_normalized_to_match_latest_version_cache() {
+        assert_eq!(
+            normalize_detected_version(RuntimeComponentKind::Node, "v24.18.1"),
+            "24.18.1"
+        );
+        assert_eq!(
+            normalize_detected_version(RuntimeComponentKind::Python, "Python 3.14.6"),
+            "3.14.6"
+        );
+        assert_eq!(
+            normalize_detected_version(RuntimeComponentKind::Uv, "uv 0.11.32"),
+            "0.11.32"
+        );
+        assert_eq!(
+            normalize_detected_version(RuntimeComponentKind::Git, "git version 2.55.0"),
+            "2.55.0"
         );
     }
 

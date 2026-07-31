@@ -376,7 +376,9 @@ fn tool_result_size(result: &crate::domain::ToolResult) -> usize {
                     + stderr.len()
                     + runtime.as_deref().map_or(0, str::len)
             }
-            ToolResult::Blocked { reason, .. } | ToolResult::Rejected { reason } => reason.len(),
+            ToolResult::Blocked { reason, .. }
+            | ToolResult::Rejected { reason }
+            | ToolResult::Interrupted { reason } => reason.len(),
             ToolResult::PendingApproval {
                 command,
                 approval_id,

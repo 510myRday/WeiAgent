@@ -324,7 +324,7 @@ export function ToolCallCard({
     );
   }
 
-  if (status === 'blocked' || status === 'rejected') {
+  if (status === 'blocked' || status === 'rejected' || status === 'interrupted') {
     return (
       <div className="tool-card tool-card--blocked tool-card--embedded">
         <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />

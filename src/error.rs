@@ -13,8 +13,6 @@ pub enum AppError {
     NotFound,
     #[error("invalid request: {0}")]
     BadRequest(String),
-    #[error("model provider API key is not configured")]
-    MissingApiKey,
     #[error("storage error: {0}")]
     Storage(#[from] std::io::Error),
     #[error("json error: {0}")]
@@ -50,7 +48,6 @@ impl IntoResponse for AppError {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
-            AppError::MissingApiKey => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Storage(_)
             | AppError::Json(_)
             | AppError::Llm(_)

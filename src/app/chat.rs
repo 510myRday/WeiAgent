@@ -97,13 +97,26 @@ pub async fn prepare_chat(
             .truncate_conversation_from_message(conversation_id, message_id)
             .await?;
     }
+    // A previous run may have persisted an assistant tool call before the
+    // result was written. Complete that protocol pair before building context.
+    state
+        .store
+        .repair_incomplete_tool_calls(conversation_id)
+        .await?;
     let history = state
         .store
         .read_conversation_messages(conversation_id)
         .await?;
     let checkpoint = state.store.read_context_checkpoint(conversation_id).await?;
-    let history_for_llm =
-        crate::app::context_compress::build_llm_messages(&history, checkpoint.as_ref());
+    let active_task_plan = state.store.read_task_plan(conversation_id).await?;
+    let active_task_plan_context = active_task_plan
+        .as_ref()
+        .map(crate::app::context_compress::ActiveTaskPlanContext::from_task_plan);
+    let history_for_llm = crate::app::context_compress::build_llm_messages(
+        &history,
+        checkpoint.as_ref(),
+        active_task_plan_context.as_ref(),
+    );
     let user_message = ChatMessage {
         id: Uuid::new_v4(),
         agent_id: agent.id,

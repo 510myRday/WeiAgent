@@ -88,7 +88,7 @@ export type ProviderCacheCapabilities = {
 export type FetchProviderModelsPayload = {
   provider_type: ProviderType;
   base_url: string;
-  api_key: string;
+  api_key?: string;
   extra_body?: Record<string, unknown>;
   proxy_url?: string | null;
 };
@@ -295,7 +295,7 @@ export type UpdateConversationPayload = {
   title?: string;
 };
 
-export type ToolCallStatus = 'running' | 'pending_approval' | 'completed' | 'blocked' | 'rejected' | 'error';
+export type ToolCallStatus = 'running' | 'pending_approval' | 'completed' | 'blocked' | 'rejected' | 'interrupted' | 'error';
 export type AgentRunPhase = 'idle' | 'waiting_for_model' | 'compacting_context' | 'executing_tool' | 'waiting_for_approval';
 export type AgentRunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 

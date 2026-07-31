@@ -56,6 +56,7 @@ const AUTO_SAVE_RETRY_DELAY_MS = 1200;
 const AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
 const PROCESS_POLL_RETRY_DELAY_MS = 1500;
 const PROCESS_POLL_MAX_RETRY_DELAY_MS = 30000;
+const RUNTIME_STATUS_POLL_INTERVAL_MS = 60_000;
 const MAX_LLM_ITERATIONS = 999;
 
 export function TerminalToolSettings({
@@ -189,6 +190,21 @@ export function TerminalToolSettings({
       cancelled = true;
     };
   }, [agentId, contextKey, loadRequestKey, scope, t, toast]);
+
+  useEffect(() => {
+    if (scope !== 'defaults') return;
+    const timer = window.setInterval(() => {
+      void readEnvironmentRuntime()
+        .then((next) => {
+          if (!isMountedRef.current || activeContextRef.current !== contextKey) return;
+          setRuntime(next);
+        })
+        .catch(() => {
+          // The initial load and manual retry provide the visible error state.
+        });
+    }, RUNTIME_STATUS_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [contextKey, scope]);
 
   useEffect(() => () => {
     if (debounceContextRef.current === contextKey && debounceTimerRef.current !== undefined) {

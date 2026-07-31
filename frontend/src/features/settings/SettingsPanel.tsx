@@ -649,7 +649,7 @@ export function SettingsPanel({
       && baseUrl === activeProvider.base_url
       && providerForm.provider_type === activeProvider.provider_type,
     );
-    if (!baseUrl || (!apiKey && !canUseStoredKey)) {
+    if (!baseUrl) {
       toast.warning(t('provider.fetchModelsMissingConfig'));
       return;
     }
