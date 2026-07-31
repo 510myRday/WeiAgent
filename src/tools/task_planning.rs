@@ -104,9 +104,13 @@ impl AgentTool for TaskPlanningTool {
                                     "minimum": 1
                                 },
                                 "description": "A non-empty array of 1-based task indexes as JSON numbers, for example [1, 2]. Do not quote the indexes as strings."
+                            },
+                            {
+                                "type": "string",
+                                "description": "Compatibility form: a decimal task index such as \"1\", or a JSON array string such as \"[1, 2]\". Prefer a JSON number or array."
                             }
                         ],
-                        "description": "A 1-based task index or an array of indexes. Arrays let set_status update multiple tasks in one call. Required for set_status. The value must be a JSON integer or an array of JSON integers, not a quoted string."
+                        "description": "A 1-based task index or an array of indexes. Arrays let set_status update multiple tasks in one call. Prefer a JSON integer or array; numeric strings and JSON-encoded arrays are accepted for compatibility."
                     },
                     "status": {
                         "type": "string",
@@ -278,7 +282,7 @@ fn parse_task_planning_args(arguments: Value) -> Result<TaskPlanningArgs, String
             if let Some(item) = arguments.get("item") {
                 if item.is_string() {
                     return Err(
-                        "task_planning item must be a JSON integer or an array of JSON integers, not a string. Use `\"item\": 1` or `\"item\": [1, 2]`, not quoted JSON.".to_string(),
+                        "task_planning item must be a JSON integer or an array of JSON integers. A string is accepted only when it contains a decimal index such as `\"1\"` or a JSON array such as `\"[1, 2]\"`.".to_string(),
                     );
                 }
                 if item
@@ -286,7 +290,7 @@ fn parse_task_planning_args(arguments: Value) -> Result<TaskPlanningArgs, String
                     .is_some_and(|items| items.iter().any(Value::is_string))
                 {
                     return Err(
-                        "task_planning item must be a JSON integer or an array of JSON integers. Use `\"item\": [1, 2]`, not an array of quoted strings.".to_string(),
+                        "task_planning item must be a JSON integer or an array of JSON integers. Array entries may not contain invalid strings; prefer `\"item\": [1, 2]`.".to_string(),
                     );
                 }
             }
@@ -504,7 +508,14 @@ mod tests {
             definition.function.parameters["properties"]["item"]["description"]
                 .as_str()
                 .unwrap()
-                .contains("not a quoted string")
+                .contains("accepted for compatibility")
+        );
+        assert!(
+            definition.function.parameters["properties"]["item"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|variant| variant["type"] == "string")
         );
         let branches = definition.function.parameters["oneOf"].as_array().unwrap();
         assert!(branches.iter().any(|branch| {
@@ -628,7 +639,7 @@ mod tests {
             panic!("expected a non-numeric item index to be rejected");
         };
         assert!(message.contains("JSON integer"));
-        assert!(message.contains("not a string"));
+        assert!(message.contains("accepted only when it contains"));
         assert!(!message.contains("untagged enum"));
     }
 

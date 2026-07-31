@@ -8,8 +8,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ClipboardEvent,
-  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
 } from 'react';

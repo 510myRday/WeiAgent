@@ -198,11 +198,6 @@ function buildPageItems(current: number, totalPages: number): Array<number | 'el
 }
 
 
-function agentScopeKey(log: Pick<LlmLogEntry, 'agent_id' | 'agent_name'>) {
-  if (log.agent_id) return `id:${log.agent_id}`;
-  return `name:${log.agent_name || 'unknown'}`;
-}
-
 function resolveAgent(
   log: Pick<LlmLogEntry, 'agent_id' | 'agent_name'>,
   agentById: Map<string, Agent>,

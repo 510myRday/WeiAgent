@@ -150,7 +150,7 @@ WeiAgent/
 - `data/agents.json`：保存 Agent 配置，包含 `id`、`name`、`description`、`model_provider_id`、`model_id`、`is_builtin`、`avatar_icon`、`avatar_color`、`created_at`、`updated_at`
 - `data/conversations.json` 与 `data/conversations/{conversation_id}.json`：保存多会话元数据和消息。会话标题自动从第一条用户消息截取（最多 80 字符）；`message_count` 在列表查询时自动修正
 
-旧版 `model` 字段和 `data/chats/{agent_id}.json` 会在启动时迁移到 Provider 与 Conversation 结构。
+当前版本只读取 Provider、Agent 和 Conversation 的现行存储结构；旧版 `model` 字段和 `data/chats/{agent_id}.json` 不属于当前启动流程的自动迁移范围。
 
 ## 工具配置数据库结构
 
@@ -183,7 +183,7 @@ WeiAgent/
 
 数据库约束保证只有一行 `default`，每个 Agent 最多一行覆盖；Agent 覆盖使用稀疏存储，整行没有覆盖和授权时直接删除该行。读取时仍向 API 返回 `defaults`、`overrides`、`effective`，因此前端契约不变。
 
-旧 `data/tool_defaults.json`、Agent `tools.json` 以及上一版 9 表结构都会在单个 SQLite 事务中迁移到这 4 张表。提交后删除旧文件和旧表并执行 `VACUUM`；迁移完成通过新表结构和默认行判断，不再保留 `storage_migrations` 标记表。
+当前版本只初始化和使用上述 SQLite 表，不再读取旧 `data/tool_defaults.json`、Agent `tools.json` 或上一版工具表结构；这些文件和表属于历史版本格式，不会在启动时自动迁移。
 
 ## 第一版 API
 
@@ -243,7 +243,7 @@ WeiAgent/
 - 角色定位：帮助用户澄清目标、拆解任务、判断优先级、识别风险，并在未来建议创建或调用其他 Agent
 - 模型建议：建议配置能力强、上下文长、推理稳定的模型；当前只做文案提醒，不强制限制模型选择
 
-内置 Agent 在后端启动时自动补齐。内置身份直接写入 `data/agents.json` 的 `is_builtin` 字段。Agent 简介为必填字段；旧数据缺少简介时会在启动时迁移补齐。内置 Agent 可以修改模型、头像和 Markdown 文档，但不能修改名称和简介，也不能删除。
+内置 Agent 在后端启动时自动补齐。内置身份直接写入 `data/agents.json` 的 `is_builtin` 字段。当前读取旧 Agent 记录时，缺少的简介字段按默认值处理；当前启动流程不再执行独立的旧数据迁移。内置 Agent 可以修改模型、头像和 Markdown 文档，但不能修改名称和简介，也不能删除。
 
 如果启动时没有任何模型提供商，后端会初始化一个本地默认 OpenAI 兼容 Provider，用于让内置 Agent 能够落库。用户后续需要在设置里补充 API Key、模型列表和实际可用模型。
 
