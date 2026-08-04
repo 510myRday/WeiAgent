@@ -8,6 +8,7 @@ import type {
   Conversation,
   ConversationUsage,
   ImageAttachment,
+  GenerationMode,
   ThinkingLevel,
   ToolCallState,
   ToolCallStatus,
@@ -288,6 +289,7 @@ function appendTextDeltaToAssistant(message: UiMessage, delta: string): UiMessag
 function assistantHasVisibleBody(message: UiMessage): boolean {
   if (message.content?.trim()) return true;
   if (message.reasoning_content?.trim()) return true;
+  if (message.attachments?.length) return true;
   if (listTools(message).length > 0) return true;
   return false;
 }
@@ -937,6 +939,7 @@ export function useConversations({
                 id: msg.id || last.id,
                 content: msg.content || last.content,
                 reasoning_content: msg.reasoning_content || last.reasoning_content,
+                attachments: msg.attachments?.length ? msg.attachments : last.attachments,
                 usage: msg.usage ?? last.usage,
                 status: msg.status ?? (last.status === 'streaming' ? 'done' : last.status),
               },
@@ -1137,6 +1140,7 @@ export function useConversations({
       isStreamMode: boolean,
       attachments: ImageAttachment[],
       thinkingLevel: ThinkingLevel,
+      generationMode: GenerationMode = 'chat',
       restartFromMessageId?: string,
     ) => {
       const requestId = ++sendRequestIdRef.current;
@@ -1208,9 +1212,10 @@ export function useConversations({
         const run = await createMessageRun(
           conversationId,
           content,
-          isStreamMode,
+          generationMode === 'chat' && isStreamMode,
           attachments,
           thinkingLevel,
+          generationMode,
           restartFromMessageId,
           controller.signal,
         );

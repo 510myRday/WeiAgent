@@ -173,6 +173,10 @@ fn build_anthropic_request(
                                 "url": url,
                             }
                         }),
+                        ImageSource::Local { path } => json!({
+                            "type": "image",
+                            "source": { "type": "url", "url": path },
+                        }),
                     },
                 ));
                 ("user", blocks)
@@ -632,6 +636,8 @@ mod tests {
             prompt_cache: Default::default(),
             cache_capabilities: None,
             proxy_url: None,
+            image_generation_url: None,
+            image_edit_url: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -649,6 +655,7 @@ mod tests {
             output_price: None,
             cache_write_price: None,
             cache_read_price: None,
+            image_options: None,
         }];
         let client = reqwest::Client::new();
         let url = "http://localhost/v1/messages";
@@ -854,6 +861,8 @@ mod tests {
             prompt_cache: Default::default(),
             cache_capabilities: None,
             proxy_url: None,
+            image_generation_url: None,
+            image_edit_url: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

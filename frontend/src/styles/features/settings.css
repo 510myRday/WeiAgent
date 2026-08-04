@@ -492,6 +492,147 @@
   font-weight: var(--font-weight-regular);
 }
 
+.provider-generic-model-config {
+  display: contents;
+}
+
+.is-image-model-config {
+  grid-template-rows: 22px var(--provider-model-editor-height);
+}
+
+.is-image-model-config .provider-generic-model-config {
+  display: none;
+}
+
+.provider-image-model-note {
+  display: grid;
+  align-content: center;
+  box-sizing: border-box;
+  min-height: var(--provider-model-editor-height);
+  gap: 10px;
+  padding: 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--surface-pane);
+}
+
+.provider-image-model-note p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: 1.6;
+}
+
+.image-model-config__label {
+  gap: 8px;
+}
+
+.image-model-config__label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-config-list.image-model-config-list {
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+.image-model-config-header,
+.image-model-config-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.25fr) repeat(5, minmax(96px, 0.8fr)) repeat(5, minmax(96px, 0.8fr));
+  align-items: center;
+  column-gap: 10px;
+  min-width: 1480px;
+}
+
+.image-model-config-header {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  min-height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
+  color: var(--color-muted);
+  font-size: var(--font-size-micro);
+  font-weight: var(--font-weight-emphasis);
+}
+
+.image-model-config-header > span {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.image-model-config-header > span:first-child {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.image-model-config-row {
+  min-height: 58px;
+  padding: 9px 12px;
+}
+
+.image-model-config-row + .image-model-config-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.image-model-field {
+  display: block;
+  min-width: 0;
+}
+
+.image-model-field > .model-price-field__mobile-label {
+  display: none;
+}
+
+.image-model-field input,
+.image-model-field select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--surface-input);
+  color: var(--color-text);
+  font-size: var(--font-size-caption);
+  text-align: center;
+}
+
+.image-model-field input:focus,
+.image-model-field select:focus {
+  border-color: var(--border-focus);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring-control);
+}
+
+.image-model-number-field input {
+  text-align: center;
+}
+
+.image-model-config-extra {
+  display: contents;
+}
+
+.image-model-config-extra > span {
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: var(--font-size-micro);
+  font-weight: var(--font-weight-emphasis);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-model-config-extra .image-model-field > span {
+  display: none;
+}
+
 .model-config-list {
   box-sizing: border-box;
   height: var(--provider-model-editor-height);
@@ -1022,6 +1163,7 @@
   .model-config-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
 }
 
 

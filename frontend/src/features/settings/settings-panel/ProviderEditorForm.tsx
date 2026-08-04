@@ -3,7 +3,9 @@ import {
   ChevronDown, CircleAlert, Code2, Download, Eye, EyeOff, LockKeyhole, Plus, Save, Trash2,
 } from 'lucide-react';
 
-import type { ApiKeyStrategy, IpProxy, ModelConfig, ModelProvider, ProviderType } from '../../../types';
+import type {
+  ApiKeyStrategy, ImageModelConfig, IpProxy, ModelConfig, ModelProvider, ProviderType,
+} from '../../../types';
 import { useI18n } from '../../../i18n';
 import { Button, FormField, IconButton, PaneHeader } from '../../../components/ui';
 import { displayProxyUrl } from '../web-search/utils';
@@ -35,6 +37,8 @@ interface ProviderEditorFormProps {
   onNameChange: (name: string) => void;
   onProtocolChange: (providerType: ProviderType) => void;
   onBaseUrlChange: (baseUrl: string) => void;
+  onImageGenerationUrlChange: (url: string) => void;
+  onImageEditUrlChange: (url: string) => void;
   onApiKeysChange: (apiKeys: string[]) => void;
   onNewKeyTextChange: (newKeyText: string) => void;
   onAppendApiKeys: (raw: string) => void;
@@ -61,6 +65,8 @@ export function ProviderEditorForm({
   onNameChange,
   onProtocolChange,
   onBaseUrlChange,
+  onImageGenerationUrlChange,
+  onImageEditUrlChange,
   onApiKeysChange,
   onNewKeyTextChange,
   onAppendApiKeys,
@@ -139,6 +145,8 @@ export function ProviderEditorForm({
               {PROTOCOL_PRESETS.map((preset) => (
                 <option key={preset.type} value={preset.type}>
                   {t(preset.labelKey)}
+                  {' '}
+                  ({preset.endpoint})
                 </option>
               ))}
             </select>
@@ -273,7 +281,9 @@ export function ProviderEditorForm({
         <div className="provider-model-section-heading">
           <div>
             <h3>{t('provider.models')}</h3>
-            <p>{t('provider.modelsDescription')}</p>
+            <p>{t(providerForm.provider_type === 'openai_images'
+              ? 'provider.imageModelsDescription'
+              : 'provider.modelsDescription')}</p>
           </div>
           <div className="provider-field-actions">
             <span className={`mini-status-badge${modelCount === 0 ? ' is-required' : ''}`}>
@@ -312,7 +322,191 @@ export function ProviderEditorForm({
             />
           </FormField>
 
-          <div className="provider-model-config">
+          <div className={`provider-model-config${providerForm.provider_type === 'openai_images' ? ' is-image-model-config' : ''}`}>
+            {providerForm.provider_type === 'openai_images' ? (
+              <>
+                <div className="provider-model-config__label image-model-config__label">
+                  {t('provider.imageModelConfiguration')}
+                  <span>{t('provider.imageModelConfigurationHint')}</span>
+                </div>
+                <div className="model-config-list image-model-config-list">
+                  {providerForm.modelConfigs.length === 0 ? (
+                    <div className="model-config-empty">{t('provider.modelConfigurationEmpty')}</div>
+                  ) : (
+                    <>
+                      <div className="image-model-config-header" aria-hidden="true">
+                        <span>{t('provider.model')}</span>
+                        <span>{t('provider.imageSize')}</span>
+                        <span>{t('provider.imageQuality')}</span>
+                        <span>{t('provider.imageCount')}</span>
+                        <span>{t('provider.imageOutputFormat')}</span>
+                        <span>{t('provider.imageBackground')}</span>
+                        <span>{t('provider.imageCompression')}</span>
+                        <span>{t('provider.imageModeration')}</span>
+                        <span>{t('provider.imageStyle')}</span>
+                        <span>{t('provider.imageResponseFormat')}</span>
+                        <span>{t('provider.imageInputFidelity')}</span>
+                      </div>
+                      {providerForm.modelConfigs.map((config, index) => {
+                        const image = config.image_options ?? {};
+                        const patchImage = (patch: Partial<ImageModelConfig>) => onPatchModelConfig(config.model_id, {
+                          image_options: { ...image, ...patch },
+                        });
+                        return (
+                          <div className="image-model-config-row" key={config.model_id}>
+                            <strong className="model-config-name" title={config.model_id}>
+                              {config.model_id}
+                            </strong>
+                            <label className="image-model-field">
+                              <span className="model-price-field__mobile-label">{t('provider.imageSize')}</span>
+                              <input
+                                list={`image-size-options-${index}`}
+                                value={image.size ?? ''}
+                                placeholder="auto"
+                                onChange={(event) => patchImage({ size: event.target.value })}
+                                disabled={isSubmittingProvider}
+                                aria-label={`${config.model_id} ${t('provider.imageSize')}`}
+                              />
+                              <datalist id={`image-size-options-${index}`}>
+                                {['auto', '1024x1024', '1536x1024', '1024x1536', '1792x1024', '1024x1792'].map((size) => (
+                                  <option key={size} value={size} />
+                                ))}
+                              </datalist>
+                            </label>
+                            <label className="image-model-field">
+                              <span className="model-price-field__mobile-label">{t('provider.imageQuality')}</span>
+                              <select
+                                value={image.quality ?? ''}
+                                onChange={(event) => patchImage({ quality: event.target.value })}
+                                disabled={isSubmittingProvider}
+                                aria-label={`${config.model_id} ${t('provider.imageQuality')}`}
+                              >
+                                <option value="">{t('provider.imageDefault')}</option>
+                                {['auto', 'low', 'medium', 'high', 'standard', 'hd'].map((quality) => (
+                                  <option key={quality} value={quality}>{quality}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="image-model-field image-model-number-field">
+                              <span className="model-price-field__mobile-label">{t('provider.imageCount')}</span>
+                              <input
+                                type="number"
+                                min="1"
+                                max="10"
+                                step="1"
+                                value={image.n ?? ''}
+                                placeholder="1"
+                                onChange={(event) => patchImage({ n: event.target.value ? Number(event.target.value) : undefined })}
+                                disabled={isSubmittingProvider}
+                                aria-label={`${config.model_id} ${t('provider.imageCount')}`}
+                              />
+                            </label>
+                            <label className="image-model-field">
+                              <span className="model-price-field__mobile-label">{t('provider.imageOutputFormat')}</span>
+                              <select
+                                value={image.output_format ?? ''}
+                                onChange={(event) => patchImage({ output_format: event.target.value })}
+                                disabled={isSubmittingProvider}
+                                aria-label={`${config.model_id} ${t('provider.imageOutputFormat')}`}
+                              >
+                                <option value="">{t('provider.imageDefault')}</option>
+                                {['png', 'jpeg', 'webp'].map((format) => (
+                                  <option key={format} value={format}>{format}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="image-model-field">
+                              <span className="model-price-field__mobile-label">{t('provider.imageBackground')}</span>
+                              <select
+                                value={image.background ?? ''}
+                                onChange={(event) => patchImage({ background: event.target.value })}
+                                disabled={isSubmittingProvider}
+                                aria-label={`${config.model_id} ${t('provider.imageBackground')}`}
+                              >
+                                <option value="">{t('provider.imageDefault')}</option>
+                                {['auto', 'opaque', 'transparent'].map((background) => (
+                                  <option key={background} value={background}>{background}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <div className="image-model-config-extra">
+                              <label className="image-model-field">
+                                <span>{t('provider.imageCompression')}</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  step="1"
+                                  value={image.output_compression ?? ''}
+                                  placeholder="100"
+                                  onChange={(event) => patchImage({ output_compression: event.target.value ? Number(event.target.value) : undefined })}
+                                  disabled={isSubmittingProvider}
+                                  aria-label={`${config.model_id} ${t('provider.imageCompression')}`}
+                                />
+                              </label>
+                              <label className="image-model-field">
+                                <span>{t('provider.imageModeration')}</span>
+                                <select
+                                  value={image.moderation ?? ''}
+                                  onChange={(event) => patchImage({ moderation: event.target.value })}
+                                  disabled={isSubmittingProvider}
+                                  aria-label={`${config.model_id} ${t('provider.imageModeration')}`}
+                                >
+                                  <option value="">{t('provider.imageDefault')}</option>
+                                  <option value="auto">auto</option>
+                                  <option value="low">low</option>
+                                </select>
+                              </label>
+                              <label className="image-model-field">
+                                <span>{t('provider.imageStyle')}</span>
+                                <select
+                                  value={image.style ?? ''}
+                                  onChange={(event) => patchImage({ style: event.target.value })}
+                                  disabled={isSubmittingProvider}
+                                  aria-label={`${config.model_id} ${t('provider.imageStyle')}`}
+                                >
+                                  <option value="">{t('provider.imageDefault')}</option>
+                                  <option value="vivid">vivid</option>
+                                  <option value="natural">natural</option>
+                                </select>
+                              </label>
+                              <label className="image-model-field">
+                                <span>{t('provider.imageResponseFormat')}</span>
+                                <select
+                                  value={image.response_format ?? ''}
+                                  onChange={(event) => patchImage({ response_format: event.target.value })}
+                                  disabled={isSubmittingProvider}
+                                  aria-label={`${config.model_id} ${t('provider.imageResponseFormat')}`}
+                                >
+                                  <option value="">{t('provider.imageDefault')}</option>
+                                  <option value="b64_json">b64_json</option>
+                                  <option value="url">url</option>
+                                </select>
+                              </label>
+                              <label className="image-model-field">
+                                <span>{t('provider.imageInputFidelity')}</span>
+                                <select
+                                  value={image.input_fidelity ?? ''}
+                                  onChange={(event) => patchImage({ input_fidelity: event.target.value })}
+                                  disabled={isSubmittingProvider}
+                                  aria-label={`${config.model_id} ${t('provider.imageInputFidelity')}`}
+                                >
+                                  <option value="">{t('provider.imageDefault')}</option>
+                                  <option value="low">low</option>
+                                  <option value="high">high</option>
+                                </select>
+                              </label>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </>
+                  )}
+                </div>
+              </>
+            ) : null}
+            {providerForm.provider_type !== 'openai_images' ? (
+              <div className="provider-generic-model-config">
             <div className="provider-model-config__label">
               {t('provider.modelConfiguration')}
               <span>（{t('provider.priceUnit')}）</span>
@@ -407,6 +601,8 @@ export function ProviderEditorForm({
                 </>
               )}
             </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </section>
@@ -449,6 +645,36 @@ export function ProviderEditorForm({
             </p>
           ) : null}
         </FormField>
+        {providerForm.provider_type === 'openai_images' ? (
+          <div className="form-grid two-column">
+            <FormField
+              label={t('provider.imageGenerationUrl')}
+              htmlFor="provider-image-generation-url"
+              hint={t('provider.imageGenerationUrlHint')}
+            >
+              <input
+                id="provider-image-generation-url"
+                value={providerForm.image_generation_url}
+                onChange={(event) => onImageGenerationUrlChange(event.target.value)}
+                placeholder={`${providerForm.base_url.replace(/\/$/, '')}/images/generations`}
+                disabled={isSubmittingProvider}
+              />
+            </FormField>
+            <FormField
+              label={t('provider.imageEditUrl')}
+              htmlFor="provider-image-edit-url"
+              hint={t('provider.imageEditUrlHint')}
+            >
+              <input
+                id="provider-image-edit-url"
+                value={providerForm.image_edit_url}
+                onChange={(event) => onImageEditUrlChange(event.target.value)}
+                placeholder={`${providerForm.base_url.replace(/\/$/, '')}/images/edits`}
+                disabled={isSubmittingProvider}
+              />
+            </FormField>
+          </div>
+        ) : null}
       </details>
 
       {!activeProvider ? (

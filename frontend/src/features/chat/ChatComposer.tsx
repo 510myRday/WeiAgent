@@ -10,6 +10,7 @@ import {
 import {
   Brain,
   Check,
+  Image as ImageIcon,
   Paperclip,
   Send,
   Square,
@@ -18,6 +19,7 @@ import {
 
 import type {
   ConversationUsage,
+  GenerationMode,
   ImageAttachment,
   ThinkingLevel,
 } from '../../types';
@@ -32,24 +34,29 @@ const THINKING_LEVELS: ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'x_hig
 interface ChatComposerProps {
   disabled: boolean;
   placeholder: string;
+  inputLabel: string;
   isSending: boolean;
   isSavingModel: boolean;
   isModelSavePending: boolean;
   draftKey: string;
   isStreamMode: boolean;
   supportsImages: boolean;
+  supportsImageGeneration: boolean;
+  generationMode: GenerationMode;
   supportsThinking: boolean;
   thinkingLevel: ThinkingLevel;
   usage: ConversationUsage;
   /** Model context window size in tokens. */
   contextSize: number;
   onStreamModeChange: (isStreamMode: boolean) => void;
+  onGenerationModeChange: (mode: GenerationMode) => void;
   onThinkingLevelChange: (level: ThinkingLevel) => void;
   onUnsupportedImage: () => void;
   onSend: (
     content: string,
     isStreamMode: boolean,
     attachments: ImageAttachment[],
+    generationMode: GenerationMode,
   ) => void;
   onStop: () => void;
 }
@@ -57,17 +64,21 @@ interface ChatComposerProps {
 export const ChatComposer = memo(function ChatComposer({
   disabled,
   placeholder,
+  inputLabel,
   isSending,
   isSavingModel,
   isModelSavePending,
   draftKey,
   isStreamMode,
   supportsImages,
+  supportsImageGeneration,
+  generationMode,
   supportsThinking,
   thinkingLevel,
   usage,
   contextSize,
   onStreamModeChange,
+  onGenerationModeChange,
   onThinkingLevelChange,
   onUnsupportedImage,
   onSend,
@@ -92,7 +103,7 @@ export const ChatComposer = memo(function ChatComposer({
     handleDragLeave,
     handleDrop,
   } = useImageAttachments({
-    supportsImages,
+    supportsImages: supportsImages || (supportsImageGeneration && generationMode === 'image'),
     interactionDisabled: disabled || isSending,
     onUnsupportedImage,
   });
@@ -106,9 +117,9 @@ export const ChatComposer = memo(function ChatComposer({
   }, [draftKey]);
 
   useEffect(() => {
-    if (!supportsImages) setAttachments([]);
+    if (!supportsImages && !(supportsImageGeneration && generationMode === 'image')) setAttachments([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supportsImages]);
+  }, [generationMode, supportsImageGeneration, supportsImages]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => writeChatDraft(draftKey, draft), 200);
@@ -140,7 +151,7 @@ export const ChatComposer = memo(function ChatComposer({
     setDraft('');
     setAttachments([]);
     writeChatDraft(draftKey, '');
-    onSend(content, isStreamMode, submittedAttachments);
+    onSend(content, isStreamMode, submittedAttachments, generationMode);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -187,7 +198,7 @@ export const ChatComposer = memo(function ChatComposer({
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           placeholder={placeholder}
-          aria-label={t('chat.messageLabel')}
+          aria-label={inputLabel}
           disabled={disabled}
           rows={1}
         />
@@ -214,6 +225,20 @@ export const ChatComposer = memo(function ChatComposer({
             >
               <Paperclip size={18} />
             </button>
+            {supportsImageGeneration ? (
+              <button
+                type="button"
+                className={`thinking-button${generationMode === 'image' ? ' is-active' : ''}`}
+                onClick={() => onGenerationModeChange(generationMode === 'image' ? 'chat' : 'image')}
+                disabled={disabled || isSending || supportsImageGeneration}
+                aria-pressed={generationMode === 'image'}
+                aria-label={t('chat.imageMode')}
+                title={t('chat.imageMode')}
+              >
+                <ImageIcon size={17} />
+                <span>{t('chat.imageMode')}</span>
+              </button>
+            ) : null}
             {supportsThinking ? (
               <div className="thinking-control" ref={thinkingRef}>
                 <button
@@ -260,6 +285,7 @@ export const ChatComposer = memo(function ChatComposer({
               role="switch"
               aria-checked={isStreamMode}
               aria-label={t('chat.stream')}
+              disabled={disabled || isSending || supportsImageGeneration}
               onClick={() => onStreamModeChange(!isStreamMode)}
             >
               <span className="stream-switch-track" aria-hidden="true"><span /></span>

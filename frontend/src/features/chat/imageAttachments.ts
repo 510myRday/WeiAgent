@@ -1,4 +1,5 @@
 import type { ImageAttachment } from '../../types';
+import { apiAuthorizationToken } from '../../apiAuth';
 
 export const MAX_IMAGE_COUNT = 8;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -39,9 +40,15 @@ export function fileToBase64(file: File): Promise<string> {
 }
 
 export function attachmentImageUrl(attachment: ImageAttachment): string {
-  return attachment.source_type === 'base64'
-    ? `data:${attachment.media_type};base64,${attachment.data}`
-    : attachment.url;
+  if (attachment.source_type === 'base64') {
+    return `data:${attachment.media_type};base64,${attachment.data}`;
+  }
+  if (attachment.source_type === 'local') {
+    const token = apiAuthorizationToken();
+    const tokenQuery = token ? `&token=${encodeURIComponent(token)}` : '';
+    return `/api/assets/image?path=${encodeURIComponent(attachment.path)}${tokenQuery}`;
+  }
+  return attachment.url;
 }
 
 export function createAttachmentId(): string {

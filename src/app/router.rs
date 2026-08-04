@@ -129,6 +129,7 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             get(conversations::read_task_plans),
         )
         .route("/api/assets/local", get(assets::read_local_asset))
+        .route("/api/assets/image", get(assets::read_local_asset))
         .route(
             "/api/conversations/{conversation_id}/runs",
             post(conversations::create_message_run),

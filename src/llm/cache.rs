@@ -98,6 +98,7 @@ pub fn effective_capabilities(provider: &ModelProvider) -> ProviderCacheCapabili
             stable_cache_key: false,
             supports_cache_retention: false,
         },
+        ProviderType::OpenAiImages => ProviderCacheCapabilities::default(),
     }
 }
 
@@ -201,6 +202,8 @@ mod tests {
             },
             cache_capabilities: None,
             proxy_url: None,
+            image_generation_url: None,
+            image_edit_url: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

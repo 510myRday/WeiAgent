@@ -14,7 +14,8 @@ pub use agents::{
 };
 pub use chat::{
     AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, ConversationUsage,
-    ImageAttachment, ImageSource, ModelUsage, SendMessageRequest, ThinkingLevel, TokenUsage,
+    GenerationMode, ImageAttachment, ImageSource, ModelUsage, SendMessageRequest, ThinkingLevel,
+    TokenUsage,
 };
 pub use conversations::{
     ContextCheckpoint, Conversation, ConversationMessagePage, CreateConversationRequest,
@@ -26,8 +27,9 @@ pub use ip_proxies::{
     IpProxyQualityTestUpdate, IpProxyStatus, IpProxyTestUpdate, UpdateIpProxyRequest,
 };
 pub use providers::{
-    ApiKeyStrategy, CreateModelProviderRequest, FetchProviderModelsRequest, ModelConfig,
-    ModelProvider, ModelProviderResponse, ProviderType, UpdateModelProviderRequest, merge_api_keys,
+    ApiKeyStrategy, CreateModelProviderRequest, FetchProviderModelsRequest, ImageModelConfig,
+    ModelConfig, ModelProvider, ModelProviderResponse, ProviderType, UpdateModelProviderRequest,
+    merge_api_keys,
 };
 pub use runtime::{
     EnvironmentRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, RuntimeSource,

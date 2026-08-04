@@ -600,10 +600,13 @@ export function SettingsPanel({
     }
     setIsSubmittingProvider(true);
     try {
-      await onProviderAdd(payload);
+      const created = await onProviderAdd(payload);
       clearNewProviderDraft();
       toast.success(t('notification.providerCreated'));
-      setProviderForm((current) => ({ ...current, apiKeys: [], newKeyText: '' }));
+      // Keep the editor aligned with the persisted provider. The response
+      // contains masked keys, so the new plaintext value is never retained in
+      // the form while the saved key remains visible and editable.
+      setProviderForm(providerToForm(created));
     } catch (cause) {
       toast.error(userErrorMessage(cause, {
         summary: t('error.providerSaveFailed'),
@@ -665,6 +668,8 @@ export function SettingsPanel({
         : await fetchModelsForProvider({
           provider_type: providerForm.provider_type,
           base_url: baseUrl,
+          image_generation_url: providerForm.image_generation_url.trim() || null,
+          image_edit_url: providerForm.image_edit_url.trim() || null,
           api_key: apiKey,
           extra_body: extraBody,
           proxy_url: providerForm.proxy_url,
@@ -872,6 +877,8 @@ export function SettingsPanel({
                 onNameChange={(name) => changeProviderForm((current) => ({ ...current, name }))}
                 onProtocolChange={handleProtocolChange}
                 onBaseUrlChange={(base_url) => changeProviderForm((current) => ({ ...current, base_url }))}
+                onImageGenerationUrlChange={(image_generation_url) => changeProviderForm((current) => ({ ...current, image_generation_url }))}
+                onImageEditUrlChange={(image_edit_url) => changeProviderForm((current) => ({ ...current, image_edit_url }))}
                 onApiKeysChange={(apiKeys) => changeProviderForm((current) => ({ ...current, apiKeys }))}
                 onNewKeyTextChange={(newKeyText) => changeProviderForm((current) => ({ ...current, newKeyText }))}
                 onAppendApiKeys={(raw) => changeProviderForm((current) => commitPendingApiKeys({ ...current, newKeyText: raw }))}

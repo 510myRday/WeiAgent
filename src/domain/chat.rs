@@ -16,6 +16,7 @@ pub struct ImageAttachment {
 pub enum ImageSource {
     Base64 { data: String },
     Url { url: String },
+    Local { path: String },
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +140,14 @@ pub enum ChatMessageStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GenerationMode {
+    #[default]
+    Chat,
+    Image,
+}
+
 impl ChatRole {
     pub fn as_openai_role(&self) -> &'static str {
         match self {
@@ -158,6 +167,8 @@ pub struct SendMessageRequest {
     pub thinking_level: ThinkingLevel,
     #[serde(default = "default_stream_response")]
     pub stream: bool,
+    #[serde(default)]
+    pub generation_mode: GenerationMode,
     #[serde(default)]
     pub restart_from_message_id: Option<Uuid>,
 }

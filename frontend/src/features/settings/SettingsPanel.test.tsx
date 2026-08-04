@@ -191,6 +191,29 @@ test('unsaved new-provider draft is restored after the panel unmounts and remoun
   expect(screen.getByText('model-a')).toBeInTheDocument();
 });
 
+test('creating a provider keeps the saved API key in the editor', async () => {
+  const user = userEvent.setup();
+  const createdProvider: ModelProvider = {
+    ...existingProvider,
+    id: 'provider-created',
+    name: '新提供商',
+    masked_api_keys: ['****-key'],
+    models: ['model-a'],
+  };
+  const onProviderAdd = vi.fn().mockResolvedValue(createdProvider);
+  const { container } = render(panelTree({ onProviderAdd }));
+
+  await user.type(screen.getByLabelText(/^名称/), '新提供商');
+  await user.type(screen.getByLabelText(/^API Key/), 'sk-first-key');
+  await user.type(screen.getByLabelText(/^模型 ID/), 'model-a');
+  await user.click(within(container.querySelector('.provider-editor')!).getByRole('button', { name: '创建提供商' }));
+
+  await waitFor(() => expect(onProviderAdd).toHaveBeenCalledWith(expect.objectContaining({
+    api_keys: ['sk-first-key'],
+  })));
+  expect(screen.getByText('****-key')).toBeInTheDocument();
+});
+
 test('switching to an existing provider discards the new-provider draft', async () => {
   const user = userEvent.setup();
   const onProviderChange = vi.fn();
@@ -211,4 +234,22 @@ test('switching to an existing provider discards the new-provider draft', async 
   render(panelTree({ providers: [existingProvider], onProviderChange }));
 
   expect(screen.getByLabelText(/^名称/)).toHaveValue('');
+});
+
+test('image providers show image request fields instead of text model pricing', async () => {
+  const user = userEvent.setup();
+  render(panelTree());
+
+  await user.click(screen.getAllByRole('button', { name: '创建提供商' })[0]);
+  await user.click(screen.getByRole('button', { name: /自定义连接/ }));
+  await user.selectOptions(screen.getByLabelText(/^接口模式/), 'openai_images');
+  await user.type(screen.getByLabelText(/^模型 ID/), 'gpt-image-1');
+
+  expect(screen.getByLabelText('gpt-image-1 尺寸')).toBeInTheDocument();
+  expect(screen.getByLabelText('gpt-image-1 质量')).toBeInTheDocument();
+  expect(screen.getByLabelText('gpt-image-1 数量')).toBeInTheDocument();
+  expect(screen.getByLabelText('gpt-image-1 格式')).toBeInTheDocument();
+  expect(screen.getByLabelText('gpt-image-1 背景')).toBeInTheDocument();
+  expect(screen.queryByLabelText('gpt-image-1 上下文')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('gpt-image-1 输入')).not.toBeInTheDocument();
 });

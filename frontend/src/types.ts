@@ -21,6 +21,8 @@ export type ModelProvider = {
   provider_type: ProviderType;
   name: string;
   base_url: string;
+  image_generation_url?: string | null;
+  image_edit_url?: string | null;
   has_api_key: boolean;
   /** One masked entry per stored key, in pool order. */
   masked_api_keys: string[];
@@ -45,18 +47,35 @@ export type ModelConfig = {
   output_price?: number;
   cache_write_price?: number;
   cache_read_price?: number;
+  image_options?: ImageModelConfig;
+};
+
+export type ImageModelConfig = {
+  size?: string;
+  quality?: string;
+  n?: number;
+  output_format?: string;
+  output_compression?: number;
+  background?: string;
+  moderation?: string;
+  style?: string;
+  response_format?: string;
+  input_fidelity?: string;
 };
 
 export type ProviderType =
   | 'openai_compatible'
   | 'openai_responses'
   | 'anthropic_messages'
-  | 'google_gemini';
+  | 'google_gemini'
+  | 'openai_images';
 
 export type ModelProviderPayload = {
   provider_type: ProviderType;
   name: string;
   base_url: string;
+  image_generation_url?: string | null;
+  image_edit_url?: string | null;
   /** Masked entries keep the stored key at that slot; plaintext entries are new keys. */
   api_keys: string[];
   key_strategy: ApiKeyStrategy;
@@ -88,6 +107,8 @@ export type ProviderCacheCapabilities = {
 export type FetchProviderModelsPayload = {
   provider_type: ProviderType;
   base_url: string;
+  image_generation_url?: string | null;
+  image_edit_url?: string | null;
   api_key?: string;
   extra_body?: Record<string, unknown>;
   proxy_url?: string | null;
@@ -135,6 +156,7 @@ export type Conversation = {
 
 export type ChatRole = 'user' | 'assistant' | 'tool';
 export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'x_high';
+export type GenerationMode = 'chat' | 'image';
 
 export type ImageAttachment = {
   id: string;
@@ -143,6 +165,7 @@ export type ImageAttachment = {
 } & (
   | { source_type: 'base64'; data: string }
   | { source_type: 'url'; url: string }
+  | { source_type: 'local'; path: string }
 );
 
 export type TokenUsage = {

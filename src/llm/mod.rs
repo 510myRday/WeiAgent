@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod client;
 pub mod http;
+pub mod image;
 pub mod keys;
 pub mod protocol;
 pub mod registry;

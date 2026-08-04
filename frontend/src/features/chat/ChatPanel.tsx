@@ -17,6 +17,7 @@ import type {
   AppSettings,
   Conversation,
   ImageAttachment,
+  GenerationMode,
   ModelProvider,
   ThinkingLevel,
   UiMessageItem,
@@ -116,6 +117,7 @@ export function ChatPanel({
 
   const [isStreamMode, setIsStreamMode] = useState(true);
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>('medium');
+  const [generationMode, setGenerationMode] = useState<GenerationMode>('chat');
   const [modelTargetAgentId, setModelTargetAgentId] = useState('');
   const [selectedModelValue, setSelectedModelValue] = useState('');
   const [isModelSavePending, setIsModelSavePending] = useState(false);
@@ -163,7 +165,19 @@ export function ChatPanel({
     (config) => config.model_id === modelTargetAgent?.model_id,
   );
   const supportsImages = activeModelConfig?.multimodal === true;
+  const supportsImageGeneration = activeProvider?.provider_type === 'openai_images';
   const supportsThinking = activeModelConfig?.thinking === true;
+  const effectiveGenerationMode: GenerationMode = supportsImageGeneration ? 'image' : generationMode;
+  const effectiveIsStreamMode = supportsImageGeneration ? false : isStreamMode;
+  useEffect(() => {
+    if (supportsImageGeneration) {
+      setGenerationMode('image');
+      setIsStreamMode(false);
+    } else {
+      setGenerationMode('chat');
+      setIsStreamMode(true);
+    }
+  }, [supportsImageGeneration]);
   const modelOptions = useMemo<ModelOption[]>(() => sortByName(providers).flatMap((provider) =>
     [...provider.models].sort(compareNames).map((model) => ({
       value: JSON.stringify([provider.id, model]),
@@ -184,7 +198,12 @@ export function ChatPanel({
       ? t('chat.placeholderNoProvider')
       : !hasModel
         ? t('chat.placeholderNoModel')
-        : t('chat.placeholder');
+        : effectiveGenerationMode === 'image'
+          ? t('chat.imagePromptPlaceholder')
+          : t('chat.placeholder');
+  const composerInputLabel = effectiveGenerationMode === 'image'
+    ? t('chat.imagePromptLabel')
+    : t('chat.messageLabel');
   const visibleMessages = activeAgent ? messages : EMPTY_MESSAGES;
   const activeConversation = activeAgent
     ? conversations.find((conversation) => conversation.id === activeConversationId)
@@ -418,12 +437,21 @@ export function ChatPanel({
     void send(
       content.trim(),
       activeAgent.id,
-      isStreamMode,
+      effectiveIsStreamMode,
       attachments,
       supportsThinking ? thinkingLevel : 'off',
+      effectiveGenerationMode,
       messageId,
     );
-  }, [activeAgent, isSending, isStreamMode, send, supportsThinking, thinkingLevel]);
+  }, [
+    activeAgent,
+    effectiveGenerationMode,
+    effectiveIsStreamMode,
+    isSending,
+    send,
+    supportsThinking,
+    thinkingLevel,
+  ]);
 
   async function handleModelChange(value: string) {
     if (!modelTargetAgent || isSavingModel || isSending) return;
@@ -550,14 +578,16 @@ export function ChatPanel({
     content: string,
     streamMode: boolean,
     attachments: ImageAttachment[],
+    imageMode: GenerationMode,
   ) => {
     if (!activeAgent || isSending || isModelSavePending || isSavingModel) return;
     void send(
       content,
       activeAgent.id,
-      streamMode,
+      supportsImageGeneration ? false : streamMode,
       attachments,
       supportsThinking ? thinkingLevel : 'off',
+      supportsImageGeneration ? 'image' : imageMode,
     );
   }, [
     activeAgent,
@@ -565,6 +595,7 @@ export function ChatPanel({
     isSavingModel,
     isSending,
     send,
+    supportsImageGeneration,
     supportsThinking,
     thinkingLevel,
   ]);
@@ -783,7 +814,7 @@ export function ChatPanel({
           hasOlderMessages={hasOlderMessages}
           isLoadingOlderMessages={isLoadingOlderMessages}
           isSending={isSending}
-          supportsImages={supportsImages}
+          supportsImages={supportsImages || supportsImageGeneration}
           runPhase={runPhase}
           retryStatus={retryStatus}
           timelineMessageIndexes={timelineMessageIndexes}
@@ -816,13 +847,17 @@ export function ChatPanel({
           <ChatComposer
             disabled={isComposerDisabled}
             placeholder={composerPlaceholder}
+            inputLabel={composerInputLabel}
             draftKey={`${activeAgent?.id ?? 'none'}:${activeConversationId || 'new'}`}
             isSending={isSending}
             isSavingModel={isSavingModel}
             isModelSavePending={isModelSavePending}
-            isStreamMode={isStreamMode}
+            isStreamMode={effectiveIsStreamMode}
             onStreamModeChange={setIsStreamMode}
             supportsImages={supportsImages}
+            supportsImageGeneration={supportsImageGeneration}
+            generationMode={effectiveGenerationMode}
+            onGenerationModeChange={setGenerationMode}
             supportsThinking={supportsThinking}
             thinkingLevel={thinkingLevel}
             onThinkingLevelChange={setThinkingLevel}

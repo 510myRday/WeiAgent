@@ -35,6 +35,8 @@ pub async fn fetch_provider_models(
         provider_type: request.provider_type,
         name: String::new(),
         base_url: request.base_url,
+        image_generation_url: request.image_generation_url,
+        image_edit_url: request.image_edit_url,
         api_keys: vec![request.api_key],
         key_strategy: Default::default(),
         models: Vec::new(),
@@ -46,6 +48,10 @@ pub async fn fetch_provider_models(
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
+    if provider.provider_type == crate::domain::ProviderType::OpenAiImages {
+        let client = state.llm_registry.image_client_for(&provider)?;
+        return Ok(Json(client.list_models(&provider).await?));
+    }
     let client = state.llm_registry.client_for(&provider)?;
     Ok(Json(client.list_models(&provider).await?))
 }
@@ -75,6 +81,10 @@ pub async fn list_provider_models(
     Path(provider_id): Path<Uuid>,
 ) -> AppResult<Json<Vec<String>>> {
     let provider = state.store.get_model_provider(provider_id).await?;
+    if provider.provider_type == crate::domain::ProviderType::OpenAiImages {
+        let client = state.llm_registry.image_client_for(&provider)?;
+        return Ok(Json(client.list_models(&provider).await?));
+    }
     let client = state.llm_registry.client_for(&provider)?;
     Ok(Json(client.list_models(&provider).await?))
 }

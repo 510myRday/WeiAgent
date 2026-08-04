@@ -120,15 +120,17 @@ impl LlmHttp {
                     if !(keys.has_alternatives() && is_rotatable_status(response.status())) {
                         return Ok(response);
                     }
+                    let key = keys.current_key().to_string();
                     keys.note_failure();
                     if attempt >= attempts {
                         // Hand the final response back untouched so callers
                         // keep their upstream status/body error reporting.
                         return Ok(response);
                     }
-                    last_error = Some(AppError::Llm(format!(
-                        "upstream returned {}",
-                        response.status()
+                    last_error = Some(AppError::Llm(with_key_label(
+                        keys,
+                        &key,
+                        &format!("upstream returned {}", response.status()),
                     )));
                 }
                 Err(error) => last_error = Some(error),

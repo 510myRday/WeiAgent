@@ -16,12 +16,13 @@ use crate::{
         AppState,
         agent_executor::{AgentRunEvent, run_agent},
         chat::prepare_chat,
+        image::run_image,
         run_manager::SequencedRunEvent,
     },
     domain::{
         AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, Conversation,
-        ConversationMessagePage, ConversationUsage, CreateConversationRequest, SendMessageRequest,
-        UpdateConversationRequest,
+        ConversationMessagePage, ConversationUsage, CreateConversationRequest, GenerationMode,
+        SendMessageRequest, UpdateConversationRequest,
     },
     error::{AppError, AppResult},
     llm::client::RequestOptions,
@@ -273,6 +274,11 @@ pub async fn create_message_run(
     Path(conversation_id): Path<Uuid>,
     Json(request): Json<SendMessageRequest>,
 ) -> AppResult<Json<AgentRun>> {
+    // Image runs intentionally bypass prepare_chat and run_agent: image models
+    // receive only the prompt and reference images, never chat history or tools.
+    if request.generation_mode == GenerationMode::Image {
+        return create_image_run(state, conversation_id, request).await;
+    }
     let settings = state.store.read_settings().await?;
     let registration = state.run_manager.create(conversation_id)?;
     let run_id = registration.info.id;
@@ -404,6 +410,65 @@ pub async fn create_message_run(
         manager.finish(run_id, outcome.0, outcome.1);
     });
 
+    Ok(Json(info))
+}
+
+async fn create_image_run(
+    state: AppState,
+    conversation_id: Uuid,
+    request: SendMessageRequest,
+) -> AppResult<Json<AgentRun>> {
+    let settings = state.store.read_settings().await?;
+    let registration = state.run_manager.create(conversation_id)?;
+    let run_id = registration.info.id;
+    let info = registration.info.clone();
+    let user_message_id = Uuid::new_v4();
+    state.run_manager.set_user_message(run_id, user_message_id);
+    let manager = state.run_manager.clone();
+    let mut cancel = registration.cancel.clone();
+    let (event_sender, mut event_receiver) = mpsc::channel(64);
+    let event_manager = manager.clone();
+    let forwarding = tokio::spawn(async move {
+        while let Some(event) = event_receiver.recv().await {
+            event_manager.record_event(run_id, event);
+        }
+    });
+    let options = request_options(&settings, None);
+    tokio::spawn(async move {
+        let _registration = registration;
+        let run = run_image(
+            state,
+            conversation_id,
+            user_message_id,
+            request.content,
+            request.attachments,
+            request.restart_from_message_id,
+            options,
+            Some(event_sender.clone()),
+        );
+        let outcome = tokio::select! {
+            result = tokio::time::timeout(MAX_AGENT_RUN_DURATION, run) => {
+                match result {
+                    Ok(Ok(())) => (AgentRunStatus::Completed, None, None),
+                    Ok(Err(error)) => {
+                        let message = error.to_string();
+                        (AgentRunStatus::Failed, Some(message.clone()), Some(AgentRunEvent::Error(message)))
+                    }
+                    Err(_) => {
+                        let message = "image run exceeded the 60 minute deadline".to_string();
+                        (AgentRunStatus::Failed, Some(message.clone()), Some(AgentRunEvent::Error(message)))
+                    }
+                }
+            }
+            _ = cancel.changed() => (AgentRunStatus::Cancelled, None, Some(AgentRunEvent::Cancelled)),
+        };
+        if let Some(event) = outcome.2 {
+            let _ = event_sender.send(event).await;
+        }
+        drop(event_sender);
+        let _ = forwarding.await;
+        manager.finish(run_id, outcome.0, outcome.1);
+    });
     Ok(Json(info))
 }
 

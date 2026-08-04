@@ -184,6 +184,9 @@ fn build_gemini_request(
                                 "fileUri": url,
                             }
                         }),
+                        ImageSource::Local { path } => json!({
+                            "fileData": { "mimeType": attachment.media_type, "fileUri": path },
+                        }),
                     },
                 ));
                 ("user", parts)
@@ -663,6 +666,8 @@ mod tests {
             prompt_cache: Default::default(),
             cache_capabilities: None,
             proxy_url: None,
+            image_generation_url: None,
+            image_edit_url: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

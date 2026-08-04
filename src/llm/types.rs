@@ -193,6 +193,7 @@ pub(crate) fn openai_image_url(attachment: &ImageAttachment) -> String {
             format!("data:{};base64,{data}", attachment.media_type)
         }
         ImageSource::Url { url } => url.clone(),
+        ImageSource::Local { path } => path.clone(),
     }
 }
 
@@ -268,6 +269,7 @@ fn context_message_bytes(message: &ChatMessage) -> usize {
             .map(|attachment| match &attachment.source {
                 ImageSource::Base64 { data } => data.len(),
                 ImageSource::Url { url } => url.len(),
+                ImageSource::Local { path } => path.len(),
             })
             .sum::<usize>()
         + message

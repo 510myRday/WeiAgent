@@ -56,9 +56,10 @@ const imageAttachmentSchema = looseObject({
   id: string(),
   name: string(),
   media_type: picklist(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
-  source_type: picklist(['base64', 'url']),
+  source_type: picklist(['base64', 'url', 'local']),
   data: optional(string()),
   url: optional(string()),
+  path: optional(string()),
 });
 
 const tokenUsageFields = {

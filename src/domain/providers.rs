@@ -15,6 +15,8 @@ pub enum ProviderType {
     AnthropicMessages,
     #[serde(rename = "google_gemini")]
     GoogleGemini,
+    #[serde(rename = "openai_images")]
+    OpenAiImages,
 }
 
 /// How a provider with several API keys picks the key for each request.
@@ -36,6 +38,30 @@ fn default_context_size() -> u32 {
     128_000
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ImageModelConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_compression: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moderation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_fidelity: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelConfig {
     pub model_id: String,
@@ -54,6 +80,8 @@ pub struct ModelConfig {
     pub cache_write_price: Option<f64>,
     #[serde(default)]
     pub cache_read_price: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_options: Option<ImageModelConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -63,6 +91,10 @@ pub struct ModelProvider {
     pub provider_type: ProviderType,
     pub name: String,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_generation_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_edit_url: Option<String>,
     /// Ordered API key pool; requests pick a key according to `key_strategy`.
     pub api_keys: Vec<String>,
     #[serde(default)]
@@ -93,6 +125,10 @@ pub struct ModelProviderResponse {
     pub provider_type: ProviderType,
     pub name: String,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_generation_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_edit_url: Option<String>,
     pub has_api_key: bool,
     /// One masked entry per stored key, in pool order.
     pub masked_api_keys: Vec<String>,
@@ -115,6 +151,8 @@ impl From<&ModelProvider> for ModelProviderResponse {
             provider_type: provider.provider_type.clone(),
             name: provider.name.clone(),
             base_url: provider.base_url.clone(),
+            image_generation_url: provider.image_generation_url.clone(),
+            image_edit_url: provider.image_edit_url.clone(),
             has_api_key: provider.api_keys.iter().any(|key| !key.trim().is_empty()),
             masked_api_keys: provider
                 .api_keys
@@ -190,6 +228,10 @@ pub struct CreateModelProviderRequest {
     pub provider_type: ProviderType,
     pub name: String,
     pub base_url: String,
+    #[serde(default)]
+    pub image_generation_url: Option<String>,
+    #[serde(default)]
+    pub image_edit_url: Option<String>,
     /// Plaintext keys; masked entries are only meaningful on update. An empty
     /// list creates a provider that sends requests without an API key.
     #[serde(default)]
@@ -215,6 +257,10 @@ pub struct FetchProviderModelsRequest {
     pub provider_type: ProviderType,
     pub base_url: String,
     #[serde(default)]
+    pub image_generation_url: Option<String>,
+    #[serde(default)]
+    pub image_edit_url: Option<String>,
+    #[serde(default)]
     pub api_key: String,
     #[serde(default)]
     pub extra_body: serde_json::Value,
@@ -227,6 +273,10 @@ pub struct UpdateModelProviderRequest {
     pub provider_type: Option<ProviderType>,
     pub name: Option<String>,
     pub base_url: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub image_generation_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub image_edit_url: Option<Option<String>>,
     /// Missing = keys unchanged. Entries: masked = keep that stored key,
     /// plaintext = new key; an empty list clears the stored key pool.
     pub api_keys: Option<Vec<String>>,
@@ -250,7 +300,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{ModelConfig, merge_api_keys};
+    use super::{ModelConfig, UpdateModelProviderRequest, merge_api_keys};
 
     fn keys(values: &[&str]) -> Vec<String> {
         values.iter().map(ToString::to_string).collect()
@@ -336,5 +386,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.context_size, 200_000);
+    }
+
+    #[test]
+    fn provider_endpoint_updates_distinguish_missing_from_clear() {
+        let missing: UpdateModelProviderRequest =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(missing.image_generation_url, None);
+        assert_eq!(missing.image_edit_url, None);
+
+        let clear: UpdateModelProviderRequest = serde_json::from_value(serde_json::json!({
+            "image_generation_url": null,
+            "image_edit_url": "https://example.test/images/edits"
+        }))
+        .unwrap();
+        assert_eq!(clear.image_generation_url, Some(None));
+        assert_eq!(
+            clear.image_edit_url,
+            Some(Some("https://example.test/images/edits".to_string()))
+        );
     }
 }

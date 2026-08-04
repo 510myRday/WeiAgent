@@ -16,7 +16,9 @@ import {
   ArrowLeft,
   Bot,
   ChevronDown,
+  Download,
   LoaderCircle,
+  Maximize2,
   MessageSquare,
   Paperclip,
   Pencil,
@@ -36,7 +38,7 @@ import type {
 } from '../../types';
 import { AvatarBadge } from '../../components/AvatarPicker';
 import { agentDisplayName } from '../../components/AgentListItem';
-import { Button, EmptyState, useFeedback } from '../../components/ui';
+import { Button, Dialog, EmptyState, useFeedback } from '../../components/ui';
 import { useI18n } from '../../i18n';
 import { MarkdownContent } from './MarkdownContent';
 import { StreamingMarkdown } from './StreamingMarkdown';
@@ -679,6 +681,12 @@ const MessageRow = memo(function MessageRow({
   const [editDraft, setEditDraft] = useState(message.content);
   const editInputRef = useRef<HTMLTextAreaElement>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
+  const isImageOnly = Boolean(
+    message.attachments?.length
+    && !message.content
+    && !message.reasoning_content
+    && !message.blocks?.length,
+  );
   const {
     attachments: editAttachments,
     setAttachments: setEditAttachments,
@@ -750,6 +758,7 @@ const MessageRow = memo(function MessageRow({
           'message-row',
           message.role,
           message.status === 'streaming' ? 'is-streaming' : '',
+          isImageOnly ? 'is-image-only' : '',
           isEditing ? 'is-editing' : '',
         ].filter(Boolean).join(' ')}
       >
@@ -915,6 +924,7 @@ function MessageContent({
 }) {
   const { t } = useI18n();
   const { toast } = useFeedback();
+  const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
   const blocks = message.blocks ?? [];
   const tools = blocks
     .filter((block): block is Extract<NonNullable<UiMessage['blocks']>[number], { type: 'tool' }> => block.type === 'tool')
@@ -949,15 +959,43 @@ function MessageContent({
   return (
     <>
       {message.attachments?.length ? (
-        <div className="message-image-grid">
-          {message.attachments.map((attachment) => (
-            <img
-              key={attachment.id}
-              src={attachmentImageUrl(attachment)}
-              alt={attachment.name}
-              loading="lazy"
-            />
-          ))}
+        <div className={`message-image-grid${message.attachments.length === 1 ? ' is-single' : ''}`}>
+          {message.attachments.map((attachment) => {
+            const imageUrl = attachmentImageUrl(attachment);
+            return (
+              <div className="message-image-preview" key={attachment.id}>
+                <button
+                  className="message-image-preview__open"
+                  type="button"
+                  onClick={() => setPreviewAttachment(attachment)}
+                  title={t('chat.openImage')}
+                  aria-label={`${t('chat.openImage')}: ${attachment.name}`}
+                >
+                  <img src={imageUrl} alt={attachment.name} loading="lazy" />
+                </button>
+                <div className="message-image-preview__actions">
+                  <a
+                    className="message-image-action"
+                    href={imageUrl}
+                    download={attachment.name}
+                    title={t('chat.downloadImage')}
+                    aria-label={`${t('chat.downloadImage')}: ${attachment.name}`}
+                  >
+                    <Download size={14} aria-hidden="true" />
+                  </a>
+                  <button
+                    className="message-image-action"
+                    type="button"
+                    onClick={() => setPreviewAttachment(attachment)}
+                    title={t('chat.openImage')}
+                    aria-label={`${t('chat.openImage')}: ${attachment.name}`}
+                  >
+                    <Maximize2 size={14} aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       ) : null}
       {message.reasoning_content ? (
@@ -1002,6 +1040,23 @@ function MessageContent({
           )}
         </div>
       ) : null}
+      <Dialog
+        open={Boolean(previewAttachment)}
+        title={previewAttachment?.name || t('chat.imagePreview')}
+        closeLabel={t('common.close')}
+        onClose={() => setPreviewAttachment(null)}
+        size="xl"
+        className="image-preview-dialog"
+        bodyClassName="image-preview-dialog__body"
+      >
+        {previewAttachment ? (
+          <img
+            className="image-preview-dialog__image"
+            src={attachmentImageUrl(previewAttachment)}
+            alt={previewAttachment.name}
+          />
+        ) : null}
+      </Dialog>
     </>
   );
 }

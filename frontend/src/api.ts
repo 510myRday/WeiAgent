@@ -15,6 +15,7 @@ import type {
   ModelProvider,
   ModelProviderPayload,
   ImageAttachment,
+  GenerationMode,
   IpProxy,
   IpProxyImportEntry,
   IpProxyImportResult,
@@ -711,6 +712,7 @@ export function createMessageRun(
   streamOutput: boolean,
   attachments: ImageAttachment[],
   thinkingLevel: ThinkingLevel,
+  generationMode: GenerationMode = 'chat',
   restartFromMessageId?: string,
   signal?: AbortSignal,
 ): Promise<AgentRun> {
@@ -721,6 +723,7 @@ export function createMessageRun(
       attachments,
       thinking_level: thinkingLevel,
       stream: streamOutput,
+      generation_mode: generationMode,
       ...(restartFromMessageId ? { restart_from_message_id: restartFromMessageId } : {}),
     }),
     signal,

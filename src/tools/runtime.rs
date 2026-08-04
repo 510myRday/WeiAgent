@@ -223,10 +223,9 @@ impl TerminalEnvironment for EnvironmentRuntimeManager {
             .bundled_ripgrep
             .get_or_init(|| materialize_bundled_ripgrep(&self.runtimes_root))
             .clone()
+            && let Some(parent) = path.parent()
         {
-            if let Some(parent) = path.parent() {
-                paths.push(parent.to_path_buf());
-            }
+            paths.push(parent.to_path_buf());
         }
         paths.extend(supporting_runtime::managed_bin_paths(&self.runtimes_root).await);
         paths

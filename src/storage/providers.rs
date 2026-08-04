@@ -36,6 +36,8 @@ impl Store {
         let model_configs = normalize_model_configs(&models, request.model_configs)?;
         validate_extra_body(&request.extra_body)?;
         let proxy_url = normalize_provider_proxy_url(request.proxy_url)?;
+        let image_generation_url = normalize_optional_url(request.image_generation_url)?;
+        let image_edit_url = normalize_optional_url(request.image_edit_url)?;
 
         let _guard = self.lock.lock().await;
         let now = Utc::now();
@@ -44,6 +46,8 @@ impl Store {
             provider_type,
             name,
             base_url,
+            image_generation_url,
+            image_edit_url,
             api_keys,
             key_strategy: request.key_strategy,
             models,
@@ -88,6 +92,12 @@ impl Store {
         }
         if let Some(base_url) = request.base_url {
             provider.base_url = validate_non_empty("base_url", &base_url)?;
+        }
+        if let Some(image_generation_url) = request.image_generation_url {
+            provider.image_generation_url = normalize_optional_url(image_generation_url)?;
+        }
+        if let Some(image_edit_url) = request.image_edit_url {
+            provider.image_edit_url = normalize_optional_url(image_edit_url)?;
         }
         if let Some(submitted) = request.api_keys {
             provider.api_keys = merge_api_keys(&provider.api_keys, &submitted);
@@ -215,7 +225,21 @@ fn default_model_config(model_id: &str) -> ModelConfig {
         output_price: None,
         cache_write_price: None,
         cache_read_price: None,
+        image_options: None,
     }
+}
+
+fn normalize_optional_url(value: Option<String>) -> AppResult<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    reqwest::Url::parse(&value)
+        .map_err(|_| AppError::BadRequest("image endpoint URL must be valid".to_string()))?;
+    Ok(Some(value))
 }
 
 fn validate_context_size(context_size: u32) -> AppResult<()> {
@@ -298,6 +322,7 @@ mod tests {
                 output_price: Some(1.5),
                 cache_write_price: Some(0.08),
                 cache_read_price: Some(0.05),
+                image_options: None,
             }],
         )
         .unwrap();
@@ -327,6 +352,7 @@ mod tests {
                 output_price: None,
                 cache_write_price: None,
                 cache_read_price: None,
+                image_options: None,
             }],
         );
 
@@ -346,6 +372,7 @@ mod tests {
                 output_price: None,
                 cache_write_price: None,
                 cache_read_price: None,
+                image_options: None,
             }],
         );
 

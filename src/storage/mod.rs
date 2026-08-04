@@ -35,9 +35,9 @@ mod tests {
     use crate::domain::agents::UpdateAgentWorkspaceRequest;
     use crate::domain::{
         ApiKeyStrategy, ChatMessage, ChatMessageStatus, ChatRole, ContextCheckpoint,
-        CreateAgentRequest, CreateConversationRequest, CreateModelProviderRequest, ProviderType,
-        UpdateAgentProfileRequest, UpdateAgentRequest, UpdateConversationRequest,
-        UpdateModelProviderRequest,
+        CreateAgentRequest, CreateConversationRequest, CreateModelProviderRequest, ImageAttachment,
+        ImageSource, ProviderType, UpdateAgentProfileRequest, UpdateAgentRequest,
+        UpdateConversationRequest, UpdateModelProviderRequest,
     };
 
     fn provider_request(name: &str, model: &str) -> CreateModelProviderRequest {
@@ -53,6 +53,8 @@ mod tests {
             prompt_cache: Default::default(),
             cache_capabilities: None,
             proxy_url: None,
+            image_generation_url: None,
+            image_edit_url: None,
         }
     }
 
@@ -564,6 +566,8 @@ mod tests {
                     prompt_cache: None,
                     cache_capabilities: None,
                     proxy_url: None,
+                    image_generation_url: None,
+                    image_edit_url: None,
                 },
             )
             .await
@@ -588,6 +592,8 @@ mod tests {
                     prompt_cache: None,
                     cache_capabilities: None,
                     proxy_url: None,
+                    image_generation_url: None,
+                    image_edit_url: None,
                 },
             )
             .await
@@ -647,6 +653,8 @@ mod tests {
                     prompt_cache: None,
                     cache_capabilities: None,
                     proxy_url: None,
+                    image_generation_url: None,
+                    image_edit_url: None,
                 },
             )
             .await
@@ -668,6 +676,8 @@ mod tests {
                     prompt_cache: None,
                     cache_capabilities: None,
                     proxy_url: None,
+                    image_generation_url: None,
+                    image_edit_url: None,
                 },
             )
             .await
@@ -967,6 +977,99 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn history_restart_removes_deleted_generated_images() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
+        let agent = store
+            .list_agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.is_builtin)
+            .unwrap();
+        let conversation = store
+            .create_conversation(agent.id, CreateConversationRequest { title: None })
+            .await
+            .unwrap();
+        let generated_dir = store
+            .attachments_dir
+            .join("generated")
+            .join(conversation.id.to_string());
+        tokio::fs::create_dir_all(&generated_dir).await.unwrap();
+        let generated_path = generated_dir.join("generated.png");
+        tokio::fs::write(&generated_path, b"generated")
+            .await
+            .unwrap();
+        let retained_path = store.attachments_dir.join("retained.png");
+        tokio::fs::write(&retained_path, b"retained").await.unwrap();
+
+        let user = |content: &str| ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: agent.id,
+            conversation_id: conversation.id,
+            role: ChatRole::User,
+            content: content.to_string(),
+            reasoning_content: None,
+            openai_response_items: Vec::new(),
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        };
+        let first_user = user("first");
+        let second_user = user("second");
+        let removed_assistant = ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: agent.id,
+            conversation_id: conversation.id,
+            role: ChatRole::Assistant,
+            content: String::new(),
+            reasoning_content: None,
+            openai_response_items: Vec::new(),
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: vec![
+                ImageAttachment {
+                    id: "generated".to_string(),
+                    name: "generated.png".to_string(),
+                    media_type: "image/png".to_string(),
+                    source: ImageSource::Local {
+                        path: generated_path.to_string_lossy().into_owned(),
+                    },
+                },
+                ImageAttachment {
+                    id: "retained".to_string(),
+                    name: "retained.png".to_string(),
+                    media_type: "image/png".to_string(),
+                    source: ImageSource::Local {
+                        path: retained_path.to_string_lossy().into_owned(),
+                    },
+                },
+            ],
+            usage: None,
+        };
+        store
+            .append_conversation_messages(
+                conversation.id,
+                &[first_user, second_user.clone(), removed_assistant],
+            )
+            .await
+            .unwrap();
+
+        store
+            .truncate_conversation_from_message(conversation.id, second_user.id)
+            .await
+            .unwrap();
+
+        assert!(!generated_path.exists());
+        assert!(retained_path.exists());
     }
 
     #[tokio::test]

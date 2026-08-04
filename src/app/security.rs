@@ -85,12 +85,27 @@ impl ApiSecurity {
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "))
+            .or_else(|| {
+                matches!(
+                    request.uri().path(),
+                    "/api/assets/local" | "/api/assets/image"
+                )
+                .then(|| query_token(request.uri().query().unwrap_or_default()))
+                .flatten()
+            })
             .ok_or(StatusCode::UNAUTHORIZED)?;
         if !constant_time_eq(bearer.as_bytes(), self.token.as_bytes()) {
             return Err(StatusCode::UNAUTHORIZED);
         }
         Ok(())
     }
+}
+
+fn query_token(query: &str) -> Option<&str> {
+    query.split('&').find_map(|part| {
+        let (name, value) = part.split_once('=')?;
+        (name == "token" && !value.is_empty()).then_some(value)
+    })
 }
 
 pub async fn enforce_api_security(
@@ -197,5 +212,38 @@ mod tests {
             )),
             Err(StatusCode::UNAUTHORIZED)
         );
+    }
+
+    #[test]
+    fn accepts_query_token_only_for_local_assets() {
+        let security = ApiSecurity::new("127.0.0.1:9527".parse().unwrap(), false);
+        let asset_request = Request::builder()
+            .uri("/api/assets/local?path=C%3A%5Cimage.png&token=test-token")
+            .header(header::HOST, "127.0.0.1:9527")
+            .body(Body::empty())
+            .unwrap();
+        let api_request = Request::builder()
+            .uri("/api/settings?token=test-token")
+            .header(header::HOST, "127.0.0.1:9527")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            security.validate(&asset_request),
+            Err(StatusCode::UNAUTHORIZED)
+        );
+        assert_eq!(
+            security.validate(&api_request),
+            Err(StatusCode::UNAUTHORIZED)
+        );
+
+        let asset_request = Request::builder()
+            .uri(format!(
+                "/api/assets/local?path=C%3A%5Cimage.png&token={}",
+                security.token()
+            ))
+            .header(header::HOST, "127.0.0.1:9527")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(security.validate(&asset_request), Ok(()));
     }
 }

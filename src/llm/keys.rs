@@ -124,6 +124,13 @@ impl ApiKeyCycle {
         &self.keys[index]
     }
 
+    pub(crate) fn current_key(&self) -> &str {
+        self.last_index
+            .and_then(|index| self.keys.get(index))
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+
     /// The attempt on the current key failed. Failover moves its sticky
     /// cursor to the following key so subsequent requests skip the bad one.
     pub fn note_failure(&mut self) {
@@ -167,6 +174,8 @@ mod tests {
             prompt_cache: Default::default(),
             cache_capabilities: None,
             proxy_url: None,
+            image_generation_url: None,
+            image_edit_url: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

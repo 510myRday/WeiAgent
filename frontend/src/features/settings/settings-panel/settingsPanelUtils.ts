@@ -1,6 +1,7 @@
 import type {
   ApiKeyStrategy,
   AppSettings,
+  ImageModelConfig,
   ModelConfig,
   ModelProvider,
   ModelProviderPayload,
@@ -26,6 +27,8 @@ export type ProviderForm = {
   provider_type: ProviderType;
   name: string;
   base_url: string;
+  image_generation_url: string;
+  image_edit_url: string;
   /** Masked entries reference stored keys; other entries are new plaintext keys. */
   apiKeys: string[];
   /** Text sitting in the add-key input, not yet committed to `apiKeys`. */
@@ -41,6 +44,8 @@ export const defaultProviderForm: ProviderForm = {
   provider_type: 'openai_compatible',
   name: '',
   base_url: protocolPresetByType.openai_compatible.defaultBaseUrl,
+  image_generation_url: '',
+  image_edit_url: '',
   apiKeys: [],
   newKeyText: '',
   key_strategy: 'failover',
@@ -72,6 +77,8 @@ export function providerTemplateToForm(template: ProviderTemplate, name: string)
     provider_type: template.providerType,
     name,
     base_url: template.baseUrl,
+    image_generation_url: '',
+    image_edit_url: '',
     modelConfigs: [],
   };
 }
@@ -125,7 +132,42 @@ export function normalizeModelConfig(modelId: string, config: ModelConfig): Mode
     output_price: config.output_price,
     cache_write_price: config.cache_write_price,
     cache_read_price: config.cache_read_price,
+    image_options: normalizeImageModelConfig(config.image_options),
   };
+}
+
+export function normalizeImageModelConfig(
+  config: ImageModelConfig | undefined,
+): ImageModelConfig | undefined {
+  if (!config) return undefined;
+  const normalized: ImageModelConfig = {
+    size: normalizeOptionalString(config.size),
+    quality: normalizeOptionalString(config.quality),
+    n: normalizeOptionalInteger(config.n, 1, 10),
+    output_format: normalizeOptionalString(config.output_format),
+    output_compression: normalizeOptionalInteger(config.output_compression, 0, 100),
+    background: normalizeOptionalString(config.background),
+    moderation: normalizeOptionalString(config.moderation),
+    style: normalizeOptionalString(config.style),
+    response_format: normalizeOptionalString(config.response_format),
+    input_fidelity: normalizeOptionalString(config.input_fidelity),
+  };
+  return Object.values(normalized).some((value) => value !== undefined) ? normalized : undefined;
+}
+
+function normalizeOptionalString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+function normalizeOptionalInteger(
+  value: number | undefined,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  if (!Number.isFinite(value) || value === undefined) return undefined;
+  const integer = Math.floor(value);
+  return integer >= minimum && integer <= maximum ? integer : undefined;
 }
 
 export function syncModelConfigs(models: string[], current: ModelConfig[]): ModelConfig[] {
@@ -229,6 +271,8 @@ export function providerToForm(provider: ModelProvider): ProviderForm {
     provider_type: provider.provider_type,
     name: provider.name,
     base_url: provider.base_url,
+    image_generation_url: provider.image_generation_url ?? '',
+    image_edit_url: provider.image_edit_url ?? '',
     apiKeys: [...(provider.masked_api_keys ?? [])],
     newKeyText: '',
     key_strategy: provider.key_strategy ?? 'failover',
@@ -272,6 +316,8 @@ export function buildProviderPayload(form: ProviderForm): ModelProviderPayload |
     provider_type: form.provider_type,
     name: form.name.trim(),
     base_url: form.base_url.trim(),
+    image_generation_url: form.image_generation_url.trim() || null,
+    image_edit_url: form.image_edit_url.trim() || null,
     api_keys: normalizeFormApiKeys(form.apiKeys),
     key_strategy: form.key_strategy,
     models,
@@ -301,6 +347,8 @@ export function serializeProviderForm(form: ProviderForm): string {
     provider_type: form.provider_type,
     name: form.name.trim(),
     base_url: form.base_url.trim(),
+    image_generation_url: form.image_generation_url.trim(),
+    image_edit_url: form.image_edit_url.trim(),
     api_keys: normalizeFormApiKeys(form.apiKeys),
     key_strategy: form.key_strategy,
     models,
@@ -316,6 +364,8 @@ export function formFromSerializedSnapshot(serialized: string): ProviderForm {
     provider_type: ProviderType;
     name: string;
     base_url: string;
+    image_generation_url?: string;
+    image_edit_url?: string;
     api_keys?: string[];
     key_strategy?: ApiKeyStrategy;
     models: string[];
@@ -327,6 +377,8 @@ export function formFromSerializedSnapshot(serialized: string): ProviderForm {
     provider_type: snap.provider_type,
     name: snap.name,
     base_url: snap.base_url,
+    image_generation_url: snap.image_generation_url ?? '',
+    image_edit_url: snap.image_edit_url ?? '',
     apiKeys: snap.api_keys ?? [],
     newKeyText: '',
     key_strategy: snap.key_strategy ?? 'failover',

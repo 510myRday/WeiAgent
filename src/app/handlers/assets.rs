@@ -84,6 +84,11 @@ fn validate_image_bytes(path: &std::path::Path, bytes: &[u8]) -> AppResult<&'sta
 async fn resolve_local_asset_path(root: &std::path::Path, raw_path: &str) -> AppResult<PathBuf> {
     let requested = path_from_local_source(raw_path)?;
     let root = tokio::fs::canonicalize(root).await?;
+    let requested = if requested.is_absolute() {
+        requested
+    } else {
+        std::env::current_dir()?.join(requested)
+    };
     let resolved =
         tokio::fs::canonicalize(&requested)
             .await
@@ -140,11 +145,6 @@ fn path_from_local_source(raw_path: &str) -> AppResult<PathBuf> {
         trimmed.to_string()
     };
     let path = PathBuf::from(path);
-    if !path.is_absolute() {
-        return Err(AppError::BadRequest(
-            "local image path must be absolute".to_string(),
-        ));
-    }
     Ok(path)
 }
 
@@ -232,11 +232,20 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn rejects_relative_paths() {
-        assert!(matches!(
-            path_from_local_source("images/chart.png"),
-            Err(AppError::BadRequest(_))
-        ));
+    #[tokio::test]
+    async fn resolves_a_relative_local_image_path_inside_the_attachment_directory() {
+        let current_dir = std::env::current_dir().unwrap();
+        let directory = tempfile::tempdir_in(&current_dir).unwrap();
+        let root = directory.path().join("attachments");
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let image = root.join("chart.png");
+        tokio::fs::write(&image, valid_png()).await.unwrap();
+        let relative = image.strip_prefix(&current_dir).unwrap();
+
+        let resolved = resolve_local_asset_path(&root, relative.to_string_lossy().as_ref())
+            .await
+            .unwrap();
+
+        assert_eq!(resolved, tokio::fs::canonicalize(image).await.unwrap());
     }
 }

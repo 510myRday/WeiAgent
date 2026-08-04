@@ -105,6 +105,8 @@ mod tests {
             prompt_cache: Default::default(),
             cache_capabilities: None,
             proxy_url: None,
+            image_generation_url: None,
+            image_edit_url: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

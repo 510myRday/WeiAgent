@@ -20,7 +20,7 @@ mime_guess = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 pdf-extract = "0.9"
 portable-pty = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "charset", "http2", "gzip", "deflate", "system-proxy", "socks"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "rustls-tls", "charset", "http2", "gzip", "deflate", "system-proxy", "socks"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 scraper = "0.23"
 wreq = { version = "6.0.0-rc.29", default-features = false, features = ["json", "gzip", "deflate", "brotli", "zstd", "socks", "system-proxy", "webpki-roots", "tokio-rt"] }

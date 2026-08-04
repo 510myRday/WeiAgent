@@ -2,6 +2,7 @@ mod agent_executor;
 mod chat;
 pub(crate) mod context_compress;
 pub mod handlers;
+mod image;
 mod router;
 mod run_manager;
 mod security;
@@ -34,7 +35,7 @@ mod tests {
             Agent, ChatMessage, CreateAgentRequest, CreateConversationRequest,
             CreateModelProviderRequest, ModelProvider, ProviderType,
         },
-        error::AppResult,
+        error::{AppError, AppResult},
         llm::{
             client::{ChatClient, ChatStream, DynChatClient},
             registry::LlmRegistry,
@@ -102,6 +103,15 @@ mod tests {
         fn client_for(&self, _provider: &ModelProvider) -> AppResult<DynChatClient> {
             Ok(self.client.clone())
         }
+
+        fn image_client_for(
+            &self,
+            _provider: &ModelProvider,
+        ) -> AppResult<crate::llm::image::DynImageClient> {
+            Err(AppError::BadRequest(
+                "image client is not configured in test".to_string(),
+            ))
+        }
     }
 
     async fn test_app() -> (Router, Uuid, Uuid, Uuid) {
@@ -120,6 +130,8 @@ mod tests {
                 prompt_cache: Default::default(),
                 cache_capabilities: None,
                 proxy_url: None,
+                image_generation_url: None,
+                image_edit_url: None,
             })
             .await
             .unwrap();
@@ -566,6 +578,8 @@ mod tests {
                 prompt_cache: Default::default(),
                 cache_capabilities: None,
                 proxy_url: None,
+                image_generation_url: None,
+                image_edit_url: None,
             })
             .await
             .unwrap();
@@ -1288,6 +1302,8 @@ mod tests {
                 prompt_cache: Default::default(),
                 cache_capabilities: None,
                 proxy_url: None,
+                image_generation_url: None,
+                image_edit_url: None,
             })
             .await
             .unwrap();

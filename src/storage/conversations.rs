@@ -1,4 +1,7 @@
+use std::{collections::HashSet, path::PathBuf};
+
 use chrono::Utc;
+use tokio::fs;
 use uuid::Uuid;
 
 use crate::{
@@ -159,11 +162,101 @@ impl Store {
         conversation_id: Uuid,
         message_id: Uuid,
     ) -> AppResult<()> {
-        self.database
+        let removed = self
+            .database
             .call(move |conn| {
                 conversation_db::truncate_from_message_conn(conn, conversation_id, message_id)
             })
-            .await
+            .await?;
+        self.cleanup_removed_generated_attachments(conversation_id, &removed)
+            .await;
+        Ok(())
+    }
+
+    async fn cleanup_removed_generated_attachments(
+        &self,
+        conversation_id: Uuid,
+        removed_messages: &[ChatMessage],
+    ) {
+        let generated_dir = self
+            .attachments_dir
+            .join("generated")
+            .join(conversation_id.to_string());
+        let generated_dir = match fs::canonicalize(&generated_dir).await {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %conversation_id,
+                    error = %error,
+                    "failed to locate generated image directory for cleanup"
+                );
+                return;
+            }
+        };
+
+        let retained_paths: HashSet<String> =
+            match self.read_conversation_messages(conversation_id).await {
+                Ok(messages) => messages
+                    .iter()
+                    .flat_map(|message| message.attachments.iter())
+                    .filter_map(|attachment| match &attachment.source {
+                        crate::domain::ImageSource::Local { path } => {
+                            Some(crate::fsutil::path_identity_key(&PathBuf::from(path)))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        error = %error,
+                        "failed to inspect remaining messages before generated image cleanup"
+                    );
+                    return;
+                }
+            };
+
+        let mut removed_paths = HashSet::new();
+        for attachment in removed_messages
+            .iter()
+            .flat_map(|message| message.attachments.iter())
+        {
+            let crate::domain::ImageSource::Local { path } = &attachment.source else {
+                continue;
+            };
+            let candidate = PathBuf::from(path);
+            let resolved = match fs::canonicalize(&candidate).await {
+                Ok(path) => path,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        path = %candidate.display(),
+                        error = %error,
+                        "failed to resolve generated image for cleanup"
+                    );
+                    continue;
+                }
+            };
+            if !crate::fsutil::path_is_within(&resolved, &generated_dir)
+                || crate::fsutil::paths_equal(&resolved, &generated_dir)
+            {
+                continue;
+            }
+            let key = crate::fsutil::path_identity_key(&resolved);
+            if retained_paths.contains(&key) || !removed_paths.insert(key) {
+                continue;
+            }
+            if let Err(error) = fs::remove_file(&resolved).await {
+                tracing::warn!(
+                    conversation_id = %conversation_id,
+                    path = %resolved.display(),
+                    error = %error,
+                    "failed to remove generated image after conversation restart"
+                );
+            }
+        }
     }
 
     pub async fn upsert_conversation_message(

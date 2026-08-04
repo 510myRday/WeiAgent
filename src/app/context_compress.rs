@@ -221,6 +221,10 @@ fn summary_anchor_message(
         .last()
         .map(|message| message.conversation_id)
         .unwrap_or_else(Uuid::nil);
+    let attachments = covered
+        .iter()
+        .flat_map(|message| message.attachments.iter().cloned())
+        .collect();
     ChatMessage {
         id: checkpoint.covers_until_message_id,
         agent_id,
@@ -233,7 +237,7 @@ fn summary_anchor_message(
         created_at: checkpoint.created_at,
         tool_calls: None,
         tool_call_id: None,
-        attachments: Vec::new(),
+        attachments,
         usage: None,
     }
 }
@@ -305,6 +309,9 @@ fn estimate_message_tokens(message: &ChatMessage) -> u64 {
             crate::domain::ImageSource::Base64 { .. } => IMAGE_TOKEN_ESTIMATE,
             crate::domain::ImageSource::Url { url } => {
                 IMAGE_TOKEN_ESTIMATE.saturating_add(estimate_text_tokens(url))
+            }
+            crate::domain::ImageSource::Local { path } => {
+                IMAGE_TOKEN_ESTIMATE.saturating_add(estimate_text_tokens(path))
             }
         })
     });
@@ -430,6 +437,7 @@ fn provider_for_compaction(provider: &ModelProvider) -> ModelProvider {
                 serde_json::Value::Object(generation_config),
             );
         }
+        ProviderType::OpenAiImages => {}
     }
     provider.extra_body = serde_json::Value::Object(extra);
     provider

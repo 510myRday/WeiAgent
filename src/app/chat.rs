@@ -1,5 +1,7 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::Utc;
+use image::{ImageReader, codecs::jpeg::JpegEncoder, imageops::FilterType};
+use std::io::Cursor;
 use uuid::Uuid;
 
 use crate::{
@@ -16,6 +18,10 @@ const MAX_SYSTEM_PROMPT_BYTES: usize = 512 * 1024;
 const MAX_IMAGE_ATTACHMENTS: usize = 8;
 const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_LLM_IMAGE_BYTES: usize = 1_500_000;
+const MAX_LLM_TOTAL_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_LLM_IMAGE_DIMENSION: u32 = 1536;
+const LLM_IMAGE_JPEG_QUALITY: u8 = 78;
 const SUPPORTED_IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
 
 pub struct PreparedChat {
@@ -107,6 +113,13 @@ pub async fn prepare_chat(
         .store
         .read_conversation_messages(conversation_id)
         .await?;
+    let mut llm_image_bytes = 0;
+    let history = normalize_history_for_llm(
+        history,
+        model_config.is_some_and(|config| config.multimodal),
+        &mut llm_image_bytes,
+    )
+    .await?;
     let checkpoint = state.store.read_context_checkpoint(conversation_id).await?;
     let active_task_plan = state.store.read_task_plan(conversation_id).await?;
     let active_task_plan_context = active_task_plan
@@ -132,8 +145,12 @@ pub async fn prepare_chat(
         attachments: attachments.to_vec(),
         usage: None,
     };
+    let mut llm_attachments = attachments.to_vec();
+    normalize_attachments_for_llm(&mut llm_attachments, &mut llm_image_bytes).await?;
+    let mut llm_user_message = user_message.clone();
+    llm_user_message.attachments = llm_attachments;
     let mut messages_for_llm = history_for_llm;
-    messages_for_llm.push(user_message.clone());
+    messages_for_llm.push(llm_user_message);
 
     Ok(PreparedChat {
         agent,
@@ -144,6 +161,155 @@ pub async fn prepare_chat(
         tools_config,
         thinking_level,
     })
+}
+
+async fn normalize_history_for_llm(
+    history: Vec<ChatMessage>,
+    supports_multimodal: bool,
+    llm_image_bytes: &mut usize,
+) -> AppResult<Vec<ChatMessage>> {
+    if history
+        .iter()
+        .any(|message| !message.attachments.is_empty())
+        && !supports_multimodal
+    {
+        return Err(AppError::BadRequest(
+            "the selected model is not configured for multimodal image context".to_string(),
+        ));
+    }
+
+    let mut normalized = Vec::with_capacity(history.len());
+    for mut message in history {
+        normalize_attachments_for_llm(&mut message.attachments, llm_image_bytes).await?;
+
+        if message.role == ChatRole::Assistant
+            && !message.attachments.is_empty()
+            && message.tool_calls.is_none()
+        {
+            let attachments = std::mem::take(&mut message.attachments);
+            let has_assistant_content = !message.content.is_empty()
+                || message
+                    .reasoning_content
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty())
+                || !message.openai_response_items.is_empty();
+            if has_assistant_content {
+                normalized.push(message.clone());
+            }
+            normalized.push(ChatMessage {
+                // Keep the persisted assistant id so context checkpoints remain stable
+                // across turns after the image is represented as a user input.
+                id: message.id,
+                agent_id: message.agent_id,
+                conversation_id: message.conversation_id,
+                role: ChatRole::User,
+                content: String::new(),
+                reasoning_content: None,
+                openai_response_items: Vec::new(),
+                status: ChatMessageStatus::Done,
+                created_at: message.created_at,
+                tool_calls: None,
+                tool_call_id: None,
+                attachments,
+                usage: None,
+            });
+        } else {
+            normalized.push(message);
+        }
+    }
+    Ok(normalized)
+}
+
+async fn normalize_attachments_for_llm(
+    attachments: &mut [ImageAttachment],
+    llm_image_bytes: &mut usize,
+) -> AppResult<()> {
+    for attachment in attachments {
+        let bytes = match &attachment.source {
+            ImageSource::Base64 { data } => STANDARD.decode(data).map_err(|_| {
+                AppError::BadRequest(format!(
+                    "image attachment {} contains invalid Base64 data",
+                    attachment.name
+                ))
+            })?,
+            ImageSource::Local { path } => tokio::fs::read(path).await.map_err(|error| {
+                AppError::BadRequest(format!(
+                    "historical image {} could not be read: {error}",
+                    attachment.name
+                ))
+            })?,
+            ImageSource::Url { .. } => continue,
+        };
+        if bytes.len() > MAX_IMAGE_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "image attachment {} exceeds {MAX_IMAGE_BYTES} bytes",
+                attachment.name
+            )));
+        }
+        let (media_type, data) = compact_image_for_llm(&bytes, &attachment.name)?;
+        *llm_image_bytes = llm_image_bytes.saturating_add(data.len());
+        if *llm_image_bytes > MAX_LLM_TOTAL_IMAGE_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "combined image context exceeds {} MB after optimization",
+                MAX_LLM_TOTAL_IMAGE_BYTES / (1024 * 1024)
+            )));
+        }
+        attachment.media_type = media_type;
+        attachment.source = ImageSource::Base64 { data };
+    }
+    Ok(())
+}
+
+fn compact_image_for_llm(bytes: &[u8], name: &str) -> AppResult<(String, String)> {
+    let image = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| {
+            AppError::BadRequest(format!("image attachment {name} format error: {error}"))
+        })?
+        .decode()
+        .map_err(|error| {
+            AppError::BadRequest(format!("image attachment {name} decode failed: {error}"))
+        })?;
+    if bytes.len() <= MAX_LLM_IMAGE_BYTES
+        && image.width() <= MAX_LLM_IMAGE_DIMENSION
+        && image.height() <= MAX_LLM_IMAGE_DIMENSION
+    {
+        return Ok((
+            detect_image_media_type(bytes).unwrap_or_else(|| "image/png".to_string()),
+            STANDARD.encode(bytes),
+        ));
+    }
+
+    let mut resized = image.thumbnail(MAX_LLM_IMAGE_DIMENSION, MAX_LLM_IMAGE_DIMENSION);
+    loop {
+        let mut encoded = Vec::new();
+        JpegEncoder::new_with_quality(&mut encoded, LLM_IMAGE_JPEG_QUALITY)
+            .encode_image(&resized)
+            .map_err(|error| {
+                AppError::BadRequest(format!("image attachment {name} encode failed: {error}"))
+            })?;
+        if encoded.len() <= MAX_LLM_IMAGE_BYTES {
+            return Ok(("image/jpeg".to_string(), STANDARD.encode(encoded)));
+        }
+        let next_width = (resized.width() * 3 / 4).max(1);
+        let next_height = (resized.height() * 3 / 4).max(1);
+        if next_width == resized.width() && next_height == resized.height() {
+            return Err(AppError::BadRequest(format!(
+                "image attachment {name} remains too large after optimization"
+            )));
+        }
+        resized = resized.resize(next_width, next_height, FilterType::Triangle);
+    }
+}
+
+fn detect_image_media_type(bytes: &[u8]) -> Option<String> {
+    match image::guess_format(bytes).ok()? {
+        image::ImageFormat::Png => Some("image/png".to_string()),
+        image::ImageFormat::Jpeg => Some("image/jpeg".to_string()),
+        image::ImageFormat::WebP => Some("image/webp".to_string()),
+        image::ImageFormat::Gif => Some("image/gif".to_string()),
+        _ => None,
+    }
 }
 
 fn validate_attachments(attachments: &[ImageAttachment]) -> AppResult<()> {
@@ -189,6 +355,11 @@ fn validate_attachments(attachments: &[ImageAttachment]) -> AppResult<()> {
                     ));
                 }
             }
+            ImageSource::Local { .. } => {
+                return Err(AppError::BadRequest(
+                    "local generated images cannot be used as user attachments".to_string(),
+                ));
+            }
         }
     }
     if total_bytes > MAX_TOTAL_IMAGE_BYTES {
@@ -197,4 +368,80 @@ fn validate_attachments(attachments: &[ImageAttachment]) -> AppResult<()> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn assistant_with_attachment(attachment: ImageAttachment) -> ChatMessage {
+        ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            conversation_id: Uuid::new_v4(),
+            role: ChatRole::Assistant,
+            content: String::new(),
+            reasoning_content: None,
+            openai_response_items: Vec::new(),
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: vec![attachment],
+            usage: None,
+        }
+    }
+
+    fn image_attachment(source: ImageSource) -> ImageAttachment {
+        ImageAttachment {
+            id: "generated-image".to_string(),
+            name: "generated.png".to_string(),
+            media_type: "image/png".to_string(),
+            source,
+        }
+    }
+
+    fn png_data() -> String {
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("test PNG should encode");
+        STANDARD.encode(bytes.into_inner())
+    }
+
+    #[tokio::test]
+    async fn normalizes_generated_assistant_image_as_user_context() {
+        let message =
+            assistant_with_attachment(image_attachment(ImageSource::Base64 { data: png_data() }));
+        let message_id = message.id;
+
+        let mut llm_image_bytes = 0;
+        let normalized = normalize_history_for_llm(vec![message], true, &mut llm_image_bytes)
+            .await
+            .expect("multimodal history should be accepted");
+
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].id, message_id);
+        assert_eq!(normalized[0].role, ChatRole::User);
+        assert!(normalized[0].content.is_empty());
+        assert_eq!(normalized[0].attachments.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_image_history_for_text_only_model() {
+        let history = vec![assistant_with_attachment(image_attachment(
+            ImageSource::Base64 { data: png_data() },
+        ))];
+
+        let mut llm_image_bytes = 0;
+        let error = normalize_history_for_llm(history, false, &mut llm_image_bytes)
+            .await
+            .expect_err("text-only model should reject image context");
+
+        assert!(error.to_string().contains("multimodal image context"));
+    }
 }

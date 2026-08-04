@@ -5,6 +5,7 @@ use crate::{
     error::AppResult,
     llm::{
         client::DynChatClient,
+        image::{DynImageClient, OpenAiImagesClient},
         protocol::{
             anthropic::AnthropicAdapter, common::ProtocolClient, gemini::GeminiAdapter,
             openai_chat::OpenAiChatAdapter, openai_responses::OpenAiResponsesAdapter,
@@ -15,6 +16,7 @@ use crate::{
 
 pub trait LlmRegistry: Send + Sync {
     fn client_for(&self, provider: &ModelProvider) -> AppResult<DynChatClient>;
+    fn image_client_for(&self, provider: &ModelProvider) -> AppResult<DynImageClient>;
 }
 
 pub type DynLlmRegistry = Arc<dyn LlmRegistry>;
@@ -24,6 +26,7 @@ pub struct DefaultLlmRegistry {
     openai_responses: DynChatClient,
     anthropic_messages: DynChatClient,
     google_gemini: DynChatClient,
+    openai_images: DynImageClient,
 }
 
 impl DefaultLlmRegistry {
@@ -38,7 +41,10 @@ impl DefaultLlmRegistry {
             anthropic_messages: Arc::new(
                 ProtocolClient::new(AnthropicAdapter).with_logger(llm_logger.clone()),
             ),
-            google_gemini: Arc::new(ProtocolClient::new(GeminiAdapter).with_logger(llm_logger)),
+            google_gemini: Arc::new(
+                ProtocolClient::new(GeminiAdapter).with_logger(llm_logger.clone()),
+            ),
+            openai_images: Arc::new(OpenAiImagesClient::new(llm_logger.clone())),
         }
     }
 }
@@ -50,6 +56,18 @@ impl LlmRegistry for DefaultLlmRegistry {
             ProviderType::OpenAiResponses => Ok(self.openai_responses.clone()),
             ProviderType::AnthropicMessages => Ok(self.anthropic_messages.clone()),
             ProviderType::GoogleGemini => Ok(self.google_gemini.clone()),
+            ProviderType::OpenAiImages => Err(crate::error::AppError::BadRequest(
+                "image providers require image mode".to_string(),
+            )),
+        }
+    }
+
+    fn image_client_for(&self, provider: &ModelProvider) -> AppResult<DynImageClient> {
+        match provider.provider_type {
+            ProviderType::OpenAiImages => Ok(self.openai_images.clone()),
+            _ => Err(crate::error::AppError::BadRequest(
+                "selected provider is not an image provider".to_string(),
+            )),
         }
     }
 }
@@ -78,6 +96,8 @@ mod tests {
                 provider_type,
                 name: "Provider".to_string(),
                 base_url: "https://example.test/v1".to_string(),
+                image_generation_url: None,
+                image_edit_url: None,
                 api_keys: vec!["test-key".to_string()],
                 key_strategy: Default::default(),
                 models: vec!["test-model".to_string()],

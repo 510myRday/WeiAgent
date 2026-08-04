@@ -740,7 +740,7 @@ pub(super) fn truncate_from_message_conn(
     conn: &mut Connection,
     conversation_id: Uuid,
     message_id: Uuid,
-) -> AppResult<()> {
+) -> AppResult<Vec<ChatMessage>> {
     let tx = conn.transaction()?;
     let conversation = load_conversation(&tx, conversation_id)?;
     let existing = load_messages(&tx, conversation_id)?;
@@ -794,7 +794,7 @@ pub(super) fn truncate_from_message_conn(
         ],
     )?;
     tx.commit()?;
-    Ok(())
+    Ok(existing[index..].to_vec())
 }
 
 pub(super) fn fail_streaming_messages_conn(
