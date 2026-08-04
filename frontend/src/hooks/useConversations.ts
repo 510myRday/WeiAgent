@@ -1261,6 +1261,7 @@ export function useConversations({
       followRun,
       imageAttachmentTitleNote,
       imageOnlyConversationTitle,
+      locale,
       newConversationTitle,
       runInterruptedMessage,
     ],

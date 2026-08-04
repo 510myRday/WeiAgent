@@ -46,6 +46,8 @@ export function formatRawJson(raw: string | undefined): string {
 }
 
 export function formatLlmResponse(raw: string): FormattedLlmResponse {
+  const hasTruncationMarker = /\[(?:middle truncated|log field truncated|LLM stream log truncated|LLM stream log middle truncated)\]/
+    .test(raw);
   const displayRaw = normalizeTruncationMarker(raw);
   const payloads = parseSsePayloads(displayRaw);
   if (!payloads) {
@@ -61,6 +63,10 @@ export function formatLlmResponse(raw: string): FormattedLlmResponse {
     ?? aggregateAnthropic(payloads)
     ?? aggregateGemini(payloads)
     ?? { events: payloads };
+  if (hasTruncationMarker) {
+    aggregated.truncated = true;
+    aggregated.truncation_notice = DISPLAY_TRUNCATION_MARKER;
+  }
 
   return {
     isStreaming: true,

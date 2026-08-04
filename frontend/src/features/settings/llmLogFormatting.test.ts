@@ -76,4 +76,19 @@ describe('LLM log formatting', () => {
       'HEAD\n[..., 此处已截断, ...]\nTAIL',
     );
   });
+
+  it('marks truncated streams in both the raw view and aggregated JSON', () => {
+    const raw = [
+      'data: {"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"HEAD"},"finish_reason":null}]}',
+      '[LLM stream log middle truncated]',
+      'data: {"id":"chat-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"TAIL"},"finish_reason":"stop"}]}',
+    ].join('\n');
+
+    const response = formatLlmResponse(raw);
+    const aggregated = JSON.parse(response.formatted);
+
+    expect(response.raw).toContain('[..., 此处已截断, ...]');
+    expect(aggregated.truncated).toBe(true);
+    expect(aggregated.truncation_notice).toBe('[..., 此处已截断, ...]');
+  });
 });

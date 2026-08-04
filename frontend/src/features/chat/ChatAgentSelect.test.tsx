@@ -40,7 +40,11 @@ test('lists conversation agents and reports the selected configuration target', 
   const onChange = vi.fn();
   render(
     <I18nProvider>
-      <ChatAgentSelect agents={agents} value="agent-master" onChange={onChange} />
+      <ChatAgentSelect
+        agents={agents}
+        value="agent-master"
+        onChange={onChange}
+      />
     </I18nProvider>,
   );
 

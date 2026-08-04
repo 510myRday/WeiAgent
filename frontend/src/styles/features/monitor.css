@@ -15,7 +15,7 @@
   margin: 14px 12px 8px;
   font-size: var(--font-size-caption, 12px);
   font-weight: var(--font-weight-emphasis, 600);
-  color: var(--color-muted, #64748b);
+  color: var(--color-muted);
   letter-spacing: 0.02em;
 }
 
@@ -43,7 +43,7 @@
   border: 1px solid transparent;
   border-radius: var(--radius-sm, 10px);
   background: transparent;
-  color: var(--color-text, #0f172a);
+  color: var(--color-text);
   text-align: left;
   cursor: pointer;
   transition:
@@ -65,15 +65,15 @@
 
 .monitor-model-scope-card:hover,
 .monitor-model-scope-card:focus-visible {
-  border-color: var(--color-primary-border, #c7d2fe);
-  background: var(--surface-active, #f8fafc);
+  border-color: var(--color-primary-border);
+  background: var(--surface-active);
   outline: none;
 }
 
 .monitor-model-scope-card.is-active {
-  border-color: color-mix(in srgb, var(--color-primary, #6366f1) 28%, transparent);
-  background: var(--color-primary-soft, #eef2ff);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary, #6366f1) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 28%, transparent);
+  background: var(--color-primary-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 12%, transparent);
 }
 
 .monitor-model-scope-card-top {
@@ -89,7 +89,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--color-muted, #64748b);
+  color: var(--color-muted);
   font-size: 11.5px;
   font-weight: 500;
   line-height: 1.3;
@@ -97,7 +97,7 @@
 
 .monitor-model-scope-count {
   flex: 0 0 auto;
-  color: var(--color-muted, #64748b);
+  color: var(--color-muted);
   font-size: 11px;
   font-weight: 500;
   line-height: 1.3;
@@ -110,7 +110,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--color-text, #0f172a);
+  color: var(--color-text);
   font-size: 12.5px;
   font-weight: 600;
   line-height: 1.35;
@@ -118,11 +118,11 @@
 
 .monitor-model-scope-card.is-active .monitor-model-scope-provider,
 .monitor-model-scope-card.is-active .monitor-model-scope-count {
-  color: color-mix(in srgb, var(--color-primary-strong, #4338ca) 72%, var(--color-muted, #64748b));
+  color: color-mix(in srgb, var(--color-primary-strong) 72%, var(--color-muted));
 }
 
 .monitor-model-scope-card.is-active .monitor-model-scope-model {
-  color: var(--color-primary-strong, #4338ca);
+  color: var(--color-primary-strong);
 }
 
 /* Model scope metadata stays below the model title. */
@@ -130,6 +130,10 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+}
+
+.monitor-model-scope-item {
   min-width: 0;
 }
 
@@ -315,7 +319,7 @@
   width: 32px;
   height: 18px;
   border-radius: 999px;
-  background: #d7e0db;
+  background: var(--border-strong);
   flex: none;
   transition: background 0.16s ease;
 }
@@ -327,8 +331,8 @@
   width: 14px;
   height: 14px;
   border-radius: 999px;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
+  background: var(--surface-pane);
+  box-shadow: var(--shadow-xs);
   transition: transform 0.16s ease;
 }
 
@@ -397,8 +401,8 @@
   padding: 10px 12px;
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.75) inset;
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-xs);
 }
 
 .monitor-metric-card.is-controls {
@@ -483,12 +487,12 @@
 }
 
 .monitor-metric-sub-strong.is-success {
-  color: var(--color-success, #15803d);
+  color: var(--status-success-text);
   font-weight: var(--font-weight-emphasis);
 }
 
 .monitor-metric-sub-strong.is-error {
-  color: var(--color-danger, #dc2626);
+  color: var(--status-danger-text);
   font-weight: var(--font-weight-emphasis);
 }
 
@@ -598,7 +602,7 @@
 }
 
 .monitor-empty .empty-icon {
-  color: var(--color-muted, #94a3b8);
+  color: var(--color-muted);
 }
 
 .monitor-request-table {
@@ -610,7 +614,7 @@
 .monitor-request-table th,
 .monitor-request-table td {
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border-subtle, #eef0f3);
+  border-bottom: 1px solid var(--border-subtle);
   text-align: center;
   white-space: nowrap;
   vertical-align: middle;
@@ -627,13 +631,13 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--surface-subtle, #f8fafc);
+  background: var(--surface-subtle);
   font-weight: 600;
-  color: var(--color-text-soft, #475569);
+  color: var(--color-text-soft);
 }
 
 .monitor-request-table tbody tr:hover {
-  background: color-mix(in srgb, var(--color-primary, #22c55e) 6%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
 }
 
 .monitor-request-table .mono {
@@ -688,7 +692,7 @@
   min-width: 3.25rem;
   padding: 2px 8px;
   border-radius: 999px;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 600;
   line-height: 1.4;
@@ -698,78 +702,78 @@
 
 /* < 5s: green */
 .monitor-latency-badge.is-under5 {
-  color: #15803d;
-  background: #dcfce7;
-  border-color: #86efac;
+  color: var(--status-success-text);
+  background: var(--status-success-bg);
+  border-color: var(--status-success-border);
 }
 
 /* 5s – 10s: lime */
 .monitor-latency-badge.is-s5_10 {
-  color: #4d7c0f;
-  background: #ecfccb;
-  border-color: #bef264;
+  color: var(--status-info-text);
+  background: var(--status-info-bg);
+  border-color: var(--status-info-border);
 }
 
 /* 10s – 15s: yellow (matches previous medium) */
 .monitor-latency-badge.is-s10_15 {
-  color: #a16207;
-  background: #fef9c3;
-  border-color: #fde047;
+  color: var(--status-warning-text);
+  background: var(--status-warning-bg);
+  border-color: var(--status-warning-border);
 }
 
 /* 15s – 20s: amber */
 .monitor-latency-badge.is-s15_20 {
-  color: #b45309;
-  background: #ffedd5;
-  border-color: #fdba74;
+  color: var(--status-warning-text);
+  background: var(--status-warning-bg);
+  border-color: var(--status-warning-border);
 }
 
 /* 20s – 25s: orange */
 .monitor-latency-badge.is-s20_25 {
-  color: #c2410c;
-  background: #ffedd5;
-  border-color: #fb923c;
+  color: var(--status-warning-text);
+  background: var(--status-warning-bg);
+  border-color: var(--status-warning-border);
 }
 
 /* 25s – 30s: deep orange */
 .monitor-latency-badge.is-s25_30 {
-  color: #c2410c;
-  background: #fed7aa;
-  border-color: #f97316;
+  color: var(--status-danger-text);
+  background: var(--status-danger-bg);
+  border-color: var(--status-danger-border);
 }
 
 /* 30s – 1min: light red */
 .monitor-latency-badge.is-s30_60 {
-  color: #dc2626;
-  background: #fee2e2;
-  border-color: #fca5a5;
+  color: var(--status-danger-text);
+  background: var(--status-danger-bg);
+  border-color: var(--status-danger-border);
 }
 
 /* 1min – 5min: red (matches previous slow) */
 .monitor-latency-badge.is-m1_5 {
-  color: #b91c1c;
-  background: #fee2e2;
-  border-color: #f87171;
+  color: var(--status-danger-text);
+  background: var(--status-danger-bg);
+  border-color: var(--status-danger-border);
 }
 
 /* 5min – 10min: deeper red */
 .monitor-latency-badge.is-m5_10 {
-  color: #991b1b;
-  background: #fecaca;
-  border-color: #ef4444;
+  color: var(--status-danger-text);
+  background: var(--status-danger-bg);
+  border-color: var(--status-danger-border);
 }
 
 /* >= 10min: darkest red */
 .monitor-latency-badge.is-over10 {
-  color: #7f1d1d;
-  background: #fecaca;
-  border-color: #dc2626;
+  color: var(--status-danger-text);
+  background: var(--status-danger-bg);
+  border-color: var(--status-danger-border);
 }
 
 .monitor-latency-badge.is-unknown {
-  color: #64748b;
-  background: #f1f5f9;
-  border-color: #e2e8f0;
+  color: var(--status-neutral-text);
+  background: var(--status-neutral-bg);
+  border-color: var(--status-neutral-border);
 }
 
 
@@ -782,7 +786,7 @@
   gap: 16px;
   flex-wrap: wrap;
   padding: 2px 2px 0;
-  color: var(--color-muted, #64748b);
+  color: var(--color-muted);
   font-size: 13px;
 }
 
@@ -805,7 +809,7 @@
   border: 1px solid transparent;
   border-radius: 999px;
   background: transparent;
-  color: #475569;
+  color: var(--color-text-soft);
   font-size: 13px;
   line-height: 1;
   display: inline-flex;
@@ -816,14 +820,14 @@
 
 .monitor-page-btn:hover:not(:disabled),
 .monitor-page-nav:hover:not(:disabled) {
-  background: #f1f5f9;
-  color: #0f172a;
+  background: var(--surface-hover);
+  color: var(--color-text);
 }
 
 .monitor-page-btn.is-active {
-  background: var(--color-primary-soft, #eaf8f0);
-  color: var(--color-primary-deep, #047b3e);
-  border-color: var(--color-primary-border, #bde8cf);
+  background: var(--color-primary-soft);
+  color: var(--color-primary-deep);
+  border-color: var(--color-primary-border);
   font-weight: 600;
 }
 
@@ -836,7 +840,7 @@
 .monitor-page-ellipsis {
   min-width: 20px;
   text-align: center;
-  color: #94a3b8;
+  color: var(--color-muted);
 }
 
 .monitor-page-size {
@@ -846,10 +850,10 @@
   margin-left: 4px;
   height: 34px;
   padding: 0 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-subtle);
   border-radius: 999px;
-  background: #fff;
-  color: #475569;
+  background: var(--surface-pane);
+  color: var(--color-text-soft);
   white-space: nowrap;
 }
 
@@ -886,7 +890,7 @@
   right: 0;
   top: 50%;
   transform: translateY(-50%);
-  color: #94a3b8;
+  color: var(--color-muted);
   pointer-events: none;
   flex: none;
 }
@@ -895,7 +899,7 @@
 .monitor-page-size select:focus-visible {
   outline: none;
   box-shadow: none;
-  border-color: #e2e8f0;
+  border-color: var(--border-subtle);
 }
 
 .monitor-time-cell {
@@ -907,12 +911,12 @@
 }
 
 .monitor-time-date {
-  color: #0f172a;
+  color: var(--color-text);
   font-weight: 500;
 }
 
 .monitor-time-clock {
-  color: #64748b;
+  color: var(--color-muted);
   font-size: 11.5px;
 }
 
@@ -925,7 +929,7 @@
 }
 
 .monitor-split-sep {
-  color: #cbd5e1;
+  color: var(--border-strong);
   font-weight: 500;
   user-select: none;
 }
@@ -949,19 +953,19 @@
 }
 
 .monitor-status.is-success {
-  color: #16a34a;
+  color: var(--status-success-text);
 }
 
 .monitor-status.is-warning {
-  color: #d97706;
+  color: var(--status-warning-text);
 }
 
 .monitor-status.is-error {
-  color: #dc2626;
+  color: var(--status-danger-text);
 }
 
 .monitor-status.is-unknown {
-  color: #94a3b8;
+  color: var(--status-neutral-text);
 }
 
 .monitor-request-table .monitor-agent-cell {
@@ -970,7 +974,7 @@
 
 
 .text-warning {
-  color: #d97706;
+  color: var(--status-warning-text);
 }
 .monitor-model-cell {
   display: inline-flex;
@@ -982,13 +986,13 @@
 }
 
 .monitor-model-provider {
-  color: #64748b;
+  color: var(--color-muted);
   font-size: 11.5px;
   font-weight: 500;
 }
 
 .monitor-model-id {
-  color: #0f172a;
+  color: var(--color-text);
   font-weight: 600;
   font-size: 12.5px;
 }
@@ -1005,9 +1009,9 @@
   font-weight: 600;
   line-height: 1.4;
   white-space: nowrap;
-  color: #64748b;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
+  color: var(--status-neutral-text);
+  background: var(--status-neutral-bg);
+  border: 1px solid var(--status-neutral-border);
 }
 
 

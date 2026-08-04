@@ -501,7 +501,7 @@ export function IpProxySettings({
       <section className="form-card ip-proxy-management">
         <div className="ip-proxy-toolbar">
           <div className="ip-proxy-filters">
-            <SearchInput value={search} onChange={setSearch} placeholder={t('ipProxy.search')} />
+            <SearchInput value={search} onChange={setSearch} placeholder={t('ipProxy.search')} label={t('ipProxy.search')} />
             <select
               value={protocolFilter}
               onChange={(event) => setProtocolFilter(event.target.value as ProtocolFilter)}

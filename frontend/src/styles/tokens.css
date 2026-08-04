@@ -50,6 +50,22 @@
   --color-info: #2e69c7;
   --color-info-soft: #eef5ff;
   --color-info-border: #c8daf5;
+
+  --status-success-text: var(--color-success);
+  --status-success-bg: var(--color-success-soft);
+  --status-success-border: var(--color-success-border);
+  --status-warning-text: var(--color-warning);
+  --status-warning-bg: var(--color-warning-soft);
+  --status-warning-border: var(--color-warning-border);
+  --status-danger-text: var(--color-danger-text);
+  --status-danger-bg: var(--color-danger-soft);
+  --status-danger-border: var(--color-danger-border);
+  --status-info-text: var(--color-info);
+  --status-info-bg: var(--color-info-soft);
+  --status-info-border: var(--color-info-border);
+  --status-neutral-text: var(--color-muted);
+  --status-neutral-bg: var(--surface-subtle);
+  --status-neutral-border: var(--border-subtle);
   --color-message-text: #202923;
   --color-message-muted: #74827a;
   --text-terminal: #d1fae5;

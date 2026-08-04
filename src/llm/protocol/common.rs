@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::RequestBuilder;
 use serde_json::{Map, Value};
 
@@ -11,7 +12,7 @@ use crate::{
         client::{ChatClient, ChatStream, RequestOptions},
         http::{
             DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, StreamLineParser, StreamLogContext,
-            read_response_body_limited, spawn_log, stream_response,
+            is_rotatable_status, read_response_body_limited, spawn_log, stream_response,
         },
         keys::ApiKeyCycle,
         types::{ChatCompletionOutput, ToolCall, ToolDefinition},
@@ -85,6 +86,52 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         self.http = self.http.with_logger(logger);
         self
     }
+}
+
+fn notify_retry(options: &RequestOptions, attempt: u32, max_attempts: u32, error: &AppError) {
+    if let Some(on_retry) = options.on_retry.as_ref() {
+        on_retry(attempt, max_attempts, &error.to_string());
+    }
+}
+
+fn is_retryable_stream_error(error: &AppError) -> bool {
+    matches!(error, AppError::Llm(message) if message.contains("LLM stream idle timeout")
+        || message.contains("error decoding response body")
+        || message.contains("connection reset"))
+}
+
+fn log_stream_open_error(context: &StreamLogContext, error: &AppError) {
+    spawn_log(
+        &context.logger,
+        context.enabled,
+        &context.agent_name,
+        context.agent_id.as_deref(),
+        context.conversation_id.as_deref(),
+        &context.model_id,
+        &context.provider_name,
+        &context.request_json,
+        None,
+        None,
+        Some(&error.to_string()),
+        LlmLogMetrics::timed(context.started),
+    );
+}
+
+fn log_stream_status_error(context: &StreamLogContext, body: &str, status: u16, error: &AppError) {
+    spawn_log(
+        &context.logger,
+        context.enabled,
+        &context.agent_name,
+        context.agent_id.as_deref(),
+        context.conversation_id.as_deref(),
+        &context.model_id,
+        &context.provider_name,
+        &context.request_json,
+        Some(body),
+        Some(status),
+        Some(&error.to_string()),
+        LlmLogMetrics::timed(context.started),
+    );
 }
 
 #[async_trait]
@@ -256,7 +303,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             tools,
             options.thinking_level,
         )?;
-        let mut api_keys = ApiKeyCycle::new(provider)?;
+        let api_keys = ApiKeyCycle::new(provider)?;
         let url = self.adapter.completion_url(provider, agent, true);
         let client = self.http.client_for(provider.proxy_url.as_deref())?;
         let log_enabled = self.http.log_enabled();
@@ -271,74 +318,97 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             .last()
             .map(|message| message.conversation_id.to_string());
 
-        let response = match self
-            .http
-            .retry_send(&options, &mut api_keys, |api_key| {
-                self.adapter
-                    .authenticated_post(&client, &url, api_key, &request, provider)
-            })
-            .await
-        {
-            Ok(response) => response,
-            Err(error) => {
-                spawn_log(
-                    &self.http.logger(),
-                    log_enabled,
-                    &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
-                    &agent.model_id,
-                    &provider.name,
-                    &request_json,
-                    None,
-                    None,
-                    Some(&error.to_string()),
-                    LlmLogMetrics::timed(started),
-                );
-                return Err(error);
-            }
+        let attempts = options.retry_attempts.max(1).max(api_keys.attempt_budget());
+        let adapter = self.adapter.clone();
+        let http = self.http.clone();
+        let provider = provider.clone();
+        let agent_name = agent.name.clone();
+        let model_id = agent.model_id.clone();
+        let request_json = request_json.clone();
+        let logger = self.http.logger();
+        let stream_options = options.clone();
+        let stream_context = StreamLogContext {
+            logger,
+            enabled: log_enabled,
+            agent_name,
+            agent_id: Some(agent_id),
+            conversation_id,
+            model_id,
+            provider_name: provider.name.clone(),
+            request_json,
+            status: 200,
+            started,
         };
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = read_response_body_limited(response, options.timeout)
-                .await
-                .unwrap_or_else(|_| "failed to read error body".to_string());
-            let error = format!("upstream returned {status}: {body}");
-            spawn_log(
-                &self.http.logger(),
-                log_enabled,
-                &agent.name,
-                Some(agent_id.as_str()),
-                conversation_id.as_deref(),
-                &agent.model_id,
-                &provider.name,
-                &request_json,
-                Some(&body),
-                Some(status.as_u16()),
-                Some(&error),
-                LlmLogMetrics::timed(started),
-            );
-            return Err(AppError::Llm(error));
-        }
+        let stream = async_stream::stream! {
+            let mut api_keys = api_keys;
+            for attempt in 1..=attempts {
+                let response = match http.send_once(&stream_options, &mut api_keys, |api_key| {
+                    adapter.authenticated_post(&client, &url, api_key, &request, &provider)
+                }).await {
+                    Ok(response) => response,
+                    Err(error) => {
+                        if attempt < attempts {
+                            notify_retry(&stream_options, attempt + 1, attempts, &error);
+                            tokio::time::sleep(std::time::Duration::from_millis(250 * u64::from(attempt))).await;
+                            continue;
+                        }
+                        log_stream_open_error(&stream_context, &error);
+                        yield Err(error);
+                        return;
+                    }
+                };
 
-        Ok(stream_response(
-            response,
-            self.adapter.stream_parser(),
-            options,
-            StreamLogContext {
-                logger: self.http.logger(),
-                enabled: log_enabled,
-                agent_name: agent.name.clone(),
-                agent_id: Some(agent_id),
-                conversation_id,
-                model_id: agent.model_id.clone(),
-                provider_name: provider.name.clone(),
-                request_json,
-                status: status.as_u16(),
-                started,
-            },
-        ))
+                let status = response.status();
+                if !status.is_success() {
+                    let body = read_response_body_limited(response, stream_options.timeout)
+                        .await
+                        .unwrap_or_else(|_| "failed to read error body".to_string());
+                    let error = AppError::Llm(format!("upstream returned {status}: {body}"));
+                    if attempt < attempts && api_keys.has_alternatives() && is_rotatable_status(status) {
+                        api_keys.note_failure();
+                        notify_retry(&stream_options, attempt + 1, attempts, &error);
+                        tokio::time::sleep(std::time::Duration::from_millis(250 * u64::from(attempt))).await;
+                        continue;
+                    }
+                    log_stream_status_error(&stream_context, &body, status.as_u16(), &error);
+                    yield Err(error);
+                    return;
+                }
+
+                let mut upstream = stream_response(
+                    response,
+                    adapter.stream_parser(),
+                    stream_options.clone(),
+                    StreamLogContext { status: status.as_u16(), ..stream_context.clone() },
+                );
+                let mut saw_event = false;
+                let mut retry_stream = false;
+                while let Some(event) = upstream.next().await {
+                    match event {
+                        Ok(event) => {
+                            saw_event = true;
+                            yield Ok(event);
+                        }
+                        Err(error) => {
+                            if !saw_event && attempt < attempts && is_retryable_stream_error(&error) {
+                                notify_retry(&stream_options, attempt + 1, attempts, &error);
+                                tokio::time::sleep(std::time::Duration::from_millis(250 * u64::from(attempt))).await;
+                                retry_stream = true;
+                            } else {
+                                yield Err(error);
+                            }
+                            break;
+                        }
+                    }
+                }
+                if retry_stream {
+                    continue;
+                }
+                return;
+            }
+        };
+        Ok(Box::pin(stream))
     }
 
     async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>> {

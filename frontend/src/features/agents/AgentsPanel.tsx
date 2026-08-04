@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, FormEvent, type KeyboardEvent } from 'react';
+import { useState, useEffect, useRef, useCallback, FormEvent, type KeyboardEvent } from 'react';
 import { ArrowLeft, Brain, FileText, IdCard, Plus, SlidersHorizontal, Trash2, Wrench } from 'lucide-react';
 
 import type {
@@ -109,6 +109,7 @@ export function AgentsPanel({
   const pendingSaveRef = useRef<PendingAgentSave | null>(null);
   const saveInFlightRef = useRef(false);
   const savePromiseRef = useRef<Promise<boolean> | null>(null);
+  const flushAgentSaveQueueRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true));
   const saveRetryCountRef = useRef(0);
   const saveTimerRef = useRef<number | undefined>(undefined);
   const retryTimerRef = useRef<number | undefined>(undefined);
@@ -124,7 +125,7 @@ export function AgentsPanel({
         window.clearTimeout(saveTimerRef.current);
         saveTimerRef.current = undefined;
       }
-      void flushAgentSaveQueue();
+      void flushAgentSaveQueueRef.current();
     };
   }, []);
 
@@ -144,6 +145,13 @@ export function AgentsPanel({
   const displayedAgentDescription = activeAgent?.is_builtin
     ? agentDisplayDescription(activeAgent, t)
     : agentForm.description;
+
+  const agentActionError = useCallback((cause: unknown) => {
+    return userErrorMessage(cause, {
+      summary: t('error.agentActionFailed'),
+      recovery: t('error.retryConnection'),
+    });
+  }, [t]);
 
   useEffect(() => {
     if (!activeAgent) {
@@ -206,7 +214,7 @@ export function AgentsPanel({
     return () => {
       cancelled = true;
     };
-  }, [activeAgent?.id, t, toast]);
+  }, [activeAgent, activeAgent?.id, agentActionError, t, toast]);
 
   useEffect(() => {
     if (
@@ -266,7 +274,7 @@ export function AgentsPanel({
     }
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = undefined;
-      void flushAgentSaveQueue();
+      void flushAgentSaveQueueRef.current();
     }, AGENT_AUTO_SAVE_DELAY_MS);
   }, [activeAgent, agentForm, agentFormDirty, agents, isLoadingWorkspace, t, toast, workspaceForm]);
 
@@ -328,7 +336,7 @@ export function AgentsPanel({
           }
           retryTimerRef.current = window.setTimeout(() => {
             retryTimerRef.current = undefined;
-            void flushAgentSaveQueue();
+            void flushAgentSaveQueueRef.current();
           }, retryDelay);
         }
       }
@@ -341,6 +349,8 @@ export function AgentsPanel({
       if (savePromiseRef.current === operation) savePromiseRef.current = null;
     }
   }
+
+  flushAgentSaveQueueRef.current = flushAgentSaveQueue;
 
   async function flushAgentSaveNow(): Promise<boolean> {
     if (saveTimerRef.current !== undefined) {
@@ -434,13 +444,6 @@ export function AgentsPanel({
     } catch (cause) {
       toast.error(agentActionError(cause));
     }
-  }
-
-  function agentActionError(cause: unknown) {
-    return userErrorMessage(cause, {
-      summary: t('error.agentActionFailed'),
-      recovery: t('error.retryConnection'),
-    });
   }
 
   return (

@@ -115,9 +115,8 @@ impl LlmHttp {
         let attempts = options.retry_attempts.max(1).max(keys.attempt_budget());
         let mut last_error = None;
         for attempt in 1..=attempts {
-            let key = keys.next_key().to_string();
-            match tokio::time::timeout(options.timeout, request(&key).send()).await {
-                Ok(Ok(response)) => {
+            match self.send_once(options, keys, &request).await {
+                Ok(response) => {
                     if !(keys.has_alternatives() && is_rotatable_status(response.status())) {
                         return Ok(response);
                     }
@@ -127,28 +126,12 @@ impl LlmHttp {
                         // keep their upstream status/body error reporting.
                         return Ok(response);
                     }
-                    last_error = Some(AppError::Llm(with_key_label(
-                        keys,
-                        &key,
-                        &format!("upstream returned {}", response.status()),
+                    last_error = Some(AppError::Llm(format!(
+                        "upstream returned {}",
+                        response.status()
                     )));
                 }
-                Ok(Err(error)) => {
-                    keys.note_failure();
-                    last_error = Some(AppError::Llm(with_key_label(
-                        keys,
-                        &key,
-                        &error.to_string(),
-                    )));
-                }
-                Err(_) => {
-                    keys.note_failure();
-                    last_error = Some(AppError::Llm(with_key_label(
-                        keys,
-                        &key,
-                        &format!("request timed out after {}s", options.timeout.as_secs()),
-                    )));
-                }
+                Err(error) => last_error = Some(error),
             }
             if attempt < attempts {
                 let reason = last_error
@@ -163,13 +146,47 @@ impl LlmHttp {
         }
         Err(last_error.unwrap_or_else(|| AppError::Llm("request failed".to_string())))
     }
+
+    /// Execute exactly one HTTP request attempt. Stream consumers use this so
+    /// an idle timeout while reading the response can start a fresh attempt
+    /// without restarting the whole retry budget.
+    pub async fn send_once<F>(
+        &self,
+        options: &RequestOptions,
+        keys: &mut ApiKeyCycle,
+        request: F,
+    ) -> AppResult<Response>
+    where
+        F: Fn(&str) -> RequestBuilder,
+    {
+        let key = keys.next_key().to_string();
+        match tokio::time::timeout(options.timeout, request(&key).send()).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(error)) => {
+                keys.note_failure();
+                Err(AppError::Llm(with_key_label(
+                    keys,
+                    &key,
+                    &error.to_string(),
+                )))
+            }
+            Err(_) => {
+                keys.note_failure();
+                Err(AppError::Llm(with_key_label(
+                    keys,
+                    &key,
+                    &format!("request timed out after {}s", options.timeout.as_secs()),
+                )))
+            }
+        }
+    }
 }
 
 /// With several keys configured, these statuses are worth retrying on another
 /// key: explicit key rejections (401/402/403), rate limits (429), request
 /// timeouts/conflicts (408/409), and every 5xx — which also covers
 /// Cloudflare-style 520-524 and Anthropic's 529 overloaded.
-fn is_rotatable_status(status: reqwest::StatusCode) -> bool {
+pub(crate) fn is_rotatable_status(status: reqwest::StatusCode) -> bool {
     status.is_server_error() || matches!(status.as_u16(), 401 | 402 | 403 | 408 | 409 | 429)
 }
 
@@ -265,6 +282,7 @@ pub trait StreamLineParser: Send {
     fn parse_line(&mut self, line: &str) -> Vec<AppResult<StreamEvent>>;
 }
 
+#[derive(Clone)]
 pub struct StreamLogContext {
     pub logger: Option<Arc<LlmLogger>>,
     pub enabled: bool,

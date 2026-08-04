@@ -6,7 +6,11 @@ pub mod openai_responses;
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        convert::Infallible,
+        sync::atomic::{AtomicUsize, Ordering},
+        sync::{Arc, Mutex},
+    };
 
     use axum::{
         Router,
@@ -23,7 +27,7 @@ mod tests {
 
     use super::{
         anthropic::AnthropicAdapter, common::ProtocolClient, gemini::GeminiAdapter,
-        openai_responses::OpenAiResponsesAdapter,
+        openai_chat::OpenAiChatAdapter, openai_responses::OpenAiResponsesAdapter,
     };
     use crate::{
         domain::{Agent, ChatMessage, ChatMessageStatus, ChatRole, ModelProvider, ProviderType},
@@ -332,6 +336,88 @@ mod tests {
             "key",
         )
         .await;
+    }
+
+    async fn idle_then_success_upstream(
+        State(requests): State<Arc<AtomicUsize>>,
+        method: Method,
+    ) -> Response {
+        if method != Method::POST {
+            return Response::builder().status(404).body(Body::empty()).unwrap();
+        }
+        if requests.fetch_add(1, Ordering::SeqCst) == 0 {
+            let body = async_stream::stream! {
+                yield Ok::<Bytes, Infallible>(Bytes::from("\n"));
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                yield Ok::<Bytes, Infallible>(Bytes::from(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"stale\"}}]}\n\n",
+                ));
+            };
+            return Response::builder()
+                .status(200)
+                .header("content-type", "text/event-stream")
+                .body(Body::from_stream(body))
+                .unwrap();
+        }
+        Response::builder()
+            .status(200)
+            .header("content-type", "text/event-stream")
+            .body(Body::from(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            ))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn streaming_idle_timeout_retries_before_first_event() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_requests = requests.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .fallback(any(idle_then_success_upstream))
+                    .with_state(server_requests),
+            )
+            .await
+            .unwrap();
+        });
+
+        let (agent, messages) = fixture();
+        let provider = provider(
+            ProviderType::OpenAiCompatible,
+            format!("http://{address}/v1"),
+        );
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let retry_reasons = reasons.clone();
+        let options = RequestOptions {
+            timeout: std::time::Duration::from_millis(20),
+            retry_attempts: 2,
+            thinking_level: None,
+            on_retry: Some(Arc::new(move |_attempt, _max, reason| {
+                retry_reasons.lock().unwrap().push(reason.to_string());
+            })),
+        };
+        let client: DynChatClient = Arc::new(ProtocolClient::new(OpenAiChatAdapter));
+        let mut stream = client
+            .stream(&agent, &provider, &messages, "system", options, None)
+            .await
+            .unwrap();
+        let mut output = String::new();
+        while let Some(event) = stream.next().await {
+            if let StreamEvent::TextDelta(delta) = event.unwrap() {
+                output.push_str(&delta);
+            }
+        }
+
+        assert_eq!(output, "ok");
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        let reasons = reasons.lock().unwrap();
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains("LLM stream idle timeout"));
+        server.abort();
     }
 
     #[test]

@@ -2,7 +2,6 @@
 @import '@fontsource-variable/inter/standard-italic.css';
 @import '@fontsource-variable/noto-sans-sc/wght.css';
 @import './tokens.css';
-@import 'highlight.js/styles/github.css';
 @import './base.css';
 @import './layout.css';
 @import './components.css';

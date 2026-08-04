@@ -9,6 +9,7 @@ import {
   ListChecks,
   Pin,
   Plus,
+  Settings2,
   Trash2,
 } from 'lucide-react';
 import type {
@@ -39,6 +40,7 @@ interface ChatPanelProps {
   activeAgentId: string;
   onAgentChange: (id: string) => void;
   onAgentEdit: (id: string, payload: UpdateAgentPayload) => Promise<Agent>;
+  onOpenAgentSettings: (id: string) => void;
   onOpenMain: () => void;
   onBackToList: () => void;
   onCreateAgent: () => void;
@@ -68,6 +70,7 @@ export function ChatPanel({
   activeAgentId,
   onAgentChange,
   onAgentEdit,
+  onOpenAgentSettings,
   onOpenMain,
   onBackToList,
   onCreateAgent,
@@ -130,7 +133,10 @@ export function ChatPanel({
   const modelSaveTimerRef = useRef<number | undefined>(undefined);
   const modelSaveRequestRef = useRef(0);
   const pendingModelSaveRef = useRef<PendingModelSave | null>(null);
+  const onAgentEditRef = useRef(onAgentEdit);
   const taskPlanRequestRef = useRef(0);
+
+  onAgentEditRef.current = onAgentEdit;
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const conversationAgentIdKey = useMemo(() => {
@@ -184,6 +190,13 @@ export function ChatPanel({
     ? conversations.find((conversation) => conversation.id === activeConversationId)
     : undefined;
 
+  const conversationActionError = useCallback((cause: unknown) => {
+    return userErrorMessage(cause, {
+      summary: t('error.conversationActionFailed'),
+      recovery: t('error.retryConnection'),
+    });
+  }, [t]);
+
   const refreshTaskPlan = useCallback(async (silent = false) => {
     const requestId = ++taskPlanRequestRef.current;
     if (!activeConversationId) {
@@ -197,7 +210,10 @@ export function ChatPanel({
       if (requestId === taskPlanRequestRef.current) setTaskPlans(plans);
     } catch (error) {
       if (!silent && requestId === taskPlanRequestRef.current) {
-        toast.error(error instanceof Error ? error.message : t('chat.taskPlanLoading'));
+        toast.error(userErrorMessage(error, {
+          summary: t('chat.taskPlanLoading'),
+          recovery: t('error.retryConnection'),
+        }));
       }
     } finally {
       if (requestId === taskPlanRequestRef.current) setIsTaskPlanLoading(false);
@@ -317,7 +333,7 @@ export function ChatPanel({
     setIsSavingModel(false);
     // Thinking-capable models default to medium; others stay off (no thinking params).
     setThinkingLevel(supportsThinking ? 'medium' : 'off');
-  }, [activeModelValue, modelTargetAgentId, supportsThinking]);
+  }, [activeModelValue, conversationActionError, modelTargetAgentId, onAgentEdit, supportsThinking, toast]);
 
   useEffect(() => () => {
     const pending = pendingModelSaveRef.current;
@@ -327,7 +343,7 @@ export function ChatPanel({
       window.clearTimeout(modelSaveTimerRef.current);
     }
     if (pending) {
-      void onAgentEdit(pending.agentId, {
+      void onAgentEditRef.current(pending.agentId, {
         model_provider_id: pending.selection.providerId,
         model_id: pending.selection.modelId,
       }).catch(() => undefined);
@@ -369,7 +385,7 @@ export function ChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [activeAgentId, activeConversationId, loadMessages, resumeActiveRun]);
+  }, [activeAgentId, activeConversationId, conversationActionError, loadMessages, resumeActiveRun, toast]);
 
   function handleAgentSelect(agentId: string) {
     onAgentChange(agentId);
@@ -381,13 +397,6 @@ export function ChatPanel({
     setConversationFilter('');
     onAgentChange('');
   }
-
-  const conversationActionError = useCallback((cause: unknown) => {
-    return userErrorMessage(cause, {
-      summary: t('error.conversationActionFailed'),
-      recovery: t('error.retryConnection'),
-    });
-  }, [t]);
 
   const handleConversationSelect = useCallback((conversationId: string) => {
     if (isSending) detachActiveRun();
@@ -474,7 +483,7 @@ export function ChatPanel({
     }
   }
 
-  function handleNewConversation() {
+  const handleNewConversation = useCallback(() => {
     if (!activeAgent) return;
     const isCurrentConversationEmpty = Boolean(
       activeConversation && activeConversation.message_count === 0,
@@ -489,7 +498,7 @@ export function ChatPanel({
       .catch((cause) => {
         toast.error(conversationActionError(cause));
       });
-  }
+  }, [activeAgent, activeConversation, conversationActionError, createNewConversation, detachActiveRun, isSending, onOpenMain, toast]);
 
   const handleDeleteConversation = useCallback(async (conversationId: string) => {
     if (!activeAgent) return;
@@ -599,7 +608,7 @@ export function ChatPanel({
     };
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
-  }, [activeAgent?.id, activeConversation?.id, activeConversation?.message_count, isSending]);
+  }, [activeAgent, activeAgent?.id, activeConversation?.id, activeConversation?.message_count, handleNewConversation, isSending]);
 
   const formatTime = useCallback((value: string) => {
     return dateFormatters.time.format(new Date(value));
@@ -666,7 +675,7 @@ export function ChatPanel({
                 </IconButton>
               )}
             />
-            <SearchInput ref={conversationSearchRef} value={conversationFilter} onChange={setConversationFilter} placeholder={t('conversation.search')} />
+            <SearchInput ref={conversationSearchRef} value={conversationFilter} onChange={setConversationFilter} placeholder={t('conversation.search')} label={t('conversation.search')} />
             <div className="list-stack conversation-list">
               {isLoadingConversations && conversations.length === 0 ? (
                 <p className="muted centered conversation-list-state" role="status">{t('conversation.loading')}</p>
@@ -749,6 +758,18 @@ export function ChatPanel({
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
+              <IconButton
+                className="chat-agent-settings-button"
+                variant="ghost"
+                type="button"
+                label={t('chat.configureAgent')}
+                disabled={!modelTargetAgent || isSavingModel}
+                onClick={() => {
+                  if (modelTargetAgent) onOpenAgentSettings(modelTargetAgent.id);
+                }}
+              >
+                <Settings2 size={16} />
+              </IconButton>
             </div>
           ) : null}
         </header>
@@ -771,7 +792,6 @@ export function ChatPanel({
           onApproveToolCall={handleApproveToolCall}
           onActiveTimelineMessageChange={setActiveTimelineMessageIndex}
           formatTimelineTime={formatTimelineTime}
-          onCreateAgent={onCreateAgent}
         />
 
         {timelineItems.length > 1 ? (

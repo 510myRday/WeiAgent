@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect } from 'react';
+import { lazy, Suspense, useCallback, useState, useEffect } from 'react';
 import { RefreshCw } from 'lucide-react';
 import type { AppSettings, MobileView, NavKey } from './types';
 import { useSettings, useProviders, useAgents } from './hooks';
@@ -66,11 +66,7 @@ export function App() {
     removeAgent,
   } = useAgents();
 
-  useEffect(() => {
-    void refreshAll();
-  }, []);
-
-  async function refreshAll() {
+  const refreshAll = useCallback(async () => {
     setIsRefreshingInitialData(true);
     setInitialLoadError('');
     const [settingsResult, providersResult, agentsResult] = await Promise.allSettled([
@@ -83,7 +79,7 @@ export function App() {
     }
     const errors = [settingsResult, providersResult, agentsResult]
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-      .map((result) => result.reason instanceof Error ? result.reason.message : t('error.unknown'));
+      .map(() => t('error.unknown'));
     if (errors.length > 0) {
       const message = userErrorMessage(new Error(errors.join(' ')), {
         summary: t('error.initialLoadFailed'),
@@ -93,7 +89,7 @@ export function App() {
       toast.error(message);
     }
     setIsRefreshingInitialData(false);
-  }
+  }, [refreshAgents, refreshProviders, refreshSettings, setLocale, t, toast]);
 
   async function saveSettingsWithLocale(payload: AppSettings) {
     const next = { ...payload, language: isLocale(payload.language) ? payload.language : locale };
@@ -115,6 +111,10 @@ export function App() {
     setMobileView('main');
   }
 
+  useEffect(() => {
+    void refreshAll();
+  }, [refreshAll]);
+
   function openIpProxySettings() {
     setSettingsSection('proxies');
     setActiveNav('settings');
@@ -123,6 +123,12 @@ export function App() {
 
   function openAgentCreation() {
     setActiveAgentId('');
+    setActiveNav('agents');
+    setMobileView('main');
+  }
+
+  function openAgentSettings(id: string) {
+    setActiveAgentId(id);
     setActiveNav('agents');
     setMobileView('main');
   }
@@ -183,6 +189,7 @@ export function App() {
             activeAgentId={activeAgentId}
             onAgentChange={setActiveAgentId}
             onAgentEdit={editAgent}
+            onOpenAgentSettings={openAgentSettings}
             onOpenMain={openMainPane}
             onBackToList={openListPane}
             onCreateAgent={openAgentCreation}
@@ -259,7 +266,7 @@ export function App() {
 
 function PanelLoading({ label }: { label: string }) {
   return (
-    <section className="main-pane panel-loading" role="status" aria-live="polite">
+    <section className="main-pane panel-loading" role="status" aria-live="polite" aria-busy="true">
       <span className="panel-loading-spinner" aria-hidden="true" />
       <span>{label}</span>
     </section>

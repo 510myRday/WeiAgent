@@ -5,6 +5,7 @@ import type { AppSettings, AvatarIcon, NavKey } from '../../types';
 import { useI18n } from '../../i18n';
 import { AvatarBadge } from '../AvatarPicker';
 import { AvatarPopover, IconButton, useFeedback } from '../ui';
+import { userErrorMessage } from '../../utils/userError';
 
 interface SidebarProps {
   activeNav: NavKey;
@@ -19,7 +20,10 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
 
   function handleAvatarChange(next: { icon: AvatarIcon; color: string }) {
     void onSettingsSave({ ...settings, avatar_icon: next.icon, avatar_color: next.color })
-      .catch((cause) => toast.error(cause instanceof Error ? cause.message : t('error.unknown')));
+      .catch((cause) => toast.error(userErrorMessage(cause, {
+        summary: t('error.settingsSaveFailed'),
+        recovery: t('error.retryConnection'),
+      })));
   }
 
   async function handleLocaleToggle() {
@@ -31,7 +35,10 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
       setLocale(updated.language);
     } catch (cause) {
       setLocale(previousLocale);
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      toast.error(userErrorMessage(cause, {
+        summary: t('error.settingsSaveFailed'),
+        recovery: t('error.retryConnection'),
+      }));
     }
   }
 

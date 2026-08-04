@@ -333,7 +333,6 @@ function ContextUsageRing({
   return (
     <span
       className={`context-usage-ring${ratio >= 1 ? ' is-full' : ''}`}
-      tabIndex={0}
     >
       <span className="context-usage-ring__icon" role="img" aria-label={label}>
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">

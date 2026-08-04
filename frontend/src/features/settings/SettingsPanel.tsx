@@ -141,6 +141,8 @@ export function SettingsPanel({
   const providerSaveTimerRef = useRef<number | undefined>(undefined);
   const providerRetryTimerRef = useRef<number | undefined>(undefined);
   const onProviderEditRef = useRef(onProviderEdit);
+  const flushRuntimeSaveQueueRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const flushProviderSaveQueueRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   onSettingsSaveRef.current = onSettingsSave;
   onProviderEditRef.current = onProviderEdit;
@@ -181,8 +183,8 @@ export function SettingsPanel({
         window.clearTimeout(providerRetryTimerRef.current);
         providerRetryTimerRef.current = undefined;
       }
-      void flushRuntimeSaveQueue();
-      void flushProviderSaveQueue();
+      void flushRuntimeSaveQueueRef.current();
+      void flushProviderSaveQueueRef.current();
     };
   }, []);
 
@@ -322,7 +324,7 @@ export function SettingsPanel({
     }
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = undefined;
-      void flushRuntimeSaveQueue();
+      void flushRuntimeSaveQueueRef.current();
     }, RUNTIME_AUTO_SAVE_DELAY_MS);
   }, [runtimeDirty, settingsForm]);
 
@@ -366,7 +368,7 @@ export function SettingsPanel({
     }
     providerSaveTimerRef.current = window.setTimeout(() => {
       providerSaveTimerRef.current = undefined;
-      void flushProviderSaveQueue();
+      void flushProviderSaveQueueRef.current();
     }, PROVIDER_AUTO_SAVE_DELAY_MS);
   }, [activeProviderId, providerDirty, providerForm]);
 
@@ -425,7 +427,7 @@ export function SettingsPanel({
         }
         retryTimerRef.current = window.setTimeout(() => {
           retryTimerRef.current = undefined;
-          void flushRuntimeSaveQueue();
+          void flushRuntimeSaveQueueRef.current();
         }, retryDelay);
       }
     }
@@ -440,7 +442,7 @@ export function SettingsPanel({
       window.clearTimeout(retryTimerRef.current);
       retryTimerRef.current = undefined;
     }
-    void flushRuntimeSaveQueue();
+    void flushRuntimeSaveQueueRef.current();
   }
 
   async function flushProviderSaveQueue() {
@@ -526,11 +528,14 @@ export function SettingsPanel({
         }
         providerRetryTimerRef.current = window.setTimeout(() => {
           providerRetryTimerRef.current = undefined;
-          void flushProviderSaveQueue();
+          void flushProviderSaveQueueRef.current();
         }, retryDelay);
       }
     }
   }
+
+  flushRuntimeSaveQueueRef.current = flushRuntimeSaveQueue;
+  flushProviderSaveQueueRef.current = flushProviderSaveQueue;
 
   function retryProviderSaveNow() {
     if (providerSaveTimerRef.current !== undefined) {
@@ -541,7 +546,7 @@ export function SettingsPanel({
       window.clearTimeout(providerRetryTimerRef.current);
       providerRetryTimerRef.current = undefined;
     }
-    void flushProviderSaveQueue();
+    void flushProviderSaveQueueRef.current();
   }
 
   function patchRuntimeSettings(patch: Partial<AppSettings>) {
@@ -563,7 +568,7 @@ export function SettingsPanel({
     if (providerSaveTimerRef.current !== undefined) {
       window.clearTimeout(providerSaveTimerRef.current);
       providerSaveTimerRef.current = undefined;
-      void flushProviderSaveQueue();
+      void flushProviderSaveQueueRef.current();
     }
     onProviderChange(id);
   }

@@ -59,13 +59,25 @@ export function Dialog({
   const titleId = useId();
   const descriptionId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
 
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const previousOverflow = document.body.style.overflow;
+    const backgroundNodes = Array.from(document.body.children)
+      .filter((node): node is HTMLElement => node instanceof HTMLElement && node !== backdropRef.current)
+      .map((node) => ({
+        node,
+        hadInert: node.hasAttribute('inert'),
+        hadAriaHidden: node.getAttribute('aria-hidden'),
+      }));
     document.body.style.overflow = 'hidden';
+    backgroundNodes.forEach(({ node }) => {
+      node.setAttribute('inert', '');
+      node.setAttribute('aria-hidden', 'true');
+    });
 
     const focusDialog = window.requestAnimationFrame(() => {
       const firstFocusable = dialogRef.current?.querySelector<HTMLElement>(focusableSelector);
@@ -75,6 +87,11 @@ export function Dialog({
     return () => {
       window.cancelAnimationFrame(focusDialog);
       document.body.style.overflow = previousOverflow;
+      backgroundNodes.forEach(({ node, hadInert, hadAriaHidden }) => {
+        if (!hadInert) node.removeAttribute('inert');
+        if (hadAriaHidden === null) node.removeAttribute('aria-hidden');
+        else node.setAttribute('aria-hidden', hadAriaHidden);
+      });
       previousFocus?.focus();
     };
   }, [open]);
@@ -111,6 +128,7 @@ export function Dialog({
 
   return createPortal(
     <div
+      ref={backdropRef}
       className="dialog-backdrop"
       role="presentation"
       onMouseDown={(event) => {

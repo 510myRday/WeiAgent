@@ -13,6 +13,7 @@ import {
 } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
+  ArrowLeft,
   Bot,
   ChevronDown,
   LoaderCircle,
@@ -43,6 +44,7 @@ import { MAX_IMAGE_COUNT, attachmentImageUrl } from './imageAttachments';
 import { useImageAttachments } from './useImageAttachments';
 import { ReasoningDisclosure } from './ReasoningDisclosure';
 import { ToolDisclosure } from './ToolDisclosure';
+import { userErrorMessage } from '../../utils/userError';
 
 interface MessageListProps {
   conversationId: string;
@@ -66,7 +68,6 @@ interface MessageListProps {
   ) => Promise<void>;
   onActiveTimelineMessageChange: (messageIndex: number | null) => void;
   formatTimelineTime: (value: string) => string;
-  onCreateAgent: () => void;
 }
 
 export type MessageListHandle = {
@@ -116,7 +117,6 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   onApproveToolCall,
   onActiveTimelineMessageChange,
   formatTimelineTime,
-  onCreateAgent,
 }, ref) {
   const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -146,11 +146,11 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
         item,
       });
     });
-    if (activeAgent && shouldShowAgentWaitingBubble(messages, isSending, runPhase)) {
+    if (activeAgent && shouldShowAgentWaitingBubble(messages, isSending, runPhase, retryStatus)) {
       next.push({ key: 'waiting', kind: 'waiting' });
     }
     return next;
-  }, [activeAgent, hasOlderMessages, isSending, messages, runPhase]);
+  }, [activeAgent, hasOlderMessages, isSending, messages, retryStatus, runPhase]);
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -450,12 +450,12 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
           <EmptyState
             icon={activeAgent ? <MessageSquare size={34} /> : <Bot size={34} />}
             title={activeAgent ? t('chat.emptyTitle') : t('chat.noAgent')}
-            description={activeAgent ? t('chat.emptyHint') : t('chat.noAgentHint')}
-            action={!activeAgent ? (
-              <Button variant="primary" type="button" onClick={onCreateAgent}>
-                {t('agentConfig.create')}
-              </Button>
-            ) : undefined}
+            description={activeAgent ? t('chat.emptyHint') : (
+              <span className="empty-state-no-agent-hint">
+                <ArrowLeft size={18} aria-hidden="true" />
+                <span>{t('chat.noAgentHint')}</span>
+              </span>
+            )}
           />
         ) : null}
       </div>
@@ -576,8 +576,10 @@ function shouldShowAgentWaitingBubble(
   messages: UiMessageItem[],
   isSending: boolean,
   runPhase: AgentRunPhase,
+  retryStatus: { attempt: number; maxAttempts: number; reason: string } | null,
 ): boolean {
   if (!isSending) return false;
+  if (retryStatus) return true;
   if (runPhase === 'waiting_for_approval') return false;
 
   const last = messages[messages.length - 1];
@@ -631,6 +633,7 @@ function WaitingBubble({
               <div className="message-retry-copy">
                 <span className="message-retry-title">{label}</span>
                 <span className="message-retry-hint">{t('chat.retryingHint')}</span>
+                <span className="message-retry-reason">{t('chat.retryingReason', { reason: retryStatus.reason })}</span>
               </div>
               <span className="message-retry-badge">
                 {retryStatus.attempt}/{retryStatus.maxAttempts}
@@ -935,7 +938,10 @@ function MessageContent({
     try {
       await onApproveToolCall(approvalId, resolvedAgentId, decision);
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      toast.error(userErrorMessage(cause, {
+        summary: t('error.conversationActionFailed'),
+        recovery: t('error.retryConnection'),
+      }));
       throw cause;
     }
   }

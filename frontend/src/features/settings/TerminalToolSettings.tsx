@@ -19,6 +19,7 @@ import {
 } from '../../api';
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
+import { userErrorMessage } from '../../utils/userError';
 import { updateToolProcessCache, useBeforeUnloadGuard, usePageVisibility } from '../../hooks';
 import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../components/ui';
 import { PermissionModeControl, type PermissionMode } from './PermissionModeControl';
@@ -99,6 +100,7 @@ export function TerminalToolSettings({
   const debounceTimerRef = useRef<number | undefined>(undefined);
   const debounceContextRef = useRef('');
   const retryTimerRef = useRef<number | undefined>(undefined);
+  const flushSaveQueueRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const isMountedRef = useRef(true);
   const installWatchRef = useRef<{
     kind: RuntimeComponentKind;
@@ -212,7 +214,7 @@ export function TerminalToolSettings({
       debounceTimerRef.current = undefined;
       debounceContextRef.current = '';
     }
-    void flushSaveQueue();
+    void flushSaveQueueRef.current();
   }, [contextKey]);
 
   useEffect(() => {
@@ -347,7 +349,7 @@ export function TerminalToolSettings({
     debounceTimerRef.current = window.setTimeout(() => {
       debounceTimerRef.current = undefined;
       debounceContextRef.current = '';
-      void flushSaveQueue();
+      void flushSaveQueueRef.current();
     }, AUTO_SAVE_DELAY_MS);
   }, [agentId, config, contextKey, isLoading, overrides, scope]);
 
@@ -392,7 +394,10 @@ export function TerminalToolSettings({
       if (isMountedRef.current && activeContextRef.current === nextSave.contextKey) {
         setAutoSaveStatus('error');
         if (attempt === 1) {
-          toast.error(error instanceof Error ? error.message : t('tools.terminal.saveFailed'));
+          toast.error(userErrorMessage(error, {
+            summary: t('tools.terminal.saveFailed'),
+            recovery: t('error.retryConnection'),
+          }));
         }
       }
     } finally {
@@ -407,11 +412,13 @@ export function TerminalToolSettings({
         }
         retryTimerRef.current = window.setTimeout(() => {
           retryTimerRef.current = undefined;
-          void flushSaveQueue();
+          void flushSaveQueueRef.current();
         }, retryDelay);
       }
     }
   }
+
+  flushSaveQueueRef.current = flushSaveQueue;
 
   function retryAutoSaveNow() {
     if (debounceTimerRef.current !== undefined) {
@@ -423,7 +430,7 @@ export function TerminalToolSettings({
       window.clearTimeout(retryTimerRef.current);
       retryTimerRef.current = undefined;
     }
-    void flushSaveQueue();
+    void flushSaveQueueRef.current();
   }
 
   async function retryRuntimeLoad() {
@@ -447,7 +454,10 @@ export function TerminalToolSettings({
       updateToolProcessCache(stopped);
       setProcesses((current) => current.map((item) => item.process_id === process.process_id ? stopped : item));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('tools.terminal.processStopFailed'));
+      toast.error(userErrorMessage(error, {
+        summary: t('tools.terminal.processStopFailed'),
+        recovery: t('error.retryConnection'),
+      }));
     } finally {
       setIsStoppingProcess('');
     }
@@ -467,7 +477,10 @@ export function TerminalToolSettings({
       setProcesses((current) => current.map((item) => item.process_id === process.process_id ? next : item));
       setSessionInputs((current) => ({ ...current, [process.process_id]: '' }));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('tools.terminal.sessionSendFailed'));
+      toast.error(userErrorMessage(error, {
+        summary: t('tools.terminal.sessionSendFailed'),
+        recovery: t('error.retryConnection'),
+      }));
     } finally {
       setIsSendingToProcess('');
     }
@@ -479,7 +492,10 @@ export function TerminalToolSettings({
       updateToolProcessCache(next);
       setProcesses((current) => current.map((item) => item.process_id === process.process_id ? next : item));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('tools.terminal.sessionInterruptFailed'));
+      toast.error(userErrorMessage(error, {
+        summary: t('tools.terminal.sessionInterruptFailed'),
+        recovery: t('error.retryConnection'),
+      }));
     }
   }
 
@@ -522,7 +538,10 @@ export function TerminalToolSettings({
       }
     } catch (error) {
       installWatchRef.current = null;
-      toast.error(error instanceof Error ? error.message : t('tools.terminal.runtimeInstallFailed'));
+      toast.error(userErrorMessage(error, {
+        summary: t('tools.terminal.runtimeInstallFailed'),
+        recovery: t('error.retryConnection'),
+      }));
       try {
         setRuntime(await readEnvironmentRuntime());
       } catch {
@@ -538,7 +557,10 @@ export function TerminalToolSettings({
     try {
       setRuntime(await refreshEnvironmentComponent(component));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('tools.terminal.runtimeRefreshFailed'));
+      toast.error(userErrorMessage(error, {
+        summary: t('tools.terminal.runtimeRefreshFailed'),
+        recovery: t('error.retryConnection'),
+      }));
     } finally {
       setRefreshingRuntimeComponent(null);
     }
@@ -650,7 +672,10 @@ export function TerminalToolSettings({
       const selection = await pickDirectory(initialDirectory);
       if (selection.path) setRootInput(selection.path);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('tools.terminal.browseFailed'));
+      toast.error(userErrorMessage(error, {
+        summary: t('tools.terminal.browseFailed'),
+        recovery: t('error.retryConnection'),
+      }));
     } finally {
       setIsPickingRoot(false);
     }

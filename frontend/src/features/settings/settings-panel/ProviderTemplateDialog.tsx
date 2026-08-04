@@ -91,6 +91,7 @@ export function ProviderTemplateDialog({ open, onClose, onSelect }: ProviderTemp
           value={search}
           onChange={setSearch}
           placeholder={t('provider.template.searchPlaceholder')}
+          label={t('provider.template.searchPlaceholder')}
         />
       </div>
       {filteredProviderTemplates.length > 0 ? (

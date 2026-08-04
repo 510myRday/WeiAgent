@@ -24,6 +24,7 @@ import {
 import type { Agent, IpProxy } from '../../types';
 import { useI18n } from '../../i18n';
 import { useBeforeUnloadGuard } from '../../hooks';
+import { userErrorMessage } from '../../utils/userError';
 import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../components/ui';
 import {
   AUTO_SAVE_DELAY_MS,
@@ -155,16 +156,6 @@ export function WebSearchToolSettings({
   }, [t, toast]);
 
   useEffect(() => {
-    if (scope !== 'defaults' || !hasLoadedIpProxies || !config) return;
-    const validProxyUrls = new Set(ipProxies.map((proxy) => proxy.url));
-    config.web_search.sources.forEach((source, index) => {
-      if (source.proxy_url && !validProxyUrls.has(source.proxy_url)) {
-        updateSource(index, { proxy_url: null });
-      }
-    });
-  }, [config, hasLoadedIpProxies, ipProxies, scope]);
-
-  useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
     setConfigLoadError('');
@@ -279,7 +270,10 @@ export function WebSearchToolSettings({
       if (isMountedRef.current && activeContextRef.current === nextSave.contextKey) {
         setAutoSaveStatus('error');
         if (attempt === 1) {
-          toast.error(error instanceof Error ? error.message : t('tools.webSearch.saveFailed'));
+          toast.error(userErrorMessage(error, {
+            summary: t('tools.webSearch.saveFailed'),
+            recovery: t('error.retryConnection'),
+          }));
         }
       }
     } finally {
@@ -355,19 +349,19 @@ export function WebSearchToolSettings({
     void flushSaveQueue();
   }
 
-  function updateGlobalConfig(next: AgentToolsConfig) {
+  const updateGlobalConfig = useCallback((next: AgentToolsConfig) => {
     setDefaults(withWebSearch(next));
-  }
+  }, []);
 
-  function updateOverrides(next: AgentToolsOverrides) {
+  const updateOverrides = useCallback((next: AgentToolsOverrides) => {
     setAgentSettings((current) => (current ? {
       ...current,
       overrides: next,
       effective: mergeToolsConfig(current.defaults, next),
     } : current));
-  }
+  }, []);
 
-  function updateWebSearch(patch: Partial<WebSearchToolConfig>) {
+  const updateWebSearch = useCallback((patch: Partial<WebSearchToolConfig>) => {
     if (!config) return;
     if (scope === 'defaults') {
       updateGlobalConfig({ ...config, web_search: { ...config.web_search, ...patch } });
@@ -378,7 +372,7 @@ export function WebSearchToolSettings({
     if (patch.enabled !== undefined) nextWebSearch.enabled = patch.enabled;
     if (patch.max_results !== undefined) nextWebSearch.max_results = patch.max_results;
     updateOverrides({ ...overrides, web_search: nextWebSearch });
-  }
+  }, [config, overrides, scope, updateGlobalConfig, updateOverrides]);
 
   function updateExtraction(patch: Partial<WebSearchToolConfig['extraction']>) {
     updateWebSearch({
@@ -413,11 +407,21 @@ export function WebSearchToolSettings({
     updateOverrides(next);
   }
 
-  function updateSource(index: number, patch: Partial<WebSearchSourceConfig>) {
+  const updateSource = useCallback((index: number, patch: Partial<WebSearchSourceConfig>) => {
     if (!config || scope !== 'defaults') return;
     const sources = config.web_search.sources.map((source, i) => (i === index ? { ...source, ...patch } : source));
     updateWebSearch({ sources });
-  }
+  }, [config, scope, updateWebSearch]);
+
+  useEffect(() => {
+    if (scope !== 'defaults' || !hasLoadedIpProxies || !config) return;
+    const validProxyUrls = new Set(ipProxies.map((proxy) => proxy.url));
+    config.web_search.sources.forEach((source, index) => {
+      if (source.proxy_url && !validProxyUrls.has(source.proxy_url)) {
+        updateSource(index, { proxy_url: null });
+      }
+    });
+  }, [config, hasLoadedIpProxies, ipProxies, scope, updateSource]);
 
   function openProxyPicker(sourceIndex: number, field: ProxyPickerField) {
     setProxyPicker({ sourceIndex, field });
@@ -504,7 +508,10 @@ export function WebSearchToolSettings({
       }
       setAddKeySourceId((current) => current === sourceId ? null : current);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('tools.webSearch.saveFailed'));
+      toast.error(userErrorMessage(error, {
+        summary: t('tools.webSearch.saveFailed'),
+        recovery: t('error.retryConnection'),
+      }));
     } finally {
       dispatchKeys({ type: 'setFlag', map: 'importingKeys', sourceId, value: false });
     }
@@ -543,7 +550,10 @@ export function WebSearchToolSettings({
       });
       updateWebSearch({ sources });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('tools.webSearch.saveFailed'));
+      toast.error(userErrorMessage(error, {
+        summary: t('tools.webSearch.saveFailed'),
+        recovery: t('error.retryConnection'),
+      }));
     } finally {
       dispatchKeys({ type: 'setFlag', map: 'deletingKeys', sourceId, value: false });
     }
@@ -596,7 +606,10 @@ export function WebSearchToolSettings({
         deletedCount += 1;
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('tools.webSearch.saveFailed'));
+      toast.error(userErrorMessage(error, {
+        summary: t('tools.webSearch.saveFailed'),
+        recovery: t('error.retryConnection'),
+      }));
     } finally {
       if (deletedCount > 0) {
         const sources = config.web_search.sources.map((item) => (

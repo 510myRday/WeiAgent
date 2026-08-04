@@ -47,6 +47,7 @@ import { PanelShell } from '../../components/layout';
 import { AvatarBadge } from '../../components/AvatarPicker';
 import { formatLlmResponse, formatRawJson } from '../settings/llmLogFormatting';
 import { agentDisplayName } from '../../components/AgentListItem';
+import { userErrorMessage } from '../../utils/userError';
 
 interface MonitorPanelProps {
   agents: Agent[];
@@ -474,7 +475,10 @@ export function MonitorPanel({
       const maxPage = Math.max(1, Math.ceil(pageData.total / pageSize) || 1);
       if (page > maxPage) setPage(maxPage);
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      toast.error(userErrorMessage(cause, {
+        summary: t('llmLogs.loadFailed'),
+        recovery: t('error.retryConnection'),
+      }));
     } finally {
       setIsLoading(false);
     }
@@ -483,6 +487,27 @@ export function MonitorPanel({
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  const handleViewPayload = useCallback(async (logId: string, hasPayload: boolean) => {
+    if (!hasPayload) return;
+    setIsDetailLoading(true);
+    try {
+      const detail = await getLlmLog(logId);
+      if (!detail.raw_request && !detail.raw_response && !detail.error) {
+        toast.error(t('llmLogs.payloadUnavailable'));
+        return;
+      }
+      setSelectedLog(detail);
+      setActiveTab('request');
+    } catch (cause) {
+      toast.error(userErrorMessage(cause, {
+        summary: t('llmLogs.payloadLoadFailed'),
+        recovery: t('error.retryConnection'),
+      }));
+    } finally {
+      setIsDetailLoading(false);
+    }
+  }, [t, toast]);
 
   useEffect(() => {
     if (!pendingDetailNavigation || !selectedLog || isLoading || page !== pendingDetailNavigation.page) return;
@@ -541,27 +566,12 @@ export function MonitorPanel({
     try {
       await onSettingsSave({ ...settings, llm_log_enabled: enabled });
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
+      toast.error(userErrorMessage(cause, {
+        summary: t('llmLogs.saveLoggingFailed'),
+        recovery: t('error.retryConnection'),
+      }));
     } finally {
       setIsSavingToggle(false);
-    }
-  }
-
-  async function handleViewPayload(logId: string, hasPayload: boolean) {
-    if (!hasPayload) return;
-    setIsDetailLoading(true);
-    try {
-      const detail = await getLlmLog(logId);
-      if (!detail.raw_request && !detail.raw_response && !detail.error) {
-        toast.error(t('llmLogs.payloadUnavailable'));
-        return;
-      }
-      setSelectedLog(detail);
-      setActiveTab('request');
-    } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : t('error.unknown'));
-    } finally {
-      setIsDetailLoading(false);
     }
   }
 
@@ -753,23 +763,23 @@ export function MonitorPanel({
               {modelOptions.map((option) => {
                 const active = scope.kind === 'model' && scope.modelKey === option.modelKey;
                 return (
-                  <button
-                    key={option.modelKey}
-                    type="button"
-                    role="listitem"
-                    className={`monitor-model-scope-card${active ? ' is-active' : ''}`}
-                    title={`${option.providerName} · ${option.modelId}`}
-                    aria-pressed={active}
-                    onClick={() => selectModel(option)}
-                  >
-                    <span className="monitor-model-scope-card-top">
-                      <span className="monitor-model-scope-provider">{option.providerName}</span>
-                      <span className="monitor-model-scope-count">
-                        {t('llmLogs.requestCount', { count: option.requestCount })}
+                  <div key={option.modelKey} className="monitor-model-scope-item" role="listitem">
+                    <button
+                      type="button"
+                      className={`monitor-model-scope-card${active ? ' is-active' : ''}`}
+                      title={`${option.providerName} · ${option.modelId}`}
+                      aria-pressed={active}
+                      onClick={() => selectModel(option)}
+                    >
+                      <span className="monitor-model-scope-card-top">
+                        <span className="monitor-model-scope-provider">{option.providerName}</span>
+                        <span className="monitor-model-scope-count">
+                          {t('llmLogs.requestCount', { count: option.requestCount })}
+                        </span>
                       </span>
-                    </span>
-                    <span className="monitor-model-scope-model mono">{option.modelId}</span>
-                  </button>
+                      <span className="monitor-model-scope-model mono">{option.modelId}</span>
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -825,10 +835,13 @@ export function MonitorPanel({
               </div>
               <div className="monitor-controls-footer">
                 <label
+                  htmlFor="monitor-payload-logging"
+                  aria-label={t('llmLogs.enableLogging')}
                   className={`monitor-payload-switch${settings.llm_log_enabled ? ' is-on' : ''}`}
                   title={t('llmLogs.enableLoggingHint')}
                 >
                   <input
+                    id="monitor-payload-logging"
                     type="checkbox"
                     checked={settings.llm_log_enabled}
                     disabled={isSavingToggle}
@@ -995,9 +1008,9 @@ export function MonitorPanel({
           </div>
         </section>
 
-        <div className="monitor-table-wrap form-card">
+        <div className="monitor-table-wrap form-card" aria-busy={isLoading}>
           {isLoading ? (
-            <div className="monitor-empty">
+            <div className="monitor-empty" role="status" aria-live="polite">
               <p className="muted">{t('sidebar.loading')}</p>
             </div>
           ) : logs.length === 0 ? (

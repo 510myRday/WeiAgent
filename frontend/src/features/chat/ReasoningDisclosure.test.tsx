@@ -25,7 +25,7 @@ test('completed reasoning is collapsed by default and can be expanded', async ()
 
   await user.click(toggle);
   expect(toggle).toHaveAttribute('aria-expanded', 'true');
-  expect(screen.getByText('先检查约束，再组织最终答案。')).toBeVisible();
+  expect(await screen.findByText('先检查约束，再组织最终答案。')).toBeVisible();
 });
 
 test('streaming reasoning starts expanded', () => {
@@ -52,7 +52,8 @@ test('reasoning code blocks use the shared markdown styling scope', async () => 
 
   const reasoningContent = container.querySelector('.message-reasoning__content');
   expect(reasoningContent).toHaveClass('message-markdown');
+  await screen.findByText('13. 请问 百度百科是什么意思');
   expect(reasoningContent?.querySelector('pre')).toHaveTextContent('13. 请问 百度百科是什么意思');
-  expect(screen.getByText('Text')).toBeVisible();
-  expect(screen.getByRole('button', { name: '复制代码' })).toBeEnabled();
+  expect(await screen.findByText('Text')).toBeVisible();
+  expect(await screen.findByRole('button', { name: '复制代码' })).toBeEnabled();
 });

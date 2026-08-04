@@ -121,6 +121,22 @@
   flex-basis: 176px;
 }
 
+.chat-agent-settings-button {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  flex: 0 0 32px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+}
+
+.chat-agent-settings-button:hover,
+.chat-agent-settings-button:focus-visible {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-soft);
+  color: var(--color-primary-strong);
+}
+
 .chat-agent-select option,
 .chat-model-select option {
   text-align: center;
@@ -977,15 +993,15 @@
 }
 
 .message-tool__action--reject {
-  color: var(--color-danger, #d14343);
+  color: var(--color-danger);
 }
 
 .message-tool__action--stop {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  border-color: var(--color-danger, #d14343);
-  color: var(--color-danger, #d14343);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
 }
 
 .message-tool__action:disabled {
@@ -1013,7 +1029,7 @@
 }
 
 .message-tool.is-error .message-tool__title {
-  color: var(--color-danger, #d14343);
+  color: var(--color-danger);
 }
 
 .message-tool__content {
@@ -1063,7 +1079,7 @@
 
 .message-tool__icon--error,
 .message-tool.is-error .message-tool__icon {
-  color: var(--color-danger, #d14343);
+  color: var(--color-danger);
 }
 
 .message-tool.is-done .message-tool__title {
@@ -1651,7 +1667,7 @@
   padding: 10px 12px;
   border-radius: 10px;
   background: rgba(28, 28, 30, 0.94);
-  color: #f5f5f7;
+  color: var(--color-on-primary);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
   font-size: 12px;
   line-height: 1.45;
@@ -1859,6 +1875,17 @@
   font-size: var(--font-size-ui);
 }
 
+.empty-state-no-agent-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.empty-state-no-agent-hint svg {
+  flex: 0 0 auto;
+  color: var(--color-primary);
+}
+
 .empty-state-action {
   display: flex;
   justify-content: center;
@@ -1892,8 +1919,8 @@
   width: 22px;
   height: 22px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-warning, #f59e0b) 16%, transparent);
-  color: var(--color-warning, #d97706);
+  background: color-mix(in srgb, var(--status-warning-text) 16%, transparent);
+  color: var(--status-warning-text);
 }
 
 .message-retry-spinner svg {
@@ -1916,7 +1943,14 @@
 
 .message-retry-hint {
   font-size: 12px;
-  color: var(--text-muted, #6b7280);
+  color: var(--color-muted);
+  line-height: 1.35;
+}
+
+.message-retry-reason {
+  overflow-wrap: anywhere;
+  color: var(--color-muted);
+  font-size: 11px;
   line-height: 1.35;
 }
 
@@ -1924,9 +1958,9 @@
   flex-shrink: 0;
   padding: 2px 8px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--color-warning, #f59e0b) 35%, var(--border-strong));
-  background: color-mix(in srgb, var(--color-warning, #f59e0b) 12%, var(--surface-elevated, #fff));
-  color: var(--color-warning, #b45309);
+  border: 1px solid color-mix(in srgb, var(--status-warning-text) 35%, var(--border-strong));
+  background: color-mix(in srgb, var(--status-warning-text) 12%, var(--surface-elevated));
+  color: var(--status-warning-text);
   font-size: 11px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
