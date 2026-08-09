@@ -1,0 +1,1 @@
+后端代码test和check用`scripts/dev-test.ps1`即可，不要用cargo test和cargo check

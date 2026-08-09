@@ -1219,6 +1219,7 @@ mod tests {
             },
             total_tokens: 95_000,
             cost_usd: None,
+            image_count: None,
             provider_id: Uuid::new_v4(),
             model_id: "test".to_string(),
         });

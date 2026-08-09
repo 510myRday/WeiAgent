@@ -7,6 +7,8 @@ pub struct ImageAttachment {
     pub id: String,
     pub name: String,
     pub media_type: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_mask: bool,
     #[serde(flatten)]
     pub source: ImageSource,
 }
@@ -17,6 +19,10 @@ pub enum ImageSource {
     Base64 { data: String },
     Url { url: String },
     Local { path: String },
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -84,6 +90,8 @@ pub struct ModelUsage {
     pub tokens: TokenUsage,
     pub total_tokens: u64,
     pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_count: Option<u32>,
     pub provider_id: Uuid,
     pub model_id: String,
 }
@@ -94,6 +102,8 @@ pub struct ConversationUsage {
     pub tokens: TokenUsage,
     pub total_tokens: u64,
     pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

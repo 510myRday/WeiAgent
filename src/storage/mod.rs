@@ -100,7 +100,7 @@ mod tests {
                 .filter(|source| source.enabled)
                 .map(|source| source.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["jina"]
+            vec!["jina", "firecrawl"]
         );
         let conn = db::open_data_dir(temp_dir.path()).unwrap();
         let default_rows: i64 = conn
@@ -118,7 +118,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(migration_versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(migration_versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         assert_eq!(
             tool_table_names(&conn),
             vec![
@@ -694,6 +694,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleting_provider_clears_agent_model_selection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
+        let provider = store
+            .create_model_provider(provider_request("OpenAI", "gpt-4o-mini"))
+            .await
+            .unwrap();
+        let agent = store
+            .create_agent(CreateAgentRequest {
+                name: "Planner".to_string(),
+                description: "Plans the work.".to_string(),
+                model_provider_id: provider.id,
+                model_id: "gpt-4o-mini".to_string(),
+                avatar_icon: Some("sparkles".to_string()),
+                avatar_color: Some("#3b82f6".to_string()),
+            })
+            .await
+            .unwrap();
+
+        store.delete_model_provider(provider.id).await.unwrap();
+
+        let updated_agent = store.get_agent(agent.id).await.unwrap();
+        assert_eq!(updated_agent.model_provider_id, Uuid::nil());
+        assert!(updated_agent.model_id.is_empty());
+        assert!(store.list_model_providers().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn validates_agent_provider_and_stores_conversations() {
         let temp_dir = tempfile::tempdir().unwrap();
         let store = Store::new(temp_dir.path()).await.unwrap();
@@ -1040,6 +1068,7 @@ mod tests {
                     id: "generated".to_string(),
                     name: "generated.png".to_string(),
                     media_type: "image/png".to_string(),
+                    is_mask: false,
                     source: ImageSource::Local {
                         path: generated_path.to_string_lossy().into_owned(),
                     },
@@ -1048,6 +1077,7 @@ mod tests {
                     id: "retained".to_string(),
                     name: "retained.png".to_string(),
                     media_type: "image/png".to_string(),
+                    is_mask: false,
                     source: ImageSource::Local {
                         path: retained_path.to_string_lossy().into_owned(),
                     },
@@ -1070,6 +1100,64 @@ mod tests {
 
         assert!(!generated_path.exists());
         assert!(retained_path.exists());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_conversation_removes_generated_images() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
+        let agent = store
+            .list_agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.is_builtin)
+            .unwrap();
+        let conversation = store
+            .create_conversation(agent.id, CreateConversationRequest { title: None })
+            .await
+            .unwrap();
+        let generated_dir = store
+            .attachments_dir
+            .join("generated")
+            .join(conversation.id.to_string());
+        tokio::fs::create_dir_all(&generated_dir).await.unwrap();
+        let generated_path = generated_dir.join("generated.png");
+        tokio::fs::write(&generated_path, b"generated")
+            .await
+            .unwrap();
+        let message = ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: agent.id,
+            conversation_id: conversation.id,
+            role: ChatRole::Assistant,
+            content: String::new(),
+            reasoning_content: None,
+            openai_response_items: Vec::new(),
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: vec![ImageAttachment {
+                id: "generated".to_string(),
+                name: "generated.png".to_string(),
+                media_type: "image/png".to_string(),
+                is_mask: false,
+                source: ImageSource::Local {
+                    path: generated_path.to_string_lossy().into_owned(),
+                },
+            }],
+            usage: None,
+        };
+        store
+            .append_conversation_messages(conversation.id, &[message])
+            .await
+            .unwrap();
+
+        store.delete_conversation(conversation.id).await.unwrap();
+
+        assert!(!generated_path.exists());
+        assert!(!generated_dir.exists());
     }
 
     #[tokio::test]

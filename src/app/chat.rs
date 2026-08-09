@@ -400,6 +400,7 @@ mod tests {
             id: "generated-image".to_string(),
             name: "generated.png".to_string(),
             media_type: "image/png".to_string(),
+            is_mask: false,
             source,
         }
     }

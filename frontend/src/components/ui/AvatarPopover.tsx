@@ -1,8 +1,9 @@
-import { cloneElement, useEffect, useId, useRef, useState } from 'react';
+import { cloneElement, useId, useState } from 'react';
 import type { MouseEventHandler, ReactElement } from 'react';
 
 import type { AvatarIcon } from '../../types';
 import { AvatarPicker } from '../AvatarPicker';
+import { useDismissiblePopover } from './useDismissiblePopover';
 
 export function AvatarPopover({
   icon,
@@ -22,7 +23,7 @@ export function AvatarPopover({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const popoverRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useDismissiblePopover<HTMLDivElement>(open, () => setOpen(false));
   const panelId = useId();
   const triggerElement = trigger(open);
   const clickableTrigger = triggerElement as ReactElement<{
@@ -43,22 +44,6 @@ export function AvatarPopover({
       },
     },
   );
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!popoverRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('pointerdown', handlePointerDown, true);
-    window.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown, true);
-      window.removeEventListener('keydown', handleEscape);
-    };
-  }, [open]);
 
   return (
     <div ref={popoverRef} className={['avatar-popover', className].filter(Boolean).join(' ')}>

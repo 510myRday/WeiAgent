@@ -216,6 +216,7 @@ mod tests {
                 id: "image-1".to_string(),
                 name: "sample.png".to_string(),
                 media_type: "image/png".to_string(),
+                is_mask: false,
                 source: crate::domain::ImageSource::Base64 {
                     data: "aGVsbG8=".to_string(),
                 },

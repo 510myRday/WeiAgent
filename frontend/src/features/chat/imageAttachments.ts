@@ -3,6 +3,7 @@ import { apiAuthorizationToken } from '../../apiAuth';
 
 export const MAX_IMAGE_COUNT = 8;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+export const MAX_IMAGE_TOTAL_BYTES = 32 * 1024 * 1024;
 
 const IMAGE_TYPES = new Set<ImageAttachment['media_type']>([
   'image/png',
@@ -48,7 +49,42 @@ export function attachmentImageUrl(attachment: ImageAttachment): string {
     const tokenQuery = token ? `&token=${encodeURIComponent(token)}` : '';
     return `/api/assets/image?path=${encodeURIComponent(attachment.path)}${tokenQuery}`;
   }
-  return attachment.url;
+  try {
+    const parsed = new URL(attachment.url, window.location.origin);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    return parsed.href;
+  } catch {
+    return '';
+  }
+}
+
+export function attachmentByteLength(attachment: ImageAttachment): number {
+  if (attachment.source_type !== 'base64') return 0;
+  const padding = attachment.data.endsWith('==') ? 2 : attachment.data.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((attachment.data.length * 3) / 4) - padding);
+}
+
+export function attachmentTotalBytes(attachments: ImageAttachment[]): number {
+  return attachments.reduce((total, attachment) => total + attachmentByteLength(attachment), 0);
+}
+
+export function toggleAttachmentMask(
+  attachments: ImageAttachment[],
+  attachmentId: string,
+): ImageAttachment[] {
+  return attachments.map((attachment) => ({
+    ...attachment,
+    is_mask: attachment.id === attachmentId ? !attachment.is_mask : false,
+  }));
+}
+
+export function removeAttachment(
+  attachments: ImageAttachment[],
+  attachmentId: string,
+): ImageAttachment[] {
+  const remaining = attachments.filter((attachment) => attachment.id !== attachmentId);
+  if (remaining.some((attachment) => !attachment.is_mask)) return remaining;
+  return remaining.map((attachment) => ({ ...attachment, is_mask: false }));
 }
 
 export function createAttachmentId(): string {

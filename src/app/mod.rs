@@ -1021,8 +1021,8 @@ mod tests {
         assert!(second_text.contains("event: done"));
     }
     #[tokio::test]
-    async fn permission_mode_switch_hot_reloads_during_active_run() {
-        let command = "echo hot-reload-permission";
+    async fn permission_mode_switch_does_not_change_active_run() {
+        let command = "echo frozen-permission";
         let outputs = vec![
             ChatCompletionOutput {
                 content: String::new(),
@@ -1030,7 +1030,7 @@ mod tests {
                 openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
-                    "call-hot-reload-1",
+                    "call-frozen-1",
                     "execute_terminal",
                     json!({
                         "command": command,
@@ -1045,7 +1045,7 @@ mod tests {
                 openai_response_items: Vec::new(),
                 usage: Default::default(),
                 tool_calls: vec![scripted_tool_call(
-                    "call-hot-reload-2",
+                    "call-frozen-2",
                     "execute_terminal",
                     json!({
                         "command": command,
@@ -1055,7 +1055,7 @@ mod tests {
                 )],
             },
             ChatCompletionOutput {
-                content: "hot reload applied".to_string(),
+                content: "frozen config applied".to_string(),
                 reasoning_content: String::new(),
                 openai_response_items: Vec::new(),
                 usage: Default::default(),
@@ -1081,7 +1081,7 @@ mod tests {
         let run_response = post_message_run(
             &app,
             conversation_id,
-            json!({"content": "hot reload", "stream": false}),
+            json!({"content": "frozen config", "stream": false}),
         )
         .await;
         let run_id = started_run_id(run_response).await;
@@ -1102,17 +1102,44 @@ mod tests {
             .await
             .unwrap();
 
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        assert_eq!(state.approval_manager.pending_count(), 1);
+        let approval_id = state.approval_manager.resolve_for_test_id().unwrap();
+        assert!(matches!(
+            state.approval_manager.resolve(
+                &approval_id,
+                agent_id,
+                crate::domain::ApprovalDecision::Approve,
+            ),
+            crate::tools::approval::ApprovalResolution::Resolved(_)
+        ));
+
+        for _ in 0..3000 {
+            if state.approval_manager.pending_count() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(state.approval_manager.pending_count(), 1);
+        let approval_id = state.approval_manager.resolve_for_test_id().unwrap();
+        assert!(matches!(
+            state.approval_manager.resolve(
+                &approval_id,
+                agent_id,
+                crate::domain::ApprovalDecision::Approve,
+            ),
+            crate::tools::approval::ApprovalResolution::Resolved(_)
+        ));
+
         assert_eq!(wait_run_terminal(&app, &run_id).await, "completed");
         let text = run_events_text(&app, &run_id).await;
         assert!(text.contains("event: approval_required"));
         assert!(text.contains("event: done"));
-        assert!(text.contains("hot reload applied"));
-        // The in-flight approval should auto-clear once FullAccess is saved,
-        // and the second tool call in the same run must not request approval again.
+        assert!(text.contains("frozen config applied"));
         assert_eq!(
             text.matches("event: approval_required").count(),
-            1,
-            "expected only the first tool call to request approval: {text}"
+            2,
+            "expected both tool calls to use the original approval mode: {text}"
         );
         assert_eq!(state.approval_manager.pending_count(), 0);
     }

@@ -1155,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_defaults_route_search_to_anonymous_jina() {
+    fn fresh_defaults_route_search_to_anonymous_sources() {
         let config = WebSearchToolConfig::default();
         let selected = select_sources(&config, &args("rust"), &SearchMode::Fast).unwrap();
         assert_eq!(
@@ -1163,9 +1163,10 @@ mod tests {
                 .iter()
                 .map(|source| source.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["jina"]
+            vec!["jina", "firecrawl"]
         );
         assert!(selected[0].api_keys.is_empty());
+        assert!(selected[1].api_keys.is_empty());
     }
 
     #[test]

@@ -27,7 +27,7 @@ use crate::{
 
 // Migration versions share one application-wide namespace with conversations
 // and provider migrations, so task planning must use the next free version.
-const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 9;
+const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 10;
 
 const TOOL_SETTINGS_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS tool_settings (
@@ -630,6 +630,40 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
             params!["tool_settings_task_planning_v8", Utc::now().to_rfc3339()],
         )?;
     }
+    let task_planning_v9_applied = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM app_schema_migrations WHERE version = 9
+        )",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !task_planning_v9_applied {
+        conn.execute(
+            "INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (9, ?1, ?2)",
+            params!["tool_settings_task_planning_v9", Utc::now().to_rfc3339()],
+        )?;
+    }
+    let firecrawl_anonymous_v10_applied = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM app_schema_migrations WHERE version = 10
+        )",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !firecrawl_anonymous_v10_applied {
+        conn.execute(
+            "UPDATE tool_web_search_sources
+             SET enabled = 1
+             WHERE source_id = 'firecrawl'
+               AND enabled = 0
+               AND NOT EXISTS (
+                   SELECT 1 FROM tool_web_search_api_keys
+                   WHERE source_id = 'firecrawl'
+               )",
+            [],
+        )?;
+    }
     if applied {
         return Ok(());
     }
@@ -638,7 +672,7 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
          VALUES (?1, ?2, ?3)",
         params![
             TOOL_SETTINGS_SCHEMA_VERSION,
-            "tool_settings_task_planning_v9",
+            "tool_settings_firecrawl_anonymous_v10",
             Utc::now().to_rfc3339()
         ],
     )?;

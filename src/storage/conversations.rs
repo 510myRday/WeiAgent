@@ -108,9 +108,13 @@ impl Store {
     }
 
     pub async fn delete_conversation(&self, id: Uuid) -> AppResult<()> {
-        self.database
+        let removed = self
+            .database
             .call(move |conn| conversation_db::delete_conversation_conn(conn, id))
-            .await
+            .await?;
+        self.cleanup_removed_generated_attachments(id, &removed)
+            .await;
+        Ok(())
     }
 
     pub async fn read_conversation_messages(
@@ -173,7 +177,7 @@ impl Store {
         Ok(())
     }
 
-    async fn cleanup_removed_generated_attachments(
+    pub(crate) async fn cleanup_removed_generated_attachments(
         &self,
         conversation_id: Uuid,
         removed_messages: &[ChatMessage],
@@ -207,6 +211,7 @@ impl Store {
                         _ => None,
                     })
                     .collect(),
+                Err(AppError::NotFound) => HashSet::new(),
                 Err(error) => {
                     tracing::warn!(
                         conversation_id = %conversation_id,
@@ -256,6 +261,17 @@ impl Store {
                     "failed to remove generated image after conversation restart"
                 );
             }
+        }
+        if let Err(error) = fs::remove_dir(&generated_dir).await
+            && error.kind() != std::io::ErrorKind::DirectoryNotEmpty
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                path = %generated_dir.display(),
+                error = %error,
+                "failed to remove empty generated image directory"
+            );
         }
     }
 

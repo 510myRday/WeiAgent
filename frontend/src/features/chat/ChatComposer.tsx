@@ -11,7 +11,9 @@ import {
   Brain,
   Check,
   Image as ImageIcon,
+  LoaderCircle,
   Paperclip,
+  Scan,
   Send,
   Square,
   X,
@@ -21,15 +23,24 @@ import type {
   ConversationUsage,
   GenerationMode,
   ImageAttachment,
+  ImageModelConfig,
   ThinkingLevel,
 } from '../../types';
-import { Button } from '../../components/ui';
+import { ImageSizeControl } from '../../components/ImageSizeControl';
+import { Button, useDismissiblePopover } from '../../components/ui';
 import { useI18n } from '../../i18n';
 import { readChatDraft, writeChatDraft } from './chatDrafts';
-import { attachmentImageUrl } from './imageAttachments';
+import {
+  attachmentImageUrl,
+  removeAttachment,
+  toggleAttachmentMask,
+} from './imageAttachments';
 import { useImageAttachments } from './useImageAttachments';
 
 const THINKING_LEVELS: ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'x_high'];
+const IMAGE_QUALITY_OPTIONS = ['auto', 'low', 'medium', 'high', 'standard', 'hd'];
+
+type ComposerImageOptions = Pick<ImageModelConfig, 'size' | 'quality' | 'n'>;
 
 interface ChatComposerProps {
   disabled: boolean;
@@ -39,22 +50,23 @@ interface ChatComposerProps {
   isSavingModel: boolean;
   isModelSavePending: boolean;
   draftKey: string;
-  isStreamMode: boolean;
   supportsImages: boolean;
   supportsImageGeneration: boolean;
   generationMode: GenerationMode;
+  imageOptions: ComposerImageOptions;
+  imageSizeControlKey?: string;
+  isSavingImageOptions: boolean;
   supportsThinking: boolean;
   thinkingLevel: ThinkingLevel;
   usage: ConversationUsage;
   /** Model context window size in tokens. */
   contextSize: number;
-  onStreamModeChange: (isStreamMode: boolean) => void;
   onGenerationModeChange: (mode: GenerationMode) => void;
+  onImageOptionsChange: (patch: Partial<ComposerImageOptions>) => void;
   onThinkingLevelChange: (level: ThinkingLevel) => void;
   onUnsupportedImage: () => void;
   onSend: (
     content: string,
-    isStreamMode: boolean,
     attachments: ImageAttachment[],
     generationMode: GenerationMode,
   ) => void;
@@ -69,16 +81,18 @@ export const ChatComposer = memo(function ChatComposer({
   isSavingModel,
   isModelSavePending,
   draftKey,
-  isStreamMode,
   supportsImages,
   supportsImageGeneration,
   generationMode,
+  imageOptions,
+  imageSizeControlKey,
+  isSavingImageOptions,
   supportsThinking,
   thinkingLevel,
   usage,
   contextSize,
-  onStreamModeChange,
   onGenerationModeChange,
+  onImageOptionsChange,
   onThinkingLevelChange,
   onUnsupportedImage,
   onSend,
@@ -90,7 +104,7 @@ export const ChatComposer = memo(function ChatComposer({
   const formRef = useRef<HTMLFormElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const thinkingRef = useRef<HTMLDivElement>(null);
+  const thinkingRef = useDismissiblePopover<HTMLDivElement>(thinkingOpen, () => setThinkingOpen(false));
   const {
     attachments,
     setAttachments,
@@ -126,15 +140,6 @@ export const ChatComposer = memo(function ChatComposer({
     return () => window.clearTimeout(timer);
   }, [draft, draftKey]);
 
-  useEffect(() => {
-    if (!thinkingOpen) return;
-    const close = (event: MouseEvent) => {
-      if (!thinkingRef.current?.contains(event.target as Node)) setThinkingOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [thinkingOpen]);
-
   useLayoutEffect(() => {
     const input = inputRef.current;
     if (!input) return;
@@ -151,7 +156,7 @@ export const ChatComposer = memo(function ChatComposer({
     setDraft('');
     setAttachments([]);
     writeChatDraft(draftKey, '');
-    onSend(content, isStreamMode, submittedAttachments, generationMode);
+    onSend(content, submittedAttachments, generationMode);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -162,7 +167,6 @@ export const ChatComposer = memo(function ChatComposer({
   }
 
   const canSend = Boolean(draft.trim() || attachments.length > 0);
-
   return (
     <form className="composer" ref={formRef} onSubmit={handleSubmit}>
       <div
@@ -175,12 +179,34 @@ export const ChatComposer = memo(function ChatComposer({
         {attachments.length > 0 ? (
           <div className="composer-image-strip">
             {attachments.map((attachment) => (
-              <div className="composer-image-preview" key={attachment.id}>
-                <img src={attachmentImageUrl(attachment)} alt={attachment.name} />
+              <div
+                className={`composer-image-preview${attachment.is_mask ? ' is-mask' : ''}`}
+                key={attachment.id}
+              >
+                <img src={attachmentImageUrl(attachment)} alt={attachment.name} referrerPolicy="no-referrer" />
+                {generationMode === 'image' && attachment.media_type === 'image/png' ? (
+                  <button
+                    type="button"
+                    className={`composer-image-mask-button${attachment.is_mask ? ' is-active' : ''}`}
+                    onClick={() => setAttachments((current) => (
+                      toggleAttachmentMask(current, attachment.id)
+                    ))}
+                    disabled={
+                      !attachment.is_mask
+                      && !attachments.some((item) => item.id !== attachment.id && !item.is_mask)
+                    }
+                    aria-pressed={Boolean(attachment.is_mask)}
+                    aria-label={t(attachment.is_mask ? 'chat.maskImage' : 'chat.markAsMask')}
+                    title={t(attachment.is_mask ? 'chat.maskImage' : 'chat.markAsMask')}
+                  >
+                    <Scan size={13} />
+                  </button>
+                ) : null}
                 <button
                   type="button"
+                  className="composer-image-remove-button"
                   onClick={() => setAttachments((current) => (
-                    current.filter((item) => item.id !== attachment.id)
+                    removeAttachment(current, attachment.id)
                   ))}
                   aria-label={t('chat.removeImage')}
                   title={t('chat.removeImage')}
@@ -203,7 +229,8 @@ export const ChatComposer = memo(function ChatComposer({
           rows={1}
         />
         <div className="composer-toolbar">
-          <div className="composer-controls">
+          <div className="composer-toolbar-main">
+            <div className="composer-controls">
             <input
               ref={fileInputRef}
               className="composer-file-input"
@@ -279,20 +306,61 @@ export const ChatComposer = memo(function ChatComposer({
                 ) : null}
               </div>
             ) : null}
-            <button
-              type="button"
-              className={`stream-switch${isStreamMode ? ' is-active' : ''}`}
-              role="switch"
-              aria-checked={isStreamMode}
-              aria-label={t('chat.stream')}
-              disabled={disabled || isSending || supportsImageGeneration}
-              onClick={() => onStreamModeChange(!isStreamMode)}
-            >
-              <span className="stream-switch-track" aria-hidden="true"><span /></span>
-              <span>{t('chat.stream')}</span>
-            </button>
-          </div>
-          <div className="composer-actions">
+            {supportsImageGeneration ? (
+              <div className="composer-image-options" aria-label={t('chat.imageSettings')}>
+                <label className="composer-image-option composer-image-option--size">
+                  <span>{t('provider.imageSize')}</span>
+                  <ImageSizeControl
+                    value={imageOptions.size}
+                    resetKey={imageSizeControlKey}
+                    selectAriaLabel={t('provider.imageSize')}
+                    onChange={(size) => onImageOptionsChange({ size })}
+                    disabled={disabled || isSending || isSavingImageOptions}
+                  />
+                </label>
+                <label className="composer-image-option">
+                  <span>{t('provider.imageQuality')}</span>
+                  <select
+                    value={imageOptions.quality ?? ''}
+                    onChange={(event) => onImageOptionsChange({
+                      quality: event.target.value || undefined,
+                    })}
+                    disabled={disabled || isSending || isSavingImageOptions}
+                  >
+                    <option value="">{t('provider.imageDefault')}</option>
+                    {IMAGE_QUALITY_OPTIONS.map((quality) => (
+                      <option key={quality} value={quality}>{quality}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="composer-image-option composer-image-option--count">
+                  <span>{t('provider.imageCount')}</span>
+                  <select
+                    value={imageOptions.n ?? ''}
+                    onChange={(event) => onImageOptionsChange({
+                      n: event.target.value ? Number(event.target.value) : undefined,
+                    })}
+                    disabled={disabled || isSending || isSavingImageOptions}
+                  >
+                    <option value="">{t('provider.imageDefault')}</option>
+                    {Array.from({ length: 10 }, (_, index) => index + 1).map((count) => (
+                      <option key={count} value={count}>{count}</option>
+                    ))}
+                  </select>
+                </label>
+                {isSavingImageOptions ? (
+                  <span
+                    className="composer-image-options__saving"
+                    title={t('tools.autoSave.saving')}
+                    aria-label={t('tools.autoSave.saving')}
+                  >
+                    <LoaderCircle size={14} className="is-spinning" />
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            </div>
+            <div className="composer-actions">
             <div className="conversation-usage">
               <ContextUsageRing
                 used={usage.total_tokens}
@@ -325,6 +393,7 @@ export const ChatComposer = memo(function ChatComposer({
             >
               {isSending ? t('chat.stop') : t('chat.send')}
             </Button>
+            </div>
           </div>
         </div>
       </div>

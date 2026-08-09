@@ -1,24 +1,57 @@
-use std::{sync::Arc, time::Instant};
+use std::{
+    io::Cursor,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use image::ImageDecoder;
 use reqwest::multipart;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    domain::{ImageAttachment, ImageModelConfig, ImageSource, ModelProvider, ProviderType},
+    domain::{
+        ImageAttachment, ImageModelConfig, ImageSource, ModelProvider, ProviderType, TokenUsage,
+    },
     error::{AppError, AppResult},
     llm::{
         client::RequestOptions,
-        http::{DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, read_response_body_limited},
+        http::{
+            DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, read_response_body_limited,
+            read_response_body_limited_to,
+        },
         keys::ApiKeyCycle,
     },
 };
+
+const MAX_IMAGE_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_GENERATED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_GENERATED_TOTAL_BYTES: usize = 128 * 1024 * 1024;
+const MAX_REFERENCE_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_REFERENCE_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+const REMOTE_DNS_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct GeneratedImage {
     pub bytes: Vec<u8>,
     pub media_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GeneratedImages {
+    pub images: Vec<GeneratedImage>,
+    pub usage: Option<TokenUsage>,
+}
+
+#[derive(Debug)]
+struct ReferenceImage {
+    name: String,
+    media_type: String,
+    bytes: Vec<u8>,
+    is_mask: bool,
+    dimensions: (u32, u32),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -63,7 +96,7 @@ pub trait ImageClient: Send + Sync {
         options: RequestOptions,
         image_options: ImageRequestOptions,
         log_context: Option<ImageLogContext>,
-    ) -> AppResult<Vec<GeneratedImage>>;
+    ) -> AppResult<GeneratedImages>;
 
     async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>>;
 }
@@ -109,7 +142,7 @@ impl OpenAiImagesClient {
 
     async fn response_images(
         &self,
-        client: &reqwest::Client,
+        image_fetch_client: &reqwest::Client,
         response: reqwest::Response,
         options: &RequestOptions,
         log_context: Option<&ImageLogContext>,
@@ -117,13 +150,22 @@ impl OpenAiImagesClient {
         endpoint: &str,
         operation: &str,
         started: Instant,
-    ) -> AppResult<Vec<GeneratedImage>> {
+    ) -> AppResult<GeneratedImages> {
         let status = response.status();
         let mut body_for_log = None;
         let result = async {
-            let body = read_response_body_limited(response, options.timeout).await?;
-            body_for_log = Some(body.clone());
+            let body = read_response_body_limited_to(
+                response,
+                options.timeout,
+                MAX_IMAGE_RESPONSE_BYTES,
+                "image response",
+            )
+            .await?;
+            let body = String::from_utf8(body).map_err(|error| {
+                AppError::Llm(format!("image response was not valid UTF-8: {error}"))
+            })?;
             if !status.is_success() {
+                body_for_log = Some(log_excerpt(&body, 64 * 1024));
                 if status == reqwest::StatusCode::NOT_FOUND {
                     let hint = if operation == "image edit" {
                         "The selected provider may expose image generation but not image editing; configure its image edit URL or choose a provider/model with image editing support"
@@ -140,45 +182,44 @@ impl OpenAiImagesClient {
             }
             let value: Value = serde_json::from_str(&body)
                 .map_err(|error| AppError::Llm(format!("invalid image upstream JSON: {error}")))?;
+            body_for_log = Some(image_response_log_summary(&value));
+            let usage = parse_image_usage(value.get("usage"));
             let items = value["data"].as_array().ok_or_else(|| {
                 AppError::Llm("image upstream response is missing data".to_string())
             })?;
             let mut images = Vec::with_capacity(items.len());
+            let mut total_bytes = 0_usize;
             for item in items {
                 if let Some(encoded) = item["b64_json"].as_str() {
                     let bytes = STANDARD.decode(encoded).map_err(|error| {
                         AppError::Llm(format!("invalid generated image Base64: {error}"))
                     })?;
-                    let media_type = detected_media_type(&bytes, "image/png");
+                    validate_image_size(
+                        bytes.len(),
+                        &mut total_bytes,
+                        MAX_GENERATED_IMAGE_BYTES,
+                        MAX_GENERATED_TOTAL_BYTES,
+                        "generated image",
+                    )?;
+                    let media_type = detected_media_type(&bytes)?;
                     images.push(GeneratedImage { bytes, media_type });
                 } else if let Some(url) = item["url"].as_str() {
-                    let image = tokio::time::timeout(options.timeout, client.get(url).send())
-                        .await
-                        .map_err(|_| {
-                            AppError::Llm("generated image URL request timed out".to_string())
-                        })?
-                        .map_err(|error| {
-                            AppError::Llm(format!("failed to download generated image: {error}"))
-                        })?;
-                    let media_type = image
-                        .headers()
-                        .get(reqwest::header::CONTENT_TYPE)
-                        .and_then(|value| value.to_str().ok())
-                        .filter(|value| value.starts_with("image/"))
-                        .unwrap_or("image/png")
-                        .split(';')
-                        .next()
-                        .unwrap_or("image/png")
-                        .trim()
-                        .to_string();
-                    let bytes = image.bytes().await.map_err(|error| {
-                        AppError::Llm(format!("failed to read generated image: {error}"))
-                    })?;
-                    let media_type = detected_media_type(&bytes, &media_type);
-                    images.push(GeneratedImage {
-                        bytes: bytes.to_vec(),
-                        media_type,
-                    });
+                    let image = fetch_remote_image(
+                        image_fetch_client,
+                        url,
+                        options.timeout,
+                        MAX_GENERATED_IMAGE_BYTES,
+                        "generated image",
+                    )
+                    .await?;
+                    validate_image_size(
+                        image.bytes.len(),
+                        &mut total_bytes,
+                        MAX_GENERATED_IMAGE_BYTES,
+                        MAX_GENERATED_TOTAL_BYTES,
+                        "generated image",
+                    )?;
+                    images.push(image);
                 }
             }
             if images.is_empty() {
@@ -186,7 +227,7 @@ impl OpenAiImagesClient {
                     "image upstream returned no image data".to_string(),
                 ));
             }
-            Ok(images)
+            Ok(GeneratedImages { images, usage })
         }
         .await;
         let error_message = result.as_ref().err().map(ToString::to_string);
@@ -202,34 +243,34 @@ impl OpenAiImagesClient {
         result
     }
 
-    async fn reference_bytes(
+    async fn reference_image(
         &self,
-        client: &reqwest::Client,
+        image_fetch_client: &reqwest::Client,
         attachment: &ImageAttachment,
         timeout: std::time::Duration,
-    ) -> AppResult<Vec<u8>> {
+    ) -> AppResult<GeneratedImage> {
         match &attachment.source {
-            ImageSource::Base64 { data } => STANDARD
-                .decode(data)
-                .map_err(|error| AppError::BadRequest(format!("invalid reference image: {error}"))),
-            ImageSource::Url { url } => {
-                let response = tokio::time::timeout(timeout, client.get(url).send())
-                    .await
-                    .map_err(|_| AppError::Llm("reference image request timed out".to_string()))?
-                    .map_err(|error| {
-                        AppError::Llm(format!("failed to fetch reference image: {error}"))
-                    })?;
-                let status = response.status();
-                if !status.is_success() {
-                    return Err(AppError::Llm(format!("reference image returned {status}")));
+            ImageSource::Base64 { data } => {
+                let bytes = STANDARD.decode(data).map_err(|error| {
+                    AppError::BadRequest(format!("invalid reference image: {error}"))
+                })?;
+                if bytes.len() > MAX_REFERENCE_IMAGE_BYTES {
+                    return Err(AppError::BadRequest(format!(
+                        "reference image exceeds {MAX_REFERENCE_IMAGE_BYTES} bytes"
+                    )));
                 }
-                Ok(response
-                    .bytes()
-                    .await
-                    .map_err(|error| {
-                        AppError::Llm(format!("failed to read reference image: {error}"))
-                    })?
-                    .to_vec())
+                let media_type = detected_media_type(&bytes)?;
+                Ok(GeneratedImage { bytes, media_type })
+            }
+            ImageSource::Url { url } => {
+                fetch_remote_image(
+                    image_fetch_client,
+                    url,
+                    timeout,
+                    MAX_REFERENCE_IMAGE_BYTES,
+                    "reference image",
+                )
+                .await
             }
             ImageSource::Local { .. } => Err(AppError::BadRequest(
                 "local generated images cannot be sent as new references".to_string(),
@@ -249,7 +290,7 @@ impl ImageClient for OpenAiImagesClient {
         options: RequestOptions,
         image_options: ImageRequestOptions,
         log_context: Option<ImageLogContext>,
-    ) -> AppResult<Vec<GeneratedImage>> {
+    ) -> AppResult<GeneratedImages> {
         if provider.provider_type != ProviderType::OpenAiImages {
             return Err(AppError::BadRequest(
                 "selected provider is not an image provider".to_string(),
@@ -261,7 +302,11 @@ impl ImageClient for OpenAiImagesClient {
             ));
         }
         let client = self.http.client_for(provider.proxy_url.as_deref())?;
+        let image_fetch_client = self
+            .http
+            .client_for_image_fetch(provider.proxy_url.as_deref())?;
         let mut keys = ApiKeyCycle::new(provider)?;
+        let image_options = effective_image_options(image_options);
         if references.is_empty() {
             let mut body = Map::new();
             body.insert("model".to_string(), json!(model));
@@ -331,7 +376,7 @@ impl ImageClient for OpenAiImagesClient {
             };
             return self
                 .response_images(
-                    &client,
+                    &image_fetch_client,
                     response,
                     &options,
                     log_context.as_ref(),
@@ -343,15 +388,28 @@ impl ImageClient for OpenAiImagesClient {
                 .await;
         }
 
-        let mut references_bytes = Vec::with_capacity(references.len());
+        let mut reference_images = Vec::with_capacity(references.len());
+        let mut total_reference_bytes = 0_usize;
         for reference in references {
-            references_bytes.push((
-                reference.name.clone(),
-                reference.media_type.clone(),
-                self.reference_bytes(&client, reference, options.timeout)
-                    .await?,
-            ));
+            let image = self
+                .reference_image(&image_fetch_client, reference, options.timeout)
+                .await?;
+            total_reference_bytes = total_reference_bytes.saturating_add(image.bytes.len());
+            if total_reference_bytes > MAX_REFERENCE_TOTAL_BYTES {
+                return Err(AppError::BadRequest(format!(
+                    "reference images exceed {MAX_REFERENCE_TOTAL_BYTES} total bytes"
+                )));
+            }
+            let dimensions = image_dimensions(&image.bytes, "reference image")?;
+            reference_images.push(ReferenceImage {
+                name: reference.name.clone(),
+                media_type: image.media_type,
+                bytes: image.bytes,
+                is_mask: reference.is_mask,
+                dimensions,
+            });
         }
+        validate_mask_image(&reference_images)?;
         let url = Self::edit_url(provider);
         let prompt = prompt.to_string();
         let model = model.to_string();
@@ -361,6 +419,7 @@ impl ImageClient for OpenAiImagesClient {
             "references": references.iter().map(|reference| json!({
                 "name": reference.name,
                 "media_type": reference.media_type,
+                "is_mask": reference.is_mask,
             })).collect::<Vec<_>>(),
         }))
         .unwrap_or_default();
@@ -371,14 +430,15 @@ impl ImageClient for OpenAiImagesClient {
                 let mut form = multipart::Form::new()
                     .text("model", model.clone())
                     .text("prompt", prompt.clone());
-                for (name, media_type, bytes) in &references_bytes {
-                    let part = multipart::Part::bytes(bytes.clone())
-                        .file_name(name.clone())
-                        .mime_str(media_type)
+                for reference in &reference_images {
+                    let part = multipart::Part::bytes(reference.bytes.clone())
+                        .file_name(reference.name.clone())
+                        .mime_str(&reference.media_type)
                         .unwrap_or_else(|_| {
-                            multipart::Part::bytes(bytes.clone()).file_name(name.clone())
+                            multipart::Part::bytes(reference.bytes.clone())
+                                .file_name(reference.name.clone())
                         });
-                    form = form.part("image[]", part);
+                    form = form.part(if reference.is_mask { "mask" } else { "image[]" }, part);
                 }
                 if let Some(size) = &image_options.size {
                     form = form.text("size", size.clone());
@@ -442,7 +502,7 @@ impl ImageClient for OpenAiImagesClient {
             }
         };
         self.response_images(
-            &client,
+            &image_fetch_client,
             response,
             &options,
             log_context.as_ref(),
@@ -514,14 +574,262 @@ fn log_image_request(
     );
 }
 
-fn detected_media_type(bytes: &[u8], fallback: &str) -> String {
-    match ::image::guess_format(bytes).ok() {
-        Some(::image::ImageFormat::Png) => "image/png".to_string(),
-        Some(::image::ImageFormat::Jpeg) => "image/jpeg".to_string(),
-        Some(::image::ImageFormat::WebP) => "image/webp".to_string(),
-        Some(::image::ImageFormat::Gif) => "image/gif".to_string(),
-        _ => fallback.to_string(),
+fn image_response_log_summary(value: &Value) -> String {
+    let data = value["data"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    json!({
+                        "base64_chars": item["b64_json"].as_str().map(str::len),
+                        "has_url": item["url"].is_string(),
+                        "revised_prompt": item.get("revised_prompt"),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    serde_json::to_string_pretty(&json!({
+        "created": value.get("created"),
+        "data": data,
+        "usage": value.get("usage"),
+    }))
+    .unwrap_or_default()
+}
+
+fn parse_image_usage(value: Option<&Value>) -> Option<TokenUsage> {
+    let value = value?.as_object()?;
+    let number = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|name| value.get(*name).and_then(Value::as_u64))
+            .unwrap_or_default()
+    };
+    let input_tokens = number(&["input_tokens", "prompt_tokens"]);
+    let output_tokens = number(&["output_tokens", "completion_tokens"]);
+    if input_tokens == 0 && output_tokens == 0 {
+        return None;
     }
+    Some(
+        TokenUsage {
+            input_tokens,
+            output_tokens,
+            ..TokenUsage::default()
+        }
+        .normalized(),
+    )
+}
+
+fn log_excerpt(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[image response log truncated]", &value[..end])
+}
+
+fn effective_image_options(mut options: ImageRequestOptions) -> ImageRequestOptions {
+    options.n = options.n.filter(|value| (1..=10).contains(value));
+    options.output_compression = options.output_compression.filter(|value| *value <= 100);
+    options.output_format = allowed_value(options.output_format, &["png", "jpeg", "webp"]);
+    options.background = allowed_value(options.background, &["auto", "opaque", "transparent"]);
+    options.moderation = allowed_value(options.moderation, &["auto", "low"]);
+    options.style = allowed_value(options.style, &["vivid", "natural"]);
+    options.response_format = allowed_value(options.response_format, &["b64_json", "url"]);
+    options.input_fidelity = allowed_value(options.input_fidelity, &["low", "high"]);
+    options
+}
+
+fn allowed_value(value: Option<String>, allowed: &[&str]) -> Option<String> {
+    value.filter(|value| allowed.contains(&value.as_str()))
+}
+
+async fn fetch_remote_image(
+    client: &reqwest::Client,
+    raw_url: &str,
+    timeout: Duration,
+    max_bytes: usize,
+    label: &str,
+) -> AppResult<GeneratedImage> {
+    let url = validate_remote_image_url(raw_url, timeout).await?;
+    let response = tokio::time::timeout(timeout, client.get(url.clone()).send())
+        .await
+        .map_err(|_| AppError::Llm(format!("{label} request timed out")))?
+        .map_err(|error| AppError::Llm(format!("failed to fetch {label}: {error}")))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppError::Llm(format!("{label} returned {status}")));
+    }
+    let bytes = read_response_body_limited_to(response, timeout, max_bytes, label).await?;
+    let media_type = detected_media_type(&bytes)?;
+    Ok(GeneratedImage { bytes, media_type })
+}
+
+pub(crate) async fn validate_remote_image_url(
+    raw_url: &str,
+    timeout: Duration,
+) -> AppResult<reqwest::Url> {
+    let url = reqwest::Url::parse(raw_url)
+        .map_err(|_| AppError::BadRequest("image URL is invalid".to_string()))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(AppError::BadRequest(
+            "image URLs must use http or https".to_string(),
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(AppError::BadRequest(
+            "image URLs cannot contain credentials".to_string(),
+        ));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| AppError::BadRequest("image URL is missing a host".to_string()))?;
+    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
+        return Err(AppError::BadRequest(
+            "image URL points to a local address".to_string(),
+        ));
+    }
+    if let Ok(address) = host.parse::<IpAddr>() {
+        ensure_public_ip(address)?;
+        return Ok(url);
+    }
+
+    let port = url.port_or_known_default().unwrap_or(443);
+    let dns_timeout = timeout.min(REMOTE_DNS_TIMEOUT);
+    let addresses = tokio::time::timeout(dns_timeout, tokio::net::lookup_host((host, port)))
+        .await
+        .map_err(|_| AppError::Llm("image URL DNS lookup timed out".to_string()))?
+        .map_err(|error| AppError::Llm(format!("image URL DNS lookup failed: {error}")))?;
+    let mut resolved = false;
+    for address in addresses {
+        resolved = true;
+        ensure_public_ip(address.ip())?;
+    }
+    if !resolved {
+        return Err(AppError::BadRequest(
+            "image URL did not resolve to an address".to_string(),
+        ));
+    }
+    Ok(url)
+}
+
+fn ensure_public_ip(address: IpAddr) -> AppResult<()> {
+    let blocked = match address {
+        IpAddr::V4(address) => is_blocked_ipv4(address),
+        IpAddr::V6(address) => is_blocked_ipv6(address),
+    };
+    if blocked {
+        return Err(AppError::BadRequest(
+            "image URL points to a private or local address".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_blocked_ipv4(address: Ipv4Addr) -> bool {
+    address.is_private()
+        || address.is_loopback()
+        || address.is_link_local()
+        || address.is_broadcast()
+        || address.is_documentation()
+        || address.is_unspecified()
+        || address.is_multicast()
+        || address.octets()[0] == 0
+        || address.octets()[0] >= 240
+        || address.octets() == [169, 254, 169, 254]
+}
+
+fn is_blocked_ipv6(address: Ipv6Addr) -> bool {
+    address.is_loopback()
+        || address.is_unspecified()
+        || address.is_multicast()
+        || (address.segments()[0] & 0xfe00) == 0xfc00
+        || (address.segments()[0] & 0xffc0) == 0xfe80
+        || address.to_ipv4_mapped().is_some_and(is_blocked_ipv4)
+}
+
+fn validate_image_size(
+    bytes: usize,
+    total: &mut usize,
+    per_image_limit: usize,
+    total_limit: usize,
+    label: &str,
+) -> AppResult<()> {
+    if bytes > per_image_limit {
+        return Err(AppError::Llm(format!(
+            "{label} exceeded {per_image_limit} bytes"
+        )));
+    }
+    *total = total.saturating_add(bytes);
+    if *total > total_limit {
+        return Err(AppError::Llm(format!(
+            "generated images exceeded {total_limit} total bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn detected_media_type(bytes: &[u8]) -> AppResult<String> {
+    match ::image::guess_format(bytes).ok() {
+        Some(::image::ImageFormat::Png) => Ok("image/png".to_string()),
+        Some(::image::ImageFormat::Jpeg) => Ok("image/jpeg".to_string()),
+        Some(::image::ImageFormat::WebP) => Ok("image/webp".to_string()),
+        Some(::image::ImageFormat::Gif) => Ok("image/gif".to_string()),
+        _ => Err(AppError::Llm(
+            "image response did not contain a supported image".to_string(),
+        )),
+    }
+}
+
+fn image_dimensions(bytes: &[u8], label: &str) -> AppResult<(u32, u32)> {
+    image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| AppError::BadRequest(format!("invalid {label}: {error}")))?
+        .into_dimensions()
+        .map_err(|error| AppError::BadRequest(format!("invalid {label} dimensions: {error}")))
+}
+
+fn validate_mask_image(references: &[ReferenceImage]) -> AppResult<()> {
+    let masks = references
+        .iter()
+        .filter(|reference| reference.is_mask)
+        .collect::<Vec<_>>();
+    if masks.len() > 1 {
+        return Err(AppError::BadRequest(
+            "a request can contain at most one mask image".to_string(),
+        ));
+    }
+    let Some(mask) = masks.first() else {
+        return Ok(());
+    };
+    let source = references
+        .iter()
+        .find(|reference| !reference.is_mask)
+        .ok_or_else(|| {
+            AppError::BadRequest("a mask image requires at least one source image".to_string())
+        })?;
+    if mask.media_type != "image/png" {
+        return Err(AppError::BadRequest(
+            "the mask image must contain PNG data".to_string(),
+        ));
+    }
+    if mask.dimensions != source.dimensions {
+        return Err(AppError::BadRequest(
+            "the mask image dimensions must match the first source image".to_string(),
+        ));
+    }
+    let decoder = image::codecs::png::PngDecoder::new(Cursor::new(&mask.bytes))
+        .map_err(|error| AppError::BadRequest(format!("invalid PNG mask image: {error}")))?;
+    if !decoder.color_type().has_alpha() {
+        return Err(AppError::BadRequest(
+            "the mask PNG must include an alpha channel".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn default_image_endpoint(base_url: &str, operation: &str) -> String {
@@ -558,7 +866,12 @@ fn value_to_form_text(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::default_image_endpoint;
+    use std::time::Duration;
+
+    use super::{
+        ImageRequestOptions, ReferenceImage, default_image_endpoint, detected_media_type,
+        effective_image_options, parse_image_usage, validate_mask_image, validate_remote_image_url,
+    };
 
     #[test]
     fn default_image_endpoint_trims_trailing_slashes() {
@@ -566,5 +879,79 @@ mod tests {
             default_image_endpoint("https://api.example.test/v1///", "edits"),
             "https://api.example.test/v1/images/edits"
         );
+    }
+
+    #[test]
+    fn configured_image_options_are_preserved_without_model_specific_filtering() {
+        let filtered = effective_image_options(ImageRequestOptions {
+            response_format: Some("url".to_string()),
+            input_fidelity: Some("high".to_string()),
+            style: Some("vivid".to_string()),
+            background: Some("transparent".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(filtered.response_format.as_deref(), Some("url"));
+        assert_eq!(filtered.input_fidelity.as_deref(), Some("high"));
+        assert_eq!(filtered.style.as_deref(), Some("vivid"));
+        assert_eq!(filtered.background.as_deref(), Some("transparent"));
+    }
+
+    #[tokio::test]
+    async fn rejects_private_and_non_http_image_urls() {
+        assert!(
+            validate_remote_image_url("http://127.0.0.1/image.png", Duration::from_secs(1))
+                .await
+                .is_err()
+        );
+        assert!(
+            validate_remote_image_url("file:///tmp/image.png", Duration::from_secs(1))
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_image_bytes_and_parses_usage() {
+        assert!(detected_media_type(b"not-an-image").is_err());
+        let usage = parse_image_usage(Some(&serde_json::json!({
+            "input_tokens": 12,
+            "output_tokens": 7
+        })))
+        .unwrap();
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 7);
+    }
+
+    #[test]
+    fn validates_mask_format_alpha_and_dimensions() {
+        let mut source_bytes = Vec::new();
+        let source = image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]));
+        source
+            .write_to(
+                &mut std::io::Cursor::new(&mut source_bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        let references = vec![
+            ReferenceImage {
+                name: "source.png".to_string(),
+                media_type: "image/png".to_string(),
+                bytes: source_bytes.clone(),
+                is_mask: false,
+                dimensions: (2, 2),
+            },
+            ReferenceImage {
+                name: "mask.png".to_string(),
+                media_type: "image/png".to_string(),
+                bytes: source_bytes,
+                is_mask: true,
+                dimensions: (2, 2),
+            },
+        ];
+        assert!(validate_mask_image(&references).is_ok());
+
+        let mut mismatched = references;
+        mismatched[1].dimensions = (1, 1);
+        assert!(validate_mask_image(&mismatched).is_err());
     }
 }

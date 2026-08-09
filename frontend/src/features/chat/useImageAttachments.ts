@@ -11,6 +11,8 @@ import { useI18n } from '../../i18n';
 import {
   MAX_IMAGE_BYTES,
   MAX_IMAGE_COUNT,
+  MAX_IMAGE_TOTAL_BYTES,
+  attachmentTotalBytes,
   createAttachmentId,
   fileToBase64,
   isFileDrag,
@@ -61,6 +63,9 @@ export function useImageAttachments({
       return;
     }
     const accepted: ImageAttachment[] = [];
+    let acceptedBytes = 0;
+    const currentBytes = attachmentTotalBytes(attachments);
+    let totalLimitReached = false;
     for (const file of files.slice(0, remaining)) {
       const mediaType = normalizedImageType(file);
       if (!mediaType) {
@@ -71,6 +76,10 @@ export function useImageAttachments({
         toast.warning(t('chat.imageTooLarge', { size: 10 }));
         continue;
       }
+      if (currentBytes + acceptedBytes + file.size > MAX_IMAGE_TOTAL_BYTES) {
+        totalLimitReached = true;
+        continue;
+      }
       accepted.push({
         id: createAttachmentId(),
         name: file.name || t('chat.pastedImage'),
@@ -78,9 +87,13 @@ export function useImageAttachments({
         source_type: 'base64',
         data: await fileToBase64(file),
       });
+      acceptedBytes += file.size;
     }
     if (files.length > remaining) {
       toast.warning(t('chat.imageCountLimit', { count: MAX_IMAGE_COUNT }));
+    }
+    if (totalLimitReached) {
+      toast.warning(t('chat.imageTotalTooLarge', { size: 32 }));
     }
     if (accepted.length > 0) {
       setAttachments((current) => [...current, ...accepted]);

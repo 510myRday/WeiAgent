@@ -89,6 +89,26 @@ impl LlmHttp {
         Ok(client)
     }
 
+    /// Fetch provider-returned or user-supplied image URLs without following
+    /// redirects. Each redirect target would otherwise need a fresh private-IP
+    /// check before it could be requested.
+    pub fn client_for_image_fetch(&self, proxy_url: Option<&str>) -> AppResult<reqwest::Client> {
+        let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        if let Some(proxy) = proxy_url
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| crate::domain::ip_proxies::proxy_url_with_remote_dns(value).into_owned())
+        {
+            let proxy_config = reqwest::Proxy::all(&proxy).map_err(|error| {
+                AppError::Llm(format!("failed to configure LLM proxy: {error}"))
+            })?;
+            builder = builder.proxy(proxy_config);
+        }
+        builder
+            .build()
+            .map_err(|error| AppError::Llm(format!("failed to build image HTTP client: {error}")))
+    }
+
     pub fn logger(&self) -> Option<Arc<LlmLogger>> {
         self.logger.clone()
     }
@@ -254,6 +274,23 @@ pub async fn read_response_body_limited(
     response: Response,
     idle_timeout: Duration,
 ) -> AppResult<String> {
+    let body = read_response_body_limited_to(
+        response,
+        idle_timeout,
+        MAX_LLM_RESPONSE_BYTES,
+        "LLM response",
+    )
+    .await?;
+    String::from_utf8(body)
+        .map_err(|error| AppError::Llm(format!("LLM response was not valid UTF-8: {error}")))
+}
+
+pub async fn read_response_body_limited_to(
+    response: Response,
+    idle_timeout: Duration,
+    max_bytes: usize,
+    label: &str,
+) -> AppResult<Vec<u8>> {
     let mut stream = response.bytes_stream();
     let mut body = Vec::new();
     loop {
@@ -269,15 +306,12 @@ pub async fn read_response_body_limited(
             break;
         };
         let chunk = chunk.map_err(|error| AppError::Llm(error.to_string()))?;
-        if body.len().saturating_add(chunk.len()) > MAX_LLM_RESPONSE_BYTES {
-            return Err(AppError::Llm(format!(
-                "LLM response exceeded {MAX_LLM_RESPONSE_BYTES} bytes"
-            )));
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(AppError::Llm(format!("{label} exceeded {max_bytes} bytes")));
         }
         body.extend_from_slice(&chunk);
     }
-    String::from_utf8(body)
-        .map_err(|error| AppError::Llm(format!("LLM response was not valid UTF-8: {error}")))
+    Ok(body)
 }
 
 pub trait StreamLineParser: Send {

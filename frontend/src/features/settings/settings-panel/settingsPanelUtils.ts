@@ -120,6 +120,19 @@ export function defaultModelConfig(modelId: string): ModelConfig {
   };
 }
 
+export function defaultImageModelConfig(modelId: string): ModelConfig {
+  return {
+    ...defaultModelConfig(modelId),
+    image_options: {
+      size: 'auto',
+      quality: 'auto',
+      n: 1,
+      background: 'auto',
+      moderation: 'auto',
+    },
+  };
+}
+
 export function normalizeModelConfig(modelId: string, config: ModelConfig): ModelConfig {
   return {
     model_id: modelId,
@@ -170,7 +183,11 @@ function normalizeOptionalInteger(
   return integer >= minimum && integer <= maximum ? integer : undefined;
 }
 
-export function syncModelConfigs(models: string[], current: ModelConfig[]): ModelConfig[] {
+export function syncModelConfigs(
+  models: string[],
+  current: ModelConfig[],
+  providerType: ProviderType = 'openai_compatible',
+): ModelConfig[] {
   const exactMatches = new Map(current.map((config) => [config.model_id, config]));
   const nextModelSet = new Set(models);
   const usedConfigIds = new Set<string>();
@@ -192,7 +209,9 @@ export function syncModelConfigs(models: string[], current: ModelConfig[]): Mode
       return normalizeModelConfig(modelId, sameRow);
     }
 
-    return defaultModelConfig(modelId);
+    return providerType === 'openai_images'
+      ? defaultImageModelConfig(modelId)
+      : defaultModelConfig(modelId);
   });
 }
 
@@ -277,7 +296,7 @@ export function providerToForm(provider: ModelProvider): ProviderForm {
     newKeyText: '',
     key_strategy: provider.key_strategy ?? 'failover',
     modelsText: provider.models.join('\n'),
-    modelConfigs: syncModelConfigs(provider.models, provider.model_configs ?? []),
+    modelConfigs: syncModelConfigs(provider.models, provider.model_configs ?? [], provider.provider_type),
     extraBodyText: formatExtraBodyText(provider.extra_body),
     proxy_url: provider.proxy_url ?? null,
   };
@@ -321,7 +340,7 @@ export function buildProviderPayload(form: ProviderForm): ModelProviderPayload |
     api_keys: normalizeFormApiKeys(form.apiKeys),
     key_strategy: form.key_strategy,
     models,
-    model_configs: syncModelConfigs(models, form.modelConfigs),
+    model_configs: syncModelConfigs(models, form.modelConfigs, form.provider_type),
     // Always send an object so PUT updates apply (JSON null becomes Option::None
     // on the backend and would leave the previous extra_body unchanged).
     extra_body: parsedExtraBody.status === 'valid'
@@ -352,7 +371,7 @@ export function serializeProviderForm(form: ProviderForm): string {
     api_keys: normalizeFormApiKeys(form.apiKeys),
     key_strategy: form.key_strategy,
     models,
-    model_configs: syncModelConfigs(models, form.modelConfigs),
+    model_configs: syncModelConfigs(models, form.modelConfigs, form.provider_type),
     extra_body_text: form.extraBodyText.trim(),
     proxy_url: form.proxy_url?.trim() || null,
   });
@@ -383,7 +402,7 @@ export function formFromSerializedSnapshot(serialized: string): ProviderForm {
     newKeyText: '',
     key_strategy: snap.key_strategy ?? 'failover',
     modelsText: snap.models.join('\n'),
-    modelConfigs: snap.model_configs ?? [],
+    modelConfigs: syncModelConfigs(snap.models, snap.model_configs ?? [], snap.provider_type),
     // Keep the exact extra-body text the user saved (not server pretty-print).
     extraBodyText: snap.extra_body_text ?? '',
     proxy_url: snap.proxy_url ?? null,

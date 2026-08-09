@@ -189,6 +189,11 @@
     flex-wrap: wrap;
   }
 
+  .composer-toolbar-main {
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
   .composer-controls {
     flex: 1 1 100%;
     overflow-x: auto;
@@ -203,10 +208,6 @@
 
   .conversation-usage {
     margin-right: auto;
-  }
-
-  .stream-switch {
-    flex: 0 0 auto;
   }
 
   .send-button {

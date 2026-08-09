@@ -4,8 +4,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        CreateModelProviderRequest, ModelConfig, ModelProvider, ModelProviderResponse,
-        UpdateModelProviderRequest, merge_api_keys,
+        CreateModelProviderRequest, ImageModelConfig, ModelConfig, ModelProvider,
+        ModelProviderResponse, ProviderType, UpdateModelProviderRequest, merge_api_keys,
     },
     error::{AppError, AppResult},
     storage::{
@@ -33,7 +33,8 @@ impl Store {
         let base_url = validate_non_empty("base_url", &request.base_url)?;
         let api_keys = merge_api_keys(&[], &request.api_keys);
         let models = normalize_models(request.models)?;
-        let model_configs = normalize_model_configs(&models, request.model_configs)?;
+        let model_configs =
+            normalize_model_configs_for_provider(&models, request.model_configs, &provider_type)?;
         validate_extra_body(&request.extra_body)?;
         let proxy_url = normalize_provider_proxy_url(request.proxy_url)?;
         let image_generation_url = normalize_optional_url(request.image_generation_url)?;
@@ -120,9 +121,10 @@ impl Store {
             }
             provider.models = models;
         }
-        provider.model_configs = normalize_model_configs(
+        provider.model_configs = normalize_model_configs_for_provider(
             &provider.models,
             requested_model_configs.unwrap_or_else(|| provider.model_configs.clone()),
+            &provider.provider_type,
         )?;
         if let Some(extra_body) = request.extra_body {
             validate_extra_body(&extra_body)?;
@@ -159,19 +161,40 @@ impl Store {
 
     pub async fn delete_model_provider(&self, id: Uuid) -> AppResult<()> {
         let _guard = self.lock.lock().await;
-        let agents = self.read_agents_unlocked().await?;
-        if let Some(agent) = agents.iter().find(|agent| agent.model_provider_id == id) {
-            return Err(AppError::BadRequest(format!(
-                "provider is used by agent {}",
-                agent.name
-            )));
+        let mut agents = self.read_agents_unlocked().await?;
+        let original_agents = agents.clone();
+        let mut agents_changed = false;
+        for agent in agents
+            .iter_mut()
+            .filter(|agent| agent.model_provider_id == id)
+        {
+            agent.model_provider_id = Uuid::nil();
+            agent.model_id.clear();
+            agent.updated_at = Utc::now();
+            agents_changed = true;
         }
 
-        if !self
+        if agents_changed {
+            self.write_agents_unlocked(&agents).await?;
+        }
+
+        let deleted = self
             .database
             .call(move |connection| db::delete_provider_conn(connection, id))
-            .await?
-        {
+            .await;
+        let deleted = match deleted {
+            Ok(deleted) => deleted,
+            Err(error) => {
+                if agents_changed {
+                    let _ = self.write_agents_unlocked(&original_agents).await;
+                }
+                return Err(error);
+            }
+        };
+        if !deleted {
+            if agents_changed {
+                let _ = self.write_agents_unlocked(&original_agents).await;
+            }
             return Err(AppError::NotFound);
         }
         Ok(())
@@ -186,9 +209,18 @@ impl Store {
     }
 }
 
+#[cfg(test)]
 fn normalize_model_configs(
     models: &[String],
     configs: Vec<ModelConfig>,
+) -> AppResult<Vec<ModelConfig>> {
+    normalize_model_configs_for_provider(models, configs, &ProviderType::OpenAiCompatible)
+}
+
+fn normalize_model_configs_for_provider(
+    models: &[String],
+    configs: Vec<ModelConfig>,
+    provider_type: &ProviderType,
 ) -> AppResult<Vec<ModelConfig>> {
     let mut configs_by_id = configs
         .into_iter()
@@ -202,20 +234,21 @@ fn normalize_model_configs(
     models
         .iter()
         .map(|model_id| {
-            let config = configs_by_id
+            let mut config = configs_by_id
                 .remove(model_id)
-                .unwrap_or_else(|| default_model_config(model_id));
+                .unwrap_or_else(|| default_model_config(model_id, provider_type));
             validate_context_size(config.context_size)?;
             validate_model_price("input_price", config.input_price)?;
             validate_model_price("output_price", config.output_price)?;
             validate_model_price("cache_write_price", config.cache_write_price)?;
             validate_model_price("cache_read_price", config.cache_read_price)?;
+            normalize_image_options(&mut config.image_options)?;
             Ok(config)
         })
         .collect()
 }
 
-fn default_model_config(model_id: &str) -> ModelConfig {
+fn default_model_config(model_id: &str, provider_type: &ProviderType) -> ModelConfig {
     ModelConfig {
         model_id: model_id.to_string(),
         multimodal: false,
@@ -225,7 +258,18 @@ fn default_model_config(model_id: &str) -> ModelConfig {
         output_price: None,
         cache_write_price: None,
         cache_read_price: None,
-        image_options: None,
+        image_options: (*provider_type == ProviderType::OpenAiImages).then(|| ImageModelConfig {
+            size: Some("auto".to_string()),
+            quality: Some("auto".to_string()),
+            n: Some(1),
+            output_format: None,
+            output_compression: None,
+            background: Some("auto".to_string()),
+            moderation: Some("auto".to_string()),
+            style: None,
+            response_format: None,
+            input_fidelity: None,
+        }),
     }
 }
 
@@ -237,9 +281,95 @@ fn normalize_optional_url(value: Option<String>) -> AppResult<Option<String>> {
     if value.is_empty() {
         return Ok(None);
     }
-    reqwest::Url::parse(&value)
+    let parsed = reqwest::Url::parse(&value)
         .map_err(|_| AppError::BadRequest("image endpoint URL must be valid".to_string()))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(AppError::BadRequest(
+            "image endpoint URL must use http or https".to_string(),
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(AppError::BadRequest(
+            "image endpoint URL cannot contain credentials".to_string(),
+        ));
+    }
     Ok(Some(value))
+}
+
+fn normalize_image_options(options: &mut Option<ImageModelConfig>) -> AppResult<()> {
+    let Some(config) = options.as_mut() else {
+        return Ok(());
+    };
+    config.size = normalized_optional_string(config.size.take());
+    config.quality = normalized_enum(
+        "image quality",
+        config.quality.take(),
+        &["auto", "low", "medium", "high", "standard", "hd"],
+    )?;
+    config.output_format = normalized_enum(
+        "image output_format",
+        config.output_format.take(),
+        &["png", "jpeg", "webp"],
+    )?;
+    config.background = normalized_enum(
+        "image background",
+        config.background.take(),
+        &["auto", "opaque", "transparent"],
+    )?;
+    config.moderation = normalized_enum(
+        "image moderation",
+        config.moderation.take(),
+        &["auto", "low"],
+    )?;
+    config.style = normalized_enum("image style", config.style.take(), &["vivid", "natural"])?;
+    config.response_format = normalized_enum(
+        "image response_format",
+        config.response_format.take(),
+        &["b64_json", "url"],
+    )?;
+    config.input_fidelity = normalized_enum(
+        "image input_fidelity",
+        config.input_fidelity.take(),
+        &["low", "high"],
+    )?;
+    if config.n.is_some_and(|value| !(1..=10).contains(&value)) {
+        return Err(AppError::BadRequest(
+            "image n must be between 1 and 10".to_string(),
+        ));
+    }
+    if config.output_compression.is_some_and(|value| value > 100) {
+        return Err(AppError::BadRequest(
+            "image output_compression must be between 0 and 100".to_string(),
+        ));
+    }
+    if config == &ImageModelConfig::default() {
+        *options = None;
+    }
+    Ok(())
+}
+
+fn normalized_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim().to_string();
+        (!value.is_empty()).then_some(value)
+    })
+}
+
+fn normalized_enum(
+    field: &str,
+    value: Option<String>,
+    allowed: &[&str],
+) -> AppResult<Option<String>> {
+    let value = normalized_optional_string(value);
+    if value
+        .as_deref()
+        .is_some_and(|value| !allowed.contains(&value))
+    {
+        return Err(AppError::BadRequest(format!(
+            "{field} has an unsupported value"
+        )));
+    }
+    Ok(value)
 }
 
 fn validate_context_size(context_size: u32) -> AppResult<()> {
@@ -295,8 +425,8 @@ fn validate_extra_body(extra_body: &serde_json::Value) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_model_configs, validate_extra_body};
-    use crate::domain::ModelConfig;
+    use super::{normalize_model_configs, normalize_optional_url, validate_extra_body};
+    use crate::domain::{ImageModelConfig, ModelConfig};
 
     #[test]
     fn extra_body_accepts_objects_and_null() {
@@ -377,5 +507,58 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn image_options_reject_invalid_ranges_and_values() {
+        let result = normalize_model_configs(
+            &["image-model".to_string()],
+            vec![ModelConfig {
+                model_id: "image-model".to_string(),
+                multimodal: false,
+                thinking: false,
+                context_size: 128_000,
+                input_price: None,
+                output_price: None,
+                cache_write_price: None,
+                cache_read_price: None,
+                image_options: Some(ImageModelConfig {
+                    n: Some(11),
+                    ..Default::default()
+                }),
+            }],
+        );
+        assert!(result.is_err());
+
+        let result = normalize_model_configs(
+            &["image-model".to_string()],
+            vec![ModelConfig {
+                model_id: "image-model".to_string(),
+                multimodal: false,
+                thinking: false,
+                context_size: 128_000,
+                input_price: None,
+                output_price: None,
+                cache_write_price: None,
+                cache_read_price: None,
+                image_options: Some(ImageModelConfig {
+                    style: Some("unsupported".to_string()),
+                    ..Default::default()
+                }),
+            }],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn image_endpoint_urls_require_http_or_https_without_credentials() {
+        assert!(normalize_optional_url(Some("file:///tmp/image".to_string())).is_err());
+        assert!(
+            normalize_optional_url(Some("https://user:pass@example.test/images".to_string()))
+                .is_err()
+        );
+        assert!(
+            normalize_optional_url(Some("https://api.example.test/images".to_string())).is_ok()
+        );
     }
 }

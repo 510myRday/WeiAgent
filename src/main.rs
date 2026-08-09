@@ -24,9 +24,11 @@ async fn main() -> AppResult<()> {
     let is_dev = std::env::args().any(|arg| arg == "dev");
     let config = AppConfig::load(is_dev).await?;
 
-    tracing_subscriber::fmt()
-        .with_max_level(log_level_filter(&config.settings.log_level))
-        .init();
+    let log_filter = format!(
+        "{},html5ever=error",
+        log_level_filter(&config.settings.log_level)
+    );
+    tracing_subscriber::fmt().with_env_filter(log_filter).init();
 
     let addr = config.socket_addr()?;
     let api_security = Arc::new(ApiSecurity::new(addr, is_dev));

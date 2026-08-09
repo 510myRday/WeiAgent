@@ -677,7 +677,7 @@ export function SettingsPanel({
       changeProviderForm((current) => ({
         ...current,
         modelsText: models.join('\n'),
-        modelConfigs: syncModelConfigs(models, current.modelConfigs),
+        modelConfigs: syncModelConfigs(models, current.modelConfigs, current.provider_type),
       }));
       toast.success(t('notification.modelsLoaded', { count: models.length }));
     } catch (cause) {
@@ -707,7 +707,7 @@ export function SettingsPanel({
     changeProviderForm((current) => ({
       ...current,
       modelsText,
-      modelConfigs: syncModelConfigs(parseModels(modelsText), current.modelConfigs),
+      modelConfigs: syncModelConfigs(parseModels(modelsText), current.modelConfigs, current.provider_type),
     }));
   }
 

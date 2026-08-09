@@ -109,6 +109,7 @@ fn latest_usage_snapshot(usage: &ModelUsage) -> ConversationUsage {
         tokens: usage.tokens.clone(),
         total_tokens: context_tokens,
         cost_usd: usage.cost_usd,
+        image_count: usage.image_count,
     }
 }
 
@@ -582,8 +583,13 @@ pub(super) fn update_conversation_title_conn(
     Ok(conversation)
 }
 
-pub(super) fn delete_conversation_conn(conn: &mut Connection, id: Uuid) -> AppResult<()> {
+pub(super) fn delete_conversation_conn(
+    conn: &mut Connection,
+    id: Uuid,
+) -> AppResult<Vec<ChatMessage>> {
     let tx = conn.transaction()?;
+    load_conversation(&tx, id)?;
+    let removed = load_messages(&tx, id)?;
     tx.execute(
         "DELETE FROM conversation_messages WHERE conversation_id = ?1",
         [id.to_string()],
@@ -593,14 +599,19 @@ pub(super) fn delete_conversation_conn(conn: &mut Connection, id: Uuid) -> AppRe
     if deleted == 0 {
         return Err(AppError::NotFound);
     }
-    Ok(())
+    Ok(removed)
 }
 
 pub(super) fn delete_agent_conversations_conn(
     conn: &mut Connection,
     agent_id: Uuid,
-) -> AppResult<()> {
+) -> AppResult<Vec<(Uuid, Vec<ChatMessage>)>> {
     let tx = conn.transaction()?;
+    let conversations = list_conversations_conn(&tx, agent_id)?;
+    let mut removed = Vec::with_capacity(conversations.len());
+    for conversation in &conversations {
+        removed.push((conversation.id, load_messages(&tx, conversation.id)?));
+    }
     tx.execute(
         "DELETE FROM conversation_messages WHERE conversation_id IN (
             SELECT id FROM conversations WHERE agent_id = ?1
@@ -612,7 +623,7 @@ pub(super) fn delete_agent_conversations_conn(
         [agent_id.to_string()],
     )?;
     tx.commit()?;
-    Ok(())
+    Ok(removed)
 }
 
 pub(super) fn read_messages_conn(

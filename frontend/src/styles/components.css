@@ -2759,6 +2759,35 @@
   background: var(--status-warning-text);
 }
 
+.image-size-control {
+  min-width: 0;
+}
+
+.image-size-custom-dialog__form {
+  display: grid;
+  gap: 8px;
+}
+
+.image-size-custom-dialog__form label {
+  color: var(--color-text-soft);
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-emphasis);
+}
+
+.image-size-custom-dialog__form input {
+  min-height: 40px;
+}
+
+.image-size-custom-dialog__form input[aria-invalid="true"] {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-soft);
+}
+
+.image-size-custom-dialog__error {
+  color: var(--color-danger-text);
+  font-size: var(--font-size-label);
+}
+
 .card-body {
   padding: 0;
 }

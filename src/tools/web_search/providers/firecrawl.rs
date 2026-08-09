@@ -25,9 +25,9 @@ pub async fn search(
     let body = build_request_body(request);
     let builder = client
         .post(endpoint)
-        .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
         .json(&body);
+    let builder = add_optional_bearer(builder, api_key);
     let text = send_checked(
         builder,
         "Firecrawl",
@@ -79,9 +79,9 @@ pub async fn extract(
     });
     let builder = client
         .post(endpoint)
-        .bearer_auth(api_key)
         .header("Content-Type", "application/json")
         .json(&body);
+    let builder = add_optional_bearer(builder, api_key);
     let text = send_checked(
         builder,
         "Firecrawl scrape",
@@ -125,6 +125,15 @@ fn build_api_endpoint(base_url: &str, suffix: &str) -> Result<reqwest::Url, Prov
     endpoint.set_query(None);
     endpoint.set_fragment(None);
     Ok(endpoint)
+}
+
+fn add_optional_bearer(builder: reqwest::RequestBuilder, api_key: &str) -> reqwest::RequestBuilder {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        builder
+    } else {
+        builder.bearer_auth(api_key)
+    }
 }
 
 fn parse_extract_output(value: &Value, requested_url: &str) -> ProviderExtractOutput {
@@ -465,6 +474,37 @@ mod tests {
                 .unwrap()
                 .as_str(),
             "https://example.com/custom/v1/search"
+        );
+    }
+
+    #[test]
+    fn omits_authorization_without_a_key() {
+        let client = reqwest::Client::new();
+        let endpoint = build_api_endpoint("https://api.firecrawl.dev/v2", "search").unwrap();
+        let request = add_optional_bearer(client.post(endpoint), "")
+            .build()
+            .unwrap();
+        assert!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sends_authorization_when_a_key_is_configured() {
+        let client = reqwest::Client::new();
+        let endpoint = build_api_endpoint("https://api.firecrawl.dev/v2", "search").unwrap();
+        let request = add_optional_bearer(client.post(endpoint), "fc-key")
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer fc-key")
         );
     }
 

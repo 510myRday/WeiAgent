@@ -23,6 +23,7 @@ import {
   Paperclip,
   Pencil,
   RotateCcw,
+  Scan,
   Send,
   X,
 } from 'lucide-react';
@@ -42,7 +43,12 @@ import { Button, Dialog, EmptyState, useFeedback } from '../../components/ui';
 import { useI18n } from '../../i18n';
 import { MarkdownContent } from './MarkdownContent';
 import { StreamingMarkdown } from './StreamingMarkdown';
-import { MAX_IMAGE_COUNT, attachmentImageUrl } from './imageAttachments';
+import {
+  MAX_IMAGE_COUNT,
+  attachmentImageUrl,
+  removeAttachment,
+  toggleAttachmentMask,
+} from './imageAttachments';
 import { useImageAttachments } from './useImageAttachments';
 import { ReasoningDisclosure } from './ReasoningDisclosure';
 import { ToolDisclosure } from './ToolDisclosure';
@@ -58,6 +64,7 @@ interface MessageListProps {
   isLoadingOlderMessages: boolean;
   isSending: boolean;
   supportsImages: boolean;
+  supportsImageMasks: boolean;
   runPhase: AgentRunPhase;
   retryStatus: { attempt: number; maxAttempts: number; reason: string } | null;
   timelineMessageIndexes: readonly number[];
@@ -111,6 +118,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   isLoadingOlderMessages,
   isSending,
   supportsImages,
+  supportsImageMasks,
   runPhase,
   retryStatus,
   timelineMessageIndexes,
@@ -510,6 +518,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                     settings={settings}
                     isSending={isSending}
                     supportsImages={supportsImages}
+                    supportsImageMasks={supportsImageMasks}
                     onRestart={onRestart}
                     onApproveToolCall={onApproveToolCall}
                     formatTimelineTime={formatTimelineTime}
@@ -542,6 +551,7 @@ const MessageListItem = memo(function MessageListItem({
   settings,
   isSending,
   supportsImages,
+  supportsImageMasks,
   onRestart,
   onApproveToolCall,
   formatTimelineTime,
@@ -552,6 +562,7 @@ const MessageListItem = memo(function MessageListItem({
   settings: AppSettings;
   isSending: boolean;
   supportsImages: boolean;
+  supportsImageMasks: boolean;
   onRestart: MessageListProps['onRestart'];
   onApproveToolCall: MessageListProps['onApproveToolCall'];
   formatTimelineTime: (value: string) => string;
@@ -568,6 +579,7 @@ const MessageListItem = memo(function MessageListItem({
       failedLabel={t('chat.failed')}
       actionsDisabled={isSending}
       supportsImages={supportsImages}
+      supportsImageMasks={supportsImageMasks}
       onRestart={onRestart}
       onApproveToolCall={onApproveToolCall}
     />
@@ -660,6 +672,7 @@ const MessageRow = memo(function MessageRow({
   failedLabel,
   actionsDisabled,
   supportsImages,
+  supportsImageMasks,
   onRestart,
   onApproveToolCall,
 }: {
@@ -672,6 +685,7 @@ const MessageRow = memo(function MessageRow({
   failedLabel: string;
   actionsDisabled: boolean;
   supportsImages: boolean;
+  supportsImageMasks: boolean;
   onRestart: MessageListProps['onRestart'];
   onApproveToolCall: MessageListProps['onApproveToolCall'];
 }) {
@@ -780,11 +794,41 @@ const MessageRow = memo(function MessageRow({
                   {editAttachments.length > 0 ? (
                     <div className="message-edit-image-strip">
                       {editAttachments.map((attachment) => (
-                        <div className="message-edit-image-preview" key={attachment.id}>
-                          <img src={attachmentImageUrl(attachment)} alt={attachment.name} />
+                        <div
+                          className={`message-edit-image-preview${attachment.is_mask ? ' is-mask' : ''}`}
+                          key={attachment.id}
+                        >
+                          <img
+                            src={attachmentImageUrl(attachment)}
+                            alt={attachment.name}
+                            referrerPolicy="no-referrer"
+                          />
+                          {supportsImageMasks && attachment.media_type === 'image/png' ? (
+                            <button
+                              type="button"
+                              className={`message-edit-image-mask-button${attachment.is_mask ? ' is-active' : ''}`}
+                              onClick={() => setEditAttachments((current) => (
+                                toggleAttachmentMask(current, attachment.id)
+                              ))}
+                              disabled={
+                                !attachment.is_mask
+                                && !editAttachments.some((item) => (
+                                  item.id !== attachment.id && !item.is_mask
+                                ))
+                              }
+                              aria-pressed={Boolean(attachment.is_mask)}
+                              aria-label={t(attachment.is_mask ? 'chat.maskImage' : 'chat.markAsMask')}
+                              title={t(attachment.is_mask ? 'chat.maskImage' : 'chat.markAsMask')}
+                            >
+                              <Scan size={13} />
+                            </button>
+                          ) : null}
                           <button
                             type="button"
-                            onClick={() => setEditAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                            className="message-edit-image-remove-button"
+                            onClick={() => setEditAttachments((current) => (
+                              removeAttachment(current, attachment.id)
+                            ))}
                             aria-label={t('chat.removeImage')}
                             title={t('chat.removeImage')}
                           >
@@ -971,7 +1015,7 @@ function MessageContent({
                   title={t('chat.openImage')}
                   aria-label={`${t('chat.openImage')}: ${attachment.name}`}
                 >
-                  <img src={imageUrl} alt={attachment.name} loading="lazy" />
+                  <img src={imageUrl} alt={attachment.name} loading="lazy" referrerPolicy="no-referrer" />
                 </button>
                 <div className="message-image-preview__actions">
                   <a
@@ -1054,6 +1098,7 @@ function MessageContent({
             className="image-preview-dialog__image"
             src={attachmentImageUrl(previewAttachment)}
             alt={previewAttachment.name}
+            referrerPolicy="no-referrer"
           />
         ) : null}
       </Dialog>

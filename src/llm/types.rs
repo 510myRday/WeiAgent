@@ -342,21 +342,14 @@ pub struct StreamFunctionDelta {
     pub arguments: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct OpenAiUsage {
-    #[serde(default, alias = "input_tokens")]
     pub prompt_tokens: u64,
-    #[serde(default, alias = "output_tokens")]
     pub completion_tokens: u64,
-    #[serde(default, alias = "input_tokens_details")]
     pub prompt_tokens_details: Option<OpenAiInputTokenDetails>,
-    #[serde(default, alias = "cache_hit_tokens")]
     pub prompt_cache_hit_tokens: u64,
-    #[serde(default)]
     pub prompt_cache_miss_tokens: u64,
-    #[serde(default)]
     pub cache_read_tokens: u64,
-    #[serde(default)]
     pub cached_tokens: u64,
 }
 
@@ -364,6 +357,46 @@ pub struct OpenAiUsage {
 pub struct OpenAiInputTokenDetails {
     #[serde(default)]
     pub cached_tokens: u64,
+}
+
+impl<'de> Deserialize<'de> for OpenAiUsage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Some OpenAI-compatible gateways mix Chat Completions names with
+        // Responses API names in the same usage object. Deserializing aliases
+        // directly makes Serde report a duplicate field, so normalize from a
+        // generic object and tolerate duplicate JSON keys as well.
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let fields = value
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("usage must be a JSON object"))?;
+        let number = |name: &str| {
+            fields
+                .get(name)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default()
+        };
+        let details = ["prompt_tokens_details", "input_tokens_details"]
+            .iter()
+            .filter_map(|name| fields.get(*name))
+            .filter_map(|value| value.get("cached_tokens"))
+            .filter_map(serde_json::Value::as_u64)
+            .max();
+
+        Ok(Self {
+            prompt_tokens: number("prompt_tokens").max(number("input_tokens")),
+            completion_tokens: number("completion_tokens").max(number("output_tokens")),
+            prompt_tokens_details: details
+                .map(|cached_tokens| OpenAiInputTokenDetails { cached_tokens }),
+            prompt_cache_hit_tokens: number("prompt_cache_hit_tokens")
+                .max(number("cache_hit_tokens")),
+            prompt_cache_miss_tokens: number("prompt_cache_miss_tokens"),
+            cache_read_tokens: number("cache_read_tokens"),
+            cached_tokens: number("cached_tokens"),
+        })
+    }
 }
 
 impl OpenAiUsage {
@@ -424,6 +457,41 @@ mod tests {
         assert_eq!(normalized.cache_read_tokens, 1200);
         assert_eq!(normalized.total_prompt_tokens, 1800);
         assert!((normalized.cache_hit_ratio - (2.0 / 3.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn usage_accepts_chat_and_responses_field_names_together() {
+        let usage: OpenAiUsage = serde_json::from_str(
+            r#"{
+                "prompt_tokens": 1800,
+                "input_tokens": 1800,
+                "completion_tokens": 20,
+                "output_tokens": 20,
+                "prompt_tokens_details": {"cached_tokens": 1100},
+                "input_tokens_details": {"cached_tokens": 1200},
+                "prompt_cache_hit_tokens": 1200,
+                "cache_hit_tokens": 1200
+            }"#,
+        )
+        .unwrap();
+
+        let normalized = usage.normalized();
+        assert_eq!(normalized.input_tokens, 600);
+        assert_eq!(normalized.output_tokens, 20);
+        assert_eq!(normalized.cache_read_tokens, 1200);
+        assert_eq!(normalized.total_prompt_tokens, 1800);
+    }
+
+    #[test]
+    fn usage_accepts_repeated_json_keys() {
+        let usage: OpenAiUsage = serde_json::from_str(
+            r#"{"prompt_tokens":1700,"prompt_tokens":1800,"completion_tokens":20}"#,
+        )
+        .unwrap();
+
+        let normalized = usage.normalized();
+        assert_eq!(normalized.input_tokens, 1800);
+        assert_eq!(normalized.output_tokens, 20);
     }
 
     fn message(role: ChatRole, content: impl Into<String>) -> ChatMessage {

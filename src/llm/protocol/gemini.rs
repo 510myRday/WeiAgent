@@ -696,6 +696,7 @@ mod tests {
                     id: "image-1".to_string(),
                     name: "sample.png".to_string(),
                     media_type: "image/png".to_string(),
+                    is_mask: false,
                     source: ImageSource::Url {
                         url: "https://example.test/sample.png".to_string(),
                     },

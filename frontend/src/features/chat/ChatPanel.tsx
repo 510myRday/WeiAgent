@@ -16,9 +16,11 @@ import type {
   Agent,
   AppSettings,
   Conversation,
+  ImageModelConfig,
   ImageAttachment,
   GenerationMode,
   ModelProvider,
+  ModelProviderPayload,
   ThinkingLevel,
   UiMessageItem,
   UpdateAgentPayload,
@@ -41,6 +43,10 @@ interface ChatPanelProps {
   activeAgentId: string;
   onAgentChange: (id: string) => void;
   onAgentEdit: (id: string, payload: UpdateAgentPayload) => Promise<Agent>;
+  onProviderEdit: (
+    id: string,
+    payload: Partial<ModelProviderPayload>,
+  ) => Promise<ModelProvider>;
   onOpenAgentSettings: (id: string) => void;
   onOpenMain: () => void;
   onBackToList: () => void;
@@ -62,7 +68,17 @@ type PendingModelSave = {
   previousValue: string;
 };
 
+type PendingImageOptionsSave = {
+  requestId: number;
+  providerId: string;
+  modelId: string;
+  options: ComposerImageOptions;
+};
+
+type ComposerImageOptions = Pick<ImageModelConfig, 'size' | 'quality' | 'n'>;
+
 const MODEL_AUTO_SAVE_DELAY_MS = 600;
+const IMAGE_OPTIONS_AUTO_SAVE_DELAY_MS = 600;
 const EMPTY_MESSAGES: UiMessageItem[] = [];
 
 export function ChatPanel({
@@ -71,6 +87,7 @@ export function ChatPanel({
   activeAgentId,
   onAgentChange,
   onAgentEdit,
+  onProviderEdit,
   onOpenAgentSettings,
   onOpenMain,
   onBackToList,
@@ -115,13 +132,14 @@ export function ChatPanel({
     onError: toast.error,
   });
 
-  const [isStreamMode, setIsStreamMode] = useState(true);
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>('medium');
   const [generationMode, setGenerationMode] = useState<GenerationMode>('chat');
   const [modelTargetAgentId, setModelTargetAgentId] = useState('');
   const [selectedModelValue, setSelectedModelValue] = useState('');
   const [isModelSavePending, setIsModelSavePending] = useState(false);
   const [isSavingModel, setIsSavingModel] = useState(false);
+  const [imageOptionsDraft, setImageOptionsDraft] = useState<ComposerImageOptions>({});
+  const [isSavingImageOptions, setIsSavingImageOptions] = useState(false);
   const [conversationFilter, setConversationFilter] = useState('');
   const [pinningConversationIds, setPinningConversationIds] = useState<Set<string>>(() => new Set());
   const [activeTimelineMessageIndex, setActiveTimelineMessageIndex] = useState<number | null>(null);
@@ -135,10 +153,17 @@ export function ChatPanel({
   const modelSaveTimerRef = useRef<number | undefined>(undefined);
   const modelSaveRequestRef = useRef(0);
   const pendingModelSaveRef = useRef<PendingModelSave | null>(null);
+  const imageOptionsDraftRef = useRef<ComposerImageOptions>({});
+  const imageOptionsSaveTimerRef = useRef<number | undefined>(undefined);
+  const imageOptionsSaveRequestRef = useRef(0);
+  const pendingImageOptionsSaveRef = useRef<PendingImageOptionsSave | null>(null);
+  const imageOptionsSaveInFlightRef = useRef(false);
+  const autoModelSelectionKeyRef = useRef<string | null>(null);
   const onAgentEditRef = useRef(onAgentEdit);
   const taskPlanRequestRef = useRef(0);
 
   onAgentEditRef.current = onAgentEdit;
+  imageOptionsDraftRef.current = imageOptionsDraft;
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const conversationAgentIdKey = useMemo(() => {
@@ -158,24 +183,76 @@ export function ChatPanel({
   }, [agents, conversationAgentIdKey]);
   const modelTargetAgent = conversationAgents.find((agent) => agent.id === modelTargetAgentId)
     ?? activeAgent;
+  const pendingModelSelection = useMemo(() => {
+    if (!selectedModelValue) return null;
+    try {
+      const parsed: unknown = JSON.parse(selectedModelValue);
+      if (!Array.isArray(parsed)) return null;
+      const [providerId, modelId] = parsed;
+      if (typeof providerId !== 'string' || typeof modelId !== 'string') return null;
+      return { providerId, modelId };
+    } catch {
+      return null;
+    }
+  }, [selectedModelValue]);
+  const targetProviderId = pendingModelSelection?.providerId
+    ?? modelTargetAgent?.model_provider_id;
+  const targetModelId = pendingModelSelection?.modelId ?? modelTargetAgent?.model_id;
   const activeProvider = providers.find(
-    (provider) => provider.id === modelTargetAgent?.model_provider_id,
+    (provider) => provider.id === targetProviderId,
   );
   const activeModelConfig = activeProvider?.model_configs.find(
-    (config) => config.model_id === modelTargetAgent?.model_id,
+    (config) => config.model_id === targetModelId,
   );
   const supportsImages = activeModelConfig?.multimodal === true;
   const supportsImageGeneration = activeProvider?.provider_type === 'openai_images';
   const supportsThinking = activeModelConfig?.thinking === true;
   const effectiveGenerationMode: GenerationMode = supportsImageGeneration ? 'image' : generationMode;
-  const effectiveIsStreamMode = supportsImageGeneration ? false : isStreamMode;
+  const imageOptionSize = activeModelConfig?.image_options?.size;
+  const imageOptionQuality = activeModelConfig?.image_options?.quality;
+  const imageOptionCount = activeModelConfig?.image_options?.n;
+  useEffect(() => {
+    const pending = pendingImageOptionsSaveRef.current;
+    if (
+      pending
+      && pending.providerId === activeProvider?.id
+      && pending.modelId === targetModelId
+    ) return;
+    if (pending) {
+      pendingImageOptionsSaveRef.current = null;
+      imageOptionsSaveRequestRef.current += 1;
+      if (imageOptionsSaveTimerRef.current !== undefined) {
+        window.clearTimeout(imageOptionsSaveTimerRef.current);
+        imageOptionsSaveTimerRef.current = undefined;
+      }
+    }
+    const next = {
+      size: imageOptionSize,
+      quality: imageOptionQuality,
+      n: imageOptionCount,
+    };
+    imageOptionsDraftRef.current = next;
+    setImageOptionsDraft({
+      ...next,
+    });
+    setIsSavingImageOptions(false);
+  }, [
+    imageOptionCount,
+    imageOptionQuality,
+    imageOptionSize,
+    activeProvider?.id,
+    targetModelId,
+  ]);
+  useEffect(() => () => {
+    if (imageOptionsSaveTimerRef.current !== undefined) {
+      window.clearTimeout(imageOptionsSaveTimerRef.current);
+    }
+  }, []);
   useEffect(() => {
     if (supportsImageGeneration) {
       setGenerationMode('image');
-      setIsStreamMode(false);
     } else {
       setGenerationMode('chat');
-      setIsStreamMode(true);
     }
   }, [supportsImageGeneration]);
   const modelOptions = useMemo<ModelOption[]>(() => sortByName(providers).flatMap((provider) =>
@@ -186,11 +263,12 @@ export function ChatPanel({
       label: `${provider.name} | ${model}`,
     })),
   ), [providers]);
+  const soleModelOption = modelOptions.length === 1 ? modelOptions[0] : undefined;
   const activeModelValue = modelTargetAgent
     ? JSON.stringify([modelTargetAgent.model_provider_id, modelTargetAgent.model_id])
     : '';
-  const hasProvider = Boolean(activeAgent?.model_provider_id);
-  const hasModel = Boolean(activeAgent?.model_id);
+  const hasProvider = Boolean(targetProviderId);
+  const hasModel = Boolean(targetModelId);
   const isComposerDisabled = !activeAgent || !hasProvider || !hasModel;
   const composerPlaceholder = !activeAgent
     ? t('chat.placeholderDisabled')
@@ -350,9 +428,63 @@ export function ChatPanel({
     setSelectedModelValue(activeModelValue);
     setIsModelSavePending(false);
     setIsSavingModel(false);
-    // Thinking-capable models default to medium; others stay off (no thinking params).
+  }, [activeModelValue, conversationActionError, modelTargetAgentId, onAgentEdit, toast]);
+
+  useEffect(() => {
+    // Keep thinking state in sync without resetting a model selection that is
+    // still waiting for auto-save.
     setThinkingLevel(supportsThinking ? 'medium' : 'off');
-  }, [activeModelValue, conversationActionError, modelTargetAgentId, onAgentEdit, supportsThinking, toast]);
+  }, [supportsThinking]);
+
+  useEffect(() => {
+    if (
+      !soleModelOption
+      || !modelTargetAgent
+      || isSavingModel
+      || isSavingImageOptions
+      || isSending
+      || activeModelValue === soleModelOption.value
+      || selectedModelValue === soleModelOption.value
+    ) return;
+
+    const selectionKey = `${modelTargetAgent.id}:${soleModelOption.value}`;
+    if (autoModelSelectionKeyRef.current === selectionKey) return;
+    autoModelSelectionKeyRef.current = selectionKey;
+
+    const requestId = modelSaveRequestRef.current + 1;
+    modelSaveRequestRef.current = requestId;
+    pendingModelSaveRef.current = null;
+    setSelectedModelValue(soleModelOption.value);
+    setIsModelSavePending(true);
+    setIsSavingModel(true);
+    void onAgentEdit(modelTargetAgent.id, {
+      model_provider_id: soleModelOption.providerId,
+      model_id: soleModelOption.modelId,
+    }).catch((cause) => {
+      if (modelSaveRequestRef.current === requestId) {
+        setSelectedModelValue(activeModelValue);
+        setIsModelSavePending(false);
+      }
+      toast.error(conversationActionError(cause));
+    }).finally(() => {
+      if (modelSaveRequestRef.current === requestId) {
+        setIsSavingModel(false);
+      }
+    });
+  }, [
+    activeModelValue,
+    conversationActionError,
+    isSavingImageOptions,
+    isSavingModel,
+    isSending,
+    modelTargetAgent,
+    modelTargetAgent?.id,
+    onAgentEdit,
+    selectedModelValue,
+    soleModelOption,
+    soleModelOption?.value,
+    toast,
+  ]);
 
   useEffect(() => () => {
     const pending = pendingModelSaveRef.current;
@@ -437,7 +569,7 @@ export function ChatPanel({
     void send(
       content.trim(),
       activeAgent.id,
-      effectiveIsStreamMode,
+      !supportsImageGeneration,
       attachments,
       supportsThinking ? thinkingLevel : 'off',
       effectiveGenerationMode,
@@ -446,15 +578,15 @@ export function ChatPanel({
   }, [
     activeAgent,
     effectiveGenerationMode,
-    effectiveIsStreamMode,
     isSending,
     send,
+    supportsImageGeneration,
     supportsThinking,
     thinkingLevel,
   ]);
 
   async function handleModelChange(value: string) {
-    if (!modelTargetAgent || isSavingModel || isSending) return;
+    if (!modelTargetAgent || isSavingModel || isSavingImageOptions || isSending) return;
     const selection = modelOptions.find((option) => option.value === value);
     if (!selection) return;
 
@@ -485,6 +617,86 @@ export function ChatPanel({
       modelSaveTimerRef.current = undefined;
       void persistPendingModelSelection(requestId);
     }, MODEL_AUTO_SAVE_DELAY_MS);
+  }
+
+  function handleImageOptionsChange(patch: Partial<ComposerImageOptions>) {
+    if (
+      !activeProvider
+      || !activeModelConfig
+      || !supportsImageGeneration
+      || isSending
+    ) return;
+    const next = { ...imageOptionsDraftRef.current, ...patch };
+    imageOptionsDraftRef.current = next;
+    setImageOptionsDraft(next);
+    setIsSavingImageOptions(true);
+    const requestId = imageOptionsSaveRequestRef.current + 1;
+    imageOptionsSaveRequestRef.current = requestId;
+    pendingImageOptionsSaveRef.current = {
+      requestId,
+      providerId: activeProvider.id,
+      modelId: activeModelConfig.model_id,
+      options: next,
+    };
+    if (imageOptionsSaveTimerRef.current !== undefined) {
+      window.clearTimeout(imageOptionsSaveTimerRef.current);
+    }
+    imageOptionsSaveTimerRef.current = window.setTimeout(() => {
+      imageOptionsSaveTimerRef.current = undefined;
+      void flushPendingImageOptionsSave();
+    }, IMAGE_OPTIONS_AUTO_SAVE_DELAY_MS);
+  }
+
+  async function flushPendingImageOptionsSave() {
+    if (imageOptionsSaveInFlightRef.current) return;
+    const pending = pendingImageOptionsSaveRef.current;
+    if (!pending) return;
+    pendingImageOptionsSaveRef.current = null;
+    imageOptionsSaveInFlightRef.current = true;
+    try {
+      const provider = providers.find((item) => item.id === pending.providerId);
+      const modelConfig = provider?.model_configs.find((config) => config.model_id === pending.modelId);
+      if (!provider || !modelConfig) return;
+      await onProviderEdit(provider.id, {
+        model_configs: provider.model_configs.map((config) => (
+          config.model_id === pending.modelId
+            ? {
+              ...config,
+              image_options: {
+                ...config.image_options,
+                size: pending.options.size,
+                quality: pending.options.quality,
+                n: pending.options.n,
+              },
+            }
+            : config
+        )),
+      });
+    } catch (cause) {
+      if (pending.requestId === imageOptionsSaveRequestRef.current) {
+        const restored = {
+          size: imageOptionSize,
+          quality: imageOptionQuality,
+          n: imageOptionCount,
+        };
+        imageOptionsDraftRef.current = restored;
+        setImageOptionsDraft(restored);
+        toast.error(userErrorMessage(cause, {
+          summary: t('chat.imageOptionsSaveFailed'),
+          recovery: t('error.retryConnection'),
+        }));
+      }
+    } finally {
+      imageOptionsSaveInFlightRef.current = false;
+      if (pendingImageOptionsSaveRef.current) {
+        imageOptionsSaveTimerRef.current = window.setTimeout(() => {
+          imageOptionsSaveTimerRef.current = undefined;
+          void flushPendingImageOptionsSave();
+        }, 0);
+      } else if (pending.requestId === imageOptionsSaveRequestRef.current) {
+        setIsSavingImageOptions(false);
+      }
+    }
   }
 
   async function persistPendingModelSelection(requestId: number) {
@@ -576,15 +788,20 @@ export function ChatPanel({
 
   const handleSendMessage = useCallback((
     content: string,
-    streamMode: boolean,
     attachments: ImageAttachment[],
     imageMode: GenerationMode,
   ) => {
-    if (!activeAgent || isSending || isModelSavePending || isSavingModel) return;
+    if (
+      !activeAgent
+      || isSending
+      || isModelSavePending
+      || isSavingModel
+      || isSavingImageOptions
+    ) return;
     void send(
       content,
       activeAgent.id,
-      supportsImageGeneration ? false : streamMode,
+      !supportsImageGeneration,
       attachments,
       supportsThinking ? thinkingLevel : 'off',
       supportsImageGeneration ? 'image' : imageMode,
@@ -592,6 +809,7 @@ export function ChatPanel({
   }, [
     activeAgent,
     isModelSavePending,
+    isSavingImageOptions,
     isSavingModel,
     isSending,
     send,
@@ -780,7 +998,12 @@ export function ChatPanel({
                 value={selectedModelValue}
                 aria-label={t('chat.selectModel')}
                 aria-busy={isModelSavePending || isSavingModel}
-                disabled={modelOptions.length === 0 || isSavingModel || isSending}
+                disabled={
+                  modelOptions.length === 0
+                  || isSavingModel
+                  || isSavingImageOptions
+                  || isSending
+                }
                 title={t('chat.selectModel')}
                 onChange={(event) => void handleModelChange(event.target.value)}
               >
@@ -815,6 +1038,7 @@ export function ChatPanel({
           isLoadingOlderMessages={isLoadingOlderMessages}
           isSending={isSending}
           supportsImages={supportsImages || supportsImageGeneration}
+          supportsImageMasks={supportsImageGeneration}
           runPhase={runPhase}
           retryStatus={retryStatus}
           timelineMessageIndexes={timelineMessageIndexes}
@@ -834,8 +1058,8 @@ export function ChatPanel({
           />
         ) : null}
 
-        <div className={`chat-composer-stack${activeConversationId ? ' has-task-plan' : ''}`}>
-          {activeConversationId ? (
+        <div className={`chat-composer-stack${activeConversationId && !supportsImageGeneration ? ' has-task-plan' : ''}`}>
+          {activeConversationId && !supportsImageGeneration ? (
             <TaskPlanPanel
               plans={taskPlans}
               isLoading={isTaskPlanLoading}
@@ -851,13 +1075,15 @@ export function ChatPanel({
             draftKey={`${activeAgent?.id ?? 'none'}:${activeConversationId || 'new'}`}
             isSending={isSending}
             isSavingModel={isSavingModel}
-            isModelSavePending={isModelSavePending}
-            isStreamMode={effectiveIsStreamMode}
-            onStreamModeChange={setIsStreamMode}
+            isModelSavePending={isModelSavePending || isSavingImageOptions}
             supportsImages={supportsImages}
             supportsImageGeneration={supportsImageGeneration}
             generationMode={effectiveGenerationMode}
+            imageOptions={imageOptionsDraft}
+            imageSizeControlKey={targetModelId ?? ''}
+            isSavingImageOptions={isSavingImageOptions}
             onGenerationModeChange={setGenerationMode}
+            onImageOptionsChange={handleImageOptionsChange}
             supportsThinking={supportsThinking}
             thinkingLevel={thinkingLevel}
             onThinkingLevelChange={setThinkingLevel}

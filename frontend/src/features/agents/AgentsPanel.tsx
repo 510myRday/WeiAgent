@@ -49,6 +49,8 @@ const defaultAgentForm: CreateAgentPayload = {
   avatar_color: defaultAvatarColor('bot'),
 };
 
+const EMPTY_PROVIDER_ID = '00000000-0000-0000-0000-000000000000';
+
 const defaultWorkspaceForm: Pick<AgentWorkspace, 'personality' | 'memory' | 'instructions'> = {
   personality: '',
   memory: '',
@@ -170,7 +172,7 @@ export function AgentsPanel({
     setAgentForm({
       name: activeAgent.name,
       description: activeAgent.description,
-      model_provider_id: activeAgent.model_provider_id,
+      model_provider_id: normalizeModelProviderId(activeAgent.model_provider_id),
       model_id: activeAgent.model_id,
       avatar_icon: activeAgent.avatar_icon,
       avatar_color: activeAgent.avatar_color,
@@ -775,11 +777,15 @@ function agentPayloadFromAgent(agent: Agent): CreateAgentPayload {
   return {
     name: agent.name,
     description: agent.description,
-    model_provider_id: agent.model_provider_id,
+    model_provider_id: normalizeModelProviderId(agent.model_provider_id),
     model_id: agent.model_id,
     avatar_icon: agent.avatar_icon,
     avatar_color: agent.avatar_color,
   };
+}
+
+function normalizeModelProviderId(providerId: string): string {
+  return providerId === EMPTY_PROVIDER_ID ? '' : providerId;
 }
 
 function agentPayloadFromForm(agent: Agent, form: CreateAgentPayload): CreateAgentPayload {

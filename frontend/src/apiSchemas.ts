@@ -56,6 +56,7 @@ const imageAttachmentSchema = looseObject({
   id: string(),
   name: string(),
   media_type: picklist(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
+  is_mask: optional(boolean()),
   source_type: picklist(['base64', 'url', 'local']),
   data: optional(string()),
   url: optional(string()),
@@ -76,6 +77,7 @@ const modelUsageSchema = looseObject({
   ...tokenUsageFields,
   total_tokens: number(),
   cost_usd: optional(nullable(number())),
+  image_count: optional(number()),
   provider_id: string(),
   model_id: string(),
 });
@@ -84,6 +86,7 @@ const conversationUsageSchema = looseObject({
   ...tokenUsageFields,
   total_tokens: number(),
   cost_usd: optional(nullable(number())),
+  image_count: optional(number()),
 });
 
 export const chatMessageSchema = looseObject({

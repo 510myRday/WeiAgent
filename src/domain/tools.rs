@@ -279,11 +279,11 @@ impl WebSearchProviderKind {
     }
 
     pub fn supports_anonymous_search(&self) -> bool {
-        matches!(self, Self::Jina)
+        matches!(self, Self::Jina | Self::Firecrawl)
     }
 
     pub fn supports_anonymous_extract(&self) -> bool {
-        matches!(self, Self::Jina)
+        matches!(self, Self::Jina | Self::Firecrawl)
     }
 
     pub fn provider_kind(&self) -> &'static str {
@@ -1154,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn web_search_defaults_enable_only_anonymous_jina() {
+    fn web_search_defaults_enable_anonymous_sources() {
         let config = AgentToolsConfig::default();
         assert!(config.web_search.enabled);
         assert_eq!(
@@ -1171,9 +1171,10 @@ mod tests {
         assert!(!config.web_search.sources[1].enabled);
         assert!(config.web_search.sources[2].enabled);
         assert!(!config.web_search.sources[3].enabled);
-        assert!(!config.web_search.sources[4].enabled);
+        assert!(config.web_search.sources[4].enabled);
         assert!(!config.web_search.sources[0].has_available_key());
         assert!(config.web_search.sources[2].can_search());
+        assert!(config.web_search.sources[4].can_search());
     }
 
     #[test]

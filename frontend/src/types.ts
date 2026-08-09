@@ -162,6 +162,7 @@ export type ImageAttachment = {
   id: string;
   name: string;
   media_type: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+  is_mask?: boolean;
 } & (
   | { source_type: 'base64'; data: string }
   | { source_type: 'url'; url: string }
@@ -181,6 +182,7 @@ export type TokenUsage = {
 export type ModelUsage = TokenUsage & {
   total_tokens: number;
   cost_usd?: number | null;
+  image_count?: number;
   provider_id: string;
   model_id: string;
 };
@@ -188,6 +190,7 @@ export type ModelUsage = TokenUsage & {
 export type ConversationUsage = TokenUsage & {
   total_tokens: number;
   cost_usd?: number | null;
+  image_count?: number;
 };
 
 export type ChatToolCall = {

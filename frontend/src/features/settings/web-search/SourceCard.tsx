@@ -103,6 +103,7 @@ export const SourceCard = memo(function SourceCard({
   const selected = selectedKeyIndices
     .filter((keyIndex) => keyIndex >= 0 && keyIndex < keyCount);
   const canEnableSource = sourceCanBeEnabled(source);
+  const supportsAnonymousAccess = source.provider === 'jina' || source.provider === 'firecrawl';
   const isPreferencesExpanded = Boolean(expandedSections?.preferences);
   const isKeysExpanded = Boolean(expandedSections?.keys);
   const isConnectionExpanded = Boolean(expandedSections?.connection);
@@ -112,7 +113,13 @@ export const SourceCard = memo(function SourceCard({
   const checkIndices = selected.length > 0
     ? selected
     : source.api_keys.map((_, keyIndex) => keyIndex);
-  const emptyLabel = t(source.provider === 'grok' ? 'tools.webSearch.noSso' : 'tools.webSearch.noKeys');
+  const emptyLabel = t(
+    supportsAnonymousAccess
+      ? 'tools.webSearch.anonymousReady'
+      : source.provider === 'grok'
+        ? 'tools.webSearch.noSso'
+        : 'tools.webSearch.noKeys',
+  );
   const sourceBodyId = `web-search-source-body-${source.id}`;
   const preferencesBodyId = `web-search-preferences-body-${source.id}`;
   const keysBodyId = `web-search-keys-body-${source.id}`;
@@ -442,7 +449,7 @@ export const SourceCard = memo(function SourceCard({
                     <KeyRound size={18} />
                     <div>
                       <strong>{emptyLabel}</strong>
-                      <span>{t('tools.webSearch.emptyKeysHint')}</span>
+                      <span>{t(supportsAnonymousAccess ? 'tools.webSearch.anonymousReadyHint' : 'tools.webSearch.emptyKeysHint')}</span>
                     </div>
                   </div>
                 ) : (

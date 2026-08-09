@@ -6,6 +6,7 @@ import {
 import type {
   ApiKeyStrategy, ImageModelConfig, IpProxy, ModelConfig, ModelProvider, ProviderType,
 } from '../../../types';
+import { ImageSizeControl } from '../../../components/ImageSizeControl';
 import { useI18n } from '../../../i18n';
 import { Button, FormField, IconButton, PaneHeader } from '../../../components/ui';
 import { displayProxyUrl } from '../web-search/utils';
@@ -21,6 +22,7 @@ import {
 import type { ProviderForm } from './settingsPanelUtils';
 
 const KEY_STRATEGIES: ApiKeyStrategy[] = ['failover', 'round_robin', 'random'];
+const IMAGE_COUNT_OPTIONS = Array.from({ length: 10 }, (_, index) => index + 1);
 
 interface ProviderEditorFormProps {
   providerForm: ProviderForm;
@@ -347,7 +349,7 @@ export function ProviderEditorForm({
                         <span>{t('provider.imageResponseFormat')}</span>
                         <span>{t('provider.imageInputFidelity')}</span>
                       </div>
-                      {providerForm.modelConfigs.map((config, index) => {
+                      {providerForm.modelConfigs.map((config) => {
                         const image = config.image_options ?? {};
                         const patchImage = (patch: Partial<ImageModelConfig>) => onPatchModelConfig(config.model_id, {
                           image_options: { ...image, ...patch },
@@ -359,19 +361,13 @@ export function ProviderEditorForm({
                             </strong>
                             <label className="image-model-field">
                               <span className="model-price-field__mobile-label">{t('provider.imageSize')}</span>
-                              <input
-                                list={`image-size-options-${index}`}
-                                value={image.size ?? ''}
-                                placeholder="auto"
-                                onChange={(event) => patchImage({ size: event.target.value })}
+                              <ImageSizeControl
+                                value={image.size}
+                                resetKey={config.model_id}
+                                selectAriaLabel={`${config.model_id} ${t('provider.imageSize')}`}
+                                onChange={(size) => patchImage({ size })}
                                 disabled={isSubmittingProvider}
-                                aria-label={`${config.model_id} ${t('provider.imageSize')}`}
                               />
-                              <datalist id={`image-size-options-${index}`}>
-                                {['auto', '1024x1024', '1536x1024', '1024x1536', '1792x1024', '1024x1792'].map((size) => (
-                                  <option key={size} value={size} />
-                                ))}
-                              </datalist>
                             </label>
                             <label className="image-model-field">
                               <span className="model-price-field__mobile-label">{t('provider.imageQuality')}</span>
@@ -389,17 +385,17 @@ export function ProviderEditorForm({
                             </label>
                             <label className="image-model-field image-model-number-field">
                               <span className="model-price-field__mobile-label">{t('provider.imageCount')}</span>
-                              <input
-                                type="number"
-                                min="1"
-                                max="10"
-                                step="1"
+                              <select
                                 value={image.n ?? ''}
-                                placeholder="1"
                                 onChange={(event) => patchImage({ n: event.target.value ? Number(event.target.value) : undefined })}
                                 disabled={isSubmittingProvider}
                                 aria-label={`${config.model_id} ${t('provider.imageCount')}`}
-                              />
+                              >
+                                <option value="">{t('provider.imageDefault')}</option>
+                                {IMAGE_COUNT_OPTIONS.map((count) => (
+                                  <option key={count} value={count}>{count}</option>
+                                ))}
+                              </select>
                             </label>
                             <label className="image-model-field">
                               <span className="model-price-field__mobile-label">{t('provider.imageOutputFormat')}</span>

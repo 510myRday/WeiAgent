@@ -143,14 +143,22 @@ impl Store {
             return Err(AppError::NotFound);
         }
         self.write_agents_unlocked(&agents).await?;
-        if let Err(error) = self
+        match self
             .database
             .call(move |conn| {
                 crate::storage::conversation_db::delete_agent_conversations_conn(conn, id)
             })
             .await
         {
-            tracing::warn!(agent_id = %id, %error, "failed to remove deleted agent conversations");
+            Ok(removed) => {
+                for (conversation_id, messages) in removed {
+                    self.cleanup_removed_generated_attachments(conversation_id, &messages)
+                        .await;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(agent_id = %id, %error, "failed to remove deleted agent conversations");
+            }
         }
         if let Err(error) = self.delete_agent_tool_settings_unlocked(id).await {
             tracing::warn!(agent_id = %id, %error, "failed to remove deleted agent tool settings");

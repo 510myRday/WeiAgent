@@ -233,9 +233,9 @@ pub async fn run_agent(
             });
         }));
     }
-    // Tool definitions were computed by prepare_chat and stay frozen for this
-    // run so prompt-cache prefixes remain stable across tool iterations.
-    // Execution still hot-reloads terminal config per tool call.
+    // Tool definitions and the complete effective tools configuration were
+    // captured by prepare_chat and stay frozen for this run. A later Agent
+    // edit belongs to newly started runs only and must not change this loop.
     let frozen_tools = state.tool_registry.definitions(&prepared.tools_config);
     let max_llm_iterations = prepared.tools_config.max_llm_iterations();
 
@@ -543,7 +543,6 @@ async fn execute_tool_calls(
 ) -> AppResult<()> {
     let call_count = tool_calls.len();
     for (index, call) in tool_calls.into_iter().enumerate() {
-        refresh_live_terminal_config(state, prepared).await?;
         let parsed_arguments = serde_json::from_str::<Value>(&call.function.arguments);
         let display_arguments = parsed_arguments
             .as_ref()
@@ -715,15 +714,6 @@ fn format_task_plan_progress(plan: &TaskPlan) -> String {
     format!(
         "\n\n【任务规划进度提醒】\n当前进度：\n{steps}\n当前步骤：{current}\n请只判断当前步骤是否完成：如果当前步骤已完成，请立即调用 task_planning 将当前步骤更新为 completed；如果当前步骤尚未完成，请继续执行当前步骤，不要开始其他计划步骤。"
     )
-}
-
-async fn refresh_live_terminal_config(
-    state: &AppState,
-    prepared: &mut PreparedChat,
-) -> AppResult<()> {
-    let live = crate::app::chat::effective_tools_config(state, prepared.agent.id).await?;
-    prepared.tools_config.terminal = live.terminal;
-    Ok(())
 }
 
 const MAX_TOOL_RESULT_STDOUT_CHARS: usize = 24_000;
@@ -1428,6 +1418,7 @@ fn model_usage(prepared: &PreparedChat, tokens: &TokenUsage) -> ModelUsage {
         tokens,
         total_tokens,
         cost_usd,
+        image_count: None,
         provider_id: prepared.provider.id,
         model_id: prepared.agent.model_id.clone(),
     }

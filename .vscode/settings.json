@@ -41,7 +41,7 @@
 
   // === 其他性能优化 ===
   // 关闭自动检查（避免每次编辑都触发 cargo check）
-  "rust-analyzer.checkOnSave": true,
+  "rust-analyzer.checkOnSave": false,
   "rust-analyzer.cargo.runBuildScripts": false,
 
   // 减少索引时的线程争用（对 10 核机器够用）

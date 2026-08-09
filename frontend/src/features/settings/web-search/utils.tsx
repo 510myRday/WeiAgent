@@ -29,7 +29,7 @@ export function defaultWebSearch(): WebSearchToolConfig {
       { id: 'exa', provider: 'exa', display_name: 'Exa', enabled: false, deep_enabled: true, extract_enabled: true, priority: 20, independence_group: 'exa', roles: ['semantic_research', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'product_research'], api_keys: [], proxy_url: null },
       { id: 'jina', provider: 'jina', display_name: 'Jina Search', enabled: true, deep_enabled: true, extract_enabled: true, priority: 30, independence_group: 'jina', roles: ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'], api_keys: [], proxy_url: null },
       { id: 'grok', provider: 'grok', display_name: 'Grok Research', enabled: false, deep_enabled: true, extract_enabled: true, priority: 40, independence_group: 'grok', roles: ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'], api_keys: [], proxy_url: null },
-      { id: 'firecrawl', provider: 'firecrawl', display_name: 'Firecrawl', enabled: false, deep_enabled: true, extract_enabled: true, priority: 50, independence_group: 'firecrawl', roles: ['general_search', 'current_news', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'market_research', 'product_research', 'multilingual_search'], api_keys: [], proxy_url: null },
+      { id: 'firecrawl', provider: 'firecrawl', display_name: 'Firecrawl', enabled: true, deep_enabled: true, extract_enabled: true, priority: 50, independence_group: 'firecrawl', roles: ['general_search', 'current_news', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'market_research', 'product_research', 'multilingual_search'], api_keys: [], proxy_url: null },
     ],
   };
 
@@ -57,7 +57,7 @@ export function normalizeWebSearchSources(sources: WebSearchSourceConfig[]): Web
 }
 
 export function sourceCanBeEnabled(source: WebSearchSourceConfig): boolean {
-  if (source.provider === 'jina') return true;
+  if (source.provider === 'jina' || source.provider === 'firecrawl') return true;
   return source.api_keys.some((key, index) => (
     key.trim().length > 0 && source.key_statuses?.[index]?.status !== 'officially_blocked'
   ));

@@ -419,6 +419,12 @@ async fn create_image_run(
     request: SendMessageRequest,
 ) -> AppResult<Json<AgentRun>> {
     let settings = state.store.read_settings().await?;
+    let conversation = state.store.get_conversation(conversation_id).await?;
+    let agent = state.store.get_agent(conversation.agent_id).await?;
+    let provider = state
+        .store
+        .get_model_provider(agent.model_provider_id)
+        .await?;
     let registration = state.run_manager.create(conversation_id)?;
     let run_id = registration.info.id;
     let info = registration.info.clone();
@@ -440,6 +446,8 @@ async fn create_image_run(
             state,
             conversation_id,
             user_message_id,
+            agent,
+            provider,
             request.content,
             request.attachments,
             request.restart_from_message_id,

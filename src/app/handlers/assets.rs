@@ -13,7 +13,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-const MAX_INLINE_ASSET_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_INLINE_ASSET_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 50_000_000;
 const MAX_DECODED_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -46,6 +46,7 @@ pub async fn read_local_asset(
         .header(header::CONTENT_LENGTH, bytes.len())
         .header(header::CONTENT_DISPOSITION, "inline")
         .header("x-content-type-options", "nosniff")
+        .header("referrer-policy", "no-referrer")
         .body(Body::from(bytes))
         .map_err(|error| AppError::Process(error.to_string()))
 }

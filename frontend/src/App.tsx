@@ -189,6 +189,7 @@ export function App() {
             activeAgentId={activeAgentId}
             onAgentChange={setActiveAgentId}
             onAgentEdit={editAgent}
+            onProviderEdit={editProvider}
             onOpenAgentSettings={openAgentSettings}
             onOpenMain={openMainPane}
             onBackToList={openListPane}

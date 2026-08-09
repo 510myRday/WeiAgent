@@ -1,9 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, test, vi } from 'vitest';
 import type { ComponentProps } from 'react';
 
 import { FeedbackProvider } from '../../components/ui';
 import { I18nProvider } from '../../i18n';
+import { CUSTOM_IMAGE_SIZE } from '../../components/ImageSizeControl';
 import { ChatComposer } from './ChatComposer';
 
 const usage = {
@@ -31,16 +32,17 @@ function renderComposer(overrides: Partial<ComponentProps<typeof ChatComposer>> 
           isSavingModel={false}
           isModelSavePending={false}
           draftKey="chat-composer-test"
-          isStreamMode
           supportsImages
           supportsImageGeneration={false}
           generationMode="chat"
+          imageOptions={{}}
+          isSavingImageOptions={false}
           supportsThinking
           thinkingLevel="medium"
           usage={usage}
           contextSize={128000}
-          onStreamModeChange={vi.fn()}
           onGenerationModeChange={vi.fn()}
+          onImageOptionsChange={vi.fn()}
           onThinkingLevelChange={vi.fn()}
           onUnsupportedImage={vi.fn()}
           onSend={vi.fn()}
@@ -52,23 +54,20 @@ function renderComposer(overrides: Partial<ComponentProps<typeof ChatComposer>> 
   );
 }
 
-test('locks image mode on and streaming off for an image provider', () => {
+test('locks image mode on and hides streaming configuration for an image provider', () => {
   renderComposer({
     inputLabel: '图片提示词',
     placeholder: '描述你想生成的画面，可添加参考图进行图生图',
     supportsImages: false,
     supportsImageGeneration: true,
     generationMode: 'image',
-    isStreamMode: false,
   });
 
   const imageMode = screen.getByRole('button', { name: '图片模式' });
   expect(imageMode).toHaveAttribute('aria-pressed', 'true');
   expect(imageMode).toBeDisabled();
 
-  const streamMode = screen.getByRole('switch', { name: '流式' });
-  expect(streamMode).toHaveAttribute('aria-checked', 'false');
-  expect(streamMode).toBeDisabled();
+  expect(screen.queryByRole('switch', { name: '流式' })).not.toBeInTheDocument();
   expect(screen.getByRole('textbox', { name: '图片提示词' })).toHaveAttribute(
     'placeholder',
     '描述你想生成的画面，可添加参考图进行图生图',
@@ -79,6 +78,62 @@ test('shows the thinking prefix beside the brain icon', () => {
   renderComposer();
 
   expect(screen.getByRole('button', { name: '思考' })).toHaveTextContent('思考·中');
+});
+
+test('shows and updates persisted image settings for an image provider', () => {
+  const onImageOptionsChange = vi.fn();
+  renderComposer({
+    supportsImageGeneration: true,
+    generationMode: 'image',
+    imageOptions: { size: '1024x1024', quality: 'high', n: 2 },
+    onImageOptionsChange,
+  });
+
+  expect(screen.getByRole('combobox', { name: '尺寸' })).toHaveValue('1024x1024');
+  expect(screen.getByRole('combobox', { name: '质量' })).toHaveValue('high');
+  expect(screen.getByRole('combobox', { name: '数量' })).toHaveValue('2');
+
+  fireEvent.change(screen.getByRole('combobox', { name: '质量' }), {
+    target: { value: 'medium' },
+  });
+  expect(onImageOptionsChange).toHaveBeenCalledWith({ quality: 'medium' });
+});
+
+test('accepts a custom image size in the size control and persists valid dimensions', () => {
+  const onImageOptionsChange = vi.fn();
+  renderComposer({
+    supportsImageGeneration: true,
+    generationMode: 'image',
+    imageOptions: { size: '1024x1024' },
+    onImageOptionsChange,
+  });
+
+  const size = screen.getByRole('combobox', { name: '尺寸' });
+  fireEvent.change(size, { target: { value: CUSTOM_IMAGE_SIZE } });
+  const dialog = screen.getByRole('dialog', { name: '自定义尺寸' });
+  const customSize = within(dialog).getByRole('textbox', { name: '尺寸' });
+  fireEvent.change(customSize, { target: { value: '2048x1536' } });
+  fireEvent.click(within(dialog).getByRole('button', { name: '确认' }));
+
+  expect(onImageOptionsChange).toHaveBeenLastCalledWith({ size: '2048x1536' });
+  expect(screen.queryByRole('dialog', { name: '自定义尺寸' })).not.toBeInTheDocument();
+});
+
+test('keeps no-value and custom entries in the native image size select', () => {
+  const onImageOptionsChange = vi.fn();
+  renderComposer({
+    supportsImageGeneration: true,
+    generationMode: 'image',
+    imageOptions: { size: '1024x1024' },
+    onImageOptionsChange,
+  });
+
+  const size = screen.getByRole('combobox', { name: '尺寸' });
+  expect(within(size).getByRole('option', { name: '无' })).toBeInTheDocument();
+  expect(within(size).getByRole('option', { name: '自定义' })).toBeInTheDocument();
+
+  fireEvent.change(size, { target: { value: '' } });
+  expect(onImageOptionsChange).toHaveBeenLastCalledWith({ size: undefined });
 });
 
 test('adds an image dropped onto the composer', async () => {

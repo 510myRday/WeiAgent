@@ -307,10 +307,7 @@ impl AgentTool for ExecuteTerminalTool {
         let tty = args.tty;
         let sandbox_permissions = args.sandbox_permissions;
         let justification = args.justification;
-        let terminal_config = match live_terminal_config(&context).await {
-            Ok(config) => config,
-            Err(message) => return ToolResult::Error { message },
-        };
+        let terminal_config = frozen_terminal_config(&context);
         if terminal_config.permission_mode == crate::domain::TerminalPermissionMode::RequestApproval
             && sandbox_permissions == SandboxPermissions::RequireEscalated
             && justification
@@ -703,10 +700,7 @@ impl AgentTool for MultiEditFileTool {
             Ok(cwd) => cwd,
             Err(message) => return ToolResult::Error { message },
         };
-        let terminal_config = match live_terminal_config(&context).await {
-            Ok(config) => config,
-            Err(message) => return ToolResult::Error { message },
-        };
+        let terminal_config = frozen_terminal_config(&context);
         if terminal_config.permission_mode == crate::domain::TerminalPermissionMode::RequestApproval
             && args.sandbox_permissions == SandboxPermissions::RequireEscalated
         {
@@ -1106,18 +1100,8 @@ fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
     )
 }
 
-async fn live_tools_config(context: &ToolExecutionContext) -> Result<AgentToolsConfig, String> {
-    context
-        .store
-        .read_agent_tools_config(context.agent_id)
-        .await
-        .map_err(|error| format!("Failed to reload tools config: {error}"))
-}
-
-async fn live_terminal_config(
-    context: &ToolExecutionContext,
-) -> Result<crate::domain::TerminalToolConfig, String> {
-    Ok(live_tools_config(context).await?.terminal)
+fn frozen_terminal_config(context: &ToolExecutionContext) -> crate::domain::TerminalToolConfig {
+    context.tools_config.terminal.clone()
 }
 
 async fn wait_for_approval_decision(
@@ -1125,26 +1109,12 @@ async fn wait_for_approval_decision(
     approval_id: &str,
     mut decision_rx: tokio::sync::oneshot::Receiver<ApprovalDecision>,
     event_sender: &mpsc::Sender<ToolExecutionEvent>,
-    auto_approve: impl Fn(&AgentToolsConfig) -> bool,
 ) -> Option<ApprovalDecision> {
-    let mut poll = tokio::time::interval(std::time::Duration::from_millis(250));
-    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // Skip the immediate first tick so we wait for a real interval first.
-    poll.tick().await;
-    loop {
-        tokio::select! {
-            decision = &mut decision_rx => return decision.ok(),
-            _ = event_sender.closed() => return None,
-            _ = poll.tick() => {
-                match live_tools_config(context).await {
-                    Ok(tools_config) if auto_approve(&tools_config) => {
-                        // Drop the pending approval so the UI can clear it.
-                        context.approval_manager.cancel(approval_id);
-                        return Some(ApprovalDecision::Approve);
-                    }
-                    _ => {}
-                }
-            }
+    tokio::select! {
+        decision = &mut decision_rx => decision.ok(),
+        _ = event_sender.closed() => {
+            context.approval_manager.cancel(approval_id);
+            None
         }
     }
 }
@@ -1210,17 +1180,8 @@ async fn run_with_approval(
         };
     }
 
-    let decision = wait_for_approval_decision(
-        context,
-        &approval_id,
-        decision_rx,
-        &event_sender,
-        |tools_config| {
-            tools_config.terminal.permission_mode
-                == crate::domain::TerminalPermissionMode::FullAccess
-        },
-    )
-    .await;
+    let decision =
+        wait_for_approval_decision(context, &approval_id, decision_rx, &event_sender).await;
     match decision {
         Some(ApprovalDecision::Approve) => {}
         Some(ApprovalDecision::AlwaysApprove) => {
@@ -1246,10 +1207,7 @@ async fn run_with_approval(
         }
     }
 
-    let terminal_config = match live_terminal_config(context).await {
-        Ok(config) => config,
-        Err(message) => return ToolResult::Error { message },
-    };
+    let terminal_config = frozen_terminal_config(context);
     re_execute(terminal_config).await
 }
 
