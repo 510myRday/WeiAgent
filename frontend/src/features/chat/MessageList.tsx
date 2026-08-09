@@ -622,11 +622,14 @@ function WaitingBubble({
   runPhase: AgentRunPhase;
 }) {
   const { t } = useI18n();
-  const isRetrying = Boolean(retryStatus);
-  const label = isRetrying && retryStatus
-    ? t('chat.retrying', { attempt: retryStatus.attempt, max: retryStatus.maxAttempts })
-    : runPhase === 'compacting_context'
-      ? t('chat.compactingContext')
+  // Compaction owns the waiting bubble for the whole summary request,
+  // including any retries inside that request.
+  const isCompacting = runPhase === 'compacting_context';
+  const isRetrying = Boolean(retryStatus) && !isCompacting;
+  const label = isCompacting
+    ? t('chat.compactingContext')
+    : isRetrying && retryStatus
+      ? t('chat.retrying', { attempt: retryStatus.attempt, max: retryStatus.maxAttempts })
       : t('chat.sending');
   return (
     <article
@@ -719,14 +722,19 @@ const MessageRow = memo(function MessageRow({
   const canRestart = isUser && Boolean(message.id) && message.status !== 'streaming';
 
   useLayoutEffect(() => {
+    const input = editInputRef.current;
+    if (!isEditing || !input) return;
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(Math.max(input.scrollHeight, 72), 240)}px`;
+  }, [editDraft, isEditing]);
+
+  useLayoutEffect(() => {
     if (!isEditing) return;
     const input = editInputRef.current;
     if (!input) return;
-    input.style.height = 'auto';
-    input.style.height = `${Math.min(Math.max(input.scrollHeight, 72), 240)}px`;
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
-  }, [editDraft, isEditing]);
+  }, [isEditing]);
 
   function beginEditing() {
     setEditDraft(message.content);

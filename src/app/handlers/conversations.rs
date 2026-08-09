@@ -41,6 +41,7 @@ fn request_options(
         retry_attempts: settings.request_retry_attempts.max(1),
         thinking_level,
         on_retry: None,
+        is_compaction: false,
     }
 }
 
@@ -178,6 +179,7 @@ pub async fn generate_conversation_title(
                 retry_attempts: 1,
                 thinking_level: None,
                 on_retry: None,
+                is_compaction: false,
             },
             None,
         ),

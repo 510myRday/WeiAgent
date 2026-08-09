@@ -20,6 +20,7 @@ pub struct AppConfig {
 
 pub const TERMINAL_WORKSPACE_DIR_NAME: &str = "workspace";
 pub const ATTACHMENTS_DIR_NAME: &str = "attachments";
+const LEGACY_DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT: u8 = 90;
 
 impl AppConfig {
     pub async fn load(is_dev: bool) -> AppResult<Self> {
@@ -125,7 +126,13 @@ pub async fn load_or_init_settings(path: &std::path::Path) -> AppResult<AppSetti
     if fs::metadata(path).await.is_err() {
         write_settings(path, &AppSettings::default()).await?;
     }
-    let settings = read_settings(path).await?;
+    let mut settings = read_settings(path).await?;
+    if settings.context_compress_threshold_percent
+        == LEGACY_DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT
+    {
+        settings.context_compress_threshold_percent =
+            crate::domain::settings::DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT;
+    }
     write_settings(path, &settings).await?;
     Ok(settings)
 }
@@ -316,7 +323,29 @@ mod tests {
         );
         let persisted: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(path).await.unwrap()).unwrap();
-        assert_eq!(persisted["context_compress_threshold_percent"], 90);
+        assert_eq!(
+            persisted["context_compress_threshold_percent"],
+            crate::domain::settings::DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT
+        );
+    }
+
+    #[tokio::test]
+    async fn loading_previous_default_context_threshold_migrates_to_new_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut previous = AppSettings::default();
+        previous.context_compress_threshold_percent =
+            LEGACY_DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT;
+        fs::write(&path, serde_json::to_string_pretty(&previous).unwrap())
+            .await
+            .unwrap();
+
+        let settings = load_or_init_settings(&path).await.unwrap();
+
+        assert_eq!(
+            settings.context_compress_threshold_percent,
+            crate::domain::settings::DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT
+        );
     }
 
     #[test]

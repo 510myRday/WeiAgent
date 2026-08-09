@@ -229,6 +229,7 @@ mod tests {
             retry_attempts: 1,
             thinking_level: None,
             on_retry: None,
+            is_compaction: false,
         };
         let complete = client
             .complete(
@@ -401,6 +402,7 @@ mod tests {
             on_retry: Some(Arc::new(move |_attempt, _max, reason| {
                 retry_reasons.lock().unwrap().push(reason.to_string());
             })),
+            is_compaction: false,
         };
         let client: DynChatClient = Arc::new(ProtocolClient::new(OpenAiChatAdapter));
         let mut stream = client

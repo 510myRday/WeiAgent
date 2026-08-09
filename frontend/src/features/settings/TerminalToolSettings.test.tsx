@@ -57,7 +57,7 @@ const toolDefaults = {
   },
   task_planning: {
     enabled: true,
-    progress_interval: 3,
+    progress_interval: 5,
   },
 };
 

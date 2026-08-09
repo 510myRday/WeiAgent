@@ -91,7 +91,10 @@ mod tests {
         assert!(defaults.terminal.enabled);
         assert!(defaults.web_search.enabled);
         assert!(defaults.task_planning.enabled);
-        assert_eq!(defaults.task_planning.progress_interval, 3);
+        assert_eq!(
+            defaults.task_planning.progress_interval,
+            crate::domain::tools::DEFAULT_TASK_PLAN_PROGRESS_INTERVAL
+        );
         assert_eq!(
             defaults
                 .web_search
@@ -118,7 +121,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(migration_versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(migration_versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
         assert_eq!(
             tool_table_names(&conn),
             vec![

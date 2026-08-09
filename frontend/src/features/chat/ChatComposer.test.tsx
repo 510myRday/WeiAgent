@@ -111,12 +111,31 @@ test('accepts a custom image size in the size control and persists valid dimensi
   const size = screen.getByRole('combobox', { name: '尺寸' });
   fireEvent.change(size, { target: { value: CUSTOM_IMAGE_SIZE } });
   const dialog = screen.getByRole('dialog', { name: '自定义尺寸' });
-  const customSize = within(dialog).getByRole('textbox', { name: '尺寸' });
+  const customSize = within(dialog).getByRole('textbox', { name: '像素尺寸' });
   fireEvent.change(customSize, { target: { value: '2048x1536' } });
   fireEvent.click(within(dialog).getByRole('button', { name: '确认' }));
 
   expect(onImageOptionsChange).toHaveBeenLastCalledWith({ size: '2048x1536' });
   expect(screen.queryByRole('dialog', { name: '自定义尺寸' })).not.toBeInTheDocument();
+});
+
+test('accepts a custom aspect ratio in the size control', () => {
+  const onImageOptionsChange = vi.fn();
+  renderComposer({
+    supportsImageGeneration: true,
+    generationMode: 'image',
+    onImageOptionsChange,
+  });
+
+  const size = screen.getByRole('combobox', { name: '尺寸' });
+  fireEvent.change(size, { target: { value: CUSTOM_IMAGE_SIZE } });
+  const dialog = screen.getByRole('dialog', { name: '自定义尺寸' });
+  fireEvent.click(within(dialog).getByRole('tab', { name: '宽高比' }));
+  const customRatio = within(dialog).getByRole('textbox', { name: '宽高比' });
+  fireEvent.change(customRatio, { target: { value: '5:4' } });
+  fireEvent.click(within(dialog).getByRole('button', { name: '确认' }));
+
+  expect(onImageOptionsChange).toHaveBeenLastCalledWith({ size: '5:4' });
 });
 
 test('keeps no-value and custom entries in the native image size select', () => {
@@ -134,6 +153,18 @@ test('keeps no-value and custom entries in the native image size select', () => 
 
   fireEvent.change(size, { target: { value: '' } });
   expect(onImageOptionsChange).toHaveBeenLastCalledWith({ size: undefined });
+});
+
+test('shows common aspect ratio presets in the image size select', () => {
+  renderComposer({
+    supportsImageGeneration: true,
+    generationMode: 'image',
+  });
+
+  const size = screen.getByRole('combobox', { name: '尺寸' });
+  for (const ratio of ['1:1', '3:4', '4:3', '16:9', '9:16']) {
+    expect(within(size).getByRole('option', { name: ratio })).toBeInTheDocument();
+  }
 });
 
 test('adds an image dropped onto the composer', async () => {

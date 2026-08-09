@@ -230,6 +230,7 @@ pub(crate) fn spawn_log(
     agent_name: &str,
     agent_id: Option<&str>,
     conversation_id: Option<&str>,
+    is_compaction: bool,
     model_id: &str,
     provider_name: &str,
     raw_request: &str,
@@ -244,6 +245,7 @@ pub(crate) fn spawn_log(
         let agent_name = agent_name.to_string();
         let agent_id = agent_id.map(str::to_string);
         let conversation_id = conversation_id.map(str::to_string);
+        let is_compaction = is_compaction;
         let model_id = model_id.to_string();
         let provider_name = provider_name.to_string();
         let raw_request = raw_request.to_string();
@@ -255,6 +257,7 @@ pub(crate) fn spawn_log(
                     &agent_name,
                     agent_id.as_deref(),
                     conversation_id.as_deref(),
+                    is_compaction,
                     &model_id,
                     &provider_name,
                     &raw_request,
@@ -325,6 +328,7 @@ pub struct StreamLogContext {
     pub agent_name: String,
     pub agent_id: Option<String>,
     pub conversation_id: Option<String>,
+    pub is_compaction: bool,
     pub model_id: String,
     pub provider_name: String,
     pub request_json: String,
@@ -512,6 +516,7 @@ fn log_stream_result(
         &context.agent_name,
         context.agent_id.as_deref(),
         context.conversation_id.as_deref(),
+        context.is_compaction,
         &context.model_id,
         &context.provider_name,
         &context.request_json,
@@ -813,6 +818,7 @@ mod tests {
                     guard.push(reason.to_string());
                 }
             })),
+            is_compaction: false,
         }
     }
 

@@ -24,7 +24,7 @@ const settings: AppSettings = {
   language: 'zh',
   request_timeout_seconds: 60,
   request_retry_attempts: 5,
-  context_compress_threshold_percent: 90,
+  context_compress_threshold_percent: 85,
   llm_log_enabled: false,
   conversation_title_provider_id: null,
   conversation_title_model_id: null,

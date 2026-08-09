@@ -37,6 +37,17 @@ pub struct ToolCallFunction {
     pub arguments: String,
 }
 
+pub(crate) fn normalize_tool_call_arguments(tool_calls: &mut [ToolCall]) {
+    for call in tool_calls {
+        if !serde_json::from_str::<serde_json::Value>(&call.function.arguments)
+            .ok()
+            .is_some_and(|value| value.is_object())
+        {
+            call.function.arguments = "{}".to_string();
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatCompletionOutput {
     pub content: String,
@@ -159,6 +170,21 @@ pub(crate) fn strip_tool_call_ui_fields(tool_calls: &serde_json::Value) -> serde
             };
             let mut cleaned = obj.clone();
             cleaned.remove("permission_mode");
+            if let Some(function) = cleaned
+                .get_mut("function")
+                .and_then(serde_json::Value::as_object_mut)
+                && let Some(arguments) = function
+                    .get("arguments")
+                    .and_then(serde_json::Value::as_str)
+                && !serde_json::from_str::<serde_json::Value>(arguments)
+                    .ok()
+                    .is_some_and(|value| value.is_object())
+            {
+                function.insert(
+                    "arguments".to_string(),
+                    serde_json::Value::String("{}".to_string()),
+                );
+            }
             serde_json::Value::Object(cleaned)
         })
         .collect();
@@ -592,6 +618,44 @@ mod tests {
         assert!(tool_calls[0].get("permission_mode").is_none());
         assert_eq!(tool_calls[0]["id"], "call-1");
         assert_eq!(tool_calls[0]["function"]["name"], "execute_terminal");
+    }
+
+    #[test]
+    fn normalizes_invalid_tool_arguments_in_openai_history() {
+        let user = message(ChatRole::User, "run it");
+        let mut assistant = message(ChatRole::Assistant, "");
+        assistant.tool_calls = Some(json!([{
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "run", "arguments": "{command:"}
+        }]));
+        let mut tool = message(ChatRole::Tool, "invalid arguments");
+        tool.tool_call_id = Some("call-1".to_string());
+        let agent = Agent {
+            id: Uuid::new_v4(),
+            name: "a".into(),
+            description: "d".into(),
+            model_provider_id: Uuid::new_v4(),
+            model_id: "m".into(),
+            is_builtin: false,
+            avatar_icon: "bot".into(),
+            avatar_color: "#000".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let request = build_chat_request(
+            &agent,
+            &[user, assistant, tool],
+            false,
+            "system",
+            None,
+            None,
+        );
+        assert_eq!(
+            request.messages[2].tool_calls.as_ref().unwrap()[0]["function"]["arguments"],
+            "{}"
+        );
     }
 
     #[test]

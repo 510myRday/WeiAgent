@@ -25,6 +25,7 @@ const BASE_SCHEMA_VERSION: i64 = 1;
 const PROVIDER_PROXY_SCHEMA_VERSION: i64 = 5;
 const PROVIDER_KEY_STRATEGY_SCHEMA_VERSION: i64 = 6;
 const PROVIDER_IMAGE_ENDPOINTS_SCHEMA_VERSION: i64 = 7;
+const LLM_REQUEST_KIND_SCHEMA_VERSION: i64 = 8;
 
 /// Multiple API keys are stored newline-joined in the legacy `api_key` column,
 /// so single-key rows written before key pools existed stay valid as-is.
@@ -168,7 +169,8 @@ CREATE TABLE IF NOT EXISTS llm_requests (
     cache_write_tokens INTEGER,
     cost_usd REAL,
     error TEXT,
-    has_payload INTEGER NOT NULL DEFAULT 0
+    has_payload INTEGER NOT NULL DEFAULT 0,
+    is_compaction INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS llm_payloads (
@@ -382,6 +384,47 @@ fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
                 params![
                     PROVIDER_IMAGE_ENDPOINTS_SCHEMA_VERSION,
                     "model_provider_image_endpoints_v7",
+                    Utc::now().to_rfc3339()
+                ],
+            )?;
+        }
+        tx.commit()?;
+    }
+
+    let compaction_kind_applied = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM app_schema_migrations WHERE version = ?1
+        )",
+        [LLM_REQUEST_KIND_SCHEMA_VERSION],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let compaction_columns = conn
+        .prepare("PRAGMA table_info(llm_requests)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let has_compaction_column = compaction_columns
+        .iter()
+        .any(|name| name == "is_compaction");
+    if !compaction_kind_applied || !has_compaction_column {
+        let tx = conn.transaction()?;
+        if !has_compaction_column {
+            tx.execute(
+                "ALTER TABLE llm_requests ADD COLUMN is_compaction INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_llm_requests_compaction_created
+             ON llm_requests(is_compaction, created_at_ms DESC)",
+            [],
+        )?;
+        if !compaction_kind_applied {
+            tx.execute(
+                "INSERT INTO app_schema_migrations (version, name, applied_at)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    LLM_REQUEST_KIND_SCHEMA_VERSION,
+                    "llm_request_kind_v8",
                     Utc::now().to_rfc3339()
                 ],
             )?;

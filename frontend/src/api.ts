@@ -216,6 +216,7 @@ export type ListLlmLogsParams = {
   since?: string;
   until?: string;
   status?: 'success' | 'error';
+  isCompaction?: boolean;
 };
 
 export function listLlmLogs(params: ListLlmLogsParams = {}): Promise<LlmLogListPage> {
@@ -230,6 +231,7 @@ export function listLlmLogs(params: ListLlmLogsParams = {}): Promise<LlmLogListP
   if (params.since) search.set('since', params.since);
   if (params.until) search.set('until', params.until);
   if (params.status) search.set('status', params.status);
+  if (params.isCompaction != null) search.set('is_compaction', String(params.isCompaction));
   const query = search.toString();
   return request<LlmLogListPage>(query ? `/api/llm-logs?${query}` : '/api/llm-logs');
 }

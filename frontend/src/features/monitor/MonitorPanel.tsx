@@ -89,6 +89,7 @@ type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
 
 type DateRangeKey = 'today' | '7d' | '30d';
 type StatusFilter = 'all' | 'success' | 'error';
+type RequestKindFilter = 'all' | 'compaction' | 'regular';
 
 const DATE_RANGE_OPTIONS: DateRangeKey[] = ['today', '7d', '30d'];
 
@@ -101,6 +102,12 @@ const EMPTY_SUMMARY: LlmLogSummary = {
   cache_read_tokens: 0,
   cache_write_tokens: 0,
   cost_usd: 0,
+};
+
+const EMPTY_KIND_SUMMARY = {
+  all_count: 0,
+  compaction_count: 0,
+  regular_count: 0,
 };
 
 function startOfLocalDay(date: Date) {
@@ -402,8 +409,10 @@ export function MonitorPanel({
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<LlmLogSummary>(EMPTY_SUMMARY);
   const [statusSummary, setStatusSummary] = useState<LlmLogSummary>(EMPTY_SUMMARY);
+  const [kindSummary, setKindSummary] = useState(EMPTY_KIND_SUMMARY);
   const [scope, setScope] = useState<Scope>({ kind: 'overview' });
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [kindFilter, setKindFilter] = useState<RequestKindFilter>('all');
   const [dateRange, setDateRange] = useState<DateRangeKey>('today');
   const [isLoading, setIsLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -439,6 +448,7 @@ export function MonitorPanel({
         since,
         until,
         status: statusFilter === 'all' ? undefined : statusFilter,
+        isCompaction: kindFilter === 'all' ? undefined : kindFilter === 'compaction',
       };
       const pageData = await listLlmLogs({
         offset,
@@ -449,6 +459,7 @@ export function MonitorPanel({
       setTotal(pageData.total);
       setAgentStats(pageData.agent_stats ?? []);
       setModelStats(pageData.model_stats ?? []);
+      setKindSummary(pageData.kind_summary ?? EMPTY_KIND_SUMMARY);
 
       // DB cost_usd is often 0 (API rarely returns usage.cost). Match table pricing:
       // estimate from model unit prices for all successful rows in range.
@@ -482,7 +493,7 @@ export function MonitorPanel({
     } finally {
       setIsLoading(false);
     }
-  }, [dateRange, page, pageSize, providers, scope, statusFilter, t, toast]);
+  }, [dateRange, kindFilter, page, pageSize, providers, scope, statusFilter, t, toast]);
 
   useEffect(() => {
     void loadData();
@@ -610,12 +621,19 @@ export function MonitorPanel({
   function selectOverview() {
     setScope({ kind: 'overview' });
     setStatusFilter('all');
+    setKindFilter('all');
     setPage(1);
     onOpenMain();
   }
 
   function selectStatus(nextStatus: Exclude<StatusFilter, 'all'>) {
     setStatusFilter(nextStatus);
+    setPage(1);
+    onOpenMain();
+  }
+
+  function selectKind(nextKind: Exclude<RequestKindFilter, 'all'>) {
+    setKindFilter((current) => current === nextKind ? 'all' : nextKind);
     setPage(1);
     onOpenMain();
   }
@@ -653,6 +671,11 @@ export function MonitorPanel({
     : statusFilter === 'error'
       ? t('llmLogs.errorRequests')
       : null;
+  const kindTitle = kindFilter === 'compaction'
+    ? t('llmLogs.compactionRequests')
+    : kindFilter === 'regular'
+      ? t('llmLogs.regularRequests')
+      : null;
 
   const mainTitle = (
     <span className="monitor-page-title">
@@ -661,6 +684,12 @@ export function MonitorPanel({
         <span className={`monitor-status-scope-badge is-${statusFilter}`}>
           {statusFilter === 'success' ? <CheckCircle2 size={15} /> : <CircleX size={15} />}
           {statusTitle}
+        </span>
+      ) : null}
+      {kindTitle ? (
+        <span className="monitor-status-scope-badge is-warning">
+          <Sparkles size={15} />
+          {kindTitle}
         </span>
       ) : null}
     </span>
@@ -720,6 +749,26 @@ export function MonitorPanel({
             subtitle={t('llmLogs.requestCount', { count: statusSummary.error_count })}
             leading={<CircleX size={18} />}
             onClick={() => selectStatus('error')}
+          />
+
+          <div className="monitor-section-label">{t('llmLogs.byRequestKind')}</div>
+          <ListItem
+            className="monitor-status-scope-item is-success"
+            type="button"
+            active={kindFilter === 'compaction'}
+            title={t('llmLogs.compactionRequests')}
+            subtitle={t('llmLogs.requestCount', { count: kindSummary.compaction_count })}
+            leading={<Sparkles size={18} />}
+            onClick={() => selectKind('compaction')}
+          />
+          <ListItem
+            className="monitor-status-scope-item"
+            type="button"
+            active={kindFilter === 'regular'}
+            title={t('llmLogs.regularRequests')}
+            subtitle={t('llmLogs.requestCount', { count: kindSummary.regular_count })}
+            leading={<Database size={18} />}
+            onClick={() => selectKind('regular')}
           />
 
           <div className="monitor-section-label">{t('llmLogs.byAgent')}</div>

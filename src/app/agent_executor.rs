@@ -323,6 +323,8 @@ pub async fn run_agent(
             }
         };
 
+        let tool_calls = output.output.tool_calls;
+        let history_tool_calls = sanitize_tool_calls_for_history(&tool_calls);
         let assistant_message = ChatMessage {
             id: output.message_id,
             agent_id: runtime.prepared.agent.id,
@@ -334,9 +336,9 @@ pub async fn run_agent(
             openai_response_items: output.output.openai_response_items.clone(),
             status: ChatMessageStatus::Done,
             created_at: output.created_at,
-            tool_calls: (!output.output.tool_calls.is_empty()).then(|| {
+            tool_calls: (!tool_calls.is_empty()).then(|| {
                 tool_calls_with_permission_mode(
-                    &output.output.tool_calls,
+                    &history_tool_calls,
                     &runtime.prepared.tools_config.terminal.permission_mode,
                 )
             }),
@@ -349,7 +351,7 @@ pub async fn run_agent(
             .upsert_conversation_message(user_message.conversation_id, assistant_message.clone())
             .await?;
 
-        if output.output.tool_calls.is_empty() {
+        if tool_calls.is_empty() {
             emit(&events, AgentRunEvent::Assistant(assistant_message.clone())).await?;
             emit(&events, AgentRunEvent::Done).await?;
             return Ok(());
@@ -373,7 +375,7 @@ pub async fn run_agent(
             runtime.state,
             runtime.prepared,
             &mut messages,
-            output.output.tool_calls,
+            tool_calls,
             &mut tool_budget,
             runtime.events,
             iteration,
@@ -730,7 +732,6 @@ fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
             stderr,
             exit_code,
             runtime,
-            output_cursor,
             ..
         } => {
             let mut map = serde_json::Map::new();
@@ -746,9 +747,6 @@ fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
             map.insert("exit_code".to_string(), json_i64(*exit_code as i64));
             if let Some(runtime) = runtime {
                 map.insert("runtime".to_string(), Value::String(runtime.clone()));
-            }
-            if *output_cursor > 0 {
-                map.insert("output_cursor".to_string(), json_u64(*output_cursor));
             }
             Value::Object(map)
         }
@@ -781,7 +779,38 @@ fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
             }
             Value::Object(map)
         }
-        other => serde_json::to_value(other).unwrap_or(Value::Null),
+        ToolResult::PendingApproval { command, .. } => serde_json::json!({
+            "status": "pending_approval",
+            "command": command,
+        }),
+        ToolResult::Blocked {
+            reason,
+            code,
+            details,
+        } => {
+            let mut map = serde_json::Map::new();
+            map.insert("status".to_string(), Value::String("blocked".to_string()));
+            map.insert("reason".to_string(), Value::String(reason.clone()));
+            if let Some(code) = code {
+                map.insert("code".to_string(), Value::String(code.clone()));
+            }
+            if let Some(details) = details {
+                map.insert("details".to_string(), details.clone());
+            }
+            Value::Object(map)
+        }
+        ToolResult::Rejected { reason } => serde_json::json!({
+            "status": "rejected",
+            "reason": reason,
+        }),
+        ToolResult::Interrupted { reason } => serde_json::json!({
+            "status": "interrupted",
+            "reason": reason,
+        }),
+        ToolResult::Error { message } => serde_json::json!({
+            "status": "error",
+            "message": message,
+        }),
     }
 }
 
@@ -916,6 +945,31 @@ fn tool_calls_with_permission_mode(
         }
     }
     value
+}
+
+/// Keep assistant tool-call history protocol-valid even when a provider emits
+/// malformed arguments. The original call is still used for execution so the
+/// tool result reports the actual parsing error.
+fn sanitize_tool_calls_for_history(tool_calls: &[ToolCall]) -> Vec<ToolCall> {
+    tool_calls
+        .iter()
+        .cloned()
+        .map(|mut call| {
+            let valid_object = serde_json::from_str::<Value>(&call.function.arguments)
+                .ok()
+                .is_some_and(|value| value.is_object());
+            if !valid_object {
+                tracing::warn!(
+                    call_id = %call.id,
+                    tool = %call.function.name,
+                    arguments = %call.function.arguments,
+                    "normalizing malformed tool-call arguments before persisting assistant history"
+                );
+                call.function.arguments = "{}".to_string();
+            }
+            call
+        })
+        .collect()
 }
 
 struct IterationOutput {
@@ -1476,6 +1530,21 @@ mod tests {
         assert_eq!(value["exit_code"], 0);
         assert_eq!(value["runtime"], "builtin_web_search");
         assert!(value.get("duration_ms").is_none());
+        assert!(value.get("output_cursor").is_none());
+    }
+
+    #[test]
+    fn sanitize_pending_approval_drops_volatile_approval_id() {
+        let first = sanitize_tool_result_for_llm(&ToolResult::PendingApproval {
+            command: "COMMAND".into(),
+            approval_id: "APPROVAL_A".into(),
+        });
+        let second = sanitize_tool_result_for_llm(&ToolResult::PendingApproval {
+            command: "COMMAND".into(),
+            approval_id: "APPROVAL_B".into(),
+        });
+        assert_eq!(first, second);
+        assert!(first.get("approval_id").is_none());
     }
 
     #[test]
@@ -1574,5 +1643,31 @@ mod tests {
         assert!(notice.contains("继续执行当前步骤，不要开始其他计划步骤"));
         assert!(!notice.contains("下一步："));
         assert!(!notice.contains("\n是否完成："));
+    }
+
+    #[test]
+    fn sanitize_tool_calls_for_history_replaces_invalid_arguments() {
+        let calls = vec![
+            ToolCall {
+                id: "call-invalid".to_string(),
+                kind: "function".to_string(),
+                function: ToolCallFunction {
+                    name: "execute_terminal".to_string(),
+                    arguments: "{command:".to_string(),
+                },
+            },
+            ToolCall {
+                id: "call-valid".to_string(),
+                kind: "function".to_string(),
+                function: ToolCallFunction {
+                    name: "task_planning".to_string(),
+                    arguments: r#"{"action":"create","plan":[]}"#.to_string(),
+                },
+            },
+        ];
+
+        let sanitized = sanitize_tool_calls_for_history(&calls);
+        assert_eq!(sanitized[0].function.arguments, "{}");
+        assert_eq!(sanitized[1].function.arguments, calls[1].function.arguments);
     }
 }

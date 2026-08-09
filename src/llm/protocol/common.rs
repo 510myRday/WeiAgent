@@ -15,7 +15,7 @@ use crate::{
             is_rotatable_status, read_response_body_limited, spawn_log, stream_response,
         },
         keys::ApiKeyCycle,
-        types::{ChatCompletionOutput, ToolCall, ToolDefinition},
+        types::{ChatCompletionOutput, ToolCall, ToolDefinition, normalize_tool_call_arguments},
     },
     storage::{LlmLogger, llm_logs::LlmLogMetrics},
 };
@@ -107,6 +107,7 @@ fn log_stream_open_error(context: &StreamLogContext, error: &AppError) {
         &context.agent_name,
         context.agent_id.as_deref(),
         context.conversation_id.as_deref(),
+        context.is_compaction,
         &context.model_id,
         &context.provider_name,
         &context.request_json,
@@ -124,6 +125,7 @@ fn log_stream_status_error(context: &StreamLogContext, body: &str, status: u16, 
         &context.agent_name,
         context.agent_id.as_deref(),
         context.conversation_id.as_deref(),
+        context.is_compaction,
         &context.model_id,
         &context.provider_name,
         &context.request_json,
@@ -188,6 +190,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                     &agent.name,
                     Some(agent_id.as_str()),
                     conversation_id.as_deref(),
+                    options.is_compaction,
                     &agent.model_id,
                     &provider.name,
                     &request_json,
@@ -210,6 +213,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                 &agent.name,
                 Some(agent_id.as_str()),
                 conversation_id.as_deref(),
+                options.is_compaction,
                 &agent.model_id,
                 &provider.name,
                 &request_json,
@@ -236,6 +240,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                     &agent.name,
                     Some(agent_id.as_str()),
                     conversation_id.as_deref(),
+                    options.is_compaction,
                     &agent.model_id,
                     &provider.name,
                     &request_json,
@@ -254,6 +259,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                     &agent.name,
                     Some(agent_id.as_str()),
                     conversation_id.as_deref(),
+                    options.is_compaction,
                     &agent.model_id,
                     &provider.name,
                     &request_json,
@@ -271,6 +277,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                     &agent.name,
                     Some(agent_id.as_str()),
                     conversation_id.as_deref(),
+                    options.is_compaction,
                     &agent.model_id,
                     &provider.name,
                     &request_json,
@@ -333,6 +340,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             agent_name,
             agent_id: Some(agent_id),
             conversation_id,
+            is_compaction: options.is_compaction,
             model_id,
             provider_name: provider.name.clone(),
             request_json,
@@ -480,7 +488,11 @@ pub(crate) fn message_tool_calls(message: &ChatMessage) -> AppResult<Vec<ToolCal
         .tool_calls
         .as_ref()
         .map(|calls| {
-            serde_json::from_value(calls.clone())
+            serde_json::from_value::<Vec<ToolCall>>(calls.clone())
+                .map(|mut calls| {
+                    normalize_tool_call_arguments(&mut calls);
+                    calls
+                })
                 .map_err(|error| AppError::Llm(format!("stored tool calls are invalid: {error}")))
         })
         .transpose()

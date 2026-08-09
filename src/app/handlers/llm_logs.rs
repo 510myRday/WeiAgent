@@ -32,6 +32,8 @@ pub struct LogListQuery {
     until: Option<String>,
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    is_compaction: Option<bool>,
 }
 
 fn default_log_limit() -> usize {
@@ -51,6 +53,7 @@ pub async fn list_llm_logs(
         since: query.since.filter(|value| !value.trim().is_empty()),
         until: query.until.filter(|value| !value.trim().is_empty()),
         status: query.status.filter(|value| !value.trim().is_empty()),
+        is_compaction: query.is_compaction,
     };
     Ok(Json(
         state

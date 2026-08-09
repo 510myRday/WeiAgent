@@ -116,7 +116,7 @@ export const AgentSection = memo(function AgentSection({ settingsForm, providers
             max={99}
             step={1}
             value={clampCompressThreshold(
-              settingsForm.context_compress_threshold_percent ?? 90,
+              settingsForm.context_compress_threshold_percent ?? 85,
             )}
             onChange={(e) => onPatch({
               context_compress_threshold_percent: clampCompressThreshold(

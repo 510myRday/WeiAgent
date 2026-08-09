@@ -522,6 +522,7 @@ impl ImageClient for OpenAiImagesClient {
             retry_attempts: 1,
             thinking_level: None,
             on_retry: None,
+            is_compaction: false,
         };
         let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
         let response = self
@@ -564,6 +565,7 @@ fn log_image_request(
         &context.agent_name,
         context.agent_id.as_deref(),
         context.conversation_id.as_deref(),
+        false,
         &context.model_id,
         &context.provider_name,
         request_json,

@@ -130,7 +130,7 @@ export function mergeToolsConfig(defaults: AgentToolsConfig, overrides: AgentToo
     task_planning: {
       enabled: overrides.task_planning?.enabled ?? defaults.task_planning.enabled,
       progress_interval:
-        overrides.task_planning?.progress_interval ?? defaults.task_planning.progress_interval ?? 3,
+        overrides.task_planning?.progress_interval ?? defaults.task_planning.progress_interval ?? 5,
     },
   };
 }

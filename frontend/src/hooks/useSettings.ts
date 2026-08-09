@@ -12,7 +12,7 @@ const defaultSettings: AppSettings = {
   language: 'zh',
   request_timeout_seconds: 60,
   request_retry_attempts: 5,
-  context_compress_threshold_percent: 90,
+  context_compress_threshold_percent: 85,
   llm_log_enabled: false,
   conversation_title_provider_id: null,
   conversation_title_model_id: null,
@@ -27,7 +27,7 @@ function normalizeSettings(settings: AppSettings): AppSettings {
       && threshold >= 1
       && threshold <= 99
       ? threshold
-      : 90,
+      : 85,
   };
 }
 

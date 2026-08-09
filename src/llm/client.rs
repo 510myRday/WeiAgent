@@ -21,6 +21,8 @@ pub struct RequestOptions {
     pub retry_attempts: u32,
     pub thinking_level: Option<ThinkingLevel>,
     pub on_retry: Option<RetryHook>,
+    /// Marks internal context-summary requests in the request monitor.
+    pub is_compaction: bool,
 }
 
 #[async_trait]

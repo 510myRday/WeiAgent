@@ -591,6 +591,10 @@ where
     compact_options.thinking_level = Some(ThinkingLevel::Off);
     // One retry is enough for compaction; keep it snappy.
     compact_options.retry_attempts = compact_options.retry_attempts.clamp(1, 2);
+    // Compaction has its own visible run phase. Do not surface its internal
+    // retry/timeout attempts as ordinary model retries in the chat bubble.
+    compact_options.on_retry = None;
+    compact_options.is_compaction = true;
 
     let compaction_provider = provider_for_compaction(provider);
     let completion = client.complete(

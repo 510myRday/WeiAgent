@@ -180,6 +180,9 @@ async fn normalize_history_for_llm(
 
     let mut normalized = Vec::with_capacity(history.len());
     for mut message in history {
+        if message.role == ChatRole::Tool {
+            message.content = normalize_stored_tool_result_for_llm(&message.content);
+        }
         normalize_attachments_for_llm(&mut message.attachments, llm_image_bytes).await?;
 
         if message.role == ChatRole::Assistant
@@ -218,6 +221,56 @@ async fn normalize_history_for_llm(
         }
     }
     Ok(normalized)
+}
+
+/// Normalize tool messages written by older runs before they enter a new
+/// request. This keeps legacy volatile metadata from breaking the reusable
+/// prompt prefix after a restart.
+fn normalize_stored_tool_result_for_llm(content: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(content) else {
+        return content.to_string();
+    };
+    let Some(object) = value.as_object_mut() else {
+        return content.to_string();
+    };
+    match object.get("status").and_then(serde_json::Value::as_str) {
+        Some("completed") => {
+            object.remove("duration_ms");
+            object.remove("output_cursor");
+        }
+        Some("running") => {
+            object.remove("duration_ms");
+        }
+        Some("pending_approval") => {
+            object.remove("approval_id");
+        }
+        _ => {}
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| content.to_string())
+}
+
+#[cfg(test)]
+mod tool_result_tests {
+    use super::normalize_stored_tool_result_for_llm;
+
+    #[test]
+    fn legacy_completed_metadata_is_normalized() {
+        let normalized = normalize_stored_tool_result_for_llm(
+            r#"{"status":"completed","stdout":"ok","duration_ms":17,"output_cursor":2}"#,
+        );
+        assert_eq!(normalized, r#"{"status":"completed","stdout":"ok"}"#);
+    }
+
+    #[test]
+    fn legacy_pending_approval_id_is_normalized() {
+        let normalized = normalize_stored_tool_result_for_llm(
+            r#"{"status":"pending_approval","command":"COMMAND","approval_id":"APPROVAL"}"#,
+        );
+        let value: serde_json::Value = serde_json::from_str(&normalized).unwrap();
+        assert_eq!(value["status"], "pending_approval");
+        assert_eq!(value["command"], "COMMAND");
+        assert!(value.get("approval_id").is_none());
+    }
 }
 
 async fn normalize_attachments_for_llm(

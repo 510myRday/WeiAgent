@@ -1194,7 +1194,12 @@ function TaskPlanHistoryCard({
     <article className="task-plan-history__card">
       <div className="task-plan-history__title-row">
         <span className="task-plan-history__number" aria-label={`第 ${planNumber} 个任务`}>{planNumber}</span>
-        <h3 className="task-plan-history__title">{plan.explanation || t('tools.taskPlanning.name')}</h3>
+        <h3
+          className="task-plan-history__title"
+          title={plan.explanation || t('tools.taskPlanning.name')}
+        >
+          {plan.explanation || t('tools.taskPlanning.name')}
+        </h3>
         <time className="task-plan-history__time" dateTime={plan.created_at}>
           {formatTaskPlanStartTime(plan.created_at)}
         </time>

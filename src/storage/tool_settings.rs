@@ -27,7 +27,7 @@ use crate::{
 
 // Migration versions share one application-wide namespace with conversations
 // and provider migrations, so task planning must use the next free version.
-const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 10;
+const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 11;
 
 const TOOL_SETTINGS_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS tool_settings (
@@ -663,6 +663,24 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
                )",
             [],
         )?;
+        conn.execute(
+            "INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (10, ?1, ?2)",
+            params![
+                "tool_settings_firecrawl_anonymous_v10",
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+    }
+    if !applied {
+        conn.execute(
+            "UPDATE tool_settings
+             SET task_planning_progress_interval = ?1
+             WHERE scope_type = 'default'
+               AND scope_id = 'default'
+               AND task_planning_progress_interval = 3",
+            [i64::from(DEFAULT_TASK_PLAN_PROGRESS_INTERVAL)],
+        )?;
     }
     if applied {
         return Ok(());
@@ -672,7 +690,7 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
          VALUES (?1, ?2, ?3)",
         params![
             TOOL_SETTINGS_SCHEMA_VERSION,
-            "tool_settings_firecrawl_anonymous_v10",
+            "tool_settings_task_planning_default_v11",
             Utc::now().to_rfc3339()
         ],
     )?;

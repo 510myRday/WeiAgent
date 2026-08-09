@@ -410,6 +410,6 @@ export function formFromSerializedSnapshot(serialized: string): ProviderForm {
 }
 
 export function clampCompressThreshold(value: number): number {
-  if (!Number.isFinite(value)) return 90;
+  if (!Number.isFinite(value)) return 85;
   return Math.min(99, Math.max(1, Math.round(value)));
 }

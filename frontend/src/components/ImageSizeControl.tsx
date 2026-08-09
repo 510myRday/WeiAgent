@@ -10,15 +10,22 @@ export const IMAGE_SIZE_OPTIONS = [
   '1024x1536',
   '1792x1024',
   '1024x1792',
+  '1:1',
+  '3:4',
+  '4:3',
+  '16:9',
+  '9:16',
 ] as const;
 
 export const CUSTOM_IMAGE_SIZE = '__custom__';
 
+type CustomImageSizeMode = 'dimensions' | 'ratio';
+
 export function isValidCustomImageSize(value: string): boolean {
-  const match = value.trim().match(/^(\d{1,5})x(\d{1,5})$/i);
+  const match = value.trim().match(/^(\d{1,5})(x|:)(\d{1,5})$/i);
   if (!match) return false;
   const width = Number(match[1]);
-  const height = Number(match[2]);
+  const height = Number(match[3]);
   return width >= 1 && width <= 16384 && height >= 1 && height <= 16384;
 }
 
@@ -41,6 +48,7 @@ export function ImageSizeControl({
   const [customDialogOpen, setCustomDialogOpen] = useState(false);
   const [customDraft, setCustomDraft] = useState('');
   const [customError, setCustomError] = useState(false);
+  const [customMode, setCustomMode] = useState<CustomImageSizeMode>('dimensions');
 
   const isPreset = !value || IMAGE_SIZE_OPTIONS.includes(value as (typeof IMAGE_SIZE_OPTIONS)[number]);
   const currentCustomSize = isPreset ? undefined : value;
@@ -50,12 +58,20 @@ export function ImageSizeControl({
     setCustomDialogOpen(false);
     setCustomDraft(currentCustomSize ?? '');
     setCustomError(false);
+    setCustomMode(currentCustomSize?.includes(':') ? 'ratio' : 'dimensions');
   }, [currentCustomSize, resetKey]);
 
   function openCustomDialog() {
     setCustomDraft(currentCustomSize ?? '');
     setCustomError(false);
+    setCustomMode(currentCustomSize?.includes(':') ? 'ratio' : 'dimensions');
     setCustomDialogOpen(true);
+  }
+
+  function changeCustomMode(mode: CustomImageSizeMode) {
+    setCustomMode(mode);
+    setCustomDraft('');
+    setCustomError(false);
   }
 
   function handleSelectChange(nextValue: string) {
@@ -113,7 +129,29 @@ export function ImageSizeControl({
         )}
       >
         <form id="image-size-custom-form" className="image-size-custom-dialog__form" onSubmit={handleCustomSubmit}>
-          <label htmlFor="image-size-custom-input">{t('provider.imageSize')}</label>
+          <div className="image-size-custom-dialog__mode" role="tablist" aria-label={t('provider.imageCustomModeLabel')}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={customMode === 'dimensions'}
+              className={customMode === 'dimensions' ? 'is-active' : ''}
+              onClick={() => changeCustomMode('dimensions')}
+            >
+              {t('provider.imageCustomDimensions')}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={customMode === 'ratio'}
+              className={customMode === 'ratio' ? 'is-active' : ''}
+              onClick={() => changeCustomMode('ratio')}
+            >
+              {t('provider.imageCustomRatio')}
+            </button>
+          </div>
+          <label htmlFor="image-size-custom-input">
+            {customMode === 'dimensions' ? t('provider.imageCustomDimensions') : t('provider.imageCustomRatio')}
+          </label>
           <input
             id="image-size-custom-input"
             type="text"
@@ -122,11 +160,15 @@ export function ImageSizeControl({
               setCustomDraft(event.target.value);
               setCustomError(false);
             }}
-            placeholder={t('provider.imageCustomPlaceholder')}
+            placeholder={t(
+              customMode === 'dimensions'
+                ? 'provider.imageCustomDimensionsPlaceholder'
+                : 'provider.imageCustomRatioPlaceholder',
+            )}
             aria-invalid={customError}
             aria-describedby={customError ? 'image-size-custom-error' : undefined}
             autoComplete="off"
-            inputMode="numeric"
+            inputMode={customMode === 'dimensions' ? 'numeric' : 'text'}
             spellCheck={false}
           />
           {customError ? (

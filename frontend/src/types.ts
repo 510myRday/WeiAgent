@@ -464,6 +464,7 @@ export type LlmLogEntry = {
   cost_usd?: number;
   error?: string;
   has_payload?: boolean;
+  is_compaction: boolean;
 };
 
 export type LlmLogDetail = LlmLogEntry & {
@@ -498,6 +499,12 @@ export type LlmLogSummary = {
   cost_usd: number;
 };
 
+export type LlmLogKindSummary = {
+  all_count: number;
+  compaction_count: number;
+  regular_count: number;
+};
+
 export type LlmLogListPage = {
   items: LlmLogEntry[];
   total: number;
@@ -506,5 +513,6 @@ export type LlmLogListPage = {
   agent_stats?: LlmLogAgentStat[];
   model_stats?: LlmLogModelStat[];
   summary?: LlmLogSummary;
+  kind_summary?: LlmLogKindSummary;
 };
 

@@ -115,6 +115,7 @@ pub struct LlmLogEntry {
     pub error: Option<String>,
     /// Whether request/response payload was persisted and can be inspected.
     pub has_payload: bool,
+    pub is_compaction: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -158,6 +159,14 @@ pub struct LlmLogListFilter {
     pub until: Option<String>,
     /// Optional request outcome: `success` or `error`.
     pub status: Option<String>,
+    pub is_compaction: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct LlmLogKindSummary {
+    pub all_count: usize,
+    pub compaction_count: usize,
+    pub regular_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -181,6 +190,7 @@ pub struct LlmLogListPage {
     pub agent_stats: Vec<LlmLogAgentStat>,
     pub model_stats: Vec<LlmLogModelStat>,
     pub summary: LlmLogSummary,
+    pub kind_summary: LlmLogKindSummary,
 }
 
 fn validate_log_id(log_id: &str) -> AppResult<Uuid> {
@@ -277,6 +287,7 @@ impl LlmLogger {
         agent_name: &str,
         agent_id: Option<&str>,
         conversation_id: Option<&str>,
+        is_compaction: bool,
         model_id: &str,
         provider_name: &str,
         raw_request: &str,
@@ -289,6 +300,7 @@ impl LlmLogger {
         let agent_name = agent_name.to_string();
         let agent_id = agent_id.map(str::to_string);
         let conversation_id = conversation_id.map(str::to_string);
+        let is_compaction = is_compaction;
         let model_id = model_id.to_string();
         let provider_name = provider_name.to_string();
         let raw_request = raw_request.to_string();
@@ -303,6 +315,7 @@ impl LlmLogger {
                     &agent_name,
                     agent_id.as_deref(),
                     conversation_id.as_deref(),
+                    is_compaction,
                     &model_id,
                     &provider_name,
                     &raw_request,
@@ -412,11 +425,32 @@ fn list_logs_page_conn(
         })?
     };
 
+    let mut kind_filter = filter.clone();
+    kind_filter.is_compaction = None;
+    let (kind_where, kind_bind) = build_filter_clause(&kind_filter);
+    let kind_summary = {
+        let sql = format!(
+            "SELECT COUNT(*),
+                    SUM(CASE WHEN is_compaction = 1 THEN 1 ELSE 0 END)
+             FROM llm_requests {kind_where}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        stmt.query_row(rusqlite::params_from_iter(kind_bind.iter()), |row| {
+            let all_count: i64 = row.get(0)?;
+            let compaction_count: i64 = row.get::<_, Option<i64>>(1)?.unwrap_or(0);
+            Ok(LlmLogKindSummary {
+                all_count: all_count.max(0) as usize,
+                compaction_count: compaction_count.max(0) as usize,
+                regular_count: all_count.saturating_sub(compaction_count).max(0) as usize,
+            })
+        })?
+    };
+
     let list_sql = format!(
         "SELECT id, agent_name, agent_id, conversation_id, model_id, provider_name,
                         created_at, status_code, first_token_ms, duration_ms,
                         input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
-                        cost_usd, error, has_payload
+                        cost_usd, error, has_payload, is_compaction
                  FROM llm_requests
                  {where_sql}
                  ORDER BY created_at_ms DESC, id DESC
@@ -442,6 +476,7 @@ fn list_logs_page_conn(
         since: filter.since.clone(),
         until: filter.until.clone(),
         status: None,
+        is_compaction: filter.is_compaction,
     };
     let (stats_where, stats_bind) = build_filter_clause(&stats_filter);
     let agent_stats_sql = format!(
@@ -519,6 +554,7 @@ fn list_logs_page_conn(
         agent_stats,
         model_stats,
         summary,
+        kind_summary,
     })
 }
 
@@ -542,7 +578,7 @@ fn get_log_conn(conn: &Connection, log_id: &str) -> AppResult<LlmLogDetail> {
         "SELECT r.id, r.agent_name, r.agent_id, r.conversation_id, r.model_id, r.provider_name,
                         r.created_at, r.status_code, r.first_token_ms, r.duration_ms,
                         r.input_tokens, r.output_tokens, r.cache_write_tokens, r.cache_read_tokens,
-                        r.cost_usd, r.error, r.has_payload,
+                        r.cost_usd, r.error, r.has_payload, r.is_compaction,
                         p.raw_request, p.raw_response
                  FROM llm_requests r
                  LEFT JOIN llm_payloads p ON p.request_id = r.id
@@ -551,8 +587,8 @@ fn get_log_conn(conn: &Connection, log_id: &str) -> AppResult<LlmLogDetail> {
     let detail = stmt
         .query_row(params![log_id], |row| {
             let mut entry = row_to_entry(row)?;
-            let raw_request: Option<String> = row.get(17)?;
-            let raw_response: Option<String> = row.get(18)?;
+            let raw_request: Option<String> = row.get(18)?;
+            let raw_response: Option<String> = row.get(19)?;
             let raw_request = raw_request.unwrap_or_default();
             let has_saved = !raw_request.trim().is_empty()
                 || raw_response
@@ -576,6 +612,7 @@ fn write_log_conn(
     agent_name: &str,
     agent_id: Option<&str>,
     conversation_id: Option<&str>,
+    is_compaction: bool,
     model_id: &str,
     provider_name: &str,
     raw_request: &str,
@@ -629,12 +666,12 @@ fn write_log_conn(
             id, created_at, created_at_ms, agent_id, agent_name, conversation_id,
             provider_name, model_id, status_code, first_token_ms, duration_ms,
             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            cost_usd, error, has_payload
+            cost_usd, error, has_payload, is_compaction
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6,
             ?7, ?8, ?9, ?10, ?11,
             ?12, ?13, ?14, ?15,
-            ?16, ?17, ?18
+            ?16, ?17, ?18, ?19
         )",
         params![
             id,
@@ -655,6 +692,7 @@ fn write_log_conn(
             metrics.cost_usd,
             stored_error,
             has_payload as i64,
+            is_compaction as i64,
         ],
     )?;
     if has_payload {
@@ -778,6 +816,7 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<LlmLogEntry> {
         cost_usd: row.get(14)?,
         error: row.get(15)?,
         has_payload: has_payload != 0,
+        is_compaction: row.get::<_, i64>(17)? != 0,
     })
 }
 
@@ -889,6 +928,11 @@ fn build_filter_clause(filter: &LlmLogListFilter) -> (String, Vec<String>) {
             );
         }
         _ => {}
+    }
+
+    if let Some(is_compaction) = filter.is_compaction {
+        clauses.push("is_compaction = ?".to_string());
+        params.push(if is_compaction { "1" } else { "0" }.to_string());
     }
 
     if clauses.is_empty() {
@@ -1469,6 +1513,7 @@ mod tests {
                     "Agent",
                     None,
                     None,
+                    false,
                     "model",
                     "provider",
                     &format!("request-{index}"),
@@ -1499,6 +1544,7 @@ mod tests {
                 "Agent",
                 Some("a1"),
                 Some("c1"),
+                false,
                 "model",
                 "provider",
                 r#"{"messages":[{"role":"user","content":"hi"}]}"#,
@@ -1555,6 +1601,7 @@ mod tests {
                 "AI tutor",
                 Some("agent-1"),
                 Some("conv-1"),
+                false,
                 "hy3-free",
                 "opencode-free",
                 r#"{"messages":[{"role":"user","content":"hi"}]}"#,
@@ -1587,6 +1634,7 @@ mod tests {
                 "Alpha",
                 Some("id-a"),
                 None,
+                false,
                 "m1",
                 "prov-a",
                 "req-a",
@@ -1603,6 +1651,7 @@ mod tests {
                 "Beta",
                 Some("id-b"),
                 None,
+                false,
                 "m2",
                 "prov-b",
                 "req-b",
@@ -1628,6 +1677,7 @@ mod tests {
                     since: None,
                     until: None,
                     status: None,
+                    is_compaction: None,
                 },
             )
             .await
@@ -1648,6 +1698,7 @@ mod tests {
                     since: None,
                     until: None,
                     status: None,
+                    is_compaction: None,
                 },
             )
             .await

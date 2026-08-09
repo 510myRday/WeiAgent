@@ -53,7 +53,7 @@ export function TaskPlanningToolSettings({ scope, agentId, onBack }: TaskPlannin
   const enabled = Boolean(effective?.task_planning?.enabled);
   const progressInterval = Math.min(
     999,
-    Math.max(1, effective?.task_planning?.progress_interval || 3),
+    Math.max(1, effective?.task_planning?.progress_interval || 5),
   );
   const progressIntervalInherited = scope === 'agent'
     && settings?.overrides.task_planning.progress_interval === undefined;
