@@ -291,6 +291,7 @@ impl super::Store {
 mod tests {
     use super::*;
     use crate::domain::TaskPlanItemStatus;
+    use crate::storage::sql_util::now_rfc3339;
 
     async fn insert_conversation_and_message(
         store: &crate::storage::Store,
@@ -298,7 +299,7 @@ mod tests {
         message_id: Uuid,
     ) {
         let agent_id = Uuid::new_v4();
-        let now = Utc::now().to_rfc3339();
+        let now = now_rfc3339();
         store
             .database()
             .call(move |conn| {
@@ -318,7 +319,7 @@ mod tests {
                         message_id.to_string(),
                         conversation_id.to_string(),
                         agent_id.to_string(),
-                        Utc::now().to_rfc3339(),
+                        now_rfc3339(),
                     ],
                 )?;
                 Ok(())

@@ -16,7 +16,7 @@ use crate::{
 
 impl Store {
     pub async fn list_ip_proxies(&self) -> AppResult<Vec<IpProxy>> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.ip_proxy_lock.lock().await;
         self.read_ip_proxies_unlocked().await
     }
 
@@ -24,7 +24,7 @@ impl Store {
         let name = validate_non_empty("proxy name", &request.name)?;
         let (url, protocol) = normalize_proxy_url(&request.url)?;
 
-        let _guard = self.lock.lock().await;
+        let _guard = self.ip_proxy_lock.lock().await;
         let proxies = self.read_ip_proxies_unlocked().await?;
         ensure_unique_url(&proxies, &url, None)?;
         ensure_unique_name(&proxies, &name, None)?;
@@ -58,7 +58,7 @@ impl Store {
         &self,
         request: ImportIpProxiesRequest,
     ) -> AppResult<ImportIpProxiesResponse> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.ip_proxy_lock.lock().await;
         let proxies = self.read_ip_proxies_unlocked().await?;
         let mut known_urls = proxies
             .iter()
@@ -139,7 +139,7 @@ impl Store {
         id: Uuid,
         request: UpdateIpProxyRequest,
     ) -> AppResult<IpProxy> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.ip_proxy_lock.lock().await;
         let mut proxies = self.read_ip_proxies_unlocked().await?;
         let index = proxies
             .iter()
@@ -183,7 +183,7 @@ impl Store {
     }
 
     pub async fn delete_ip_proxy(&self, id: Uuid) -> AppResult<()> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.ip_proxy_lock.lock().await;
         let deleted = self
             .database
             .call(move |connection| db::delete_ip_proxy_conn(connection, id))
@@ -215,7 +215,7 @@ impl Store {
         &self,
         updates: &[IpProxyTestUpdate],
     ) -> AppResult<Vec<IpProxy>> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.ip_proxy_lock.lock().await;
         let mut proxies = self.read_ip_proxies_unlocked().await?;
         let updates_by_id = updates
             .iter()
@@ -254,7 +254,7 @@ impl Store {
         &self,
         updates: &[IpProxyQualityTestUpdate],
     ) -> AppResult<Vec<IpProxy>> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.ip_proxy_lock.lock().await;
         let mut proxies = self.read_ip_proxies_unlocked().await?;
         let updates_by_id = updates
             .iter()

@@ -118,6 +118,7 @@
     "imageMode": "Image mode",
     "imageSettings": "Image generation settings",
     "downloadImage": "Download image",
+    "editImage": "Edit image",
     "imagePreview": "Image preview",
     "removeImage": "Remove image",
     "markAsMask": "Use as mask",

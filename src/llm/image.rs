@@ -19,7 +19,7 @@ use crate::{
     llm::{
         client::RequestOptions,
         http::{
-            DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, read_response_body_limited,
+            DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, log_request, read_response_body_limited,
             read_response_body_limited_to,
         },
         keys::ApiKeyCycle,
@@ -68,6 +68,27 @@ pub struct ImageRequestOptions {
     pub input_fidelity: Option<String>,
 }
 
+#[derive(Clone)]
+pub struct ImageGenerationRequest {
+    pub provider: ModelProvider,
+    pub model: String,
+    pub prompt: String,
+    pub references: Vec<ImageAttachment>,
+    pub options: RequestOptions,
+    pub image_options: ImageRequestOptions,
+    pub log_context: Option<ImageLogContext>,
+}
+
+struct ImageResponseContext<'a> {
+    image_fetch_client: &'a reqwest::Client,
+    options: &'a RequestOptions,
+    log_context: Option<&'a ImageLogContext>,
+    request_json: &'a str,
+    endpoint: &'a str,
+    operation: &'a str,
+    started: Instant,
+}
+
 impl From<&ImageModelConfig> for ImageRequestOptions {
     fn from(config: &ImageModelConfig) -> Self {
         Self {
@@ -87,16 +108,7 @@ impl From<&ImageModelConfig> for ImageRequestOptions {
 
 #[async_trait]
 pub trait ImageClient: Send + Sync {
-    async fn generate(
-        &self,
-        provider: &ModelProvider,
-        model: &str,
-        prompt: &str,
-        references: &[ImageAttachment],
-        options: RequestOptions,
-        image_options: ImageRequestOptions,
-        log_context: Option<ImageLogContext>,
-    ) -> AppResult<GeneratedImages>;
+    async fn generate(&self, request: ImageGenerationRequest) -> AppResult<GeneratedImages>;
 
     async fn list_models(&self, provider: &ModelProvider) -> AppResult<Vec<String>>;
 }
@@ -142,21 +154,15 @@ impl OpenAiImagesClient {
 
     async fn response_images(
         &self,
-        image_fetch_client: &reqwest::Client,
         response: reqwest::Response,
-        options: &RequestOptions,
-        log_context: Option<&ImageLogContext>,
-        request_json: &str,
-        endpoint: &str,
-        operation: &str,
-        started: Instant,
+        context: ImageResponseContext<'_>,
     ) -> AppResult<GeneratedImages> {
         let status = response.status();
         let mut body_for_log = None;
         let result = async {
             let body = read_response_body_limited_to(
                 response,
-                options.timeout,
+                context.options.timeout,
                 MAX_IMAGE_RESPONSE_BYTES,
                 "image response",
             )
@@ -167,17 +173,20 @@ impl OpenAiImagesClient {
             if !status.is_success() {
                 body_for_log = Some(log_excerpt(&body, 64 * 1024));
                 if status == reqwest::StatusCode::NOT_FOUND {
-                    let hint = if operation == "image edit" {
+                    let hint = if context.operation == "image edit" {
                         "The selected provider may expose image generation but not image editing; configure its image edit URL or choose a provider/model with image editing support"
                     } else {
                         "Check the provider Base URL or configure its image generation URL"
                     };
                     return Err(AppError::Llm(format!(
-                        "{operation} endpoint returned 404: {endpoint}. {hint}. Upstream response: {body}"
+                        "{operation} endpoint returned 404: {endpoint}. {hint}. Upstream response: {body}",
+                        operation = context.operation,
+                        endpoint = context.endpoint,
                     )));
                 }
                 return Err(AppError::Llm(format!(
-                    "image upstream returned {status} from {endpoint}: {body}"
+                    "image upstream returned {status} from {endpoint}: {body}",
+                    endpoint = context.endpoint,
                 )));
             }
             let value: Value = serde_json::from_str(&body)
@@ -205,9 +214,9 @@ impl OpenAiImagesClient {
                     images.push(GeneratedImage { bytes, media_type });
                 } else if let Some(url) = item["url"].as_str() {
                     let image = fetch_remote_image(
-                        image_fetch_client,
+                        context.image_fetch_client,
                         url,
-                        options.timeout,
+                        context.options.timeout,
                         MAX_GENERATED_IMAGE_BYTES,
                         "generated image",
                     )
@@ -233,12 +242,12 @@ impl OpenAiImagesClient {
         let error_message = result.as_ref().err().map(ToString::to_string);
         log_image_request(
             &self.http,
-            log_context,
-            request_json,
+            context.log_context,
+            context.request_json,
             body_for_log.as_deref(),
             Some(status.as_u16()),
             error_message.as_deref(),
-            started,
+            context.started,
         );
         result
     }
@@ -281,16 +290,16 @@ impl OpenAiImagesClient {
 
 #[async_trait]
 impl ImageClient for OpenAiImagesClient {
-    async fn generate(
-        &self,
-        provider: &ModelProvider,
-        model: &str,
-        prompt: &str,
-        references: &[ImageAttachment],
-        options: RequestOptions,
-        image_options: ImageRequestOptions,
-        log_context: Option<ImageLogContext>,
-    ) -> AppResult<GeneratedImages> {
+    async fn generate(&self, request: ImageGenerationRequest) -> AppResult<GeneratedImages> {
+        let ImageGenerationRequest {
+            provider,
+            model,
+            prompt,
+            references,
+            options,
+            image_options,
+            log_context,
+        } = request;
         if provider.provider_type != ProviderType::OpenAiImages {
             return Err(AppError::BadRequest(
                 "selected provider is not an image provider".to_string(),
@@ -305,7 +314,7 @@ impl ImageClient for OpenAiImagesClient {
         let image_fetch_client = self
             .http
             .client_for_image_fetch(provider.proxy_url.as_deref())?;
-        let mut keys = ApiKeyCycle::new(provider)?;
+        let mut keys = ApiKeyCycle::new(&provider)?;
         let image_options = effective_image_options(image_options);
         if references.is_empty() {
             let mut body = Map::new();
@@ -350,7 +359,7 @@ impl ImageClient for OpenAiImagesClient {
                 }
             }
             let body = Value::Object(body);
-            let url = Self::generation_url(provider);
+            let url = Self::generation_url(&provider);
             let request_json = serde_json::to_string_pretty(&body).unwrap_or_default();
             let started = Instant::now();
             let response = match self
@@ -376,21 +385,23 @@ impl ImageClient for OpenAiImagesClient {
             };
             return self
                 .response_images(
-                    &image_fetch_client,
                     response,
-                    &options,
-                    log_context.as_ref(),
-                    &request_json,
-                    &url,
-                    "image generation",
-                    started,
+                    ImageResponseContext {
+                        image_fetch_client: &image_fetch_client,
+                        options: &options,
+                        log_context: log_context.as_ref(),
+                        request_json: &request_json,
+                        endpoint: &url,
+                        operation: "image generation",
+                        started,
+                    },
                 )
                 .await;
         }
 
         let mut reference_images = Vec::with_capacity(references.len());
         let mut total_reference_bytes = 0_usize;
-        for reference in references {
+        for reference in &references {
             let image = self
                 .reference_image(&image_fetch_client, reference, options.timeout)
                 .await?;
@@ -410,7 +421,7 @@ impl ImageClient for OpenAiImagesClient {
             });
         }
         validate_mask_image(&reference_images)?;
-        let url = Self::edit_url(provider);
+        let url = Self::edit_url(&provider);
         let prompt = prompt.to_string();
         let model = model.to_string();
         let request_json = serde_json::to_string_pretty(&json!({
@@ -502,14 +513,16 @@ impl ImageClient for OpenAiImagesClient {
             }
         };
         self.response_images(
-            &image_fetch_client,
             response,
-            &options,
-            log_context.as_ref(),
-            &request_json,
-            &url,
-            "image edit",
-            started,
+            ImageResponseContext {
+                image_fetch_client: &image_fetch_client,
+                options: &options,
+                log_context: log_context.as_ref(),
+                request_json: &request_json,
+                endpoint: &url,
+                operation: "image edit",
+                started,
+            },
         )
         .await
     }
@@ -561,18 +574,22 @@ fn log_image_request(
     let Some(context) = context else { return };
     crate::llm::http::spawn_log(
         &http.logger(),
-        http.log_enabled(),
-        &context.agent_name,
-        context.agent_id.as_deref(),
-        context.conversation_id.as_deref(),
-        false,
-        &context.model_id,
-        &context.provider_name,
-        request_json,
-        response,
-        status,
-        error,
-        crate::storage::llm_logs::LlmLogMetrics::timed(started),
+        log_request(
+            crate::storage::llm_logs::LlmLogIdentity {
+                agent_name: context.agent_name.clone(),
+                agent_id: context.agent_id.clone(),
+                conversation_id: context.conversation_id.clone(),
+                is_compaction: false,
+                model_id: context.model_id.clone(),
+                provider_name: context.provider_name.clone(),
+            },
+            request_json,
+            response,
+            status,
+            error,
+            crate::storage::llm_logs::LlmLogMetrics::timed(started),
+            http.log_enabled(),
+        ),
     );
 }
 

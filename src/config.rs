@@ -333,9 +333,10 @@ mod tests {
     async fn loading_previous_default_context_threshold_migrates_to_new_default() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
-        let mut previous = AppSettings::default();
-        previous.context_compress_threshold_percent =
-            LEGACY_DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT;
+        let previous = AppSettings {
+            context_compress_threshold_percent: LEGACY_DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT,
+            ..AppSettings::default()
+        };
         fs::write(&path, serde_json::to_string_pretty(&previous).unwrap())
             .await
             .unwrap();

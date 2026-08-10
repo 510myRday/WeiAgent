@@ -5,6 +5,7 @@ mod db;
 mod files;
 mod ip_proxies;
 pub mod llm_logs;
+mod migrations;
 mod providers;
 mod sql_util;
 mod store;
@@ -121,7 +122,10 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(migration_versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(
+            migration_versions,
+            (1..=migrations::LATEST_SCHEMA_VERSION).collect::<Vec<_>>()
+        );
         assert_eq!(
             tool_table_names(&conn),
             vec![

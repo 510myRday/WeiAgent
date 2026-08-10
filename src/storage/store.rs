@@ -24,7 +24,12 @@ pub struct Store {
     pub(super) agents_file: PathBuf,
     pub(super) agents_dir: PathBuf,
     pub(super) database: Arc<db::Database>,
-    pub(super) lock: Mutex<()>,
+    pub(super) settings_lock: Mutex<()>,
+    pub(super) agents_lock: Mutex<()>,
+    pub(super) workspace_lock: Mutex<()>,
+    pub(super) provider_lock: Mutex<()>,
+    pub(super) ip_proxy_lock: Mutex<()>,
+    pub(super) tool_settings_lock: Mutex<()>,
 }
 
 impl Store {
@@ -51,7 +56,12 @@ impl Store {
             agents_file,
             agents_dir,
             database,
-            lock: Mutex::new(()),
+            settings_lock: Mutex::new(()),
+            agents_lock: Mutex::new(()),
+            workspace_lock: Mutex::new(()),
+            provider_lock: Mutex::new(()),
+            ip_proxy_lock: Mutex::new(()),
+            tool_settings_lock: Mutex::new(()),
         };
         store.initialize_tool_settings().await?;
         store.ensure_builtin_agents().await?;
@@ -59,18 +69,18 @@ impl Store {
     }
 
     pub async fn read_settings(&self) -> AppResult<AppSettings> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.settings_lock.lock().await;
         crate::config::read_settings(&self.settings_file).await
     }
 
     pub async fn write_settings(&self, settings: AppSettings) -> AppResult<AppSettings> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.settings_lock.lock().await;
         write_settings(&self.settings_file, &settings).await?;
         Ok(settings)
     }
 
     pub(super) async fn read_providers(&self) -> AppResult<Vec<ModelProvider>> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.provider_lock.lock().await;
         self.database
             .call(|connection| db::read_providers_conn(connection))
             .await
@@ -81,7 +91,7 @@ impl Store {
     }
 
     pub(super) async fn read_agents(&self) -> AppResult<Vec<Agent>> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.agents_lock.lock().await;
         self.read_agents_unlocked().await
     }
 

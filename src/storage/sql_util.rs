@@ -53,6 +53,11 @@ pub(crate) fn parse_datetime(value: &str, field: &str) -> AppResult<DateTime<Utc
         .map_err(|error| AppError::Database(format!("invalid {field}: {error}")))
 }
 
+/// Canonical representation for SQLite TEXT timestamp columns.
+pub(crate) fn now_rfc3339() -> String {
+    Utc::now().to_rfc3339()
+}
+
 pub(crate) fn parse_optional_datetime(
     value: Option<String>,
     field: &str,

@@ -70,6 +70,7 @@ interface MessageListProps {
   timelineMessageIndexes: readonly number[];
   onLoadOlder: () => Promise<boolean>;
   onRestart: (messageId: string, content: string, attachments?: ImageAttachment[]) => void;
+  onEditImage: (attachment: ImageAttachment) => void;
   onApproveToolCall: (
     approvalId: string,
     agentId: string,
@@ -124,6 +125,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   timelineMessageIndexes,
   onLoadOlder,
   onRestart,
+  onEditImage,
   onApproveToolCall,
   onActiveTimelineMessageChange,
   formatTimelineTime,
@@ -520,6 +522,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                     supportsImages={supportsImages}
                     supportsImageMasks={supportsImageMasks}
                     onRestart={onRestart}
+                    onEditImage={onEditImage}
                     onApproveToolCall={onApproveToolCall}
                     formatTimelineTime={formatTimelineTime}
                   />
@@ -553,6 +556,7 @@ const MessageListItem = memo(function MessageListItem({
   supportsImages,
   supportsImageMasks,
   onRestart,
+  onEditImage,
   onApproveToolCall,
   formatTimelineTime,
 }: {
@@ -564,6 +568,7 @@ const MessageListItem = memo(function MessageListItem({
   supportsImages: boolean;
   supportsImageMasks: boolean;
   onRestart: MessageListProps['onRestart'];
+  onEditImage: MessageListProps['onEditImage'];
   onApproveToolCall: MessageListProps['onApproveToolCall'];
   formatTimelineTime: (value: string) => string;
 }) {
@@ -581,6 +586,7 @@ const MessageListItem = memo(function MessageListItem({
       supportsImages={supportsImages}
       supportsImageMasks={supportsImageMasks}
       onRestart={onRestart}
+      onEditImage={onEditImage}
       onApproveToolCall={onApproveToolCall}
     />
   );
@@ -677,6 +683,7 @@ const MessageRow = memo(function MessageRow({
   supportsImages,
   supportsImageMasks,
   onRestart,
+  onEditImage,
   onApproveToolCall,
 }: {
   message: UiMessage;
@@ -690,6 +697,7 @@ const MessageRow = memo(function MessageRow({
   supportsImages: boolean;
   supportsImageMasks: boolean;
   onRestart: MessageListProps['onRestart'];
+  onEditImage: MessageListProps['onEditImage'];
   onApproveToolCall: MessageListProps['onApproveToolCall'];
 }) {
   const { t } = useI18n();
@@ -910,6 +918,7 @@ const MessageRow = memo(function MessageRow({
                 <MessageContent
                   message={message}
                   agentId={agent?.id ?? ''}
+                  onEditImage={onEditImage}
                   onApproveToolCall={onApproveToolCall}
                 />
                 {message.status === 'failed' ? <span className="message-status error">{failedLabel}</span> : null}
@@ -968,10 +977,12 @@ export function MessageAvatar({
 function MessageContent({
   message,
   agentId,
+  onEditImage,
   onApproveToolCall,
 }: {
   message: UiMessage;
   agentId: string;
+  onEditImage: MessageListProps['onEditImage'];
   onApproveToolCall: MessageListProps['onApproveToolCall'];
 }) {
   const { t } = useI18n();
@@ -1043,6 +1054,15 @@ function MessageContent({
                     aria-label={`${t('chat.openImage')}: ${attachment.name}`}
                   >
                     <Maximize2 size={14} aria-hidden="true" />
+                  </button>
+                  <button
+                    className="message-image-action"
+                    type="button"
+                    onClick={() => onEditImage(attachment)}
+                    title={t('chat.editImage')}
+                    aria-label={`${t('chat.editImage')}: ${attachment.name}`}
+                  >
+                    <Pencil size={14} aria-hidden="true" />
                   </button>
                 </div>
               </div>

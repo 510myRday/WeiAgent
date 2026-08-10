@@ -4,7 +4,7 @@ use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::sql_util::{
-    bool_to_i64, i64_to_bool, i64_to_u16, i64_to_u32, i64_to_u64, parse_datetime,
+    bool_to_i64, i64_to_bool, i64_to_u16, i64_to_u32, i64_to_u64, now_rfc3339, parse_datetime,
     parse_optional_datetime, u64_to_i64, usize_to_i64,
 };
 use uuid::Uuid;
@@ -204,7 +204,7 @@ impl Store {
     }
 
     pub async fn read_tool_defaults(&self) -> AppResult<AgentToolsConfig> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.tool_settings_lock.lock().await;
         self.read_tool_defaults_unlocked().await
     }
 
@@ -218,7 +218,7 @@ impl Store {
             ));
         }
         config.terminal.approval_grants.clear();
-        let _guard = self.lock.lock().await;
+        let _guard = self.tool_settings_lock.lock().await;
         let existing = self.read_tool_defaults_unlocked().await?;
         config.web_search = existing.web_search.merge_secret_update(&config.web_search);
         config
@@ -239,7 +239,7 @@ impl Store {
             return Ok(0);
         }
 
-        let _guard = self.lock.lock().await;
+        let _guard = self.tool_settings_lock.lock().await;
         let mut config = self.read_tool_defaults_unlocked().await?;
         let mut updated = 0;
         for update in updates {
@@ -289,7 +289,7 @@ impl Store {
     }
 
     pub async fn read_agent_tools_settings(&self, id: Uuid) -> AppResult<AgentToolsSettings> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.tool_settings_lock.lock().await;
         self.ensure_agent_exists_unlocked(id).await?;
         let defaults = self.read_tool_defaults_unlocked().await?;
         let overrides = self
@@ -312,7 +312,7 @@ impl Store {
         id: Uuid,
         mut overrides: AgentToolsOverrides,
     ) -> AppResult<AgentToolsSettings> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.tool_settings_lock.lock().await;
         self.ensure_agent_exists_unlocked(id).await?;
         let defaults = self.read_tool_defaults_unlocked().await?;
         overrides.remove_expired_approval_grants(Utc::now());
@@ -334,7 +334,7 @@ impl Store {
         config: AgentToolsConfig,
     ) -> AppResult<AgentToolsConfig> {
         validate_tools_config(&config)?;
-        let _guard = self.lock.lock().await;
+        let _guard = self.tool_settings_lock.lock().await;
         self.ensure_agent_exists_unlocked(id).await?;
         let overrides = AgentToolsOverrides::full_override(&config);
         self.write_agent_tools_overrides_unlocked(id, &overrides)
@@ -348,7 +348,7 @@ impl Store {
         command: &str,
         cwd: Option<&str>,
     ) -> AppResult<AgentToolsConfig> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.tool_settings_lock.lock().await;
         self.ensure_agent_exists_unlocked(id).await?;
         let defaults = self.read_tool_defaults_unlocked().await?;
         let mut overrides = self
@@ -599,7 +599,7 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
         conn.execute(
             "INSERT INTO app_schema_migrations (version, name, applied_at)
              VALUES (2, ?1, ?2)",
-            params!["tool_settings_compact_v2", Utc::now().to_rfc3339()],
+            params!["tool_settings_compact_v2", now_rfc3339()],
         )?;
     }
     let task_planning_v7_applied = conn.query_row(
@@ -613,7 +613,7 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
         conn.execute(
             "INSERT INTO app_schema_migrations (version, name, applied_at)
              VALUES (7, ?1, ?2)",
-            params!["tool_settings_task_planning_v7", Utc::now().to_rfc3339()],
+            params!["tool_settings_task_planning_v7", now_rfc3339()],
         )?;
     }
     let task_planning_v8_applied = conn.query_row(
@@ -627,7 +627,7 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
         conn.execute(
             "INSERT INTO app_schema_migrations (version, name, applied_at)
              VALUES (8, ?1, ?2)",
-            params!["tool_settings_task_planning_v8", Utc::now().to_rfc3339()],
+            params!["tool_settings_task_planning_v8", now_rfc3339()],
         )?;
     }
     let task_planning_v9_applied = conn.query_row(
@@ -641,7 +641,7 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
         conn.execute(
             "INSERT INTO app_schema_migrations (version, name, applied_at)
              VALUES (9, ?1, ?2)",
-            params!["tool_settings_task_planning_v9", Utc::now().to_rfc3339()],
+            params!["tool_settings_task_planning_v9", now_rfc3339()],
         )?;
     }
     let firecrawl_anonymous_v10_applied = conn.query_row(
@@ -666,10 +666,7 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
         conn.execute(
             "INSERT INTO app_schema_migrations (version, name, applied_at)
              VALUES (10, ?1, ?2)",
-            params![
-                "tool_settings_firecrawl_anonymous_v10",
-                Utc::now().to_rfc3339()
-            ],
+            params!["tool_settings_firecrawl_anonymous_v10", now_rfc3339()],
         )?;
     }
     if !applied {
@@ -691,7 +688,7 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
         params![
             TOOL_SETTINGS_SCHEMA_VERSION,
             "tool_settings_task_planning_default_v11",
-            Utc::now().to_rfc3339()
+            now_rfc3339()
         ],
     )?;
     Ok(())
@@ -775,7 +772,7 @@ fn compact_default_exists(conn: &Connection) -> AppResult<bool> {
 }
 
 fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> AppResult<()> {
-    let now = Utc::now().to_rfc3339();
+    let now = now_rfc3339();
     let roots_json = serde_json::to_string(&config.terminal.allowed_cwd_roots)?;
     conn.execute(
         "INSERT INTO tool_settings (
@@ -925,7 +922,7 @@ fn write_agent_overrides_conn(
         .as_ref()
         .map(serde_json::to_string)
         .transpose()?;
-    let now = Utc::now().to_rfc3339();
+    let now = now_rfc3339();
     conn.execute(
         "INSERT INTO tool_settings (
             scope_type, scope_id, config_version, max_llm_iterations,

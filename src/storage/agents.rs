@@ -37,7 +37,8 @@ impl Store {
         let avatar_icon = normalize_avatar_icon(request.avatar_icon.as_deref())?;
         let avatar_color = normalize_avatar_color(request.avatar_color.as_deref())?;
 
-        let _guard = self.lock.lock().await;
+        let _guard = self.agents_lock.lock().await;
+        let _workspace_guard = self.workspace_lock.lock().await;
         let providers = self
             .database
             .call(|connection| db::read_providers_conn(connection))
@@ -70,7 +71,8 @@ impl Store {
         id: Uuid,
         request: UpdateAgentRequest,
     ) -> AppResult<AgentResponse> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.agents_lock.lock().await;
+        let _workspace_guard = self.workspace_lock.lock().await;
         let providers = self
             .database
             .call(|connection| db::read_providers_conn(connection))
@@ -86,7 +88,8 @@ impl Store {
         id: Uuid,
         request: UpdateAgentProfileRequest,
     ) -> AppResult<AgentProfileResponse> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.agents_lock.lock().await;
+        let _workspace_guard = self.workspace_lock.lock().await;
         let providers = self
             .database
             .call(|connection| db::read_providers_conn(connection))
@@ -126,7 +129,8 @@ impl Store {
     }
 
     pub async fn delete_agent(&self, id: Uuid) -> AppResult<()> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.agents_lock.lock().await;
+        let _workspace_guard = self.workspace_lock.lock().await;
         let agents = self.read_agents_unlocked().await?;
         if agents
             .iter()
@@ -157,7 +161,8 @@ impl Store {
                 }
             }
             Err(error) => {
-                tracing::warn!(agent_id = %id, %error, "failed to remove deleted agent conversations");
+                let _ = self.write_agents_unlocked(&agents).await;
+                return Err(error);
             }
         }
         if let Err(error) = self.delete_agent_tool_settings_unlocked(id).await {

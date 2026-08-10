@@ -20,7 +20,7 @@ Task planning is mandatory when enabled. Before calling any tool other than task
 
 impl Store {
     pub async fn read_agent_workspace(&self, id: Uuid) -> AppResult<AgentWorkspace> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.workspace_lock.lock().await;
         if !self
             .read_agents_unlocked()
             .await?
@@ -88,7 +88,8 @@ The current local system date is today's date and is authoritative.\n\
     }
 
     pub(super) async fn ensure_builtin_agents(&self) -> AppResult<()> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.agents_lock.lock().await;
+        let _workspace_guard = self.workspace_lock.lock().await;
         let mut agents = self.read_agents_unlocked().await?;
         let now = Utc::now();
 

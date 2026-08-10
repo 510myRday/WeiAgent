@@ -118,6 +118,7 @@
     "imageMode": "图片模式",
     "imageSettings": "图片生成参数",
     "downloadImage": "下载图片",
+    "editImage": "编辑图片",
     "imagePreview": "图片预览",
     "removeImage": "移除图片",
     "markAsMask": "设为遮罩图",

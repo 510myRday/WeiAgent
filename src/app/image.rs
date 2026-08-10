@@ -9,7 +9,10 @@ use crate::{
         ModelProvider, ModelUsage, TokenUsage,
     },
     error::{AppError, AppResult},
-    llm::{client::RequestOptions, image::ImageLogContext},
+    llm::{
+        client::RequestOptions,
+        image::{ImageGenerationRequest, ImageLogContext},
+    },
 };
 
 const MAX_PROMPT_BYTES: usize = 100 * 1024;
@@ -85,21 +88,21 @@ pub async fn run_image(
         .map(crate::llm::image::ImageRequestOptions::from)
         .unwrap_or_default();
     let generated = image_client
-        .generate(
-            &provider,
-            &agent.model_id,
-            &prompt,
-            &attachments,
+        .generate(ImageGenerationRequest {
+            provider: provider.clone(),
+            model: agent.model_id.clone(),
+            prompt: prompt.clone(),
+            references: attachments.clone(),
             options,
             image_options,
-            Some(ImageLogContext {
+            log_context: Some(ImageLogContext {
                 agent_name: agent.name.clone(),
                 agent_id: Some(agent.id.to_string()),
                 conversation_id: Some(conversation_id.to_string()),
                 model_id: agent.model_id.clone(),
                 provider_name: provider.name.clone(),
             }),
-        )
+        })
         .await?;
     let image_count = generated.images.len() as u32;
     let usage = image_usage(&provider, &agent.model_id, generated.usage, image_count);

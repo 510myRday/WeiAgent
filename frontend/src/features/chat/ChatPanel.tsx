@@ -30,7 +30,7 @@ import { useI18n } from '../../i18n';
 import { useConversations, usePageVisibility } from '../../hooks';
 import { AgentListItem, agentDisplayName } from '../../components/AgentListItem';
 import { Button, IconButton, ListItem, PaneHeader, SearchInput, useFeedback } from '../../components/ui';
-import { ChatComposer } from './ChatComposer';
+import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
 import { ChatAgentSelect } from './ChatAgentSelect';
 import { MessageAvatar, MessageList, type MessageListHandle } from './MessageList';
 import { MessageTimeline, type MessageTimelineItem } from './MessageTimeline';
@@ -150,6 +150,7 @@ export function ChatPanel({
 
   const conversationSearchRef = useRef<HTMLInputElement>(null);
   const messageListRef = useRef<MessageListHandle>(null);
+  const composerRef = useRef<ChatComposerHandle>(null);
   const modelSaveTimerRef = useRef<number | undefined>(undefined);
   const modelSaveRequestRef = useRef(0);
   const pendingModelSaveRef = useRef<PendingModelSave | null>(null);
@@ -822,6 +823,10 @@ export function ChatPanel({
     toast.warning(t('chat.imageUnsupportedModel'));
   }, [t, toast]);
 
+  const handleReferenceImage = useCallback((attachment: ImageAttachment) => {
+    composerRef.current?.addImageAttachment(attachment);
+  }, []);
+
   const handleLoadOlderMessages = useCallback(async () => {
     if (!activeConversationId || isLoadingOlderMessages) return false;
     return loadOlderMessages(activeConversationId);
@@ -1044,6 +1049,7 @@ export function ChatPanel({
           timelineMessageIndexes={timelineMessageIndexes}
           onLoadOlder={handleLoadOlderMessages}
           onRestart={handleRestartMessage}
+          onEditImage={handleReferenceImage}
           onApproveToolCall={handleApproveToolCall}
           onActiveTimelineMessageChange={setActiveTimelineMessageIndex}
           formatTimelineTime={formatTimelineTime}
@@ -1069,6 +1075,7 @@ export function ChatPanel({
             />
           ) : null}
           <ChatComposer
+            ref={composerRef}
             disabled={isComposerDisabled}
             placeholder={composerPlaceholder}
             inputLabel={composerInputLabel}

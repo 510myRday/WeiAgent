@@ -1,6 +1,8 @@
 import {
+  forwardRef,
   memo,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
@@ -31,7 +33,9 @@ import { Button, useDismissiblePopover } from '../../components/ui';
 import { useI18n } from '../../i18n';
 import { readChatDraft, writeChatDraft } from './chatDrafts';
 import {
+  MAX_IMAGE_COUNT,
   attachmentImageUrl,
+  createAttachmentId,
   removeAttachment,
   toggleAttachmentMask,
 } from './imageAttachments';
@@ -73,7 +77,11 @@ interface ChatComposerProps {
   onStop: () => void;
 }
 
-export const ChatComposer = memo(function ChatComposer({
+export type ChatComposerHandle = {
+  addImageAttachment: (attachment: ImageAttachment) => void;
+};
+
+export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposer({
   disabled,
   placeholder,
   inputLabel,
@@ -97,7 +105,7 @@ export const ChatComposer = memo(function ChatComposer({
   onUnsupportedImage,
   onSend,
   onStop,
-}: ChatComposerProps) {
+}: ChatComposerProps, ref) {
   const { t, locale } = useI18n();
   const [draft, setDraft] = useState('');
   const [thinkingOpen, setThinkingOpen] = useState(false);
@@ -121,6 +129,22 @@ export const ChatComposer = memo(function ChatComposer({
     interactionDisabled: disabled || isSending,
     onUnsupportedImage,
   });
+  const canAttachImages = supportsImages || (supportsImageGeneration && generationMode === 'image');
+
+  useImperativeHandle(ref, () => ({
+    addImageAttachment(attachment) {
+      if (!canAttachImages) {
+        onUnsupportedImage();
+        return;
+      }
+      setAttachments((current) => (
+        current.length >= MAX_IMAGE_COUNT
+          ? current
+          : [...current, { ...attachment, id: createAttachmentId(), is_mask: false }]
+      ));
+      inputRef.current?.focus();
+    },
+  }), [canAttachImages, onUnsupportedImage, setAttachments]);
 
   useEffect(() => {
     setDraft(readChatDraft(draftKey));
@@ -399,7 +423,7 @@ export const ChatComposer = memo(function ChatComposer({
       </div>
     </form>
   );
-});
+}));
 
 function ContextUsageRing({
   used,

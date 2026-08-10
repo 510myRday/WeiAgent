@@ -17,7 +17,7 @@ use crate::{
     },
     storage::{
         LlmLogger,
-        llm_logs::{LlmLogMetrics, elapsed_ms},
+        llm_logs::{LlmLogIdentity, LlmLogMetrics, LlmLogPayload, LlmLogRequest, elapsed_ms},
     },
 };
 
@@ -222,54 +222,36 @@ fn with_key_label(keys: &ApiKeyCycle, key: &str, reason: &str) -> String {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_log(
-    logger: &Option<Arc<LlmLogger>>,
-    // When true, persist full request/response payloads; summary metrics always persist.
-    include_payload: bool,
-    agent_name: &str,
-    agent_id: Option<&str>,
-    conversation_id: Option<&str>,
-    is_compaction: bool,
-    model_id: &str,
-    provider_name: &str,
+pub(crate) fn spawn_log(logger: &Option<Arc<LlmLogger>>, request: LlmLogRequest) {
+    if let Some(logger) = logger {
+        let logger = logger.clone();
+        logger.begin_pending_write();
+        tokio::spawn(async move {
+            let result = logger.write_log(request).await;
+            logger.finish_pending_write(&result);
+        });
+    }
+}
+
+pub(crate) fn log_request(
+    identity: LlmLogIdentity,
     raw_request: &str,
     raw_response: Option<&str>,
     raw_status: Option<u16>,
     error: Option<&str>,
     metrics: LlmLogMetrics,
-) {
-    if let Some(logger) = logger {
-        let logger = logger.clone();
-        logger.begin_pending_write();
-        let agent_name = agent_name.to_string();
-        let agent_id = agent_id.map(str::to_string);
-        let conversation_id = conversation_id.map(str::to_string);
-        let is_compaction = is_compaction;
-        let model_id = model_id.to_string();
-        let provider_name = provider_name.to_string();
-        let raw_request = raw_request.to_string();
-        let raw_response = raw_response.map(ToString::to_string);
-        let error = error.map(ToString::to_string);
-        tokio::spawn(async move {
-            let result = logger
-                .write_log(
-                    &agent_name,
-                    agent_id.as_deref(),
-                    conversation_id.as_deref(),
-                    is_compaction,
-                    &model_id,
-                    &provider_name,
-                    &raw_request,
-                    raw_response.as_deref(),
-                    raw_status,
-                    error.as_deref(),
-                    metrics,
-                    include_payload,
-                )
-                .await;
-            logger.finish_pending_write(&result);
-        });
+    include_payload: bool,
+) -> LlmLogRequest {
+    LlmLogRequest {
+        identity,
+        payload: LlmLogPayload {
+            raw_request: raw_request.to_string(),
+            raw_response: raw_response.map(ToString::to_string),
+            raw_status,
+            error: error.map(ToString::to_string),
+        },
+        metrics,
+        include_payload,
     }
 }
 
@@ -512,18 +494,22 @@ fn log_stream_result(
 ) {
     spawn_log(
         &context.logger,
-        context.enabled,
-        &context.agent_name,
-        context.agent_id.as_deref(),
-        context.conversation_id.as_deref(),
-        context.is_compaction,
-        &context.model_id,
-        &context.provider_name,
-        &context.request_json,
-        Some(&format_stream_log(raw_lines, raw_truncated)),
-        Some(context.status),
-        error,
-        stream_metrics(context.started, first_token_ms, usage),
+        log_request(
+            LlmLogIdentity {
+                agent_name: context.agent_name.clone(),
+                agent_id: context.agent_id.clone(),
+                conversation_id: context.conversation_id.clone(),
+                is_compaction: context.is_compaction,
+                model_id: context.model_id.clone(),
+                provider_name: context.provider_name.clone(),
+            },
+            &context.request_json,
+            Some(&format_stream_log(raw_lines, raw_truncated)),
+            Some(context.status),
+            error,
+            stream_metrics(context.started, first_token_ms, usage),
+            context.enabled,
+        ),
     );
 }
 

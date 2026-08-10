@@ -8,7 +8,7 @@ use std::{
 use chrono::Utc;
 use rusqlite::{Connection, params};
 
-use super::sql_util::{parse_datetime, parse_optional_datetime};
+use super::sql_util::{now_rfc3339, parse_datetime, parse_optional_datetime};
 use uuid::Uuid;
 
 use crate::{
@@ -154,7 +154,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS llm_requests (
     id TEXT PRIMARY KEY NOT NULL,
     created_at TEXT NOT NULL,
-    created_at_ms INTEGER NOT NULL,
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
     agent_id TEXT,
     agent_name TEXT NOT NULL,
     conversation_id TEXT,
@@ -169,8 +169,8 @@ CREATE TABLE IF NOT EXISTS llm_requests (
     cache_write_tokens INTEGER,
     cost_usd REAL,
     error TEXT,
-    has_payload INTEGER NOT NULL DEFAULT 0,
-    is_compaction INTEGER NOT NULL DEFAULT 0
+    has_payload INTEGER NOT NULL DEFAULT 0 CHECK (has_payload IN (0, 1)),
+    is_compaction INTEGER NOT NULL DEFAULT 0 CHECK (is_compaction IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS llm_payloads (
@@ -211,10 +211,10 @@ CREATE TABLE IF NOT EXISTS ip_proxies (
     name TEXT NOT NULL,
     url TEXT NOT NULL UNIQUE,
     protocol TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    is_pinned INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    is_pinned INTEGER NOT NULL DEFAULT 0 CHECK (is_pinned IN (0, 1)),
     status TEXT NOT NULL DEFAULT 'unchecked',
-    latency_ms INTEGER,
+    latency_ms INTEGER CHECK (latency_ms IS NULL OR latency_ms >= 0),
     last_checked_at TEXT,
     last_error TEXT,
     ip_address TEXT,
@@ -250,12 +250,11 @@ fn open_initialized_connection(db_path: &Path) -> AppResult<Connection> {
     }
     let mut conn = Connection::open(db_path)?;
     configure_connection(&conn)?;
-    migrate_base_schema(&mut conn)?;
-    super::conversation_db::migrate_conversations(&mut conn)?;
+    super::migrations::initialize(&mut conn)?;
     Ok(conn)
 }
 
-fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
+pub(super) fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS app_schema_migrations (
             version INTEGER PRIMARY KEY NOT NULL,
@@ -276,11 +275,7 @@ fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
         tx.execute(
             "INSERT INTO app_schema_migrations (version, name, applied_at)
              VALUES (?1, ?2, ?3)",
-            params![
-                BASE_SCHEMA_VERSION,
-                "base_schema_v1",
-                Utc::now().to_rfc3339()
-            ],
+            params![BASE_SCHEMA_VERSION, "base_schema_v1", now_rfc3339()],
         )?;
         tx.commit()?;
     }
@@ -309,7 +304,7 @@ fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
             params![
                 PROVIDER_PROXY_SCHEMA_VERSION,
                 "model_provider_proxy_url_v5",
-                Utc::now().to_rfc3339()
+                now_rfc3339()
             ],
         )?;
         tx.commit()?;
@@ -342,7 +337,7 @@ fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
             params![
                 PROVIDER_KEY_STRATEGY_SCHEMA_VERSION,
                 "model_provider_key_strategy_v6",
-                Utc::now().to_rfc3339()
+                now_rfc3339()
             ],
         )?;
         tx.commit()?;
@@ -384,7 +379,7 @@ fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
                 params![
                     PROVIDER_IMAGE_ENDPOINTS_SCHEMA_VERSION,
                     "model_provider_image_endpoints_v7",
-                    Utc::now().to_rfc3339()
+                    now_rfc3339()
                 ],
             )?;
         }
@@ -425,7 +420,7 @@ fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
                 params![
                     LLM_REQUEST_KIND_SCHEMA_VERSION,
                     "llm_request_kind_v8",
-                    Utc::now().to_rfc3339()
+                    now_rfc3339()
                 ],
             )?;
         }

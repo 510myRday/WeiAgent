@@ -12,7 +12,8 @@ use crate::{
         client::{ChatClient, ChatStream, RequestOptions},
         http::{
             DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, StreamLineParser, StreamLogContext,
-            is_rotatable_status, read_response_body_limited, spawn_log, stream_response,
+            is_rotatable_status, log_request, read_response_body_limited, spawn_log,
+            stream_response,
         },
         keys::ApiKeyCycle,
         types::{ChatCompletionOutput, ToolCall, ToolDefinition, normalize_tool_call_arguments},
@@ -103,36 +104,44 @@ fn is_retryable_stream_error(error: &AppError) -> bool {
 fn log_stream_open_error(context: &StreamLogContext, error: &AppError) {
     spawn_log(
         &context.logger,
-        context.enabled,
-        &context.agent_name,
-        context.agent_id.as_deref(),
-        context.conversation_id.as_deref(),
-        context.is_compaction,
-        &context.model_id,
-        &context.provider_name,
-        &context.request_json,
-        None,
-        None,
-        Some(&error.to_string()),
-        LlmLogMetrics::timed(context.started),
+        log_request(
+            crate::storage::llm_logs::LlmLogIdentity {
+                agent_name: context.agent_name.clone(),
+                agent_id: context.agent_id.clone(),
+                conversation_id: context.conversation_id.clone(),
+                is_compaction: context.is_compaction,
+                model_id: context.model_id.clone(),
+                provider_name: context.provider_name.clone(),
+            },
+            &context.request_json,
+            None,
+            None,
+            Some(&error.to_string()),
+            LlmLogMetrics::timed(context.started),
+            context.enabled,
+        ),
     );
 }
 
 fn log_stream_status_error(context: &StreamLogContext, body: &str, status: u16, error: &AppError) {
     spawn_log(
         &context.logger,
-        context.enabled,
-        &context.agent_name,
-        context.agent_id.as_deref(),
-        context.conversation_id.as_deref(),
-        context.is_compaction,
-        &context.model_id,
-        &context.provider_name,
-        &context.request_json,
-        Some(body),
-        Some(status),
-        Some(&error.to_string()),
-        LlmLogMetrics::timed(context.started),
+        log_request(
+            crate::storage::llm_logs::LlmLogIdentity {
+                agent_name: context.agent_name.clone(),
+                agent_id: context.agent_id.clone(),
+                conversation_id: context.conversation_id.clone(),
+                is_compaction: context.is_compaction,
+                model_id: context.model_id.clone(),
+                provider_name: context.provider_name.clone(),
+            },
+            &context.request_json,
+            Some(body),
+            Some(status),
+            Some(&error.to_string()),
+            LlmLogMetrics::timed(context.started),
+            context.enabled,
+        ),
     );
 }
 
@@ -186,18 +195,22 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             Err(error) => {
                 spawn_log(
                     &self.http.logger(),
-                    log_enabled,
-                    &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
-                    options.is_compaction,
-                    &agent.model_id,
-                    &provider.name,
-                    &request_json,
-                    None,
-                    None,
-                    Some(&error.to_string()),
-                    LlmLogMetrics::timed(started),
+                    log_request(
+                        crate::storage::llm_logs::LlmLogIdentity {
+                            agent_name: agent.name.clone(),
+                            agent_id: Some(agent_id.clone()),
+                            conversation_id: conversation_id.clone(),
+                            is_compaction: options.is_compaction,
+                            model_id: agent.model_id.clone(),
+                            provider_name: provider.name.clone(),
+                        },
+                        &request_json,
+                        None,
+                        None,
+                        Some(&error.to_string()),
+                        LlmLogMetrics::timed(started),
+                        log_enabled,
+                    ),
                 );
                 return Err(error);
             }
@@ -209,18 +222,22 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             let error = format!("upstream returned {status}: {body}");
             spawn_log(
                 &self.http.logger(),
-                log_enabled,
-                &agent.name,
-                Some(agent_id.as_str()),
-                conversation_id.as_deref(),
-                options.is_compaction,
-                &agent.model_id,
-                &provider.name,
-                &request_json,
-                Some(&body),
-                Some(status.as_u16()),
-                Some(&error),
-                LlmLogMetrics::timed(started),
+                log_request(
+                    crate::storage::llm_logs::LlmLogIdentity {
+                        agent_name: agent.name.clone(),
+                        agent_id: Some(agent_id.clone()),
+                        conversation_id: conversation_id.clone(),
+                        is_compaction: options.is_compaction,
+                        model_id: agent.model_id.clone(),
+                        provider_name: provider.name.clone(),
+                    },
+                    &request_json,
+                    Some(&body),
+                    Some(status.as_u16()),
+                    Some(&error),
+                    LlmLogMetrics::timed(started),
+                    log_enabled,
+                ),
             );
             return Err(AppError::Llm(error));
         }
@@ -236,18 +253,22 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             {
                 spawn_log(
                     &self.http.logger(),
-                    log_enabled,
-                    &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
-                    options.is_compaction,
-                    &agent.model_id,
-                    &provider.name,
-                    &request_json,
-                    Some(&body),
-                    Some(status.as_u16()),
-                    None,
-                    LlmLogMetrics::timed(started),
+                    log_request(
+                        crate::storage::llm_logs::LlmLogIdentity {
+                            agent_name: agent.name.clone(),
+                            agent_id: Some(agent_id.clone()),
+                            conversation_id: conversation_id.clone(),
+                            is_compaction: options.is_compaction,
+                            model_id: agent.model_id.clone(),
+                            provider_name: provider.name.clone(),
+                        },
+                        &request_json,
+                        Some(&body),
+                        Some(status.as_u16()),
+                        None,
+                        LlmLogMetrics::timed(started),
+                        log_enabled,
+                    ),
                 );
                 Ok(output)
             }
@@ -255,36 +276,44 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                 let error = AppError::Llm("empty model response".to_string());
                 spawn_log(
                     &self.http.logger(),
-                    log_enabled,
-                    &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
-                    options.is_compaction,
-                    &agent.model_id,
-                    &provider.name,
-                    &request_json,
-                    Some(&body),
-                    Some(status.as_u16()),
-                    Some(&error.to_string()),
-                    LlmLogMetrics::timed(started),
+                    log_request(
+                        crate::storage::llm_logs::LlmLogIdentity {
+                            agent_name: agent.name.clone(),
+                            agent_id: Some(agent_id.clone()),
+                            conversation_id: conversation_id.clone(),
+                            is_compaction: options.is_compaction,
+                            model_id: agent.model_id.clone(),
+                            provider_name: provider.name.clone(),
+                        },
+                        &request_json,
+                        Some(&body),
+                        Some(status.as_u16()),
+                        Some(&error.to_string()),
+                        LlmLogMetrics::timed(started),
+                        log_enabled,
+                    ),
                 );
                 Err(error)
             }
             Err(error) => {
                 spawn_log(
                     &self.http.logger(),
-                    log_enabled,
-                    &agent.name,
-                    Some(agent_id.as_str()),
-                    conversation_id.as_deref(),
-                    options.is_compaction,
-                    &agent.model_id,
-                    &provider.name,
-                    &request_json,
-                    Some(&body),
-                    Some(status.as_u16()),
-                    Some(&error.to_string()),
-                    LlmLogMetrics::timed(started),
+                    log_request(
+                        crate::storage::llm_logs::LlmLogIdentity {
+                            agent_name: agent.name.clone(),
+                            agent_id: Some(agent_id.clone()),
+                            conversation_id: conversation_id.clone(),
+                            is_compaction: options.is_compaction,
+                            model_id: agent.model_id.clone(),
+                            provider_name: provider.name.clone(),
+                        },
+                        &request_json,
+                        Some(&body),
+                        Some(status.as_u16()),
+                        Some(&error.to_string()),
+                        LlmLogMetrics::timed(started),
+                        log_enabled,
+                    ),
                 );
                 Err(error)
             }

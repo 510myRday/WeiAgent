@@ -40,7 +40,7 @@ impl Store {
         let image_generation_url = normalize_optional_url(request.image_generation_url)?;
         let image_edit_url = normalize_optional_url(request.image_edit_url)?;
 
-        let _guard = self.lock.lock().await;
+        let _guard = self.provider_lock.lock().await;
         let now = Utc::now();
         let provider = ModelProvider {
             id: Uuid::new_v4(),
@@ -72,7 +72,8 @@ impl Store {
         id: Uuid,
         request: UpdateModelProviderRequest,
     ) -> AppResult<ModelProviderResponse> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.provider_lock.lock().await;
+        let _agents_guard = self.agents_lock.lock().await;
         let mut providers = self
             .database
             .call(|connection| db::read_providers_conn(connection))
@@ -160,7 +161,8 @@ impl Store {
     }
 
     pub async fn delete_model_provider(&self, id: Uuid) -> AppResult<()> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.provider_lock.lock().await;
+        let _agents_guard = self.agents_lock.lock().await;
         let mut agents = self.read_agents_unlocked().await?;
         let original_agents = agents.clone();
         let mut agents_changed = false;

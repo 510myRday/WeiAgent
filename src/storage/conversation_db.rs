@@ -7,7 +7,7 @@
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use super::sql_util::{parse_datetime, parse_uuid};
+use super::sql_util::{now_rfc3339, parse_datetime, parse_uuid};
 use uuid::Uuid;
 
 use crate::{
@@ -29,8 +29,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY NOT NULL,
     agent_id TEXT NOT NULL,
     title TEXT NOT NULL,
-    message_count INTEGER NOT NULL DEFAULT 0,
-    is_pinned INTEGER NOT NULL DEFAULT 0,
+    message_count INTEGER NOT NULL DEFAULT 0 CHECK (message_count >= 0),
+    is_pinned INTEGER NOT NULL DEFAULT 0 CHECK (is_pinned IN (0, 1)),
     context_checkpoint_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -43,11 +43,11 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     id TEXT NOT NULL UNIQUE,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     agent_id TEXT NOT NULL,
-    role TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
     content TEXT NOT NULL,
     reasoning_content TEXT,
     openai_response_items_json TEXT NOT NULL DEFAULT '[]',
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('done', 'streaming', 'failed')),
     created_at TEXT NOT NULL,
     tool_calls_json TEXT,
     tool_call_id TEXT,
@@ -128,7 +128,7 @@ pub(super) fn migrate_conversations(conn: &mut Connection) -> AppResult<()> {
             params![
                 CONVERSATIONS_SCHEMA_VERSION,
                 "conversations_sqlite_v3",
-                Utc::now().to_rfc3339()
+                now_rfc3339()
             ],
         )?;
         tx.commit()?;
@@ -160,7 +160,7 @@ pub(super) fn migrate_conversations(conn: &mut Connection) -> AppResult<()> {
             params![
                 RESPONSES_ITEMS_SCHEMA_VERSION,
                 "responses_reasoning_items_sqlite_v4",
-                Utc::now().to_rfc3339()
+                now_rfc3339()
             ],
         )?;
         tx.commit()?;
@@ -485,12 +485,7 @@ fn refresh_conversation_after_write(
     };
     tx.execute(
         "UPDATE conversations SET message_count = ?2, title = ?3, updated_at = ?4 WHERE id = ?1",
-        params![
-            conversation.id.to_string(),
-            count,
-            title,
-            Utc::now().to_rfc3339()
-        ],
+        params![conversation.id.to_string(), count, title, now_rfc3339()],
     )?;
     Ok(())
 }
@@ -544,6 +539,7 @@ pub(super) fn update_conversation_conn(
     let tx = conn.transaction()?;
     let mut conversation = load_conversation(&tx, id)?;
     conversation.is_pinned = is_pinned;
+    conversation.updated_at = Utc::now();
     if let Some(title) = title {
         let title = title.trim();
         if !title.is_empty() {
@@ -551,11 +547,12 @@ pub(super) fn update_conversation_conn(
         }
     }
     tx.execute(
-        "UPDATE conversations SET is_pinned = ?2, title = ?3 WHERE id = ?1",
+        "UPDATE conversations SET is_pinned = ?2, title = ?3, updated_at = ?4 WHERE id = ?1",
         params![
             id.to_string(),
             i64::from(conversation.is_pinned),
-            conversation.title
+            conversation.title,
+            conversation.updated_at.to_rfc3339()
         ],
     )?;
     tx.commit()?;
@@ -801,7 +798,7 @@ pub(super) fn truncate_from_message_conn(
             conversation_id.to_string(),
             remaining.len() as i64,
             title,
-            Utc::now().to_rfc3339()
+            now_rfc3339()
         ],
     )?;
     tx.commit()?;
@@ -916,7 +913,7 @@ pub(super) fn write_checkpoint_conn(
         params![
             conversation_id.to_string(),
             serde_json::to_string(checkpoint)?,
-            Utc::now().to_rfc3339()
+            now_rfc3339()
         ],
     )?;
     tx.commit()?;

@@ -42,6 +42,32 @@ pub struct LlmLogMetrics {
     pub cost_usd: Option<f64>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct LlmLogIdentity {
+    pub agent_name: String,
+    pub agent_id: Option<String>,
+    pub conversation_id: Option<String>,
+    pub is_compaction: bool,
+    pub model_id: String,
+    pub provider_name: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LlmLogPayload {
+    pub raw_request: String,
+    pub raw_response: Option<String>,
+    pub raw_status: Option<u16>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LlmLogRequest {
+    pub identity: LlmLogIdentity,
+    pub payload: LlmLogPayload,
+    pub metrics: LlmLogMetrics,
+    pub include_payload: bool,
+}
+
 impl LlmLogMetrics {
     pub fn timed(started: Instant) -> Self {
         Self {
@@ -281,51 +307,10 @@ impl LlmLogger {
         self.database.call(move |conn| f(conn)).await
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn write_log(
-        &self,
-        agent_name: &str,
-        agent_id: Option<&str>,
-        conversation_id: Option<&str>,
-        is_compaction: bool,
-        model_id: &str,
-        provider_name: &str,
-        raw_request: &str,
-        raw_response: Option<&str>,
-        raw_status: Option<u16>,
-        error: Option<&str>,
-        metrics: LlmLogMetrics,
-        include_payload: bool,
-    ) -> AppResult<String> {
-        let agent_name = agent_name.to_string();
-        let agent_id = agent_id.map(str::to_string);
-        let conversation_id = conversation_id.map(str::to_string);
-        let is_compaction = is_compaction;
-        let model_id = model_id.to_string();
-        let provider_name = provider_name.to_string();
-        let raw_request = raw_request.to_string();
-        let raw_response = raw_response.map(str::to_string);
-        let error = error.map(str::to_string);
-
+    pub async fn write_log(&self, request: LlmLogRequest) -> AppResult<String> {
         let id = self
             .database
-            .call(move |conn| {
-                write_log_conn(
-                    conn,
-                    &agent_name,
-                    agent_id.as_deref(),
-                    conversation_id.as_deref(),
-                    is_compaction,
-                    &model_id,
-                    &provider_name,
-                    &raw_request,
-                    raw_response.as_deref(),
-                    raw_status,
-                    error.as_deref(),
-                    metrics,
-                    include_payload,
-                )
-            })
+            .call(move |conn| write_log_conn(conn, &request))
             .await?;
 
         let scheduled_cleanup =
@@ -606,41 +591,37 @@ fn get_log_conn(conn: &Connection, log_id: &str) -> AppResult<LlmLogDetail> {
     Ok(detail)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn write_log_conn(
-    conn: &mut Connection,
-    agent_name: &str,
-    agent_id: Option<&str>,
-    conversation_id: Option<&str>,
-    is_compaction: bool,
-    model_id: &str,
-    provider_name: &str,
-    raw_request: &str,
-    raw_response: Option<&str>,
-    raw_status: Option<u16>,
-    error: Option<&str>,
-    mut metrics: LlmLogMetrics,
-    include_payload: bool,
-) -> AppResult<String> {
-    let finalized_response = raw_response.map(finalize_response_for_log);
+fn write_log_conn(conn: &mut Connection, request: &LlmLogRequest) -> AppResult<String> {
+    let finalized_response = request
+        .payload
+        .raw_response
+        .as_deref()
+        .map(finalize_response_for_log);
+    let mut metrics = request.metrics.clone();
     metrics.merge_missing(&extract_metrics_from_raw(
-        finalized_response.as_deref().or(raw_response),
+        finalized_response
+            .as_deref()
+            .or(request.payload.raw_response.as_deref()),
     ));
 
-    let (stored_request, stored_response) = if include_payload {
+    let (stored_request, stored_response) = if request.include_payload {
         (
-            truncate_log_field(raw_request),
+            truncate_log_field(&request.payload.raw_request),
             finalized_response.map(|value| truncate_log_field(&value)),
         )
     } else {
         (String::new(), None)
     };
-    let mut has_payload = include_payload
+    let mut has_payload = request.include_payload
         && (!stored_request.trim().is_empty()
             || stored_response
                 .as_ref()
                 .is_some_and(|value| !value.trim().is_empty()));
-    let stored_error = error.map(|value| truncate_log_field_to(value, MAX_LOG_ERROR_BYTES));
+    let stored_error = request
+        .payload
+        .error
+        .as_deref()
+        .map(|value| truncate_log_field_to(value, MAX_LOG_ERROR_BYTES));
     let estimated_bytes = stored_request
         .len()
         .saturating_add(stored_response.as_deref().map(str::len).unwrap_or(0))
@@ -677,12 +658,12 @@ fn write_log_conn(
             id,
             created_at,
             created_at_ms,
-            agent_id,
-            agent_name,
-            conversation_id,
-            provider_name,
-            model_id,
-            raw_status.map(i64::from),
+            request.identity.agent_id,
+            request.identity.agent_name,
+            request.identity.conversation_id,
+            request.identity.provider_name,
+            request.identity.model_id,
+            request.payload.raw_status.map(i64::from),
             metrics.first_token_ms.map(|v| v as i64),
             metrics.duration_ms.map(|v| v as i64),
             metrics.input_tokens.map(|v| v as i64),
@@ -692,7 +673,7 @@ fn write_log_conn(
             metrics.cost_usd,
             stored_error,
             has_payload as i64,
-            is_compaction as i64,
+            request.identity.is_compaction as i64,
         ],
     )?;
     if has_payload {
@@ -1504,25 +1485,41 @@ mod tests {
         (directory, logger)
     }
 
+    fn test_log_request(
+        identity: LlmLogIdentity,
+        payload: LlmLogPayload,
+        metrics: LlmLogMetrics,
+        include_payload: bool,
+    ) -> LlmLogRequest {
+        LlmLogRequest {
+            identity,
+            payload,
+            metrics,
+            include_payload,
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn log_listing_is_paginated_and_bounded() {
         let (_dir, logger) = temp_logger(true);
         for index in 0..3 {
             logger
-                .write_log(
-                    "Agent",
-                    None,
-                    None,
-                    false,
-                    "model",
-                    "provider",
-                    &format!("request-{index}"),
-                    Some("response"),
-                    Some(200),
-                    None,
+                .write_log(test_log_request(
+                    LlmLogIdentity {
+                        agent_name: "Agent".to_string(),
+                        model_id: "model".to_string(),
+                        provider_name: "provider".to_string(),
+                        ..LlmLogIdentity::default()
+                    },
+                    LlmLogPayload {
+                        raw_request: format!("request-{index}"),
+                        raw_response: Some("response".to_string()),
+                        raw_status: Some(200),
+                        ..LlmLogPayload::default()
+                    },
                     LlmLogMetrics::default(),
                     true,
-                )
+                ))
                 .await
                 .unwrap();
         }
@@ -1540,24 +1537,31 @@ mod tests {
     async fn write_log_can_omit_payload_but_keep_metrics() {
         let (_dir, logger) = temp_logger(false);
         let id = logger
-            .write_log(
-                "Agent",
-                Some("a1"),
-                Some("c1"),
-                false,
-                "model",
-                "provider",
-                r#"{"messages":[{"role":"user","content":"hi"}]}"#,
-                Some(r#"{"usage":{"prompt_tokens":11,"completion_tokens":3,"cost":0.02}}"#),
-                Some(200),
-                None,
+            .write_log(test_log_request(
+                LlmLogIdentity {
+                    agent_name: "Agent".to_string(),
+                    agent_id: Some("a1".to_string()),
+                    conversation_id: Some("c1".to_string()),
+                    model_id: "model".to_string(),
+                    provider_name: "provider".to_string(),
+                    ..LlmLogIdentity::default()
+                },
+                LlmLogPayload {
+                    raw_request: r#"{"messages":[{"role":"user","content":"hi"}]}"#.to_string(),
+                    raw_response: Some(
+                        r#"{"usage":{"prompt_tokens":11,"completion_tokens":3,"cost":0.02}}"#
+                            .to_string(),
+                    ),
+                    raw_status: Some(200),
+                    ..LlmLogPayload::default()
+                },
                 LlmLogMetrics {
                     duration_ms: Some(42),
                     first_token_ms: Some(7),
                     ..LlmLogMetrics::default()
                 },
                 false,
-            )
+            ))
             .await
             .unwrap();
 
@@ -1597,24 +1601,31 @@ mod tests {
     async fn write_log_stores_payload_when_enabled() {
         let (_dir, logger) = temp_logger(true);
         let id = logger
-            .write_log(
-                "AI tutor",
-                Some("agent-1"),
-                Some("conv-1"),
-                false,
-                "hy3-free",
-                "opencode-free",
-                r#"{"messages":[{"role":"user","content":"hi"}]}"#,
-                Some(r#"{"usage":{"prompt_tokens":10,"completion_tokens":2},"choices":[{"message":{"content":"ok"}}]}"#),
-                Some(200),
-                None,
+            .write_log(test_log_request(
+                LlmLogIdentity {
+                    agent_name: "AI tutor".to_string(),
+                    agent_id: Some("agent-1".to_string()),
+                    conversation_id: Some("conv-1".to_string()),
+                    model_id: "hy3-free".to_string(),
+                    provider_name: "opencode-free".to_string(),
+                    ..LlmLogIdentity::default()
+                },
+                LlmLogPayload {
+                    raw_request: r#"{"messages":[{"role":"user","content":"hi"}]}"#.to_string(),
+                    raw_response: Some(
+                        r#"{"usage":{"prompt_tokens":10,"completion_tokens":2},"choices":[{"message":{"content":"ok"}}]}"#
+                            .to_string(),
+                    ),
+                    raw_status: Some(200),
+                    ..LlmLogPayload::default()
+                },
                 LlmLogMetrics {
                     duration_ms: Some(100),
                     first_token_ms: Some(50),
                     ..LlmLogMetrics::default()
                 },
                 true,
-            )
+            ))
             .await
             .unwrap();
 
@@ -1630,37 +1641,43 @@ mod tests {
     async fn filter_by_agent_and_query() {
         let (_dir, logger) = temp_logger(true);
         logger
-            .write_log(
-                "Alpha",
-                Some("id-a"),
-                None,
-                false,
-                "m1",
-                "prov-a",
-                "req-a",
-                Some("resp"),
-                Some(200),
-                None,
+            .write_log(test_log_request(
+                LlmLogIdentity {
+                    agent_name: "Alpha".to_string(),
+                    agent_id: Some("id-a".to_string()),
+                    model_id: "m1".to_string(),
+                    provider_name: "prov-a".to_string(),
+                    ..LlmLogIdentity::default()
+                },
+                LlmLogPayload {
+                    raw_request: "req-a".to_string(),
+                    raw_response: Some("resp".to_string()),
+                    raw_status: Some(200),
+                    ..LlmLogPayload::default()
+                },
                 LlmLogMetrics::default(),
                 true,
-            )
+            ))
             .await
             .unwrap();
         logger
-            .write_log(
-                "Beta",
-                Some("id-b"),
-                None,
-                false,
-                "m2",
-                "prov-b",
-                "req-b",
-                Some("resp"),
-                Some(200),
-                None,
+            .write_log(test_log_request(
+                LlmLogIdentity {
+                    agent_name: "Beta".to_string(),
+                    agent_id: Some("id-b".to_string()),
+                    model_id: "m2".to_string(),
+                    provider_name: "prov-b".to_string(),
+                    ..LlmLogIdentity::default()
+                },
+                LlmLogPayload {
+                    raw_request: "req-b".to_string(),
+                    raw_response: Some("resp".to_string()),
+                    raw_status: Some(200),
+                    ..LlmLogPayload::default()
+                },
                 LlmLogMetrics::default(),
                 true,
-            )
+            ))
             .await
             .unwrap();
 
