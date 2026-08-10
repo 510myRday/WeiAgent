@@ -10,7 +10,8 @@ use crate::{
     app::AppState,
     domain::{
         AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision,
-        ApprovalRequest, ApprovalResponse, EnvironmentRuntimeStatus, ProcessInfo,
+        ApprovalRequest, ApprovalResponse, EnvironmentRuntimeStatus, McpAgentOverrides,
+        McpAgentSettings, McpAuthState, McpServer, McpServerDraft, ProcessInfo,
         RuntimeComponentKind, WebSearchKeyStatusRecord, WebSearchProviderKind,
         WebSearchSourceConfig,
     },
@@ -21,6 +22,11 @@ use crate::{
 use crate::domain::tools::{WebSearchKeyOperation, WebSearchKeyStatusUpdate, mask_api_key};
 use crate::tools::web_search::providers::{exa, firecrawl, grok, grok_support, jina, tavily};
 use crate::tools::web_search::types::{ProviderSearchRequest, SearchMode};
+
+#[derive(Debug, Deserialize)]
+pub struct McpToolEnabledRequest {
+    pub enabled: bool,
+}
 
 #[cfg(windows)]
 use {
@@ -169,6 +175,188 @@ pub async fn update_tool_defaults(
         tracing::warn!(error = %error, "failed to clean evidence store after settings update");
     }
     Ok(Json(config.redact_secrets()))
+}
+
+pub async fn list_mcp_servers(State(state): State<AppState>) -> AppResult<Json<Vec<McpServer>>> {
+    let servers = state
+        .mcp_manager
+        .list_servers()
+        .await?
+        .into_iter()
+        .map(|server| server.redacted())
+        .collect();
+    Ok(Json(servers))
+}
+
+pub async fn read_mcp_server_secrets(
+    State(state): State<AppState>,
+    Path(server_id): Path<Uuid>,
+) -> AppResult<Json<crate::domain::McpTransport>> {
+    let transport = state
+        .store
+        .list_mcp_servers()
+        .await?
+        .into_iter()
+        .find(|server| server.id == server_id)
+        .map(|server| server.transport)
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(transport))
+}
+
+pub async fn create_mcp_server(
+    State(state): State<AppState>,
+    Json(draft): Json<McpServerDraft>,
+) -> AppResult<Json<McpServer>> {
+    let server = state.store.create_mcp_server(draft).await?;
+    let result = match state.mcp_manager.refresh_server(server.id).await {
+        Ok(server) => server,
+        Err(_) => state
+            .store
+            .list_mcp_servers()
+            .await?
+            .into_iter()
+            .find(|item| item.id == server.id)
+            .unwrap_or(server),
+    };
+    Ok(Json(result.redacted()))
+}
+
+pub async fn update_mcp_server(
+    State(state): State<AppState>,
+    Path(server_id): Path<Uuid>,
+    Json(mut draft): Json<McpServerDraft>,
+) -> AppResult<Json<McpServer>> {
+    state.mcp_manager.stop_server(server_id).await;
+    draft.id = Some(server_id);
+    let server = state.store.update_mcp_server(draft).await?;
+    let result = match state.mcp_manager.refresh_server(server.id).await {
+        Ok(server) => server,
+        Err(_) => state
+            .store
+            .list_mcp_servers()
+            .await?
+            .into_iter()
+            .find(|item| item.id == server.id)
+            .unwrap_or(server),
+    };
+    Ok(Json(result.redacted()))
+}
+
+pub async fn delete_mcp_server(
+    State(state): State<AppState>,
+    Path(server_id): Path<Uuid>,
+) -> AppResult<()> {
+    state.mcp_manager.delete_server(server_id).await
+}
+
+pub async fn refresh_mcp_server(
+    State(state): State<AppState>,
+    Path(server_id): Path<Uuid>,
+) -> AppResult<Json<McpServer>> {
+    Ok(Json(
+        state
+            .mcp_manager
+            .refresh_server(server_id)
+            .await?
+            .redacted(),
+    ))
+}
+
+pub async fn test_mcp_server(
+    State(state): State<AppState>,
+    Path(server_id): Path<Uuid>,
+) -> AppResult<Json<McpServer>> {
+    Ok(Json(
+        state
+            .mcp_manager
+            .refresh_server(server_id)
+            .await?
+            .redacted(),
+    ))
+}
+
+pub async fn get_mcp_auth_state(
+    State(state): State<AppState>,
+    Path(server_id): Path<Uuid>,
+) -> AppResult<Json<McpAuthState>> {
+    Ok(Json(state.mcp_manager.auth_state(server_id).await?))
+}
+
+pub async fn reauthorize_mcp_server(
+    State(state): State<AppState>,
+    Path(server_id): Path<Uuid>,
+) -> AppResult<Json<McpAuthState>> {
+    Ok(Json(state.mcp_manager.reauthorize(server_id).await?))
+}
+
+pub async fn clear_mcp_auth(
+    State(state): State<AppState>,
+    Path(server_id): Path<Uuid>,
+) -> AppResult<Json<McpAuthState>> {
+    Ok(Json(state.mcp_manager.clear_auth(server_id).await?))
+}
+
+pub async fn update_mcp_tool_enabled(
+    State(state): State<AppState>,
+    Path((server_id, tool_name)): Path<(Uuid, String)>,
+    Json(request): Json<McpToolEnabledRequest>,
+) -> AppResult<Json<McpServer>> {
+    state
+        .store
+        .update_mcp_tool_enabled(server_id, &tool_name, request.enabled)
+        .await?;
+    let server = state
+        .store
+        .list_mcp_servers()
+        .await?
+        .into_iter()
+        .find(|item| item.id == server_id)
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(server.redacted()))
+}
+
+pub async fn read_agent_mcp_config(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+) -> AppResult<Json<McpAgentSettings>> {
+    let settings = state.store.read_mcp_agent_settings(agent_id).await?;
+    Ok(Json(McpAgentSettings {
+        defaults: settings
+            .defaults
+            .into_iter()
+            .map(|server| server.redacted())
+            .collect(),
+        overrides: settings.overrides,
+        effective: settings
+            .effective
+            .into_iter()
+            .map(|server| server.redacted())
+            .collect(),
+    }))
+}
+
+pub async fn update_agent_mcp_config(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+    Json(overrides): Json<McpAgentOverrides>,
+) -> AppResult<Json<McpAgentSettings>> {
+    let settings = state
+        .store
+        .update_mcp_agent_overrides(agent_id, overrides)
+        .await?;
+    Ok(Json(McpAgentSettings {
+        defaults: settings
+            .defaults
+            .into_iter()
+            .map(|server| server.redacted())
+            .collect(),
+        overrides: settings.overrides,
+        effective: settings
+            .effective
+            .into_iter()
+            .map(|server| server.redacted())
+            .collect(),
+    }))
 }
 
 pub async fn pick_directory(

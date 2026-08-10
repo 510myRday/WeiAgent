@@ -6,11 +6,13 @@ import {
   ChevronDown,
   CircleAlert,
   Clock3,
+  ExternalLink,
   KeyRound,
   LoaderCircle,
   Pause,
   Plus,
   Play,
+  RotateCcw,
   ScanSearch,
   Settings2,
   Trash2,
@@ -34,6 +36,7 @@ import {
   keyStatusRank,
   providerLabel,
   sourceCanBeEnabled,
+  sourceWebsiteUrl,
   summarizeKeyStatuses,
 } from './utils';
 
@@ -50,6 +53,9 @@ interface SourceCardProps {
   isChecking: boolean;
   isDeleting: boolean;
   isImporting: boolean;
+  showKeyManagement: boolean;
+  isOverridden: boolean;
+  onResetSource: (sourceId: string) => void;
   ipProxies: IpProxy[];
   onToggleExpanded: (sourceId: string) => void;
   onToggleSection: (sourceId: string, section: SourceSection) => void;
@@ -81,6 +87,9 @@ export const SourceCard = memo(function SourceCard({
   isChecking,
   isDeleting,
   isImporting,
+  showKeyManagement,
+  isOverridden,
+  onResetSource,
   ipProxies,
   onToggleExpanded,
   onToggleSection,
@@ -124,6 +133,7 @@ export const SourceCard = memo(function SourceCard({
   const preferencesBodyId = `web-search-preferences-body-${source.id}`;
   const keysBodyId = `web-search-keys-body-${source.id}`;
   const connectionBodyId = `web-search-connection-body-${source.id}`;
+  const websiteUrl = sourceWebsiteUrl(source.provider);
 
   function renderProxySelector(field: ProxyPickerField, labelKey: string, descriptionKey: string) {
     const value = source[field];
@@ -206,6 +216,18 @@ export const SourceCard = memo(function SourceCard({
           <ChevronDown size={18} className="web-search-source__chevron" />
         </button>
         <div className="web-search-source__actions">
+          {isOverridden ? (
+            <IconButton
+              type="button"
+              variant="ghost"
+              className="web-search-source__reset"
+              label={t('tools.webSearch.resetSource')}
+              title={t('tools.webSearch.resetSource')}
+              onClick={() => onResetSource(source.id)}
+            >
+              <RotateCcw size={15} />
+            </IconButton>
+          ) : null}
           <label
             className={`toggle-switch web-search-source__toggle ${canEnableSource ? '' : 'is-disabled'}`}
             title={canEnableSource
@@ -248,6 +270,16 @@ export const SourceCard = memo(function SourceCard({
             >
               <ArrowDown size={15} />
             </IconButton>
+            <a
+              className="icon-button icon-button-ghost web-search-source__reorder-btn web-search-source__website-btn"
+              href={websiteUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={t('tools.webSearch.openWebsite')}
+              title={t('tools.webSearch.openWebsite')}
+            >
+              <ExternalLink size={15} />
+            </a>
           </div>
         </div>
       </div>
@@ -319,6 +351,7 @@ export const SourceCard = memo(function SourceCard({
             ) : null}
           </section>
 
+          {showKeyManagement ? (
           <section className={`web-search-subsection web-search-keys ${isKeysExpanded ? 'is-open' : ''}`}>
             <div className={`web-search-subsection__header web-search-keys__heading ${selected.length > 0 ? 'has-selection' : ''}`}>
               <button
@@ -530,6 +563,7 @@ export const SourceCard = memo(function SourceCard({
               </div>
             ) : null}
           </section>
+          ) : null}
 
           <section className={`web-search-subsection web-search-grok-extras ${isConnectionExpanded ? 'is-open' : ''}`}>
               <div className="web-search-subsection__header">

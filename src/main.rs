@@ -61,6 +61,8 @@ async fn main() -> AppResult<()> {
     let terminal_manager = tools::terminal::TerminalManager::new(environment_runtime.clone());
     tokio::spawn(terminal_manager.clone().cleanup_loop());
     let tool_registry = Arc::new(tools::registry::ToolRegistry::with_builtin_tools());
+    let mcp_manager = Arc::new(tools::mcp::McpManager::new(store.clone()));
+    mcp_manager.load_cached().await?;
     let state = AppState {
         api_security: api_security.clone(),
         store,
@@ -70,6 +72,7 @@ async fn main() -> AppResult<()> {
         approval_manager,
         environment_runtime,
         tool_registry,
+        mcp_manager,
         run_manager: Arc::new(app::RunManager::new()),
     };
     let app = if is_dev {

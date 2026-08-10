@@ -8,11 +8,11 @@ import { ListItem } from './ui';
 type Translate = (path: string, params?: Record<string, string | number>) => string;
 
 export function agentDisplayName(agent: Agent, t: Translate): string {
-  return agent.is_builtin ? t('agentConfig.builtinMasterName') : agent.name;
+  return agent.is_builtin ? t('agentConfig.builtinAgentName') : agent.name;
 }
 
 export function agentDisplayDescription(agent: Agent, t: Translate): string {
-  return agent.is_builtin ? t('agentConfig.builtinMasterDescription') : agent.description;
+  return agent.is_builtin ? t('agentConfig.builtinAgentDescription') : agent.description;
 }
 
 export function AgentListItem({

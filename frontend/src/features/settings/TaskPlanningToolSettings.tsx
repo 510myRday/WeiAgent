@@ -10,7 +10,7 @@ import {
   updateToolDefaults,
 } from '../../api';
 import { useI18n } from '../../i18n';
-import { Button, useFeedback } from '../../components/ui';
+import { Button, IconButton, useFeedback } from '../../components/ui';
 
 interface TaskPlanningToolSettingsProps {
   scope: 'defaults' | 'agent';
@@ -120,23 +120,26 @@ export function TaskPlanningToolSettings({ scope, agentId, onBack }: TaskPlannin
     <div className={`terminal-tool-settings-v2 ${scope === 'agent' ? 'is-agent-scope' : 'is-default-scope'}`}>
       {scope === 'agent' ? (
         <div className="tool-config-heading">
-          {onBack ? (
-            <Button
-              variant="ghost"
-              type="button"
-              onClick={onBack}
-              icon={<ArrowLeft size={17} />}
-            >
-              {t('tools.backToList')}
-            </Button>
-          ) : null}
-          <div>
-            <h2>{t('tools.taskPlanning.agentConfigTitle')}</h2>
-            <p>{t('tools.taskPlanning.agentConfigDesc')}</p>
+          <div className="tool-config-heading__main">
+            {onBack ? (
+              <IconButton
+                type="button"
+                variant="ghost"
+                className="tool-config-back"
+                onClick={onBack}
+                label={t('tools.backToList')}
+              >
+                <ArrowLeft size={18} />
+              </IconButton>
+            ) : null}
+            <div>
+              <h2>{t('tools.taskPlanning.agentConfigTitle')}</h2>
+              <p>{t('tools.taskPlanning.agentConfigDesc')}</p>
+            </div>
           </div>
         </div>
       ) : null}
-      <div className="terminal-settings-form">
+      <div className="tool-settings-form terminal-settings-form">
         <section className="settings-card basic-settings-card">
           <div className="card-header">
             <h3>{t('tools.taskPlanning.basicSettings')}</h3>

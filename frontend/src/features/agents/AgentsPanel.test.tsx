@@ -16,8 +16,8 @@ vi.mock('../../api', () => ({
 }));
 
 const builtinAgent: Agent = {
-  id: 'builtin-master',
-  name: '总管',
+  id: 'builtin-wei-sir',
+  name: 'Wei Sir',
   description: '负责统筹任务、协调各智能体并推进复杂工作。',
   model_provider_id: 'provider-1',
   model_id: 'model-1',
@@ -80,12 +80,12 @@ test('built-in agent fields follow the current locale without changing the store
   const nameInput = container.querySelector<HTMLInputElement>('#agent-name');
   const descriptionInput = container.querySelector<HTMLTextAreaElement>('#agent-description');
 
-  expect(nameInput).toHaveValue('总管');
+  expect(nameInput).toHaveValue('喂先生');
   expect(descriptionInput).toHaveValue('负责统筹任务、协调各智能体并推进复杂工作。');
 
   await user.click(screen.getByRole('button', { name: 'English' }));
 
-  expect(nameInput).toHaveValue('Master');
+  expect(nameInput).toHaveValue('Wei Sir');
   expect(descriptionInput).toHaveValue(
     'Coordinates tasks, delegates work, and drives complex jobs to completion.',
   );

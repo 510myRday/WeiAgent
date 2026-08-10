@@ -236,7 +236,15 @@ pub async fn run_agent(
     // Tool definitions and the complete effective tools configuration were
     // captured by prepare_chat and stay frozen for this run. A later Agent
     // edit belongs to newly started runs only and must not change this loop.
-    let frozen_tools = state.tool_registry.definitions(&prepared.tools_config);
+    let mut frozen_tools = state
+        .tool_registry
+        .definitions(&prepared.tools_config)
+        .unwrap_or_default();
+    if let Some(mcp_tools) = state.mcp_manager.definitions(prepared.agent.id).await {
+        frozen_tools.extend(mcp_tools);
+        frozen_tools.sort_by(|left, right| left.function.name.cmp(&right.function.name));
+    }
+    let frozen_tools = (!frozen_tools.is_empty()).then_some(frozen_tools);
     let max_llm_iterations = prepared.tools_config.max_llm_iterations();
 
     // Load compaction inputs once per run; the checkpoint is kept in memory and
@@ -1296,6 +1304,12 @@ async fn execute_tool_with_events(
     events: &Option<mpsc::Sender<AgentRunEvent>>,
     iteration: usize,
 ) -> ToolResult {
+    if crate::tools::mcp::is_mcp_tool(name) {
+        return state
+            .mcp_manager
+            .execute_tool(context.agent_id, name, arguments)
+            .await;
+    }
     let Some(run_sender) = events.clone() else {
         return state.tool_registry.execute(name, arguments, context).await;
     };

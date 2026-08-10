@@ -5,6 +5,7 @@ mod db;
 mod files;
 mod ip_proxies;
 pub mod llm_logs;
+mod mcp;
 mod migrations;
 mod providers;
 mod sql_util;
@@ -130,8 +131,13 @@ mod tests {
             tool_table_names(&conn),
             vec![
                 "task_plans",
+                "tool_mcp_agent_servers",
+                "tool_mcp_agent_tools",
+                "tool_mcp_servers",
+                "tool_mcp_tools",
                 "tool_settings",
                 "tool_terminal_approval_grants",
+                "tool_web_search_agent_sources",
                 "tool_web_search_api_keys",
                 "tool_web_search_sources",
             ]
@@ -407,6 +413,84 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(saved.overrides.terminal.allowed_cwd_roots, None);
+    }
+
+    #[tokio::test]
+    async fn agent_web_search_source_overrides_round_trip_without_secrets() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Store::new(temp_dir.path()).await.unwrap();
+        let agent = store
+            .list_agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.is_builtin)
+            .unwrap();
+        let mut defaults = store.read_tool_defaults().await.unwrap();
+        let jina = defaults
+            .web_search
+            .sources
+            .iter_mut()
+            .find(|source| source.id == "jina")
+            .unwrap();
+        jina.api_keys = vec!["global-secret".to_string()];
+        let jina_roles = vec![crate::domain::WebSearchSourceRole::OfficialDocs];
+        store.update_tool_defaults(defaults).await.unwrap();
+
+        let mut overrides = store
+            .read_agent_tools_settings(agent.id)
+            .await
+            .unwrap()
+            .overrides;
+        overrides.web_search.source_overrides = vec![
+            crate::domain::tools::WebSearchSourceOverrides {
+                source_id: "jina".to_string(),
+                enabled: Some(false),
+                deep_enabled: Some(false),
+                extract_enabled: Some(true),
+                priority: Some(1),
+                roles: Some(jina_roles.clone()),
+                proxy_url: None,
+                proxy_url_override: true,
+            },
+        ];
+
+        let saved = store
+            .update_agent_tools_overrides(agent.id, overrides)
+            .await
+            .unwrap();
+        let source = saved
+            .effective
+            .web_search
+            .sources
+            .iter()
+            .find(|source| source.id == "jina")
+            .unwrap();
+        assert!(!source.enabled);
+        assert!(!source.deep_enabled);
+        assert!(source.extract_enabled);
+        assert_eq!(source.priority, 1);
+        assert_eq!(source.roles, jina_roles);
+        assert_eq!(source.proxy_url, None);
+        assert_eq!(source.api_keys, vec!["global-secret".to_string()]);
+
+        let mut reset = saved.overrides;
+        reset.web_search.source_overrides.clear();
+        let inherited = store
+            .update_agent_tools_overrides(agent.id, reset)
+            .await
+            .unwrap();
+        let source = inherited
+            .effective
+            .web_search
+            .sources
+            .iter()
+            .find(|source| source.id == "jina")
+            .unwrap();
+        assert!(source.enabled);
+        assert!(source.deep_enabled);
+        assert_eq!(source.priority, 30);
+        assert_ne!(source.roles, vec![crate::domain::WebSearchSourceRole::OfficialDocs]);
     }
 
     #[tokio::test]
@@ -1394,7 +1478,7 @@ mod tests {
         let agents = store.list_agents().await.unwrap();
         let builtin = agents.iter().find(|agent| agent.is_builtin).unwrap();
 
-        assert_eq!(builtin.name, "Master");
+        assert_eq!(builtin.name, "Wei Sir");
         assert_eq!(
             builtin.description,
             "Coordinates tasks, delegates work, and drives complex jobs to completion."
@@ -1427,7 +1511,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(updated.name, "Master");
+        assert_eq!(updated.name, "Wei Sir");
         assert_eq!(
             updated.description,
             "Coordinates tasks, delegates work, and drives complex jobs to completion."

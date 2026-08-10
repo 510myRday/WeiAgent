@@ -89,6 +89,10 @@ export function withWebSearch(config: AgentToolsConfig): AgentToolsConfig {
   };
 }
 
+function sortWebSearchSources(sources: WebSearchSourceConfig[]): WebSearchSourceConfig[] {
+  return [...sources].sort((left, right) => left.priority - right.priority);
+}
+
 export function serializeDefaultsForAutosave(
   config: AgentToolsConfig,
   keysDirty: Record<string, boolean>,
@@ -112,6 +116,22 @@ export function serializeDefaultsForAutosave(
 }
 
 export function mergeToolsConfig(defaults: AgentToolsConfig, overrides: AgentToolsOverrides): AgentToolsConfig {
+  const sourceOverrides = overrides.web_search?.source_overrides ?? [];
+  const sources = sortWebSearchSources(defaults.web_search.sources.map((source) => {
+    const sourceOverride = sourceOverrides.find((item) => item.source_id === source.id);
+    if (!sourceOverride) return source;
+    return {
+      ...source,
+      ...(sourceOverride.enabled === undefined ? {} : { enabled: sourceOverride.enabled }),
+      ...(sourceOverride.deep_enabled === undefined ? {} : { deep_enabled: sourceOverride.deep_enabled }),
+      ...(sourceOverride.extract_enabled === undefined ? {} : { extract_enabled: sourceOverride.extract_enabled }),
+      ...(sourceOverride.priority === undefined ? {} : { priority: sourceOverride.priority }),
+      ...(sourceOverride.roles === undefined ? {} : { roles: sourceOverride.roles }),
+      ...(sourceOverride.proxy_url_override
+        ? { proxy_url: sourceOverride.proxy_url ?? null }
+        : {}),
+    };
+  }));
   return {
     max_llm_iterations: overrides.max_llm_iterations ?? defaults.max_llm_iterations,
     evidence_storage: defaults.evidence_storage,
@@ -126,6 +146,7 @@ export function mergeToolsConfig(defaults: AgentToolsConfig, overrides: AgentToo
       ...defaults.web_search,
       enabled: overrides.web_search?.enabled ?? defaults.web_search.enabled,
       max_results: overrides.web_search?.max_results ?? defaults.web_search.max_results,
+      sources,
     },
     task_planning: {
       enabled: overrides.task_planning?.enabled ?? defaults.task_planning.enabled,
@@ -137,6 +158,18 @@ export function mergeToolsConfig(defaults: AgentToolsConfig, overrides: AgentToo
 
 export function providerLabel(provider: WebSearchProviderKind, t: (key: string) => string) {
   return t(`tools.webSearch.provider.${provider}`);
+}
+
+const SOURCE_WEBSITE_URLS: Record<WebSearchProviderKind, string> = {
+  tavily: 'https://tavily.com/',
+  exa: 'https://exa.ai/',
+  jina: 'https://jina.ai/',
+  grok: 'https://grok.com/',
+  firecrawl: 'https://www.firecrawl.dev/',
+};
+
+export function sourceWebsiteUrl(provider: WebSearchProviderKind): string {
+  return SOURCE_WEBSITE_URLS[provider];
 }
 
 export function hydrateKeyStatuses(sources: WebSearchSourceConfig[]): Record<string, Record<number, WebSearchKeyCheckResult>> {

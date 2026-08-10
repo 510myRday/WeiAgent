@@ -2,6 +2,7 @@ pub mod agents;
 pub mod chat;
 pub mod conversations;
 pub mod ip_proxies;
+pub mod mcp;
 pub mod providers;
 pub mod runtime;
 pub mod settings;
@@ -26,6 +27,11 @@ pub use ip_proxies::{
     IpProxyProtocol, IpProxyQuality, IpProxyQualityProbe, IpProxyQualityStatus,
     IpProxyQualityTestUpdate, IpProxyStatus, IpProxyTestUpdate, UpdateIpProxyRequest,
 };
+pub use mcp::{
+    McpAgentOverrides, McpAgentSettings, McpAuthState, McpAuthStatus, McpServer, McpServerDraft,
+    McpServerOverride, McpServerStatus, McpTool, McpToolOverride, McpTransport, qualify_tool_name,
+    qualify_tool_name_with_suffix,
+};
 pub use providers::{
     ApiKeyStrategy, CreateModelProviderRequest, FetchProviderModelsRequest, ImageModelConfig,
     ModelConfig, ModelProvider, ModelProviderResponse, ProviderType, UpdateModelProviderRequest,
@@ -42,5 +48,6 @@ pub use tools::{
     TaskPlanningToolConfig, TerminalApprovalGrant, TerminalPermissionMode, TerminalToolConfig,
     ToolResult, WebSearchCostTier, WebSearchKeySelection, WebSearchKeyStatusRecord,
     WebSearchLatencyTier, WebSearchProviderKind, WebSearchSourceCapabilities,
-    WebSearchSourceConfig, WebSearchSourceRole, WebSearchToolConfig, WebSearchToolOverrides,
+    WebSearchSourceConfig, WebSearchSourceOverrides, WebSearchSourceRole, WebSearchToolConfig,
+    WebSearchToolOverrides,
 };

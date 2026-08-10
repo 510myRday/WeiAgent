@@ -11,8 +11,8 @@ use crate::{
     },
 };
 
-const BUILTIN_MASTER_NAME: &str = "Master";
-const BUILTIN_MASTER_DESCRIPTION: &str =
+const BUILTIN_AGENT_NAME: &str = "Wei Sir";
+const BUILTIN_AGENT_DESCRIPTION: &str =
     "Coordinates tasks, delegates work, and drives complex jobs to completion.";
 const WEB_SEARCH_POLICY: &str = "Use web search for current or source-backed information, verify important claims with original pages, and cite the supporting links.";
 const TASK_PLANNING_POLICY: &str = "## Task Planning Policy\n\
@@ -96,14 +96,14 @@ The current local system date is today's date and is authoritative.\n\
         let existing_builtin = agents.iter().position(|agent| agent.is_builtin);
 
         if let Some(index) = existing_builtin {
-            agents[index].name = BUILTIN_MASTER_NAME.to_string();
-            agents[index].description = BUILTIN_MASTER_DESCRIPTION.to_string();
+            agents[index].name = BUILTIN_AGENT_NAME.to_string();
+            agents[index].description = BUILTIN_AGENT_DESCRIPTION.to_string();
             self.ensure_agent_workspace_unlocked(&agents[index]).await?;
         } else {
             let agent = Agent {
                 id: Uuid::new_v4(),
-                name: BUILTIN_MASTER_NAME.to_string(),
-                description: BUILTIN_MASTER_DESCRIPTION.to_string(),
+                name: BUILTIN_AGENT_NAME.to_string(),
+                description: BUILTIN_AGENT_DESCRIPTION.to_string(),
                 model_provider_id: Uuid::nil(),
                 model_id: String::new(),
                 is_builtin: true,

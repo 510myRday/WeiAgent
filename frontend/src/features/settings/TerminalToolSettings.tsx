@@ -25,6 +25,7 @@ import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../compon
 import { PermissionModeControl, type PermissionMode } from './PermissionModeControl';
 import { WebSearchToolSettings } from './WebSearchToolSettings';
 import { TaskPlanningToolSettings } from './TaskPlanningToolSettings';
+import { McpAgentToolSettings, type McpToolSelection } from '../tools/McpAgentToolSettings';
 import { mergeToolsConfig } from './web-search/utils';
 
 interface TerminalToolSettingsProps {
@@ -36,7 +37,7 @@ interface TerminalToolSettingsProps {
 
 type OverrideField = 'permission_mode' | 'default_timeout_ms' | 'allowed_cwd_roots';
 export type TerminalAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
-type AgentToolView = 'list' | 'terminal' | 'web_search' | 'task_planning';
+type AgentToolView = 'list' | 'terminal' | 'web_search' | 'task_planning' | 'mcp';
 type PendingSave =
   | {
     contextKey: string;
@@ -79,6 +80,7 @@ export function TerminalToolSettings({
   const [loadRequestKey, setLoadRequestKey] = useState(0);
   const [autoSaveStatus, setAutoSaveStatus] = useState<TerminalAutoSaveStatus>('idle');
   const [agentToolView, setAgentToolView] = useState<AgentToolView>('list');
+  const [activeMcpTool, setActiveMcpTool] = useState<McpToolSelection | null>(null);
   const [installingRuntimeComponent, setInstallingRuntimeComponent] = useState<RuntimeComponentKind | null>(null);
   const [refreshingRuntimeComponent, setRefreshingRuntimeComponent] = useState<RuntimeComponentKind | null>(null);
   const [processes, setProcesses] = useState<ToolProcessInfo[]>([]);
@@ -858,6 +860,14 @@ export function TerminalToolSettings({
               </IconButton>
             </div>
           </div>
+          <McpAgentToolSettings
+            agentId={agentId!}
+            view="summary"
+            onEdit={(selection) => {
+              setActiveMcpTool(selection);
+              setAgentToolView('mcp');
+            }}
+          />
         </div>
       </div>
     );
@@ -879,6 +889,17 @@ export function TerminalToolSettings({
       <TaskPlanningToolSettings
         scope="agent"
         agentId={agentId}
+        onBack={() => setAgentToolView('list')}
+      />
+    );
+  }
+
+  if (isAgentScope && agentToolView === 'mcp') {
+    return (
+      <McpAgentToolSettings
+        agentId={agentId!}
+        view="edit"
+        selection={activeMcpTool ?? undefined}
         onBack={() => setAgentToolView('list')}
       />
     );
@@ -907,7 +928,7 @@ export function TerminalToolSettings({
         </div>
       ) : null}
 
-      <div className="terminal-settings-form">
+      <div className="tool-settings-form terminal-settings-form">
       <section className="settings-card basic-settings-card">
         <div className="card-header">
           <h3>{t('tools.terminal.basicSettings')}</h3>
@@ -1329,5 +1350,5 @@ function InheritanceControl({ inherited, onChange, t }: {
 function agentName(agentId: string, agents: Agent[], t: (path: string) => string): string {
   const agent = agents.find((item) => item.id === agentId);
   if (!agent) return agentId;
-  return agent.is_builtin ? t('agentConfig.builtinMasterName') : agent.name;
+  return agent.is_builtin ? t('agentConfig.builtinAgentName') : agent.name;
 }

@@ -88,6 +88,7 @@ pub async fn prepare_chat(
         None
     };
     let tools_config = effective_tools_config(state, agent.id).await?;
+    state.mcp_manager.prepare_agent(agent.id).await?;
     let system_prompt = state
         .store
         .build_agent_system_prompt(&agent, &tools_config)

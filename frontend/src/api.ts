@@ -382,6 +382,7 @@ export type AgentToolsOverrides = {
   web_search: {
     enabled?: boolean;
     max_results?: number;
+    source_overrides: WebSearchSourceOverrides[];
   };
   task_planning: {
     enabled?: boolean;
@@ -394,6 +395,75 @@ export type AgentToolsSettings = {
   overrides: AgentToolsOverrides;
   effective: AgentToolsConfig;
 };
+
+export type WebSearchSourceOverrides = {
+  source_id: string;
+  enabled?: boolean;
+  deep_enabled?: boolean;
+  extract_enabled?: boolean;
+  priority?: number;
+  roles?: WebSearchSourceRole[];
+  proxy_url?: string | null;
+  proxy_url_override?: boolean;
+};
+
+export type McpTransport =
+  | { type: 'stdio'; command: string; args: string[]; cwd?: string | null; env: Record<string, string>; long_running?: boolean; timeout_ms?: number }
+  | { type: 'streamable_http'; url: string; bearer_token?: string | null; headers: Record<string, string>; timeout_ms: number }
+  | { type: 'sse'; url: string; bearer_token?: string | null; headers: Record<string, string>; timeout_ms: number };
+
+export type McpTool = {
+  name: string;
+  qualified_name: string;
+  title?: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  enabled: boolean;
+  updated_at?: string;
+};
+
+export type McpAuthState = {
+  status: 'idle' | 'starting' | 'auth_pending' | 'browser_opened' | 'waiting_callback' | 'authorized' | 'connected' | 'auth_timeout' | 'auth_failed' | 'launch_failed' | 'init_failed' | 'unsupported';
+  authorize_url?: string | null;
+  last_success_at?: string | null;
+  last_updated_at?: string | null;
+  last_error?: string | null;
+  browser_opened: boolean;
+  session_dir?: string | null;
+};
+
+export type McpServer = {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  provider?: string | null;
+  provider_url?: string | null;
+  logo_url?: string | null;
+  tags: string[];
+  transport: McpTransport;
+  tools: McpTool[];
+  status: 'unknown' | 'connecting' | 'ready' | 'offline' | 'error';
+  last_synced_at?: string;
+  last_error?: string;
+};
+
+export type McpServerDraft = {
+  id?: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  provider?: string | null;
+  provider_url?: string | null;
+  logo_url?: string | null;
+  tags: string[];
+  transport: McpTransport;
+};
+
+export type McpServerOverride = { server_id: string; enabled?: boolean };
+export type McpToolOverride = { server_id: string; tool_name: string; enabled?: boolean };
+export type McpAgentOverrides = { servers: McpServerOverride[]; tools: McpToolOverride[] };
+export type McpAgentSettings = { defaults: McpServer[]; overrides: McpAgentOverrides; effective: McpServer[] };
 
 export type TaskPlan = {
   conversation_id: string;
@@ -655,6 +725,64 @@ export function listToolProcesses(agentId?: string): Promise<ToolProcessInfo[]> 
 export function stopToolProcess(processId: string, agentId: string): Promise<ToolProcessInfo> {
   return request<ToolProcessInfo>(`/api/tools/processes/${encodeURIComponent(processId)}?agent_id=${encodeURIComponent(agentId)}`, {
     method: 'DELETE',
+  });
+}
+
+export function listMcpServers(): Promise<McpServer[]> {
+  return request<McpServer[]>('/api/tools/mcp');
+}
+
+export function getMcpServerSecrets(id: string): Promise<McpTransport> {
+  return request<McpTransport>(`/api/tools/mcp/${encodeURIComponent(id)}/secrets`);
+}
+
+export function createMcpServer(draft: McpServerDraft): Promise<McpServer> {
+  return request<McpServer>('/api/tools/mcp', { method: 'POST', body: JSON.stringify(draft) });
+}
+
+export function updateMcpServer(id: string, draft: McpServerDraft): Promise<McpServer> {
+  return request<McpServer>(`/api/tools/mcp/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(draft) });
+}
+
+export function deleteMcpServer(id: string): Promise<void> {
+  return request<void>(`/api/tools/mcp/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function refreshMcpServer(id: string): Promise<McpServer> {
+  return request<McpServer>(`/api/tools/mcp/${encodeURIComponent(id)}/refresh`, { method: 'POST' }, undefined, 60000);
+}
+
+export function testMcpServer(id: string): Promise<McpServer> {
+  return request<McpServer>(`/api/tools/mcp/${encodeURIComponent(id)}/test`, { method: 'POST' }, undefined, 60000);
+}
+
+export function getMcpAuthState(id: string): Promise<McpAuthState> {
+  return request<McpAuthState>(`/api/tools/mcp/${encodeURIComponent(id)}/auth`);
+}
+
+export function reauthorizeMcpServer(id: string): Promise<McpAuthState> {
+  return request<McpAuthState>(`/api/tools/mcp/${encodeURIComponent(id)}/auth/reauthorize`, { method: 'POST' }, undefined, 130000);
+}
+
+export function clearMcpAuth(id: string): Promise<McpAuthState> {
+  return request<McpAuthState>(`/api/tools/mcp/${encodeURIComponent(id)}/auth/clear`, { method: 'POST' });
+}
+
+export function updateMcpToolEnabled(serverId: string, toolName: string, enabled: boolean): Promise<McpServer> {
+  return request<McpServer>(`/api/tools/mcp/${encodeURIComponent(serverId)}/tools/${encodeURIComponent(toolName)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function readAgentMcpConfig(agentId: string): Promise<McpAgentSettings> {
+  return request<McpAgentSettings>(`/api/agents/${encodeURIComponent(agentId)}/mcp-config`);
+}
+
+export function updateAgentMcpConfig(agentId: string, overrides: McpAgentOverrides): Promise<McpAgentSettings> {
+  return request<McpAgentSettings>(`/api/agents/${encodeURIComponent(agentId)}/mcp-config`, {
+    method: 'PUT',
+    body: JSON.stringify(overrides),
   });
 }
 

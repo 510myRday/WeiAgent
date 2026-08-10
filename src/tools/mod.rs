@@ -1,4 +1,5 @@
 pub mod approval;
+pub mod mcp;
 pub mod multi_edit;
 pub mod prompt;
 pub mod registry;

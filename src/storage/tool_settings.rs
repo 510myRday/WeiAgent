@@ -19,7 +19,7 @@ use crate::{
         AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, EvidenceStorageConfig,
         TaskPlanningToolConfig, TerminalApprovalGrant, TerminalPermissionMode, TerminalToolConfig,
         WebSearchKeySelection, WebSearchKeyStatusRecord, WebSearchProviderKind,
-        WebSearchSourceConfig, WebSearchToolConfig, WebSearchToolOverrides,
+    WebSearchSourceConfig, WebSearchSourceOverrides, WebSearchToolConfig, WebSearchToolOverrides,
     },
     error::{AppError, AppResult},
     storage::store::Store,
@@ -27,7 +27,7 @@ use crate::{
 
 // Migration versions share one application-wide namespace with conversations
 // and provider migrations, so task planning must use the next free version.
-const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 11;
+const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 12;
 
 const TOOL_SETTINGS_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS tool_settings (
@@ -155,6 +155,29 @@ CREATE TABLE IF NOT EXISTS tool_web_search_sources (
     proxy_url TEXT,
     FOREIGN KEY (scope_id) REFERENCES tool_settings(scope_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS tool_web_search_agent_sources (
+    agent_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    enabled INTEGER
+        CHECK (enabled IS NULL OR enabled IN (0, 1)),
+    deep_enabled INTEGER
+        CHECK (deep_enabled IS NULL OR deep_enabled IN (0, 1)),
+    extract_enabled INTEGER
+        CHECK (extract_enabled IS NULL OR extract_enabled IN (0, 1)),
+    priority INTEGER
+        CHECK (priority IS NULL OR priority >= 0),
+    roles_json TEXT
+        CHECK (roles_json IS NULL OR (json_valid(roles_json) AND json_type(roles_json) = 'array')),
+    proxy_url_override INTEGER NOT NULL DEFAULT 0 CHECK (proxy_url_override IN (0, 1)),
+    proxy_url TEXT,
+    PRIMARY KEY (agent_id, source_id),
+    FOREIGN KEY (agent_id) REFERENCES tool_settings(scope_id) ON DELETE CASCADE,
+    FOREIGN KEY (source_id) REFERENCES tool_web_search_sources(source_id) ON DELETE CASCADE
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_tool_web_search_agent_sources_agent
+    ON tool_web_search_agent_sources(agent_id);
 
 CREATE TABLE IF NOT EXISTS tool_web_search_api_keys (
     source_id TEXT NOT NULL,
@@ -382,6 +405,10 @@ impl Store {
     pub(super) async fn delete_agent_tool_settings_unlocked(&self, id: Uuid) -> AppResult<()> {
         self.database
             .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM tool_web_search_agent_sources WHERE agent_id = ?1",
+                    [id.to_string()],
+                )?;
                 conn.execute(
                     "DELETE FROM tool_settings WHERE scope_type = 'agent' AND scope_id = ?1",
                     [id.to_string()],
@@ -669,6 +696,20 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
             params!["tool_settings_firecrawl_anonymous_v10", now_rfc3339()],
         )?;
     }
+    let task_planning_default_v11_applied = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM app_schema_migrations WHERE version = 11
+        )",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !task_planning_default_v11_applied {
+        conn.execute(
+            "INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (11, ?1, ?2)",
+            params!["tool_settings_task_planning_default_v11", now_rfc3339()],
+        )?;
+    }
     if !applied {
         conn.execute(
             "UPDATE tool_settings
@@ -687,8 +728,8 @@ fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
          VALUES (?1, ?2, ?3)",
         params![
             TOOL_SETTINGS_SCHEMA_VERSION,
-            "tool_settings_task_planning_default_v11",
-            now_rfc3339()
+            "tool_settings_web_search_agent_sources_v12",
+            now_rfc3339(),
         ],
     )?;
     Ok(())
@@ -910,6 +951,10 @@ fn write_agent_overrides_conn(
     let agent_id = agent_id.to_string();
     if agent_overrides_are_empty(overrides) {
         conn.execute(
+            "DELETE FROM tool_web_search_agent_sources WHERE agent_id = ?1",
+            [&agent_id],
+        )?;
+        conn.execute(
             "DELETE FROM tool_settings WHERE scope_type = 'agent' AND scope_id = ?1",
             [&agent_id],
         )?;
@@ -996,6 +1041,38 @@ fn write_agent_overrides_conn(
                 permission_mode_as_str(&grant.permission_mode),
                 grant.created_at.map(|value| value.to_rfc3339()),
                 grant.expires_at.map(|value| value.to_rfc3339()),
+            ],
+        )?;
+    }
+    conn.execute(
+        "DELETE FROM tool_web_search_agent_sources WHERE agent_id = ?1",
+        [&agent_id],
+    )?;
+    for source_override in &overrides.web_search.source_overrides {
+        if source_override_is_empty(source_override) {
+            continue;
+        }
+        let roles_json = source_override
+            .roles
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let proxy_url_override = bool_to_i64(source_override.proxy_url_override);
+        conn.execute(
+            "INSERT INTO tool_web_search_agent_sources (
+                agent_id, source_id, enabled, deep_enabled, extract_enabled, priority,
+                roles_json, proxy_url_override, proxy_url
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                agent_id,
+                source_override.source_id,
+                source_override.enabled.map(bool_to_i64),
+                source_override.deep_enabled.map(bool_to_i64),
+                source_override.extract_enabled.map(bool_to_i64),
+                source_override.priority.map(i64::from),
+                roles_json,
+                proxy_url_override,
+                source_override.proxy_url,
             ],
         )?;
     }
@@ -1191,6 +1268,7 @@ fn read_agent_overrides_conn(
                 .web_search_max_results
                 .map(|value| i64_to_u32(value, "web_search_max_results"))
                 .transpose()?,
+            source_overrides: read_web_search_source_overrides(conn, &agent_id)?,
         },
         task_planning: TaskPlanningToolOverrides {
             enabled: row
@@ -1203,6 +1281,66 @@ fn read_agent_overrides_conn(
                 .transpose()?,
         },
     }))
+}
+
+fn read_web_search_source_overrides(
+    conn: &Connection,
+    agent_id: &str,
+) -> AppResult<Vec<WebSearchSourceOverrides>> {
+    let mut statement = conn.prepare(
+        "SELECT source_id, enabled, deep_enabled, extract_enabled, priority,
+                roles_json, proxy_url_override, proxy_url
+         FROM tool_web_search_agent_sources
+         WHERE agent_id = ?1
+         ORDER BY source_id ASC",
+    )?;
+    let rows = statement.query_map([agent_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, Option<String>>(7)?,
+        ))
+    })?;
+    let mut overrides = Vec::new();
+    for row in rows {
+        let (
+            source_id,
+            enabled,
+            deep_enabled,
+            extract_enabled,
+            priority,
+            roles_json,
+            proxy_url_override,
+            proxy_url,
+        ) = row?;
+        overrides.push(WebSearchSourceOverrides {
+            source_id,
+            enabled: enabled
+                .map(|value| i64_to_bool(value, "web search source override enabled"))
+                .transpose()?,
+            deep_enabled: deep_enabled
+                .map(|value| i64_to_bool(value, "web search source override deep_enabled"))
+                .transpose()?,
+            extract_enabled: extract_enabled
+                .map(|value| i64_to_bool(value, "web search source override extract_enabled"))
+                .transpose()?,
+            priority: priority
+                .map(|value| i64_to_u16(value, "web search source override priority"))
+                .transpose()?,
+            roles: roles_json.map(|value| serde_json::from_str(&value)).transpose()?,
+            proxy_url,
+            proxy_url_override: i64_to_bool(
+                proxy_url_override,
+                "web search source proxy override",
+            )?,
+        });
+    }
+    Ok(overrides)
 }
 
 fn read_compact_terminal_grants(
@@ -1365,8 +1503,18 @@ fn agent_overrides_are_empty(overrides: &AgentToolsOverrides) -> bool {
         && overrides.terminal.allowed_cwd_roots.is_none()
         && overrides.web_search.enabled.is_none()
         && overrides.web_search.max_results.is_none()
+        && overrides.web_search.source_overrides.is_empty()
         && overrides.task_planning.enabled.is_none()
         && overrides.task_planning.progress_interval.is_none()
+}
+
+fn source_override_is_empty(source_override: &WebSearchSourceOverrides) -> bool {
+    source_override.enabled.is_none()
+        && source_override.deep_enabled.is_none()
+        && source_override.extract_enabled.is_none()
+        && source_override.priority.is_none()
+        && source_override.roles.is_none()
+        && !source_override.proxy_url_override
 }
 
 fn permission_mode_as_str(mode: &TerminalPermissionMode) -> &'static str {
@@ -1657,6 +1805,41 @@ fn validate_tools_overrides(
             return Err(AppError::BadRequest(
                 "terminal approval grants must be unique by command and cwd".to_string(),
             ));
+        }
+    }
+    let default_source_ids = defaults
+        .web_search
+        .sources
+        .iter()
+        .map(|source| source.id.as_str())
+        .collect::<HashSet<_>>();
+    let mut override_source_ids = HashSet::new();
+    for source_override in &overrides.web_search.source_overrides {
+        let source_id = source_override.source_id.trim();
+        if source_id.is_empty() || !default_source_ids.contains(source_id) {
+            return Err(AppError::BadRequest(format!(
+                "web_search source override references unknown source '{source_id}'"
+            )));
+        }
+        if !override_source_ids.insert(source_id) {
+            return Err(AppError::BadRequest(format!(
+                "duplicate web_search source override '{source_id}'"
+            )));
+        }
+        if let Some(roles) = &source_override.roles {
+            let mut roles_seen = HashSet::new();
+            if roles.iter().any(|role| !roles_seen.insert(role)) {
+                return Err(AppError::BadRequest(format!(
+                    "web_search source override '{source_id}' roles must be unique"
+                )));
+            }
+        }
+        if source_override.proxy_url_override {
+            validate_optional_proxy_url(
+                source_id,
+                "proxy_url",
+                source_override.proxy_url.as_deref(),
+            )?;
         }
     }
     validate_tools_config(&overrides.apply_to(defaults))

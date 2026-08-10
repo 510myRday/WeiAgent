@@ -463,7 +463,7 @@ export function AgentsPanel({
                 onClick={() => void startCreatingAgent()}
                 label={t('agentConfig.create')}
               >
-                <Plus size={17} />
+                <Plus size={18} />
               </IconButton>
             )}
           />

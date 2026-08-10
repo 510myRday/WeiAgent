@@ -6,6 +6,7 @@ export function FormField({
   action,
   required = false,
   hint,
+  className,
   children,
 }: {
   label: ReactNode;
@@ -13,10 +14,11 @@ export function FormField({
   action?: ReactNode;
   required?: boolean;
   hint?: ReactNode;
+  className?: string;
   children: ReactNode;
 }) {
   return (
-    <div className="form-field">
+    <div className={`form-field${className ? ` ${className}` : ''}`}>
       <label htmlFor={htmlFor}>
         <span>
           {label}

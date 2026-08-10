@@ -564,6 +564,10 @@ fn default_web_extract_max_remote_attempts() -> u32 {
     DEFAULT_WEB_EXTRACT_MAX_REMOTE_ATTEMPTS
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl Default for WebContentExtractionConfig {
     fn default() -> Self {
         Self {
@@ -943,6 +947,30 @@ pub struct WebSearchToolOverrides {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_results: Option<u32>,
+    #[serde(default)]
+    pub source_overrides: Vec<WebSearchSourceOverrides>,
+}
+
+/// Agent-level overrides for one global web search source. Credentials and
+/// provider metadata intentionally stay in the global source configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WebSearchSourceOverrides {
+    pub source_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deep_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extract_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<WebSearchSourceRole>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_url: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub proxy_url_override: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -1021,7 +1049,10 @@ impl AgentToolsOverrides {
                 timeout_ms: defaults.web_search.timeout_ms,
                 key_selection: defaults.web_search.key_selection.clone(),
                 extraction: defaults.web_search.extraction.clone(),
-                sources: defaults.web_search.sources.clone(),
+                sources: apply_web_search_source_overrides(
+                    &defaults.web_search.sources,
+                    &self.web_search.source_overrides,
+                ),
             },
             evidence_storage: defaults.evidence_storage.clone(),
             task_planning: TaskPlanningToolConfig {
@@ -1052,6 +1083,21 @@ impl AgentToolsOverrides {
             web_search: WebSearchToolOverrides {
                 enabled: Some(config.web_search.enabled),
                 max_results: Some(config.web_search.max_results),
+                source_overrides: config
+                    .web_search
+                    .sources
+                    .iter()
+                    .map(|source| WebSearchSourceOverrides {
+                        source_id: source.id.clone(),
+                        enabled: Some(source.enabled),
+                        deep_enabled: Some(source.deep_enabled),
+                        extract_enabled: Some(source.extract_enabled),
+                        priority: Some(source.priority),
+                        roles: Some(source.roles.clone()),
+                        proxy_url: source.proxy_url.clone(),
+                        proxy_url_override: true,
+                    })
+                    .collect(),
             },
             task_planning: TaskPlanningToolOverrides {
                 enabled: Some(config.task_planning.enabled),
@@ -1059,6 +1105,41 @@ impl AgentToolsOverrides {
             },
         }
     }
+}
+
+fn apply_web_search_source_overrides(
+    defaults: &[WebSearchSourceConfig],
+    overrides: &[WebSearchSourceOverrides],
+) -> Vec<WebSearchSourceConfig> {
+    let mut sources = defaults.to_vec();
+    for source_override in overrides {
+        let Some(source) = sources
+            .iter_mut()
+            .find(|source| source.id == source_override.source_id)
+        else {
+            continue;
+        };
+        if let Some(enabled) = source_override.enabled {
+            source.enabled = enabled;
+        }
+        if let Some(deep_enabled) = source_override.deep_enabled {
+            source.deep_enabled = deep_enabled;
+        }
+        if let Some(extract_enabled) = source_override.extract_enabled {
+            source.extract_enabled = extract_enabled;
+        }
+        if let Some(priority) = source_override.priority {
+            source.priority = priority;
+        }
+        if let Some(roles) = &source_override.roles {
+            source.roles = roles.clone();
+        }
+        if source_override.proxy_url_override {
+            source.proxy_url = source_override.proxy_url.clone();
+        }
+    }
+    sources.sort_by_key(|source| source.priority);
+    sources
 }
 
 impl TerminalToolConfig {
@@ -1249,6 +1330,7 @@ mod tests {
             web_search: WebSearchToolOverrides {
                 enabled: Some(true),
                 max_results: Some(8),
+                source_overrides: Vec::new(),
             },
             ..AgentToolsOverrides::default()
         };

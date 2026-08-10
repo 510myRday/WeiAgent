@@ -154,6 +154,46 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             "/api/tools/defaults",
             get(tools::read_tool_defaults).put(tools::update_tool_defaults),
         )
+        .route(
+            "/api/tools/mcp",
+            get(tools::list_mcp_servers).post(tools::create_mcp_server),
+        )
+        .route(
+            "/api/tools/mcp/{server_id}",
+            put(tools::update_mcp_server).delete(tools::delete_mcp_server),
+        )
+        .route(
+            "/api/tools/mcp/{server_id}/secrets",
+            get(tools::read_mcp_server_secrets),
+        )
+        .route(
+            "/api/tools/mcp/{server_id}/refresh",
+            post(tools::refresh_mcp_server),
+        )
+        .route(
+            "/api/tools/mcp/{server_id}/test",
+            post(tools::test_mcp_server),
+        )
+        .route(
+            "/api/tools/mcp/{server_id}/auth",
+            get(tools::get_mcp_auth_state),
+        )
+        .route(
+            "/api/tools/mcp/{server_id}/auth/reauthorize",
+            post(tools::reauthorize_mcp_server),
+        )
+        .route(
+            "/api/tools/mcp/{server_id}/auth/clear",
+            post(tools::clear_mcp_auth),
+        )
+        .route(
+            "/api/tools/mcp/{server_id}/tools/{tool_name}",
+            put(tools::update_mcp_tool_enabled),
+        )
+        .route(
+            "/api/agents/{agent_id}/mcp-config",
+            get(tools::read_agent_mcp_config).put(tools::update_agent_mcp_config),
+        )
         .route("/api/tools/pick-directory", post(tools::pick_directory))
         .route(
             "/api/tools/web-search-keys/check",

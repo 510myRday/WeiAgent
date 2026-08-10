@@ -7,8 +7,8 @@ import { ChatAgentSelect } from './ChatAgentSelect';
 
 const agents: Agent[] = [
   {
-    id: 'agent-master',
-    name: 'Master',
+    id: 'agent-wei-sir',
+    name: 'Wei Sir',
     description: '',
     model_provider_id: 'provider-1',
     model_id: 'model-1',
@@ -42,15 +42,15 @@ test('lists conversation agents and reports the selected configuration target', 
     <I18nProvider>
       <ChatAgentSelect
         agents={agents}
-        value="agent-master"
+        value="agent-wei-sir"
         onChange={onChange}
       />
     </I18nProvider>,
   );
 
   const select = screen.getByRole('combobox', { name: '当前智能体' });
-  expect(select).toHaveValue('agent-master');
-  expect(screen.getByRole('option', { name: '总管' })).toBeInTheDocument();
+  expect(select).toHaveValue('agent-wei-sir');
+  expect(screen.getByRole('option', { name: '喂先生' })).toBeInTheDocument();
   expect(screen.getByRole('option', { name: '文案助手' })).toBeInTheDocument();
 
   fireEvent.change(select, { target: { value: 'agent-writer' } });

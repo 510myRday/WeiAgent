@@ -6,6 +6,7 @@ import type {
   AgentToolsOverrides,
   AgentToolsSettings,
   WebSearchKeySelection,
+  WebSearchSourceOverrides,
   WebSearchSourceRole,
   WebSearchSourceConfig,
   WebSearchToolConfig,
@@ -185,7 +186,10 @@ export function WebSearchToolSettings({
             effective: withWebSearch(next.effective),
             overrides: {
               ...next.overrides,
-              web_search: next.overrides.web_search ?? {},
+              web_search: {
+                ...next.overrides.web_search,
+                source_overrides: next.overrides.web_search?.source_overrides ?? [],
+              },
             },
           };
           setAgentSettings(normalized);
@@ -408,10 +412,52 @@ export function WebSearchToolSettings({
   }
 
   const updateSource = useCallback((index: number, patch: Partial<WebSearchSourceConfig>) => {
-    if (!config || scope !== 'defaults') return;
-    const sources = config.web_search.sources.map((source, i) => (i === index ? { ...source, ...patch } : source));
-    updateWebSearch({ sources });
-  }, [config, scope, updateWebSearch]);
+    if (!config) return;
+    const source = config.web_search.sources[index];
+    if (!source) return;
+    if (scope === 'defaults') {
+      const sources = config.web_search.sources.map((item, i) => (i === index ? { ...item, ...patch } : item));
+      updateWebSearch({ sources });
+      return;
+    }
+    if (!overrides) return;
+    const existing = overrides.web_search.source_overrides.find((item) => item.source_id === source.id);
+    const nextSourceOverride: WebSearchSourceOverrides = {
+      source_id: source.id,
+      enabled: patch.enabled ?? existing?.enabled ?? source.enabled,
+      deep_enabled: patch.deep_enabled ?? existing?.deep_enabled ?? source.deep_enabled,
+      extract_enabled: patch.extract_enabled ?? existing?.extract_enabled ?? source.extract_enabled,
+      priority: patch.priority ?? existing?.priority ?? source.priority,
+      roles: patch.roles ?? existing?.roles ?? source.roles,
+      proxy_url: Object.prototype.hasOwnProperty.call(patch, 'proxy_url')
+        ? patch.proxy_url ?? null
+        : existing?.proxy_url_override
+          ? existing.proxy_url ?? null
+          : source.proxy_url,
+      proxy_url_override: existing?.proxy_url_override ?? true,
+    };
+    updateOverrides({
+      ...overrides,
+      web_search: {
+        ...overrides.web_search,
+        source_overrides: [
+          ...overrides.web_search.source_overrides.filter((item) => item.source_id !== source.id),
+          nextSourceOverride,
+        ],
+      },
+    });
+  }, [config, overrides, scope, updateOverrides, updateWebSearch]);
+
+  function resetSource(sourceId: string) {
+    if (!overrides) return;
+    updateOverrides({
+      ...overrides,
+      web_search: {
+        ...overrides.web_search,
+        source_overrides: overrides.web_search.source_overrides.filter((item) => item.source_id !== sourceId),
+      },
+    });
+  }
 
   useEffect(() => {
     if (scope !== 'defaults' || !hasLoadedIpProxies || !config) return;
@@ -438,22 +484,43 @@ export function WebSearchToolSettings({
   }
 
   function moveSource(index: number, direction: -1 | 1) {
-    if (!config || scope !== 'defaults') return;
+    if (!config) return;
     const target = index + direction;
     if (target < 0 || target >= config.web_search.sources.length) return;
     const sources = [...config.web_search.sources];
     const [item] = sources.splice(index, 1);
     sources.splice(target, 0, item);
-    updateWebSearch({
-      sources: sources.map((source, sourceIndex) => ({
-        ...source,
+    if (scope === 'defaults') {
+      updateWebSearch({
+        sources: sources.map((source, sourceIndex) => ({
+          ...source,
+          priority: (sourceIndex + 1) * 10,
+        })),
+      });
+      return;
+    }
+    if (!overrides) return;
+    const nextSourceOverrides = sources.map((source, sourceIndex) => {
+      const existing = overrides.web_search.source_overrides.find((item) => item.source_id === source.id);
+      return {
+        source_id: source.id,
+        enabled: existing?.enabled ?? source.enabled,
+        deep_enabled: existing?.deep_enabled ?? source.deep_enabled,
+        extract_enabled: existing?.extract_enabled ?? source.extract_enabled,
         priority: (sourceIndex + 1) * 10,
-      })),
+        roles: existing?.roles ?? source.roles,
+        proxy_url: existing?.proxy_url_override ? existing.proxy_url ?? null : source.proxy_url,
+        proxy_url_override: true,
+      };
+    });
+    updateOverrides({
+      ...overrides,
+      web_search: { ...overrides.web_search, source_overrides: nextSourceOverrides },
     });
   }
 
   function toggleSourceRole(index: number, role: WebSearchSourceRole, checked: boolean) {
-    if (!config || scope !== 'defaults') return;
+    if (!config) return;
     const source = config.web_search.sources[index];
     const roles = checked
       ? Array.from(new Set([...source.roles, role]))
@@ -820,7 +887,7 @@ export function WebSearchToolSettings({
         </div>
       ) : null}
 
-      <div className="terminal-settings-form">
+      <div className="tool-settings-form terminal-settings-form">
         <section className="settings-card basic-settings-card">
           <div className="card-header">
             <h3>{t('tools.webSearch.basicSettings')}</h3>
@@ -1048,17 +1115,16 @@ export function WebSearchToolSettings({
           </div>
         </section>
 
-        {!isAgentScope ? (
-          <section className="settings-card web-search-sources-card">
-            <div className="card-header">
+        <section className="settings-card web-search-sources-card">
+          <div className="card-header">
               <div className="settings-section-title">
                 <h3>{t('tools.webSearch.sourcesTitle')}</h3>
                 <p>{t('tools.webSearch.sourcesDesc')}</p>
               </div>
               <span className="badge">{webSearch.sources.length}</span>
-            </div>
-            <div className="card-body">
-              <div className="web-search-source-list">
+          </div>
+          <div className="card-body">
+            <div className="web-search-source-list">
                 {webSearch.sources.map((source, index) => (
                   <SourceCard
                     key={source.id}
@@ -1077,6 +1143,9 @@ export function WebSearchToolSettings({
                     isChecking={Boolean(checkingKeys[source.id])}
                     isDeleting={Boolean(deletingKeys[source.id])}
                     isImporting={Boolean(importingKeys[source.id])}
+                    showKeyManagement={!isAgentScope}
+                    isOverridden={isAgentScope && Boolean(overrides?.web_search.source_overrides.some((item) => item.source_id === source.id))}
+                    onResetSource={resetSource}
                     ipProxies={ipProxies}
                     onToggleExpanded={toggleSource}
                     onToggleSection={toggleSourceSection}
@@ -1098,16 +1167,9 @@ export function WebSearchToolSettings({
                     onOpenProxyPicker={openProxyPicker}
                   />
                 ))}
-              </div>
             </div>
-          </section>
-        ) : (
-          <section className="settings-card">
-            <div className="card-body">
-              <p className="card-description">{t('tools.webSearch.agentSecretsHint')}</p>
-            </div>
-          </section>
-        )}
+          </div>
+        </section>
       </div>
 
       {proxyPicker ? (
