@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use reqwest::{RequestBuilder, Response};
+use reqwest::{RequestBuilder, Response, header::RETRY_AFTER};
 
 use crate::{
     domain::TokenUsage,
@@ -119,10 +119,9 @@ impl LlmHttp {
             .is_some_and(|logger| logger.is_enabled())
     }
 
-    /// Send with retries. Every attempt draws its key from the provider's key
-    /// pool: pools with several keys rotate to another key when one is
-    /// rejected or the upstream flaps, and may spend more attempts than the
-    /// configured retry count so each key gets a chance.
+    /// Send with retries. The configured retry count is the single budget for
+    /// every failure class. When several keys are configured, each retry
+    /// advances to the next key without increasing that budget.
     pub async fn retry_send<F>(
         &self,
         options: &RequestOptions,
@@ -132,12 +131,16 @@ impl LlmHttp {
     where
         F: Fn(&str) -> RequestBuilder,
     {
-        let attempts = options.retry_attempts.max(1).max(keys.attempt_budget());
+        let attempts = options.retry_attempts.max(1);
         let mut last_error = None;
         for attempt in 1..=attempts {
+            let mut retry_after = None;
             match self.send_once(options, keys, &request).await {
                 Ok(response) => {
-                    if !(keys.has_alternatives() && is_rotatable_status(response.status())) {
+                    let status = response.status();
+                    if !is_retryable_status(status)
+                        && !(keys.has_alternatives() && is_rotatable_status(status))
+                    {
                         return Ok(response);
                     }
                     let key = keys.current_key().to_string();
@@ -150,8 +153,12 @@ impl LlmHttp {
                     last_error = Some(AppError::Llm(with_key_label(
                         keys,
                         &key,
-                        &format!("upstream returned {}", response.status()),
+                        &format!("upstream returned {status}"),
                     )));
+                    retry_after = response
+                        .headers()
+                        .get(RETRY_AFTER)
+                        .and_then(parse_retry_after);
                 }
                 Err(error) => last_error = Some(error),
             }
@@ -163,7 +170,7 @@ impl LlmHttp {
                 if let Some(on_retry) = options.on_retry.as_ref() {
                     on_retry(attempt + 1, attempts, &reason);
                 }
-                tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
+                tokio::time::sleep(retry_delay(attempt, retry_after)).await;
             }
         }
         Err(last_error.unwrap_or_else(|| AppError::Llm("request failed".to_string())))
@@ -204,12 +211,30 @@ impl LlmHttp {
     }
 }
 
-/// With several keys configured, these statuses are worth retrying on another
-/// key: explicit key rejections (401/402/403), rate limits (429), request
-/// timeouts/conflicts (408/409), and every 5xx — which also covers
-/// Cloudflare-style 520-524 and Anthropic's 529 overloaded.
+/// These statuses generally indicate a transient upstream condition and are
+/// retried even when the provider has only one configured key.
+pub(crate) fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || matches!(status.as_u16(), 408 | 409 | 425 | 429)
+}
+
+/// With several keys configured, explicit key rejections are worth retrying
+/// on another key. Transient statuses are included for key failover too.
 pub(crate) fn is_rotatable_status(status: reqwest::StatusCode) -> bool {
-    status.is_server_error() || matches!(status.as_u16(), 401 | 402 | 403 | 408 | 409 | 429)
+    is_retryable_status(status) || matches!(status.as_u16(), 401 | 402 | 403)
+}
+
+pub(crate) fn parse_retry_after(value: &reqwest::header::HeaderValue) -> Option<Duration> {
+    value
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|seconds| Duration::from_secs(seconds.min(30)))
+}
+
+pub(crate) fn retry_delay(attempt: u32, retry_after: Option<Duration>) -> Duration {
+    retry_after.unwrap_or_else(|| Duration::from_millis(250 * u64::from(attempt).min(8)))
 }
 
 /// Retry reasons name the key (masked) when the pool has several, so users can
@@ -842,7 +867,7 @@ mod tests {
         });
 
         let reasons = Arc::new(Mutex::new(Vec::new()));
-        let options = retry_test_options(1, reasons.clone());
+        let options = retry_test_options(2, reasons.clone());
         let mut keys = cycle(&["dead-key", "good-key"]);
         let client = reqwest::Client::new();
         let response = LlmHttp::new()
@@ -890,7 +915,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_send_gives_every_key_a_chance_without_configured_retries() {
+    async fn retry_send_respects_the_configured_budget_with_key_pools() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -902,7 +927,7 @@ mod tests {
         });
 
         let reasons = Arc::new(Mutex::new(Vec::new()));
-        let options = retry_test_options(1, reasons.clone());
+        let options = retry_test_options(3, reasons.clone());
         let mut keys = cycle(&["k-one", "k-two", "k-three"]);
         let client = reqwest::Client::new();
         let response = LlmHttp::new()
@@ -916,6 +941,49 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 3);
         assert_eq!(reasons.lock().unwrap().len(), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn retry_send_retries_transient_server_errors_with_one_key() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server_hits = hits.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 2048];
+                let _ = socket.read(&mut request).await.unwrap();
+                let response: &[u8] = if server_hits
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    == 0
+                {
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 7\r\nConnection: close\r\n\r\ntry-again"
+                } else {
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                };
+                socket.write_all(response).await.unwrap();
+                socket.flush().await.unwrap();
+            }
+        });
+
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let options = retry_test_options(2, reasons.clone());
+        let mut keys = cycle(&["only-key"]);
+        let client = reqwest::Client::new();
+        let response = LlmHttp::new()
+            .retry_send(&options, &mut keys, |key| {
+                client.post(format!("http://{address}")).bearer_auth(key)
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let reasons = reasons.lock().unwrap();
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains("503"), "{}", reasons[0]);
         server.abort();
     }
 }

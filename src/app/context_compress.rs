@@ -246,7 +246,11 @@ fn render_summary_anchor_content(
     summary: &str,
     active_task_plan: Option<&ActiveTaskPlanContext>,
 ) -> String {
-    let summary = summary
+    let mut summary = summary.trim();
+    while let Some(rest) = summary.strip_prefix(SUMMARY_ANCHOR_PREFIX) {
+        summary = rest.trim_start();
+    }
+    summary = summary
         .split(ACTIVE_TASK_PLAN_PREFIX)
         .next()
         .unwrap_or(summary)
@@ -1385,5 +1389,26 @@ mod tests {
                 .content
                 .contains("current_step: Keep the plan ID")
         );
+    }
+
+    #[test]
+    fn refreshing_summary_anchor_is_idempotent() {
+        let plan = ActiveTaskPlanContext {
+            planning_id: Uuid::new_v4(),
+            current_step: "Keep one plan block".to_string(),
+            steps: vec!["1. [in_progress] Keep one plan block".to_string()],
+        };
+        let mut messages = vec![msg(
+            ChatRole::User,
+            &render_summary_anchor_content("summary", Some(&plan)),
+        )];
+
+        refresh_active_task_plan_anchor(&mut messages, Some(&plan));
+        let once = messages[0].content.clone();
+        refresh_active_task_plan_anchor(&mut messages, Some(&plan));
+
+        assert_eq!(messages[0].content, once);
+        assert_eq!(once.matches(SUMMARY_ANCHOR_PREFIX).count(), 1);
+        assert_eq!(once.matches(ACTIVE_TASK_PLAN_PREFIX).count(), 1);
     }
 }

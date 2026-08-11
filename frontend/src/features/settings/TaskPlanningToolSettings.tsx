@@ -57,7 +57,6 @@ export function TaskPlanningToolSettings({ scope, agentId, onBack }: TaskPlannin
   );
   const progressIntervalInherited = scope === 'agent'
     && settings?.overrides.task_planning.progress_interval === undefined;
-
   async function updateTaskPlanning(patch: { enabled?: boolean; progress_interval?: number }) {
     if (!effective || saving) return;
     setSaving(true);
@@ -145,16 +144,18 @@ export function TaskPlanningToolSettings({ scope, agentId, onBack }: TaskPlannin
             <h3>{t('tools.taskPlanning.basicSettings')}</h3>
           </div>
           <div className="card-body">
-            <div className="setting-row">
-              <div className="setting-info">
-                <label>{t('tools.taskPlanning.enabled')}</label>
-                <p className="setting-desc">{t('tools.taskPlanning.enabledDesc')}</p>
+            {scope === 'defaults' ? (
+              <div className="setting-row">
+                <div className="setting-info">
+                  <label>{t('tools.taskPlanning.enabled')}</label>
+                  <p className="setting-desc">{t('tools.taskPlanning.enabledDesc')}</p>
+                </div>
+                <label className="toggle-switch" title={enabled ? t('tools.enabled') : t('tools.disabled')}>
+                  <input type="checkbox" checked={enabled} disabled={saving} onChange={(event) => void handleEnabledChange(event.target.checked)} aria-label={t('tools.taskPlanning.enabled')} />
+                  <span className="toggle-slider" />
+                </label>
               </div>
-              <label className="toggle-switch" title={enabled ? t('tools.enabled') : t('tools.disabled')}>
-                <input type="checkbox" checked={enabled} disabled={saving} onChange={(event) => void handleEnabledChange(event.target.checked)} aria-label={t('tools.taskPlanning.enabled')} />
-                <span className="toggle-slider" />
-              </label>
-            </div>
+            ) : null}
             <div className="setting-row">
               <div className="setting-info">
                 <label>{t('tools.taskPlanning.progressInterval')}</label>

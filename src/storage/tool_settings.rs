@@ -19,7 +19,8 @@ use crate::{
         AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, EvidenceStorageConfig,
         TaskPlanningToolConfig, TerminalApprovalGrant, TerminalPermissionMode, TerminalToolConfig,
         WebSearchKeySelection, WebSearchKeyStatusRecord, WebSearchProviderKind,
-    WebSearchSourceConfig, WebSearchSourceOverrides, WebSearchToolConfig, WebSearchToolOverrides,
+        WebSearchSourceConfig, WebSearchSourceOverrides, WebSearchToolConfig,
+        WebSearchToolOverrides,
     },
     error::{AppError, AppResult},
     storage::store::Store,
@@ -1332,7 +1333,9 @@ fn read_web_search_source_overrides(
             priority: priority
                 .map(|value| i64_to_u16(value, "web search source override priority"))
                 .transpose()?,
-            roles: roles_json.map(|value| serde_json::from_str(&value)).transpose()?,
+            roles: roles_json
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?,
             proxy_url,
             proxy_url_override: i64_to_bool(
                 proxy_url_override,

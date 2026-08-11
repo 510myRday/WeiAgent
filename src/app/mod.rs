@@ -150,7 +150,8 @@ mod tests {
             .create_conversation(agent.id, CreateConversationRequest { title: None })
             .await
             .unwrap();
-        let mcp_manager = Arc::new(McpManager::new(store.clone()));
+        let environment_runtime = test_environment_runtime(&temp_dir);
+        let mcp_manager = Arc::new(McpManager::new(store.clone(), environment_runtime.clone()));
         let app = build_router(AppState {
             api_security: ApiSecurity::disabled_for_tests(),
             store,
@@ -162,7 +163,7 @@ mod tests {
             ),
             terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
-            environment_runtime: test_environment_runtime(&temp_dir),
+            environment_runtime,
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             mcp_manager,
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
@@ -612,7 +613,8 @@ mod tests {
             .unwrap();
 
         let client = Arc::new(ScriptedChatClient::new(outputs));
-        let mcp_manager = Arc::new(McpManager::new(store.clone()));
+        let environment_runtime = test_environment_runtime(&root);
+        let mcp_manager = Arc::new(McpManager::new(store.clone(), environment_runtime.clone()));
         let state = AppState {
             api_security: ApiSecurity::disabled_for_tests(),
             store,
@@ -622,7 +624,7 @@ mod tests {
             llm_logger: Arc::new(LlmLogger::new(&root, false).unwrap()),
             terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
-            environment_runtime: test_environment_runtime(&root),
+            environment_runtime,
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             mcp_manager,
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
@@ -1366,7 +1368,8 @@ mod tests {
         let client = Arc::new(StreamingToolClient {
             streams: std::sync::Mutex::new(streams.into()),
         });
-        let mcp_manager = Arc::new(McpManager::new(store.clone()));
+        let environment_runtime = test_environment_runtime(&root);
+        let mcp_manager = Arc::new(McpManager::new(store.clone(), environment_runtime.clone()));
         let state = AppState {
             api_security: ApiSecurity::disabled_for_tests(),
             store: store.clone(),
@@ -1374,7 +1377,7 @@ mod tests {
             llm_logger: Arc::new(LlmLogger::new(&root, false).unwrap()),
             terminal_manager: TerminalManager::new_for_tests(),
             approval_manager: Arc::new(ApprovalManager::new()),
-            environment_runtime: test_environment_runtime(&root),
+            environment_runtime,
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             mcp_manager,
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),

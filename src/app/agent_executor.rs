@@ -552,6 +552,33 @@ async fn execute_tool_calls(
     append_task_plan_progress: bool,
 ) -> AppResult<()> {
     let call_count = tool_calls.len();
+    let mut parallel_mcp_batch = call_count > 1;
+    if parallel_mcp_batch {
+        for call in &tool_calls {
+            if !crate::tools::mcp::is_mcp_tool(&call.function.name)
+                || !state
+                    .mcp_manager
+                    .supports_parallel_tool(prepared.agent.id, &call.function.name)
+                    .await
+            {
+                parallel_mcp_batch = false;
+                break;
+            }
+        }
+    }
+    if parallel_mcp_batch {
+        return execute_parallel_mcp_calls(
+            state,
+            prepared,
+            messages,
+            tool_calls,
+            budget,
+            events,
+            iteration,
+            append_task_plan_progress,
+        )
+        .await;
+    }
     for (index, call) in tool_calls.into_iter().enumerate() {
         let parsed_arguments = serde_json::from_str::<Value>(&call.function.arguments);
         let display_arguments = parsed_arguments
@@ -634,6 +661,142 @@ async fn execute_tool_calls(
                 },
             }
         };
+        let result = if append_task_plan_progress && index + 1 == call_count {
+            append_task_plan_progress_to_result(
+                state,
+                prepared.user_message.conversation_id,
+                result,
+            )
+            .await?
+        } else {
+            result
+        };
+        emit(
+            events,
+            AgentRunEvent::ToolResult {
+                call_id: call.id.clone(),
+                result: result.clone(),
+            },
+        )
+        .await?;
+        persist_tool_result(state, prepared, messages, &call.id, &result).await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_parallel_mcp_calls(
+    state: &AppState,
+    prepared: &mut PreparedChat,
+    messages: &mut Vec<ChatMessage>,
+    tool_calls: Vec<ToolCall>,
+    budget: &mut ToolBudget,
+    events: &Option<mpsc::Sender<AgentRunEvent>>,
+    iteration: usize,
+    append_task_plan_progress: bool,
+) -> AppResult<()> {
+    let call_count = tool_calls.len();
+    let mut pending = Vec::new();
+    let mut results = Vec::new();
+    for (index, call) in tool_calls.into_iter().enumerate() {
+        let parsed_arguments = serde_json::from_str::<Value>(&call.function.arguments);
+        let display_arguments = parsed_arguments
+            .as_ref()
+            .ok()
+            .filter(|value| value.is_object())
+            .cloned()
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        emit(
+            events,
+            AgentRunEvent::Phase {
+                phase: AgentRunPhase::ExecutingTool,
+                iteration,
+                call_id: Some(call.id.clone()),
+            },
+        )
+        .await?;
+        emit(
+            events,
+            AgentRunEvent::ToolCall {
+                call_id: call.id.clone(),
+                name: call.function.name.clone(),
+                arguments: display_arguments,
+                permission_mode: prepared.tools_config.terminal.permission_mode.clone(),
+            },
+        )
+        .await?;
+
+        let validation_error = if call.id.is_empty() {
+            Some("tool call id cannot be empty".to_string())
+        } else if call.id.len() > MAX_TOOL_CALL_ID_BYTES {
+            Some(format!(
+                "tool call id exceeds {MAX_TOOL_CALL_ID_BYTES} bytes"
+            ))
+        } else if !budget.seen_call_ids.insert(call.id.clone()) {
+            Some("duplicate tool call id in this run".to_string())
+        } else if index >= MAX_TOOL_CALLS_PER_ITERATION {
+            Some(format!(
+                "tool call limit per iteration ({MAX_TOOL_CALLS_PER_ITERATION}) exceeded"
+            ))
+        } else if budget.total_calls >= MAX_TOTAL_TOOL_CALLS {
+            Some(format!(
+                "total tool call limit ({MAX_TOTAL_TOOL_CALLS}) exceeded"
+            ))
+        } else {
+            budget.total_calls += 1;
+            None
+        };
+        if let Some(message) = validation_error {
+            results.push((index, call, ToolResult::Error { message }));
+            continue;
+        }
+        let Ok(Value::Object(map)) = parsed_arguments else {
+            let result = match parsed_arguments {
+                Ok(other) => ToolResult::Error {
+                    message: format!("Invalid tool arguments: expected a JSON object, got {other}"),
+                },
+                Err(error) => ToolResult::Error {
+                    message: format!("Invalid tool arguments: {error}"),
+                },
+            };
+            results.push((index, call, result));
+            continue;
+        };
+        let context = ToolExecutionContext {
+            agent_id: prepared.agent.id,
+            conversation_id: prepared.user_message.conversation_id,
+            call_id: call.id.clone(),
+            tools_config: prepared.tools_config.clone(),
+            store: state.store.clone(),
+            terminal_manager: state.terminal_manager.clone(),
+            approval_manager: state.approval_manager.clone(),
+            event_sender: None,
+            web_search_provenance: budget.web_search_provenance.clone(),
+        };
+        pending.push((index, call, map, context));
+    }
+
+    let mut completed = futures_util::stream::iter(pending.into_iter().map(
+        |(index, call, map, context)| async move {
+            let result = execute_tool_with_events(
+                state,
+                &call.function.name,
+                Value::Object(map),
+                context,
+                events,
+                iteration,
+            )
+            .await;
+            (index, call, result)
+        },
+    ))
+    .buffer_unordered(MAX_TOOL_CALLS_PER_ITERATION)
+    .collect::<Vec<_>>()
+    .await;
+    results.append(&mut completed);
+    results.sort_by_key(|(index, _, _)| *index);
+
+    for (index, call, result) in results {
         let result = if append_task_plan_progress && index + 1 == call_count {
             append_task_plan_progress_to_result(
                 state,
@@ -740,6 +903,8 @@ fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
             stderr,
             exit_code,
             runtime,
+            structured_content,
+            is_error,
             ..
         } => {
             let mut map = serde_json::Map::new();
@@ -755,6 +920,12 @@ fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
             map.insert("exit_code".to_string(), json_i64(*exit_code as i64));
             if let Some(runtime) = runtime {
                 map.insert("runtime".to_string(), Value::String(runtime.clone()));
+            }
+            if let Some(content) = structured_content {
+                map.insert("structured_content".to_string(), content.clone());
+            }
+            if *is_error {
+                map.insert("is_error".to_string(), Value::Bool(true));
             }
             Value::Object(map)
         }
@@ -1051,6 +1222,7 @@ async fn fail_stream(
         acc.created_at,
         &acc.content,
         &acc.reasoning_content,
+        &acc.openai_response_items,
         acc.persisted,
     )
     .await;
@@ -1101,6 +1273,7 @@ async fn append_delta_and_persist(
             acc.created_at,
             &acc.content,
             &acc.reasoning_content,
+            &acc.openai_response_items,
         );
         if let Err(error) = runtime
             .state
@@ -1305,10 +1478,19 @@ async fn execute_tool_with_events(
     iteration: usize,
 ) -> ToolResult {
     if crate::tools::mcp::is_mcp_tool(name) {
-        return state
+        let execution = state
             .mcp_manager
-            .execute_tool(context.agent_id, name, arguments)
-            .await;
+            .execute_tool(context.agent_id, name, arguments);
+        tokio::pin!(execution);
+        if let Some(run_sender) = events.clone() {
+            return tokio::select! {
+                result = &mut execution => result,
+                _ = run_sender.closed() => ToolResult::Rejected {
+                    reason: "Approval client disconnected".to_string(),
+                },
+            };
+        }
+        return execution.await;
     }
     let Some(run_sender) = events.clone() else {
         return state.tool_registry.execute(name, arguments, context).await;
@@ -1444,6 +1626,7 @@ fn partial_assistant(
     created_at: chrono::DateTime<Utc>,
     content: &str,
     reasoning_content: &str,
+    response_items: &[Value],
 ) -> ChatMessage {
     ChatMessage {
         id: message_id,
@@ -1452,7 +1635,7 @@ fn partial_assistant(
         role: ChatRole::Assistant,
         content: content.to_string(),
         reasoning_content: (!reasoning_content.is_empty()).then(|| reasoning_content.to_string()),
-        openai_response_items: Vec::new(),
+        openai_response_items: response_items.to_vec(),
         status: ChatMessageStatus::Streaming,
         created_at,
         tool_calls: None,
@@ -1499,13 +1682,21 @@ async fn mark_interrupted(
     created_at: chrono::DateTime<Utc>,
     content: &str,
     reasoning_content: &str,
+    response_items: &[Value],
     persisted: bool,
 ) {
-    if !persisted && content.is_empty() && reasoning_content.is_empty() {
+    if !persisted && content.is_empty() && reasoning_content.is_empty() && response_items.is_empty()
+    {
         return;
     }
-    let mut message =
-        partial_assistant(prepared, message_id, created_at, content, reasoning_content);
+    let mut message = partial_assistant(
+        prepared,
+        message_id,
+        created_at,
+        content,
+        reasoning_content,
+        response_items,
+    );
     message.status = ChatMessageStatus::Failed;
     let _ = state
         .store
@@ -1537,6 +1728,8 @@ mod tests {
             duration_ms: 1234,
             runtime: Some("builtin_web_search".into()),
             output_cursor: 0,
+            structured_content: None,
+            is_error: false,
         };
         let value = sanitize_tool_result_for_llm(&result);
         assert_eq!(value["status"], "completed");
@@ -1583,6 +1776,8 @@ mod tests {
             duration_ms: 50,
             runtime: Some("builtin_web_search".into()),
             output_cursor: 0,
+            structured_content: None,
+            is_error: false,
         };
         let value = sanitize_tool_result_for_llm(&result);
         let compact: serde_json::Value =

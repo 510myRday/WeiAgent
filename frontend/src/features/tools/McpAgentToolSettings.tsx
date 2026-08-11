@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Pencil, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Cable, Pencil, RefreshCw, Search } from 'lucide-react';
 
-import type { McpAgentOverrides, McpAgentSettings, McpServer, McpTool } from '../../api';
+import type { McpAgentOverrides, McpAgentSettings, McpTool } from '../../api';
 import { readAgentMcpConfig, updateAgentMcpConfig } from '../../api';
 import { useI18n } from '../../i18n';
 import { Button, IconButton } from '../../components/ui';
+import { McpToolDetails } from './McpToolDetails';
 
-export type McpToolSelection = {
+export type McpServerSelection = {
   serverId: string;
-  toolName: string;
 };
 
 type McpAgentToolView = 'summary' | 'edit';
@@ -16,15 +16,10 @@ type McpAgentToolView = 'summary' | 'edit';
 interface McpAgentToolSettingsProps {
   agentId: string;
   view?: McpAgentToolView;
-  selection?: McpToolSelection;
-  onEdit?: (selection: McpToolSelection) => void;
+  selection?: McpServerSelection;
+  onEdit?: (selection: McpServerSelection) => void;
   onBack?: () => void;
 }
-
-type McpToolEntry = {
-  server: McpServer;
-  tool: McpTool;
-};
 
 function toolLabel(tool: McpTool) {
   return tool.title || tool.name;
@@ -42,6 +37,7 @@ export function McpAgentToolSettings({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -71,56 +67,89 @@ export function McpAgentToolSettings({
 
   function patchTool(serverId: string, toolName: string, enabled: boolean) {
     if (!settings) return;
+    const server = settings.effective.find((item) => item.id === serverId);
+    const serverOverride = settings.overrides.servers.find((item) => item.server_id === serverId);
     const tools = settings.overrides.tools
       .filter((item) => !(item.server_id === serverId && item.tool_name === toolName))
       .concat({ server_id: serverId, tool_name: toolName, enabled });
-    void save({ ...settings.overrides, tools });
+    const servers = serverOverride
+      ? settings.overrides.servers.map((item) => item.server_id === serverId ? { ...item, customized: true } : item)
+      : settings.overrides.servers.concat({ server_id: serverId, enabled: server?.enabled ?? true, customized: true });
+    void save({ ...settings.overrides, servers, tools });
   }
 
-  function setToolInherited(serverId: string, toolName: string, inherited: boolean, enabled: boolean) {
+  function setServerInherited(serverId: string, inherited: boolean) {
     if (!settings) return;
-    const tools = settings.overrides.tools.filter((item) => !(item.server_id === serverId && item.tool_name === toolName));
-    if (!inherited) tools.push({ server_id: serverId, tool_name: toolName, enabled });
-    void save({ ...settings.overrides, tools });
+    if (inherited) {
+      const servers = settings.overrides.servers.filter((item) => item.server_id !== serverId);
+      const tools = settings.overrides.tools.filter((item) => item.server_id !== serverId);
+      void save({ ...settings.overrides, servers, tools });
+      return;
+    }
+    if (settings.overrides.servers.some((item) => item.server_id === serverId)) return;
+    const server = settings.effective.find((item) => item.id === serverId);
+    const servers = settings.overrides.servers.concat({ server_id: serverId, enabled: server?.enabled ?? true, customized: true });
+    void save({ ...settings.overrides, servers });
   }
 
-  const entries = useMemo<McpToolEntry[]>(() => {
-    if (!settings) return [];
-    return settings.effective.flatMap((server) => server.tools.map((tool) => ({ server, tool })));
-  }, [settings]);
+  function setServerEnabled(serverId: string, enabled: boolean) {
+    if (!settings) return;
+    const existing = settings.overrides.servers.find((item) => item.server_id === serverId);
+    const servers = existing
+      ? settings.overrides.servers.map((item) => item.server_id === serverId ? { ...item, enabled, customized: true } : item)
+      : settings.overrides.servers.concat({ server_id: serverId, enabled, customized: true });
+    void save({ ...settings.overrides, servers });
+  }
+
+  const servers = useMemo(() => settings?.effective ?? [], [settings]);
+  const server = selection ? servers.find((item) => item.id === selection.serverId) : undefined;
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const tools = useMemo(
+    () => server?.tools.filter((tool) => !normalizedSearch || `${tool.title || ''} ${tool.name} ${tool.description}`.toLocaleLowerCase().includes(normalizedSearch)) ?? [],
+    [normalizedSearch, server],
+  );
 
   if (view === 'summary') {
     if (loading) return <div className="mcp-agent-tools-loading">{t('tools.mcp.loading')}</div>;
     if (!settings) return <div className="agent-tool-empty error-text" role="alert">{error || t('tools.mcp.loadFailed')}</div>;
-    if (entries.length === 0) return <div className="agent-tool-empty">{t('tools.mcp.noTools')}</div>;
+    if (servers.length === 0) return <div className="agent-tool-empty">{t('tools.mcp.noServers')}</div>;
 
     return (
       <>
-        {entries.map(({ server, tool }) => {
-          const override = settings.overrides.tools.find((item) => item.server_id === server.id && item.tool_name === tool.name);
-          const inherited = override?.enabled === undefined;
-          const enabled = server.enabled && tool.enabled;
-          const currentSelection = { serverId: server.id, toolName: tool.name };
+        {servers.map((server) => {
+          const inherited = !settings.overrides.servers.some((item) => item.server_id === server.id)
+            && !settings.overrides.tools.some((item) => item.server_id === server.id);
+          const currentSelection = { serverId: server.id };
           return (
-            <div className="agent-tool-row mcp-agent-tool-row" key={tool.qualified_name}>
+            <div className="agent-tool-row mcp-agent-tool-row" key={server.id}>
               <div className="agent-tool-row__body">
                 <div className="agent-tool-row__title">
-                  <strong>{toolLabel(tool)}</strong>
-                  <span className="mini-status-badge mcp-badge">MCP</span>
+                  <strong>{server.name}</strong>
+                  <span className="mini-status-badge mcp-badge"><Cable size={12} aria-hidden="true" />MCP</span>
                 </div>
-                <small>{tool.description || t('tools.mcp.noToolDescription')}</small>
+                <small>{server.description || t('tools.mcp.noDescription')}</small>
                 <span className="agent-tool-row__source">
                   {inherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}
                 </span>
               </div>
               <div className="agent-tool-row__actions">
-                <label className="toggle-switch" title={enabled ? t('tools.enabled') : t('tools.disabled')}>
+                <label className="inherit-control" title={t('tools.mcp.serverInheritanceDesc')}>
                   <input
                     type="checkbox"
-                    aria-label={`${toolLabel(tool)} ${t('tools.enabled')}`}
-                    checked={enabled}
-                    disabled={saving || !server.enabled}
-                    onChange={(event) => patchTool(server.id, tool.name, event.target.checked)}
+                    aria-label={`${server.name} ${t('tools.inheritsDefault')}`}
+                    checked={inherited}
+                    disabled={saving}
+                    onChange={(event) => setServerInherited(server.id, event.target.checked)}
+                  />
+                  <span>{t('tools.mcp.inheritServer')}</span>
+                </label>
+                <label className={`toggle-switch${inherited ? ' is-disabled' : ''}`} title={server.enabled ? t('tools.enabled') : t('tools.disabled')}>
+                  <input
+                    type="checkbox"
+                    aria-label={`${server.name} ${server.enabled ? t('tools.enabled') : t('tools.disabled')}`}
+                    checked={server.enabled}
+                    disabled={saving || inherited}
+                    onChange={(event) => setServerEnabled(server.id, event.target.checked)}
                   />
                   <span className="toggle-slider" />
                 </label>
@@ -129,7 +158,8 @@ export function McpAgentToolSettings({
                   variant="ghost"
                   className="agent-tool-edit"
                   onClick={() => onEdit?.(currentSelection)}
-                  label={t('tools.editTool')}
+                  disabled={saving || inherited}
+                  label={t('tools.mcp.editServerTools')}
                 >
                   <Pencil size={17} />
                 </IconButton>
@@ -155,16 +185,9 @@ export function McpAgentToolSettings({
     );
   }
 
-  const selectedEntry = selection
-    ? entries.find(({ server, tool }) => server.id === selection.serverId && tool.name === selection.toolName)
-    : undefined;
-  if (!selectedEntry) {
-    return <div className="terminal-loading-state"><p>{t('tools.mcp.noTools')}</p></div>;
+  if (!server) {
+    return <div className="terminal-loading-state"><p>{t('tools.mcp.noServers')}</p></div>;
   }
-
-  const { server, tool } = selectedEntry;
-  const override = settings.overrides.tools.find((item) => item.server_id === server.id && item.tool_name === tool.name);
-  const inherited = override?.enabled === undefined;
 
   return (
     <div className="terminal-tool-settings-v2 is-agent-scope mcp-agent-tool-editor">
@@ -182,52 +205,56 @@ export function McpAgentToolSettings({
             </IconButton>
           ) : null}
           <div>
-            <div className="mcp-agent-tool-heading-title">
-              <h2>{toolLabel(tool)}</h2>
-              <span className="mini-status-badge mcp-badge">MCP</span>
-            </div>
-            <p>{server.name} · {tool.description || t('tools.mcp.noToolDescription')}</p>
+            <h2>{server.name}</h2>
+            <p>{server.description || t('tools.mcp.noDescription')}</p>
           </div>
         </div>
       </div>
 
       <div className="tool-settings-form terminal-settings-form">
         <section className="settings-card basic-settings-card">
-          <div className="card-header">
-            <h3>{t('tools.mcp.toolBasicSettings')}</h3>
+          <div className="card-header mcp-tools-toolbar">
+            <div className="settings-section-title">
+              <h3>{t('tools.mcp.discoveredTools')}</h3>
+              <p>{t('tools.mcp.discoveredToolsHint')}</p>
+            </div>
+            <div className="mcp-tools-toolbar-actions">
+              <div className="mcp-search-input">
+                <Search size={15} />
+                <input
+                  id="mcp-agent-tool-search"
+                  aria-label={t('tools.mcp.searchTools')}
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder={t('tools.mcp.searchPlaceholder')}
+                />
+              </div>
+            </div>
           </div>
           <div className="card-body">
-            <div className="setting-row">
-              <div className="setting-info">
-                <label>{t('tools.mcp.toolEnabled')}</label>
-                <p className="setting-desc">{t('tools.mcp.toolEnabledDesc')}</p>
+            {tools.length > 0 ? (
+              <div className="mcp-agent-tool-list">
+                {tools.map((tool) => (
+                  <div className={`setting-row mcp-agent-tool-row${tool.enabled ? '' : ' is-disabled'}`} key={tool.qualified_name}>
+                    <div className="setting-info mcp-agent-tool-copy">
+                      <label>{toolLabel(tool)}</label>
+                      <code>{tool.name}</code>
+                      <McpToolDetails description={tool.description || t('tools.mcp.noToolDescription')} inputSchema={tool.input_schema} />
+                    </div>
+                    <label className="toggle-switch mcp-tool-toggle" title={tool.enabled ? t('tools.enabled') : t('tools.disabled')}>
+                      <input
+                        type="checkbox"
+                        aria-label={`${toolLabel(tool)} ${t('tools.enabled')}`}
+                        checked={tool.enabled}
+                        disabled={saving || !server.enabled}
+                        onChange={(event) => patchTool(server.id, tool.name, event.target.checked)}
+                      />
+                      <span className="toggle-slider" />
+                    </label>
+                  </div>
+                ))}
               </div>
-              <label className="toggle-switch" title={tool.enabled ? t('tools.enabled') : t('tools.disabled')}>
-                <input
-                  type="checkbox"
-                  checked={tool.enabled}
-                  disabled={saving || !server.enabled}
-                  onChange={(event) => patchTool(server.id, tool.name, event.target.checked)}
-                  aria-label={`${toolLabel(tool)} ${t('tools.mcp.toolEnabled')}`}
-                />
-                <span className="toggle-slider" />
-              </label>
-            </div>
-            <div className="setting-row">
-              <div className="setting-info">
-                <label>{t('tools.inheritsDefault')}</label>
-                <p className="setting-desc">{t('tools.mcp.toolInheritanceDesc')}</p>
-              </div>
-              <label className="inherit-control">
-                <input
-                  type="checkbox"
-                  checked={inherited}
-                  disabled={saving}
-                  onChange={(event) => setToolInherited(server.id, tool.name, event.target.checked, tool.enabled)}
-                />
-                <span>{t('tools.mcp.inheritTool')}</span>
-              </label>
-            </div>
+            ) : <div className="mcp-empty-tools">{server.tools.length === 0 ? t('tools.mcp.noTools') : t('tools.mcp.noMatchingTools')}</div>}
             {error ? <p className="error-text" role="alert">{error}</p> : null}
           </div>
         </section>

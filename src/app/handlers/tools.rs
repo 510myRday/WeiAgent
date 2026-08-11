@@ -12,7 +12,7 @@ use crate::{
         AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision,
         ApprovalRequest, ApprovalResponse, EnvironmentRuntimeStatus, McpAgentOverrides,
         McpAgentSettings, McpAuthState, McpServer, McpServerDraft, ProcessInfo,
-        RuntimeComponentKind, WebSearchKeyStatusRecord, WebSearchProviderKind,
+        McpServerStatus, RuntimeComponentKind, WebSearchKeyStatusRecord, WebSearchProviderKind,
         WebSearchSourceConfig,
     },
     error::{AppError, AppResult},
@@ -25,6 +25,17 @@ use crate::tools::web_search::types::{ProviderSearchRequest, SearchMode};
 
 #[derive(Debug, Deserialize)]
 pub struct McpToolEnabledRequest {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct McpToolsEnabledRequest {
+    pub tool_names: Vec<String>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct McpServerEnabledRequest {
     pub enabled: bool,
 }
 
@@ -207,18 +218,21 @@ pub async fn create_mcp_server(
     State(state): State<AppState>,
     Json(draft): Json<McpServerDraft>,
 ) -> AppResult<Json<McpServer>> {
-    let server = state.store.create_mcp_server(draft).await?;
-    let result = match state.mcp_manager.refresh_server(server.id).await {
-        Ok(server) => server,
-        Err(_) => state
+    let mut server = state.store.create_mcp_server(draft).await?;
+    let server_id = server.id;
+    if server.enabled {
+        let _ = state
             .store
-            .list_mcp_servers()
-            .await?
-            .into_iter()
-            .find(|item| item.id == server.id)
-            .unwrap_or(server),
-    };
-    Ok(Json(result.redacted()))
+            .update_mcp_server_status(server_id, McpServerStatus::Connecting, None, None)
+            .await;
+        server.status = McpServerStatus::Connecting;
+        server.last_error = None;
+    }
+    let mcp_manager = state.mcp_manager.clone();
+    tokio::spawn(async move {
+        refresh_mcp_server_in_background(mcp_manager, server_id).await;
+    });
+    Ok(Json(server.redacted()))
 }
 
 pub async fn update_mcp_server(
@@ -226,20 +240,59 @@ pub async fn update_mcp_server(
     Path(server_id): Path<Uuid>,
     Json(mut draft): Json<McpServerDraft>,
 ) -> AppResult<Json<McpServer>> {
-    state.mcp_manager.stop_server(server_id).await;
     draft.id = Some(server_id);
-    let server = state.store.update_mcp_server(draft).await?;
-    let result = match state.mcp_manager.refresh_server(server.id).await {
-        Ok(server) => server,
-        Err(_) => state
+    let mut server = state.store.update_mcp_server(draft).await?;
+    if server.enabled {
+        let _ = state
             .store
-            .list_mcp_servers()
-            .await?
+            .update_mcp_server_status(server_id, McpServerStatus::Connecting, None, None)
+            .await;
+        server.status = McpServerStatus::Connecting;
+        server.last_error = None;
+    }
+    let mcp_manager = state.mcp_manager.clone();
+    tokio::spawn(async move {
+        refresh_mcp_server_in_background(mcp_manager, server_id).await;
+    });
+    Ok(Json(server.redacted()))
+}
+
+async fn refresh_mcp_server_in_background(
+    mcp_manager: std::sync::Arc<crate::tools::mcp::McpManager>,
+    server_id: Uuid,
+) {
+    mcp_manager.stop_server(server_id).await;
+    let enabled = match mcp_manager.list_servers().await {
+        Ok(servers) => servers
             .into_iter()
-            .find(|item| item.id == server.id)
-            .unwrap_or(server),
+            .find(|server| server.id == server_id)
+            .is_some_and(|server| server.enabled),
+        Err(error) => {
+            tracing::debug!(%error, %server_id, "MCP background refresh could not read server state");
+            return;
+        }
     };
-    Ok(Json(result.redacted()))
+    if !enabled {
+        return;
+    }
+    if let Err(error) = mcp_manager.refresh_server(server_id).await {
+        tracing::debug!(%error, %server_id, "MCP background refresh failed");
+    }
+}
+
+pub async fn update_mcp_server_enabled(
+    State(state): State<AppState>,
+    Path(server_id): Path<Uuid>,
+    Json(request): Json<McpServerEnabledRequest>,
+) -> AppResult<Json<McpServer>> {
+    if !request.enabled {
+        state.mcp_manager.stop_server(server_id).await;
+    }
+    let server = state
+        .store
+        .update_mcp_server_enabled(server_id, request.enabled)
+        .await?;
+    Ok(Json(server.redacted()))
 }
 
 pub async fn delete_mcp_server(
@@ -315,10 +368,39 @@ pub async fn update_mcp_tool_enabled(
     Ok(Json(server.redacted()))
 }
 
+pub async fn update_mcp_tools_enabled(
+    State(state): State<AppState>,
+    Path(server_id): Path<Uuid>,
+    Json(request): Json<McpToolsEnabledRequest>,
+) -> AppResult<Json<McpServer>> {
+    let names = request
+        .tool_names
+        .into_iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        return Err(AppError::BadRequest("at least one MCP tool is required".to_string()));
+    }
+    state
+        .store
+        .update_mcp_tools_enabled(server_id, &names, request.enabled)
+        .await?;
+    let server = state
+        .store
+        .list_mcp_servers()
+        .await?
+        .into_iter()
+        .find(|item| item.id == server_id)
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(server.redacted()))
+}
+
 pub async fn read_agent_mcp_config(
     State(state): State<AppState>,
     Path(agent_id): Path<Uuid>,
 ) -> AppResult<Json<McpAgentSettings>> {
+    state.store.get_agent(agent_id).await?;
     let settings = state.store.read_mcp_agent_settings(agent_id).await?;
     Ok(Json(McpAgentSettings {
         defaults: settings
@@ -340,6 +422,7 @@ pub async fn update_agent_mcp_config(
     Path(agent_id): Path<Uuid>,
     Json(overrides): Json<McpAgentOverrides>,
 ) -> AppResult<Json<McpAgentSettings>> {
+    state.store.get_agent(agent_id).await?;
     let settings = state
         .store
         .update_mcp_agent_overrides(agent_id, overrides)

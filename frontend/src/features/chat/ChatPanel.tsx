@@ -34,6 +34,7 @@ import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
 import { ChatAgentSelect } from './ChatAgentSelect';
 import { MessageAvatar, MessageList, type MessageListHandle } from './MessageList';
 import { MessageTimeline, type MessageTimelineItem } from './MessageTimeline';
+import { materializeImageAttachment } from './imageAttachments';
 import { userErrorMessage } from '../../utils/userError';
 import { compareNames, sortByName } from '../../utils/sort';
 
@@ -111,6 +112,9 @@ export function ChatPanel({
     runPhase,
     retryStatus,
     runningConversationIds,
+    unreadConversationIdsByAgent,
+    refreshUnreadState,
+    markConversationRead,
     loadConversationsForAgent,
     refreshRunningConversations,
     loadMessages,
@@ -124,6 +128,7 @@ export function ChatPanel({
     removeConversation,
     setConversationPinned,
   } = useConversations({
+    activeAgentId,
     newConversationTitle: t('conversation.newTitle'),
     imageOnlyConversationTitle: t('conversation.imagePromptTitle'),
     imageAttachmentTitleNote: t('conversation.imageAttachmentTitleNote'),
@@ -511,13 +516,16 @@ export function ChatPanel({
   }, [activeAgentId, clearChat, detachActiveRun, loadConversationsForAgent]);
 
   useEffect(() => {
-    if (!activeAgentId || !isPageVisible) return;
-    void refreshRunningConversations(activeAgentId);
+    if (!isPageVisible) return;
+    const agentIds = agents.map((agent) => agent.id);
+    void refreshUnreadState(agentIds);
+    if (activeAgentId) void refreshRunningConversations(activeAgentId);
     const timer = window.setInterval(() => {
-      void refreshRunningConversations(activeAgentId);
+      void refreshUnreadState(agentIds);
+      if (activeAgentId) void refreshRunningConversations(activeAgentId);
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [activeAgentId, isPageVisible, refreshRunningConversations]);
+  }, [activeAgentId, agents, isPageVisible, refreshRunningConversations, refreshUnreadState]);
 
   useEffect(() => {
     if (!activeConversationId) return;
@@ -552,9 +560,10 @@ export function ChatPanel({
 
   const handleConversationSelect = useCallback((conversationId: string) => {
     if (isSending) detachActiveRun();
+    markConversationRead(activeAgentId, conversationId);
     if (conversationId !== activeConversationId) selectConversation(conversationId);
     onOpenMain();
-  }, [activeConversationId, detachActiveRun, isSending, onOpenMain, selectConversation]);
+  }, [activeAgentId, activeConversationId, detachActiveRun, isSending, markConversationRead, onOpenMain, selectConversation]);
 
   const handleRestartMessage = useCallback((
     messageId: string,
@@ -823,9 +832,17 @@ export function ChatPanel({
     toast.warning(t('chat.imageUnsupportedModel'));
   }, [t, toast]);
 
-  const handleReferenceImage = useCallback((attachment: ImageAttachment) => {
-    composerRef.current?.addImageAttachment(attachment);
-  }, []);
+  const handleReferenceImage = useCallback(async (attachment: ImageAttachment) => {
+    try {
+      const materialized = await materializeImageAttachment(attachment);
+      composerRef.current?.addImageAttachment(materialized);
+    } catch (cause) {
+      toast.error(userErrorMessage(cause, {
+        summary: t('chat.imageLoadFailed'),
+        recovery: t('error.retryConnection'),
+      }));
+    }
+  }, [t, toast]);
 
   const handleLoadOlderMessages = useCallback(async () => {
     if (!activeConversationId || isLoadingOlderMessages) return false;
@@ -908,6 +925,7 @@ export function ChatPanel({
                 <AgentListItem
                   key={agent.id}
                   agent={agent}
+                  unreadCount={unreadConversationIdsByAgent[agent.id]?.length ?? 0}
                   onClick={() => handleAgentSelect(agent.id)}
                 />
               ))}
@@ -963,6 +981,8 @@ export function ChatPanel({
                   conversation={conversation}
                   active={conversation.id === activeConversationId}
                   isRunning={runningConversationIds.has(conversation.id)}
+                  isUnread={unreadConversationIdsByAgent[activeAgent.id]?.includes(conversation.id) ?? false}
+                  unreadLabel={t('conversation.unread')}
                   formatDate={formatDate}
                   runStatusLabel={t('conversation.runStatus')}
                   deleteLabel={t('conversation.delete')}
@@ -1244,6 +1264,8 @@ function ConversationRowImpl({
   conversation,
   active,
   isRunning,
+  isUnread,
+  unreadLabel,
   formatDate,
   runStatusLabel,
   deleteLabel,
@@ -1256,6 +1278,8 @@ function ConversationRowImpl({
   conversation: Conversation;
   active: boolean;
   isRunning: boolean;
+  isUnread: boolean;
+  unreadLabel: string;
   formatDate: (value: string) => string;
   runStatusLabel: string;
   deleteLabel: string;
@@ -1274,7 +1298,12 @@ function ConversationRowImpl({
       <ListItem
         className="conversation-row-main"
         type="button"
-        title={conversation.title}
+        title={(
+          <span className="conversation-row-title">
+            <span>{conversation.title}</span>
+            {isUnread ? <span className="unread-dot" aria-label={unreadLabel} title={unreadLabel} /> : null}
+          </span>
+        )}
         subtitle={(
           <span className={isRunning ? 'conversation-run-status' : undefined}>
             {isRunning ? <LoaderCircle size={12} aria-hidden="true" /> : null}

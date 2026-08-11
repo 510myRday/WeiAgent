@@ -40,10 +40,18 @@ function statusLabel(
       ? t('toolCard.executingTitle')
       : t('toolCard.executingGeneric');
   }
-  if (tool.status === 'blocked') return t('toolCard.blocked');
+  if (tool.status === 'blocked') {
+    if (tool.result?.code === 'PlanningRequired') return t('toolCard.planningRequired');
+    if (tool.result?.code === 'PlanningIdInvalid') return t('toolCard.planningIdInvalid');
+    return t('toolCard.blocked');
+  }
   if (tool.status === 'rejected') return t('toolCard.rejected');
   if (tool.status === 'interrupted') return t('toolCard.interrupted');
-  if (tool.status === 'error') return t('toolCard.executionError');
+  if (tool.status === 'error') {
+    if (tool.result?.code === 'PlanningRequired') return t('toolCard.planningRequired');
+    if (tool.result?.code === 'PlanningIdInvalid') return t('toolCard.planningIdInvalid');
+    return t('toolCard.executionError');
+  }
   if (tool.status === 'completed') {
     if (tool.result?.exit_code !== undefined && tool.result?.exit_code !== null) {
       return t('toolCard.completed', { code: tool.result.exit_code });

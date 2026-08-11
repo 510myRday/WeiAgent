@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use reqwest::RequestBuilder;
 use serde_json::{Map, Value, json};
 
@@ -9,7 +11,8 @@ use crate::{
         http::StreamLineParser,
         protocol::common::{
             ProtocolAdapter, SseData, add_query_parameter, default_models, merge_extra_body,
-            message_tool_calls, parse_json_object, parse_sse_data_line, validate_tool_calls,
+            message_tool_calls, parse_json_object, parse_sse_data_line,
+            unwrap_provider_response_item, validate_tool_calls, wrap_provider_response_item,
         },
         types::{
             ChatCompletionOutput, StreamEvent, ToolCall, ToolCallFunction, ToolDefinition,
@@ -183,6 +186,13 @@ fn build_anthropic_request(
             }
             ChatRole::Assistant => {
                 let mut blocks = Vec::new();
+                let replayed_thinking = message
+                    .openai_response_items
+                    .iter()
+                    .filter_map(|item| unwrap_provider_response_item(item, "anthropic"))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                blocks.extend(replayed_thinking);
                 if !message.content.is_empty() {
                     blocks.push(json!({"type": "text", "text": message.content}));
                 }
@@ -350,8 +360,15 @@ fn parse_anthropic_output(value: &Value) -> AppResult<ChatCompletionOutput> {
 
     let mut content = String::new();
     let mut reasoning_content = String::new();
+    let mut response_items = Vec::new();
     let mut tool_calls = Vec::new();
     for block in value["content"].as_array().into_iter().flatten() {
+        if matches!(
+            block["type"].as_str(),
+            Some("thinking" | "redacted_thinking")
+        ) {
+            response_items.push(wrap_provider_response_item("anthropic", block.clone()));
+        }
         match block["type"].as_str() {
             Some("text") => {
                 if let Some(text) = block["text"].as_str() {
@@ -378,7 +395,7 @@ fn parse_anthropic_output(value: &Value) -> AppResult<ChatCompletionOutput> {
     validate_tool_calls(tool_calls).map(|tool_calls| ChatCompletionOutput {
         content,
         reasoning_content,
-        openai_response_items: Vec::new(),
+        openai_response_items: response_items,
         tool_calls,
         usage: parse_anthropic_usage(&value["usage"]),
     })
@@ -429,6 +446,7 @@ struct AnthropicStreamParser {
     finished: bool,
     stop_reason: Option<String>,
     usage: TokenUsage,
+    thinking_blocks: HashMap<usize, Value>,
 }
 
 impl AnthropicStreamParser {
@@ -438,6 +456,7 @@ impl AnthropicStreamParser {
             finished: false,
             stop_reason: None,
             usage: TokenUsage::default(),
+            thinking_blocks: HashMap::new(),
         }
     }
 
@@ -450,6 +469,12 @@ impl AnthropicStreamParser {
             Some("content_block_start") => {
                 let block = &value["content_block"];
                 let index = value["index"].as_u64().unwrap_or(0) as usize;
+                if matches!(
+                    block["type"].as_str(),
+                    Some("thinking" | "redacted_thinking")
+                ) {
+                    self.thinking_blocks.insert(index, block.clone());
+                }
                 match block["type"].as_str() {
                     Some("text") => block["text"]
                         .as_str()
@@ -488,11 +513,32 @@ impl AnthropicStreamParser {
                     .filter(|text| !text.is_empty())
                     .map(|text| vec![Ok(StreamEvent::TextDelta(text.to_string()))])
                     .unwrap_or_default(),
-                Some("thinking_delta") => value["delta"]["thinking"]
-                    .as_str()
-                    .filter(|thinking| !thinking.is_empty())
-                    .map(|thinking| vec![Ok(StreamEvent::ReasoningDelta(thinking.to_string()))])
-                    .unwrap_or_default(),
+                Some("thinking_delta") => {
+                    let index = value["index"].as_u64().unwrap_or(0) as usize;
+                    if let Some(block) = self.thinking_blocks.get_mut(&index)
+                        && let Some(thinking) = value["delta"]["thinking"].as_str()
+                    {
+                        block["thinking"] = Value::String(
+                            block["thinking"].as_str().unwrap_or_default().to_string() + thinking,
+                        );
+                    }
+                    value["delta"]["thinking"]
+                        .as_str()
+                        .filter(|thinking| !thinking.is_empty())
+                        .map(|thinking| vec![Ok(StreamEvent::ReasoningDelta(thinking.to_string()))])
+                        .unwrap_or_default()
+                }
+                Some("signature_delta") => {
+                    let index = value["index"].as_u64().unwrap_or(0) as usize;
+                    if let Some(block) = self.thinking_blocks.get_mut(&index)
+                        && let Some(signature) = value["delta"]["signature"].as_str()
+                    {
+                        block["signature"] = Value::String(
+                            block["signature"].as_str().unwrap_or_default().to_string() + signature,
+                        );
+                    }
+                    Vec::new()
+                }
                 Some("input_json_delta") => {
                     let index = value["index"].as_u64().unwrap_or(0) as usize;
                     let Some(arguments) = value["delta"]["partial_json"]
@@ -509,6 +555,17 @@ impl AnthropicStreamParser {
                 }
                 _ => Vec::new(),
             },
+            Some("content_block_stop") => {
+                let index = value["index"].as_u64().unwrap_or(0) as usize;
+                self.thinking_blocks
+                    .remove(&index)
+                    .map(|block| {
+                        vec![Ok(StreamEvent::OpenAiResponseItem(
+                            wrap_provider_response_item("anthropic", block),
+                        ))]
+                    })
+                    .unwrap_or_default()
+            }
             Some("message_delta") => {
                 if let Some(reason) = value["delta"]["stop_reason"].as_str() {
                     self.stop_reason = Some(reason.to_string());
@@ -824,6 +881,41 @@ mod tests {
             events.into_iter().next().unwrap().unwrap(),
             StreamEvent::ReasoningDelta(text) if text == "plan"
         ));
+    }
+
+    #[test]
+    fn replays_thinking_and_redacted_thinking_blocks_with_signatures() {
+        let provider = test_provider();
+        let (agent, mut messages) = fixture();
+        let output = parse_anthropic_output(&json!({
+            "content": [
+                {"type":"thinking","thinking":"plan","signature":"SIG-1"},
+                {"type":"redacted_thinking","data":"opaque","signature":"SIG-2"},
+                {"type":"text","text":"done"}
+            ]
+        }))
+        .unwrap();
+        messages[0].content = output.content;
+        messages[0].reasoning_content = Some(output.reasoning_content);
+        messages[0].openai_response_items = output.openai_response_items;
+
+        let request = build_anthropic_request(
+            &agent,
+            &provider,
+            &messages,
+            false,
+            "system",
+            &Value::Null,
+            None,
+            Some(ThinkingLevel::High),
+        )
+        .unwrap();
+        let blocks = request["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[0]["signature"], "SIG-1");
+        assert_eq!(blocks[1]["type"], "redacted_thinking");
+        assert_eq!(blocks[1]["signature"], "SIG-2");
+        assert_eq!(blocks[2]["type"], "text");
     }
 
     #[test]

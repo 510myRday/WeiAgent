@@ -12,8 +12,8 @@ use crate::{
         client::{ChatClient, ChatStream, RequestOptions},
         http::{
             DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, StreamLineParser, StreamLogContext,
-            is_rotatable_status, log_request, read_response_body_limited, spawn_log,
-            stream_response,
+            is_retryable_status, is_rotatable_status, log_request, parse_retry_after,
+            read_response_body_limited, retry_delay, spawn_log, stream_response,
         },
         keys::ApiKeyCycle,
         types::{ChatCompletionOutput, ToolCall, ToolDefinition, normalize_tool_call_arguments},
@@ -96,9 +96,16 @@ fn notify_retry(options: &RequestOptions, attempt: u32, max_attempts: u32, error
 }
 
 fn is_retryable_stream_error(error: &AppError) -> bool {
-    matches!(error, AppError::Llm(message) if message.contains("LLM stream idle timeout")
-        || message.contains("error decoding response body")
-        || message.contains("connection reset"))
+    matches!(error, AppError::Llm(message) if {
+        let message = message.to_ascii_lowercase();
+        message.contains("idle timeout")
+            || message.contains("error decoding response body")
+            || message.contains("connection reset")
+            || message.contains("connection closed")
+            || message.contains("broken pipe")
+            || message.contains("incomplete message")
+            || message.contains("unexpected eof")
+    })
 }
 
 fn log_stream_open_error(context: &StreamLogContext, error: &AppError) {
@@ -354,7 +361,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             .last()
             .map(|message| message.conversation_id.to_string());
 
-        let attempts = options.retry_attempts.max(1).max(api_keys.attempt_budget());
+        let attempts = options.retry_attempts.max(1);
         let adapter = self.adapter.clone();
         let http = self.http.clone();
         let provider = provider.clone();
@@ -387,7 +394,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                     Err(error) => {
                         if attempt < attempts {
                             notify_retry(&stream_options, attempt + 1, attempts, &error);
-                            tokio::time::sleep(std::time::Duration::from_millis(250 * u64::from(attempt))).await;
+                            tokio::time::sleep(retry_delay(attempt, None)).await;
                             continue;
                         }
                         log_stream_open_error(&stream_context, &error);
@@ -398,14 +405,21 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
 
                 let status = response.status();
                 if !status.is_success() {
+                    let retry_after = response
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(parse_retry_after);
                     let body = read_response_body_limited(response, stream_options.timeout)
                         .await
                         .unwrap_or_else(|_| "failed to read error body".to_string());
                     let error = AppError::Llm(format!("upstream returned {status}: {body}"));
-                    if attempt < attempts && api_keys.has_alternatives() && is_rotatable_status(status) {
+                    if attempt < attempts
+                        && (is_retryable_status(status)
+                            || (api_keys.has_alternatives() && is_rotatable_status(status)))
+                    {
                         api_keys.note_failure();
                         notify_retry(&stream_options, attempt + 1, attempts, &error);
-                        tokio::time::sleep(std::time::Duration::from_millis(250 * u64::from(attempt))).await;
+                        tokio::time::sleep(retry_delay(attempt, retry_after)).await;
                         continue;
                     }
                     log_stream_status_error(&stream_context, &body, status.as_u16(), &error);
@@ -430,7 +444,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                         Err(error) => {
                             if !saw_event && attempt < attempts && is_retryable_stream_error(&error) {
                                 notify_retry(&stream_options, attempt + 1, attempts, &error);
-                                tokio::time::sleep(std::time::Duration::from_millis(250 * u64::from(attempt))).await;
+                                tokio::time::sleep(retry_delay(attempt, None)).await;
                                 retry_stream = true;
                             } else {
                                 yield Err(error);
@@ -526,6 +540,20 @@ pub(crate) fn message_tool_calls(message: &ChatMessage) -> AppResult<Vec<ToolCal
         })
         .transpose()
         .map(Option::unwrap_or_default)
+}
+
+pub(crate) fn wrap_provider_response_item(provider: &str, item: Value) -> Value {
+    serde_json::json!({
+        "_weiagent_provider": provider,
+        "item": item,
+    })
+}
+
+pub(crate) fn unwrap_provider_response_item<'a>(
+    value: &'a Value,
+    provider: &str,
+) -> Option<&'a Value> {
+    (value["_weiagent_provider"].as_str() == Some(provider)).then(|| &value["item"])
 }
 
 pub(crate) fn parse_json_object(value: &str, label: &str) -> AppResult<Value> {

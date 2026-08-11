@@ -17,11 +17,6 @@ use crate::{
     error::AppResult,
 };
 
-/// Trying every key of a huge pool inside one request would multiply the
-/// worst-case latency; past this many attempts the remaining keys are only
-/// reached by later requests via the advancing failover cursor.
-const MAX_KEY_ATTEMPTS_PER_REQUEST: u32 = 10;
-
 #[derive(Default)]
 struct KeyCursor {
     round_robin: usize,
@@ -92,11 +87,6 @@ impl ApiKeyCycle {
 
     pub fn has_alternatives(&self) -> bool {
         self.keys.len() > 1
-    }
-
-    /// How many attempts one request may spend on this pool, at minimum.
-    pub fn attempt_budget(&self) -> u32 {
-        (self.keys.len() as u32).min(MAX_KEY_ATTEMPTS_PER_REQUEST)
     }
 
     pub fn next_key(&mut self) -> &str {
@@ -186,7 +176,6 @@ mod tests {
         let mut cycle = ApiKeyCycle::new(&provider(ApiKeyStrategy::Failover, &["  ", ""])).unwrap();
         assert_eq!(cycle.next_key(), "");
         assert!(!cycle.has_alternatives());
-        assert_eq!(cycle.attempt_budget(), 1);
     }
 
     #[test]
@@ -236,14 +225,5 @@ mod tests {
             let second = cycle.next_key().to_string();
             assert_ne!(first, second, "the retry moves to the other key");
         }
-    }
-
-    #[test]
-    fn attempt_budget_is_capped() {
-        let keys: Vec<String> = (0..24).map(|index| format!("k{index}")).collect();
-        let mut provider = provider(ApiKeyStrategy::Failover, &[]);
-        provider.api_keys = keys;
-        let cycle = ApiKeyCycle::new(&provider).unwrap();
-        assert_eq!(cycle.attempt_budget(), 10);
     }
 }

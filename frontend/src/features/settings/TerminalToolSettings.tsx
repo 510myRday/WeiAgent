@@ -25,7 +25,7 @@ import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../compon
 import { PermissionModeControl, type PermissionMode } from './PermissionModeControl';
 import { WebSearchToolSettings } from './WebSearchToolSettings';
 import { TaskPlanningToolSettings } from './TaskPlanningToolSettings';
-import { McpAgentToolSettings, type McpToolSelection } from '../tools/McpAgentToolSettings';
+import { McpAgentToolSettings, type McpServerSelection } from '../tools/McpAgentToolSettings';
 import { mergeToolsConfig } from './web-search/utils';
 
 interface TerminalToolSettingsProps {
@@ -80,7 +80,7 @@ export function TerminalToolSettings({
   const [loadRequestKey, setLoadRequestKey] = useState(0);
   const [autoSaveStatus, setAutoSaveStatus] = useState<TerminalAutoSaveStatus>('idle');
   const [agentToolView, setAgentToolView] = useState<AgentToolView>('list');
-  const [activeMcpTool, setActiveMcpTool] = useState<McpToolSelection | null>(null);
+  const [activeMcpServer, setActiveMcpServer] = useState<McpServerSelection | null>(null);
   const [installingRuntimeComponent, setInstallingRuntimeComponent] = useState<RuntimeComponentKind | null>(null);
   const [refreshingRuntimeComponent, setRefreshingRuntimeComponent] = useState<RuntimeComponentKind | null>(null);
   const [processes, setProcesses] = useState<ToolProcessInfo[]>([]);
@@ -634,6 +634,30 @@ export function TerminalToolSettings({
     }
   }
 
+  function setTerminalEnabledInherited(inherited: boolean) {
+    if (!overrides || !config) return;
+    const terminalOverrides = { ...overrides.terminal };
+    if (inherited) delete terminalOverrides.enabled;
+    else terminalOverrides.enabled = config.terminal.enabled;
+    updateOverrides({ ...overrides, terminal: terminalOverrides });
+  }
+
+  function setTaskPlanningEnabledInherited(inherited: boolean) {
+    if (!overrides || !config) return;
+    const taskPlanningOverrides = { ...overrides.task_planning };
+    if (inherited) delete taskPlanningOverrides.enabled;
+    else taskPlanningOverrides.enabled = config.task_planning.enabled;
+    updateOverrides({ ...overrides, task_planning: taskPlanningOverrides });
+  }
+
+  function setWebSearchEnabledInherited(inherited: boolean) {
+    if (!overrides || !config) return;
+    const webSearchOverrides = { ...overrides.web_search };
+    if (inherited) delete webSearchOverrides.enabled;
+    else webSearchOverrides.enabled = config.web_search.enabled;
+    updateOverrides({ ...overrides, web_search: webSearchOverrides });
+  }
+
   function setMaxIterationsInherited(inherited: boolean) {
     if (!overrides || !config) return;
     const next = { ...overrides };
@@ -723,6 +747,9 @@ export function TerminalToolSettings({
   const terminal = config.terminal;
   const isAgentScope = scope === 'agent';
   const maxIterationsInherited = isAgentScope && overrides?.max_llm_iterations === undefined;
+  const terminalEnabledInherited = isAgentScope && overrides?.terminal.enabled === undefined;
+  const webSearchEnabledInherited = isAgentScope && overrides?.web_search?.enabled === undefined;
+  const taskPlanningEnabledInherited = isAgentScope && overrides?.task_planning.enabled === undefined;
   const fieldInherited = (field: OverrideField) => isAgentScope && overrides?.terminal[field] === undefined;
   const environmentDetected = runtime?.available === true;
   const runtimeComponents = normalizeRuntimeComponents(runtime);
@@ -750,18 +777,16 @@ export function TerminalToolSettings({
                 </span>
               </div>
               <small>{t('tools.terminal.description')}</small>
-              <span className="agent-tool-row__source">
-                {overrides?.terminal.enabled === undefined
-                  ? t('tools.inheritsDefault')
-                  : t('tools.agentOverride')}
-              </span>
+              <span className="agent-tool-row__source">{terminalEnabledInherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}</span>
             </div>
             <div className="agent-tool-row__actions">
-              <label className="toggle-switch" title={terminal.enabled ? t('tools.enabled') : t('tools.disabled')}>
+              <InheritanceControl inherited={Boolean(terminalEnabledInherited)} onChange={setTerminalEnabledInherited} t={t} />
+              <label className={`toggle-switch${terminalEnabledInherited ? ' is-disabled' : ''}`} title={terminal.enabled ? t('tools.enabled') : t('tools.disabled')}>
                 <input
                   type="checkbox"
                   aria-label={t('tools.terminal.enabled')}
                   checked={terminal.enabled}
+                  disabled={Boolean(terminalEnabledInherited)}
                   onChange={(event) => updateTerminal({ enabled: event.target.checked })}
                 />
                 <span className="toggle-slider" />
@@ -771,6 +796,7 @@ export function TerminalToolSettings({
                 variant="ghost"
                 className="agent-tool-edit"
                 onClick={() => setAgentToolView('terminal')}
+                disabled={Boolean(terminalEnabledInherited)}
                 label={t('tools.editTool')}
               >
                 <Pencil size={17} />
@@ -787,18 +813,16 @@ export function TerminalToolSettings({
                 </span>
               </div>
               <small>{t('tools.webSearch.description')}</small>
-              <span className="agent-tool-row__source">
-                {overrides?.web_search?.enabled === undefined
-                  ? t('tools.inheritsDefault')
-                  : t('tools.agentOverride')}
-              </span>
+              <span className="agent-tool-row__source">{webSearchEnabledInherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}</span>
             </div>
             <div className="agent-tool-row__actions">
-              <label className="toggle-switch" title={config.web_search?.enabled ? t('tools.enabled') : t('tools.disabled')}>
+              <InheritanceControl inherited={Boolean(webSearchEnabledInherited)} onChange={setWebSearchEnabledInherited} t={t} />
+              <label className={`toggle-switch${webSearchEnabledInherited ? ' is-disabled' : ''}`} title={config.web_search?.enabled ? t('tools.enabled') : t('tools.disabled')}>
                 <input
                   type="checkbox"
                   aria-label={t('tools.webSearch.enabled')}
                   checked={Boolean(config.web_search?.enabled)}
+                  disabled={Boolean(webSearchEnabledInherited)}
                   onChange={(event) => {
                     if (!overrides) return;
                     updateOverrides({
@@ -817,6 +841,7 @@ export function TerminalToolSettings({
                 variant="ghost"
                 className="agent-tool-edit"
                 onClick={() => setAgentToolView('web_search')}
+                disabled={Boolean(webSearchEnabledInherited)}
                 label={t('tools.editTool')}
               >
                 <Pencil size={17} />
@@ -833,18 +858,16 @@ export function TerminalToolSettings({
                 </span>
               </div>
               <small>{t('tools.taskPlanning.description')}</small>
-              <span className="agent-tool-row__source">
-                {overrides?.task_planning?.enabled === undefined
-                  ? t('tools.inheritsDefault')
-                  : t('tools.agentOverride')}
-              </span>
+              <span className="agent-tool-row__source">{taskPlanningEnabledInherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}</span>
             </div>
             <div className="agent-tool-row__actions">
-              <label className="toggle-switch" title={config.task_planning.enabled ? t('tools.enabled') : t('tools.disabled')}>
+              <InheritanceControl inherited={Boolean(taskPlanningEnabledInherited)} onChange={setTaskPlanningEnabledInherited} t={t} />
+              <label className={`toggle-switch${taskPlanningEnabledInherited ? ' is-disabled' : ''}`} title={config.task_planning.enabled ? t('tools.enabled') : t('tools.disabled')}>
                 <input
                   type="checkbox"
                   aria-label={t('tools.taskPlanning.enabled')}
                   checked={config.task_planning.enabled}
+                  disabled={Boolean(taskPlanningEnabledInherited)}
                   onChange={(event) => updateTaskPlanning(event.target.checked)}
                 />
                 <span className="toggle-slider" />
@@ -854,6 +877,7 @@ export function TerminalToolSettings({
                 variant="ghost"
                 className="agent-tool-edit"
                 onClick={() => setAgentToolView('task_planning')}
+                disabled={Boolean(taskPlanningEnabledInherited)}
                 label={t('tools.editTool')}
               >
                 <Pencil size={17} />
@@ -864,7 +888,7 @@ export function TerminalToolSettings({
             agentId={agentId!}
             view="summary"
             onEdit={(selection) => {
-              setActiveMcpTool(selection);
+              setActiveMcpServer(selection);
               setAgentToolView('mcp');
             }}
           />
@@ -899,7 +923,7 @@ export function TerminalToolSettings({
       <McpAgentToolSettings
         agentId={agentId!}
         view="edit"
-        selection={activeMcpTool ?? undefined}
+        selection={activeMcpServer ?? undefined}
         onBack={() => setAgentToolView('list')}
       />
     );

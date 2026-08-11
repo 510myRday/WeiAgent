@@ -7,7 +7,7 @@ use crate::{
     domain::{Agent, ChatMessage, ChatRole, ModelProvider, ThinkingLevel},
     error::{AppError, AppResult},
     llm::{
-        cache::{apply_openai_fields, build_context},
+        cache::{PromptCacheMode, apply_openai_fields, build_context, effective_capabilities},
         http::StreamLineParser,
         protocol::common::{
             ProtocolAdapter, SseData, bearer_get, bearer_post, default_models, merge_extra_body,
@@ -178,10 +178,24 @@ fn build_openai_responses_request(
                 .is_some_and(|content| !content.is_empty())
     });
     let mut body = Map::new();
-    let prompt_cache_key = messages
-        .last()
-        .map(|message| message.conversation_id.to_string())
-        .unwrap_or_else(|| agent.id.to_string());
+    let capabilities = effective_capabilities(provider);
+    let cache_enabled = !matches!(provider.prompt_cache.mode, PromptCacheMode::Disabled)
+        && capabilities.automatic_prefix_cache
+        && (!matches!(provider.prompt_cache.mode, PromptCacheMode::Explicit)
+            || capabilities.explicit_breakpoints);
+    let prompt_cache_key = cache_enabled.then(|| {
+        if provider.prompt_cache.use_stable_key && capabilities.stable_cache_key {
+            context
+                .cache_key
+                .clone()
+                .unwrap_or_else(|| agent.id.to_string())
+        } else {
+            messages
+                .last()
+                .map(|message| message.conversation_id.to_string())
+                .unwrap_or_else(|| agent.id.to_string())
+        }
+    });
     body.insert("model".to_string(), json!(agent.model_id));
     body.insert("instructions".to_string(), json!(system_prompt));
     body.insert("input".to_string(), Value::Array(input));
@@ -226,7 +240,9 @@ fn build_openai_responses_request(
         "include".to_string(),
         json!(["reasoning.encrypted_content"]),
     );
-    body.insert("prompt_cache_key".to_string(), json!(prompt_cache_key));
+    if let Some(prompt_cache_key) = prompt_cache_key {
+        body.insert("prompt_cache_key".to_string(), json!(prompt_cache_key));
+    }
     body.insert("store".to_string(), Value::Bool(false));
     body.insert("tool_choice".to_string(), Value::String("auto".to_string()));
     body.insert("parallel_tool_calls".to_string(), Value::Bool(true));
@@ -708,6 +724,63 @@ mod tests {
         .unwrap();
         assert_ne!(first["prompt_cache_key"], other["prompt_cache_key"]);
         assert_eq!(other["prompt_cache_key"], other_id.to_string());
+    }
+
+    #[test]
+    fn stable_key_is_used_only_when_enabled_and_supported() {
+        let (agent, messages) = fixture();
+        let mut provider = test_provider();
+        provider.prompt_cache.use_stable_key = true;
+
+        let request = build_openai_responses_request(
+            &agent,
+            &provider,
+            &messages,
+            false,
+            "system",
+            &Value::Null,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_ne!(
+            request["prompt_cache_key"],
+            messages[0].conversation_id.to_string()
+        );
+        assert!(
+            request["prompt_cache_key"]
+                .as_str()
+                .unwrap()
+                .starts_with("weiagent:")
+        );
+
+        provider.prompt_cache.mode = PromptCacheMode::Disabled;
+        let disabled = build_openai_responses_request(
+            &agent,
+            &provider,
+            &messages,
+            false,
+            "system",
+            &Value::Null,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(disabled.get("prompt_cache_key").is_none());
+
+        provider.prompt_cache.mode = PromptCacheMode::Explicit;
+        let unsupported_explicit = build_openai_responses_request(
+            &agent,
+            &provider,
+            &messages,
+            false,
+            "system",
+            &Value::Null,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(unsupported_explicit.get("prompt_cache_key").is_none());
     }
 
     #[test]

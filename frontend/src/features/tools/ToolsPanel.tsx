@@ -92,6 +92,23 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList, onOpenIpProxies }
     onOpenMain();
   }
 
+  function followBackgroundRefresh(serverId: string) {
+    let attempts = 0;
+    const poll = () => {
+      attempts += 1;
+      void listMcpServers().then((items) => {
+        setServers(items);
+        const server = items.find((item) => item.id === serverId);
+        if (server?.status === 'connecting' && attempts < 30) {
+          window.setTimeout(poll, 1000);
+        }
+      }).catch(() => {
+        if (attempts < 30) window.setTimeout(poll, 1000);
+      });
+    };
+    window.setTimeout(poll, 350);
+  }
+
   function openCreateDialog() {
     setEditingServer(undefined);
     setEditingSecrets(undefined);
@@ -117,6 +134,7 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList, onOpenIpProxies }
       setActiveTool({ kind: 'mcp', id: saved.id });
       setDialogOpen(false);
       onOpenMain();
+      followBackgroundRefresh(saved.id);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('tools.mcp.saveFailed'));
     } finally {
@@ -126,13 +144,22 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList, onOpenIpProxies }
 
   async function testServer(draft: McpServerDraft) {
     setTesting(true);
+    let savedId: string | undefined;
     try {
       const saved = draft.id ? await updateMcpServer(draft.id, draft) : await createMcpServer(draft);
+      savedId = saved.id;
+      setServers((current) => current.some((server) => server.id === saved.id) ? current.map((server) => server.id === saved.id ? saved : server) : [...current, saved]);
       const tested = await testMcpServer(saved.id);
-      setServers((current) => current.some((server) => server.id === tested.id) ? current.map((server) => server.id === tested.id ? tested : server) : [...current, tested]);
+      setServers((current) => current.map((server) => server.id === tested.id ? tested : server));
       setEditingServer(tested);
       toast.success(t('tools.mcp.testPassed'));
     } catch (error) {
+      const items = await listMcpServers().catch(() => []);
+      if (items.length > 0) {
+        setServers(items);
+        const failed = items.find((server) => server.id === savedId);
+        if (failed) setEditingServer(failed);
+      }
       toast.error(error instanceof Error ? error.message : t('tools.mcp.testFailed'));
     } finally {
       setTesting(false);
@@ -222,7 +249,21 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList, onOpenIpProxies }
                   type="button"
                   active={activeTool.kind === 'mcp' && activeTool.id === server.id}
                   title={<span className="tool-list-title"><span>{server.name}</span><span className="mini-status-badge mcp-badge"><Cable size={12} />MCP</span></span>}
-                  subtitle={`${server.tools.length} ${t('tools.mcp.toolsLabel')} · ${t(`tools.mcp.statuses.${server.status}`)}`}
+                  subtitle={(
+                    <span className="mcp-list-subtitle">
+                      <span>{server.tools.filter((tool) => tool.enabled).length}/{server.tools.length} {t('tools.mcp.toolsSummaryLabel')}</span>
+                      <span className="mcp-list-separator" aria-hidden="true">·</span>
+                      <span className={`mcp-list-state mcp-list-connection mcp-list-connection-${server.status}`}>
+                        <span className="mcp-list-dot" aria-hidden="true" />
+                        {t(`tools.mcp.statuses.${server.status}`)}
+                      </span>
+                      <span className="mcp-list-separator" aria-hidden="true">·</span>
+                      <span className={`mcp-list-state mcp-list-enabled-${server.enabled ? 'on' : 'off'}`}>
+                        <span className="mcp-list-dot" aria-hidden="true" />
+                        {t(server.enabled ? 'tools.enabled' : 'tools.disabled')}
+                      </span>
+                    </span>
+                  )}
                   leading={<McpServerIcon logoUrl={server.logo_url} />}
                   onClick={() => selectServer(server.id)}
                 />

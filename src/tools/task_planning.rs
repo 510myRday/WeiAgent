@@ -191,12 +191,61 @@ impl AgentTool for TaskPlanningTool {
                 }
             }
             TaskPlanningAction::SetStatus => {
-                let Some(planning_id) = parse_planning_id(args.planning_id.as_deref()) else {
-                    return ToolResult::Error {
-                        message: "task_planning set_status requires a valid planning_id"
-                            .to_string(),
-                    };
+                let provided_planning_id = args
+                    .planning_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let planning_id = parse_planning_id(provided_planning_id);
+                let active_plan = match context.store.read_task_plan(context.conversation_id).await
+                {
+                    Ok(active_plan) => active_plan,
+                    Err(error) => {
+                        return ToolResult::Error {
+                            message: error.to_string(),
+                        };
+                    }
                 };
+                if planning_id != active_plan.as_ref().map(|plan| plan.planning_id) {
+                    let has_provided_id = provided_planning_id.is_some();
+                    let (code, reason) = match active_plan.as_ref() {
+                        Some(active_plan) if has_provided_id => (
+                            "PlanningIdInvalid",
+                            format!(
+                                "本次 set_status 的 planning_id 无效，或不属于当前会话。请使用当前 active 计划的 planning_id 重试：{}",
+                                active_plan.planning_id
+                            ),
+                        ),
+                        Some(active_plan) => (
+                            "PlanningRequired",
+                            format!(
+                                "本次 set_status 缺少 planning_id。请使用当前 active 计划的 planning_id 重试：{}",
+                                active_plan.planning_id
+                            ),
+                        ),
+                        None if has_provided_id => (
+                            "PlanningIdInvalid",
+                            "本次 set_status 提供的 planning_id 无效，当前会话也没有 active 任务计划。请先调用 task_planning 创建计划，再使用新返回的 planning_id 重试。"
+                                .to_string(),
+                        ),
+                        None => (
+                            "PlanningRequired",
+                            "当前会话没有 active 任务计划，请先调用 task_planning 创建计划。"
+                                .to_string(),
+                        ),
+                    };
+                    return ToolResult::Blocked {
+                        reason,
+                        code: Some(code.to_string()),
+                        details: Some(serde_json::json!({
+                            "tool": TASK_PLANNING_TOOL_NAME,
+                            "provided_planning_id": provided_planning_id,
+                            "active_planning_id": active_plan.as_ref().map(|plan| plan.planning_id),
+                            "required_argument": "planning_id"
+                        })),
+                    };
+                }
+                let planning_id = planning_id.expect("active plan identity was checked above");
                 let Some(status) = args.status else {
                     return ToolResult::Error {
                         message: "task_planning set_status requires status".to_string(),
@@ -206,10 +255,17 @@ impl AgentTool for TaskPlanningTool {
                     Ok(items) => items,
                     Err(message) => return ToolResult::Error { message },
                 };
-                let Some(mut plan) = read_matching_plan(&context, planning_id).await else {
-                    return ToolResult::Error {
-                        message: "task_planning planning_id is not active in this conversation"
+                let Some(mut plan) = active_plan else {
+                    return ToolResult::Blocked {
+                        reason: "当前 active 任务计划已经不存在，请先调用 task_planning 创建计划。"
                             .to_string(),
+                        code: Some("PlanningRequired".to_string()),
+                        details: Some(serde_json::json!({
+                            "tool": TASK_PLANNING_TOOL_NAME,
+                            "provided_planning_id": planning_id,
+                            "active_planning_id": null,
+                            "required_argument": "planning_id"
+                        })),
                     };
                 };
                 if let Err(message) = validate_item_indexes(&items, plan.plan.len()) {
@@ -246,8 +302,22 @@ impl AgentTool for TaskPlanningTool {
                     .await
                 {
                     Ok(Some(updated)) => plan_result("Plan item updated", &updated),
-                    Ok(None) => ToolResult::Error {
-                        message: "task_planning planning_id is no longer active".to_string(),
+                    Ok(None) => ToolResult::Blocked {
+                        reason: "当前 active 任务计划已发生变化，planning_id 不再有效。请读取当前计划后重试。"
+                            .to_string(),
+                        code: Some("PlanningIdInvalid".to_string()),
+                        details: Some(serde_json::json!({
+                            "tool": TASK_PLANNING_TOOL_NAME,
+                            "provided_planning_id": planning_id,
+                            "active_planning_id": context
+                                .store
+                                .read_task_plan(context.conversation_id)
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|plan| plan.planning_id),
+                            "required_argument": "planning_id"
+                        })),
                     },
                     Err(error) => ToolResult::Error {
                         message: error.to_string(),
@@ -329,16 +399,6 @@ fn normalize_task_planning_item(item: &mut Value) {
         }
         _ => {}
     }
-}
-
-async fn read_matching_plan(context: &ToolExecutionContext, planning_id: Uuid) -> Option<TaskPlan> {
-    context
-        .store
-        .read_task_plan(context.conversation_id)
-        .await
-        .ok()
-        .flatten()
-        .filter(|plan| plan.planning_id == planning_id)
 }
 
 fn parse_planning_id(value: Option<&str>) -> Option<Uuid> {
@@ -464,6 +524,8 @@ fn plan_json_result(message: &str, plan: &TaskPlan, active: bool) -> ToolResult 
         duration_ms: 0,
         runtime: Some("builtin_task_planning".to_string()),
         output_cursor: 0,
+        structured_content: None,
+        is_error: false,
     }
 }
 
@@ -623,15 +685,30 @@ mod tests {
     async fn task_planning_explains_that_non_numeric_item_is_invalid() {
         let temp_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(temp_dir.path()).await.unwrap());
+        let conversation_id = Uuid::new_v4();
+        let created = TaskPlanningTool
+            .execute(
+                serde_json::json!({
+                    "action": "create",
+                    "explanation": "Validate task item parsing",
+                    "plan": [{"step": "First", "status": "in_progress"}]
+                }),
+                context(store.clone(), conversation_id),
+            )
+            .await;
+        let ToolResult::Completed { stdout, .. } = created else {
+            panic!("expected plan creation to succeed");
+        };
+        let created: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         let result = TaskPlanningTool
             .execute(
                 serde_json::json!({
                     "action": "set_status",
-                    "planning_id": Uuid::new_v4().to_string(),
+                    "planning_id": created["planning_id"],
                     "item": "one",
                     "status": "completed"
                 }),
-                context(store, Uuid::new_v4()),
+                context(store, conversation_id),
             )
             .await;
 

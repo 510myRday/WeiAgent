@@ -442,8 +442,8 @@ mod tests {
             .await
             .unwrap()
             .overrides;
-        overrides.web_search.source_overrides = vec![
-            crate::domain::tools::WebSearchSourceOverrides {
+        overrides.web_search.source_overrides =
+            vec![crate::domain::tools::WebSearchSourceOverrides {
                 source_id: "jina".to_string(),
                 enabled: Some(false),
                 deep_enabled: Some(false),
@@ -452,8 +452,7 @@ mod tests {
                 roles: Some(jina_roles.clone()),
                 proxy_url: None,
                 proxy_url_override: true,
-            },
-        ];
+            }];
 
         let saved = store
             .update_agent_tools_overrides(agent.id, overrides)
@@ -490,7 +489,10 @@ mod tests {
         assert!(source.enabled);
         assert!(source.deep_enabled);
         assert_eq!(source.priority, 30);
-        assert_ne!(source.roles, vec![crate::domain::WebSearchSourceRole::OfficialDocs]);
+        assert_ne!(
+            source.roles,
+            vec![crate::domain::WebSearchSourceRole::OfficialDocs]
+        );
     }
 
     #[tokio::test]

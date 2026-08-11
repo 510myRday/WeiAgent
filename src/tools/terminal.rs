@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    ffi::{OsStr, OsString},
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
@@ -157,7 +158,9 @@ impl LocalTerminalBackend {
         }
         let mut command = tokio::process::Command::from(std_command);
         command.kill_on_drop(false);
-        apply_managed_path(&self.environment, &mut command).await;
+        if let Some(path) = managed_path(self.environment.as_ref()).await {
+            command.env("PATH", path);
+        }
         let mut child = command
             .spawn()
             .map_err(|error| AppError::Process(format!("failed to start host command: {error}")))?;
@@ -260,7 +263,9 @@ impl LocalTerminalBackend {
         let mut command = CommandBuilder::new(program);
         command.args(args);
         command.cwd(&request.cwd);
-        apply_managed_path_to_pty(&self.environment, &mut command).await;
+        if let Some(path) = managed_path(self.environment.as_ref()).await {
+            command.env("PATH", path);
+        }
 
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -471,32 +476,31 @@ fn resize_pty_process(process: &PtyProcess, rows: u16, cols: u16) -> AppResult<(
         .map_err(|error| AppError::Process(format!("failed to resize PTY: {error}")))
 }
 
-async fn apply_managed_path(
-    environment: &Arc<dyn TerminalEnvironment>,
-    command: &mut tokio::process::Command,
-) {
-    let mut paths = environment.managed_bin_paths().await;
-    if let Some(current) = std::env::var_os("PATH") {
-        paths.extend(std::env::split_paths(&current));
-    }
-    paths.dedup();
-    if let Ok(path) = std::env::join_paths(paths) {
-        command.env("PATH", path);
-    }
+/// Returns the process PATH with managed runtime directories placed first.
+///
+/// Both terminal commands and MCP stdio processes use this path so installed
+/// runtimes remain available even when WeiAgent was launched without the
+/// user's interactive shell profile.
+pub async fn managed_path(environment: &dyn TerminalEnvironment) -> Option<OsString> {
+    let current = std::env::var_os("PATH");
+    managed_path_from(environment, current.as_deref()).await
 }
 
-async fn apply_managed_path_to_pty(
-    environment: &Arc<dyn TerminalEnvironment>,
-    command: &mut CommandBuilder,
-) {
+pub async fn managed_path_from(
+    environment: &dyn TerminalEnvironment,
+    current: Option<&OsStr>,
+) -> Option<OsString> {
     let mut paths = environment.managed_bin_paths().await;
-    if let Some(current) = std::env::var_os("PATH") {
-        paths.extend(std::env::split_paths(&current));
+    if let Some(current) = current {
+        paths.extend(std::env::split_paths(current));
     }
-    paths.dedup();
-    if let Ok(path) = std::env::join_paths(paths) {
-        command.env("PATH", path);
+    let mut unique_paths = Vec::with_capacity(paths.len());
+    for path in paths {
+        if !unique_paths.iter().any(|current| current == &path) {
+            unique_paths.push(path);
+        }
     }
+    std::env::join_paths(unique_paths).ok()
 }
 
 fn read_pty_output(
@@ -1338,6 +1342,8 @@ pub fn process_read_to_result(
             duration_ms: info.duration_ms,
             runtime: Some(info.runtime),
             output_cursor,
+            structured_content: None,
+            is_error: info.status == ProcessStatus::Failed,
         },
         ProcessStatus::Running => ToolResult::Running {
             process_id: info.process_id,
@@ -1847,6 +1853,17 @@ mod tests {
         }
     }
 
+    struct FixedTerminalEnvironment {
+        paths: Vec<PathBuf>,
+    }
+
+    #[async_trait]
+    impl TerminalEnvironment for FixedTerminalEnvironment {
+        async fn managed_bin_paths(&self) -> Vec<PathBuf> {
+            self.paths.clone()
+        }
+    }
+
     struct ImmediateOutputBackend;
 
     #[async_trait]
@@ -1907,6 +1924,27 @@ mod tests {
                 assert!(script.contains(r#"cd /d "D:\workspace path""#));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn managed_path_places_runtime_directories_before_existing_path() {
+        let managed = PathBuf::from("managed-runtime-bin");
+        let existing = PathBuf::from("existing-bin");
+        let system = PathBuf::from("system-bin");
+        let environment = FixedTerminalEnvironment {
+            paths: vec![managed.clone(), existing.clone(), managed.clone()],
+        };
+        let current = std::env::join_paths([&existing, &system]).expect("join test PATH");
+
+        let path = managed_path_from(&environment, Some(&current))
+            .await
+            .expect("join managed PATH");
+        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+
+        assert_eq!(entries.first(), Some(&managed));
+        assert_eq!(entries.get(1), Some(&existing));
+        assert_eq!(entries.get(2), Some(&system));
+        assert_eq!(entries.iter().filter(|entry| *entry == &managed).count(), 1);
     }
 
     #[tokio::test]

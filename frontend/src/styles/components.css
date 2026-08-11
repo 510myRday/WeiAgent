@@ -777,6 +777,30 @@
   white-space: nowrap;
 }
 
+.agent-list-title-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+}
+
+.unread-count-badge {
+  display: inline-flex;
+  min-width: 19px;
+  height: 19px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--color-danger);
+  color: var(--color-on-primary);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
 .list-item-body small,
 .row-main small,
 .agent-item small,
@@ -816,6 +840,29 @@
   min-width: 0;
   min-height: calc(var(--list-row-height) - 2px);
   padding: 9px 8px 9px 11px;
+}
+
+.conversation-row-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.conversation-row-title > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unread-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--color-danger);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-danger) 15%, transparent);
 }
 
 .conversation-run-status {

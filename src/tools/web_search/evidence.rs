@@ -294,6 +294,8 @@ pub async fn execute_web_extract_with_status_updates(
                 duration_ms: started.elapsed().as_millis() as u64,
                 runtime: Some("builtin_web_extract".to_string()),
                 output_cursor: 0,
+                structured_content: None,
+                is_error: false,
             },
             status_updates: status_updates.into_values().collect(),
         },
@@ -1855,6 +1857,8 @@ mod tests {
                 duration_ms: 0,
                 runtime: Some("builtin_web_search".to_string()),
                 output_cursor: 0,
+                structured_content: None,
+                is_error: false,
             },
         );
         assert_eq!(

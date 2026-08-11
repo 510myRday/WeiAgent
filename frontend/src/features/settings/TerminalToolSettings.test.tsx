@@ -1,13 +1,15 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import {
   listToolProcesses,
   pickDirectory,
+  readAgentToolsConfig,
   readEnvironmentRuntime,
   readToolDefaults,
 } from '../../api';
+import type { AgentToolsSettings } from '../../api';
 import { FeedbackProvider } from '../../components/ui';
 import { I18nProvider } from '../../i18n';
 import { TerminalToolSettings } from './TerminalToolSettings';
@@ -27,6 +29,10 @@ vi.mock('../../api', () => ({
 
 vi.mock('./WebSearchToolSettings', () => ({
   WebSearchToolSettings: () => null,
+}));
+
+vi.mock('../tools/McpAgentToolSettings', () => ({
+  McpAgentToolSettings: () => null,
 }));
 
 const toolDefaults = {
@@ -120,4 +126,45 @@ test('manual path entry still uses the existing add flow', async () => {
 
   expect(screen.getByText('D:\\Projects\\Manual')).toBeVisible();
   expect(pickDirectory).not.toHaveBeenCalled();
+});
+
+test('agent overview follows global enabled state and locks local controls', async () => {
+  const user = userEvent.setup();
+  const agentDefaults = structuredClone(toolDefaults);
+  agentDefaults.terminal.enabled = false;
+  const agentSettings: AgentToolsSettings = {
+    defaults: agentDefaults,
+    overrides: {
+      version: 1,
+      terminal: { approval_grants: [] },
+      web_search: { source_overrides: [] },
+      task_planning: {},
+    },
+    effective: structuredClone(agentDefaults),
+  };
+  vi.mocked(readAgentToolsConfig).mockResolvedValue(agentSettings);
+
+  render(
+    <I18nProvider>
+      <FeedbackProvider>
+        <TerminalToolSettings scope="agent" agentId="agent-1" />
+      </FeedbackProvider>
+    </I18nProvider>,
+  );
+
+  const row = (await screen.findByText('终端')).closest('.agent-tool-row');
+  expect(row).not.toBeNull();
+  const scopedRow = row as HTMLElement;
+  const inheritance = within(scopedRow).getByRole('checkbox', { name: '跟随默认设置' });
+  const enabled = within(scopedRow).getByRole('checkbox', { name: '启用' });
+  const edit = within(scopedRow).getByRole('button', { name: '编辑工具配置' });
+
+  expect(inheritance).toBeChecked();
+  expect(enabled).not.toBeChecked();
+  expect(enabled).toBeDisabled();
+  expect(edit).toBeDisabled();
+
+  await user.click(inheritance);
+  expect(enabled).toBeEnabled();
+  expect(edit).toBeEnabled();
 });

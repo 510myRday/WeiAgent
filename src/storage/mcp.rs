@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        McpAgentOverrides, McpAgentSettings, McpServer, McpServerDraft, McpServerOverride,
-        McpServerStatus, McpTool, McpToolOverride, McpTransport,
+        McpAgentOverrides, McpAgentSettings, McpDiagnostics, McpServer, McpServerDraft,
+        McpServerOverride, McpServerStatus, McpTool, McpToolOverride, McpTransport,
     },
     error::{AppError, AppResult},
 };
@@ -16,7 +16,7 @@ use super::{
     store::Store,
 };
 
-const MCP_SCHEMA_VERSION: i64 = 13;
+const MCP_SCHEMA_VERSION: i64 = 15;
 
 const MCP_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS tool_mcp_servers (
@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS tool_mcp_servers (
     name TEXT NOT NULL CHECK (length(trim(name)) > 0),
     description TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    supports_parallel_tool_calls INTEGER NOT NULL DEFAULT 0 CHECK (supports_parallel_tool_calls IN (0, 1)),
     provider TEXT,
     provider_url TEXT,
     logo_url TEXT,
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS tool_mcp_servers (
     status TEXT NOT NULL DEFAULT 'unknown',
     last_synced_at TEXT,
     last_error TEXT,
+    diagnostics_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(diagnostics_json)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 ) WITHOUT ROWID;
@@ -53,6 +55,7 @@ CREATE TABLE IF NOT EXISTS tool_mcp_agent_servers (
     agent_id TEXT NOT NULL,
     server_id TEXT NOT NULL,
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    customized INTEGER NOT NULL DEFAULT 0 CHECK (customized IN (0, 1)),
     PRIMARY KEY (agent_id, server_id),
     FOREIGN KEY (server_id) REFERENCES tool_mcp_servers(server_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
@@ -82,12 +85,22 @@ impl Store {
             )?;
             if !applied {
                 let tx = conn.transaction()?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO app_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+                    params![13_i64, "mcp_tools_v1", Utc::now().to_rfc3339()],
+                )?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO app_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+                    params![14_i64, "mcp_transport_auth_v14", Utc::now().to_rfc3339()],
+                )?;
                 tx.execute_batch(MCP_SCHEMA_SQL)?;
                 for (column, definition) in [
                     ("provider", "TEXT"),
                     ("provider_url", "TEXT"),
                     ("logo_url", "TEXT"),
                     ("tags_json", "TEXT NOT NULL DEFAULT '[]'"),
+                    ("supports_parallel_tool_calls", "INTEGER NOT NULL DEFAULT 0"),
+                    ("diagnostics_json", "TEXT NOT NULL DEFAULT '{}'"),
                 ] {
                     if !has_column(&tx, "tool_mcp_servers", column)? {
                         tx.execute(
@@ -96,6 +109,12 @@ impl Store {
                         )?;
                     }
                 }
+                if !has_column(&tx, "tool_mcp_agent_servers", "customized")? {
+                    tx.execute(
+                        "ALTER TABLE tool_mcp_agent_servers ADD COLUMN customized INTEGER NOT NULL DEFAULT 0",
+                        [],
+                    )?;
+                }
                 tx.execute(
                     "INSERT INTO app_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
                     params![MCP_SCHEMA_VERSION, "mcp_tools_v1", Utc::now().to_rfc3339()],
@@ -103,6 +122,10 @@ impl Store {
                 tx.commit()?;
             } else {
                 conn.execute_batch(MCP_SCHEMA_SQL)?;
+                conn.execute(
+                    "INSERT OR IGNORE INTO app_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+                    params![14_i64, "mcp_transport_auth_v14", Utc::now().to_rfc3339()],
+                )?;
             }
             Ok(())
         }).await
@@ -119,6 +142,26 @@ impl Store {
 
     pub async fn update_mcp_server(&self, draft: McpServerDraft) -> AppResult<McpServer> {
         self.save_mcp_server(draft).await
+    }
+
+    pub async fn update_mcp_server_enabled(
+        &self,
+        server_id: Uuid,
+        enabled: bool,
+    ) -> AppResult<McpServer> {
+        let _guard = self.mcp_lock.lock().await;
+        self.database
+            .call(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE tool_mcp_servers SET enabled = ?1, updated_at = ?2 WHERE server_id = ?3",
+                    params![bool_to_i64(enabled), now_rfc3339(), server_id.to_string()],
+                )?;
+                if changed == 0 {
+                    return Err(AppError::NotFound);
+                }
+                read_server_conn(conn, server_id)?.ok_or(AppError::NotFound)
+            })
+            .await
     }
 
     async fn save_mcp_server(&self, draft: McpServerDraft) -> AppResult<McpServer> {
@@ -170,12 +213,12 @@ impl Store {
         let now = now_rfc3339();
         self.database.call(move |conn| {
             conn.execute(
-                "INSERT INTO tool_mcp_servers(server_id, name, description, enabled, provider, provider_url, logo_url, tags_json, transport_json, status, last_synced_at, last_error, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'unknown', NULL, NULL, ?10, ?10)
+                "INSERT INTO tool_mcp_servers(server_id, name, description, enabled, supports_parallel_tool_calls, provider, provider_url, logo_url, tags_json, transport_json, status, last_synced_at, last_error, diagnostics_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'unknown', NULL, NULL, '{}', ?11, ?11)
                  ON CONFLICT(server_id) DO UPDATE SET name=excluded.name, description=excluded.description,
-                 enabled=excluded.enabled, provider=excluded.provider, provider_url=excluded.provider_url,
+                 enabled=excluded.enabled, supports_parallel_tool_calls=excluded.supports_parallel_tool_calls, provider=excluded.provider, provider_url=excluded.provider_url,
                  logo_url=excluded.logo_url, tags_json=excluded.tags_json, transport_json=excluded.transport_json, updated_at=excluded.updated_at",
-                params![id.to_string(), name, draft.description.trim(), bool_to_i64(draft.enabled), draft.provider, draft.provider_url, draft.logo_url, serde_json::to_string(&draft.tags)?, serde_json::to_string(&transport)?, now],
+                params![id.to_string(), name, draft.description.trim(), bool_to_i64(draft.enabled), bool_to_i64(draft.supports_parallel_tool_calls), draft.provider, draft.provider_url, draft.logo_url, serde_json::to_string(&draft.tags)?, serde_json::to_string(&transport)?, now],
             )?;
             read_server_conn(conn, id)?.ok_or(AppError::NotFound)
         }).await
@@ -245,6 +288,30 @@ impl Store {
         }).await
     }
 
+    pub async fn update_mcp_tools_enabled(
+        &self,
+        server_id: Uuid,
+        tool_names: &[String],
+        enabled: bool,
+    ) -> AppResult<()> {
+        let _guard = self.mcp_lock.lock().await;
+        let names = tool_names.to_vec();
+        self.database.call(move |conn| {
+            let tx = conn.transaction()?;
+            for tool_name in names {
+                let changed = tx.execute(
+                    "UPDATE tool_mcp_tools SET enabled = ?1 WHERE server_id = ?2 AND tool_name = ?3",
+                    params![bool_to_i64(enabled), server_id.to_string(), tool_name],
+                )?;
+                if changed == 0 {
+                    return Err(AppError::NotFound);
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        }).await
+    }
+
     pub async fn update_mcp_server_status(
         &self,
         server_id: Uuid,
@@ -262,6 +329,24 @@ impl Store {
         };
         self.database.call(move |conn| {
             conn.execute("UPDATE tool_mcp_servers SET status = ?1, last_error = ?2, last_synced_at = COALESCE(?3, last_synced_at), updated_at = ?4 WHERE server_id = ?5", params![status, last_error, synced_at, now_rfc3339(), server_id.to_string()])?;
+            Ok(())
+        }).await
+    }
+
+    pub async fn update_mcp_server_diagnostics(
+        &self,
+        server_id: Uuid,
+        diagnostics: McpDiagnostics,
+    ) -> AppResult<()> {
+        let _guard = self.mcp_lock.lock().await;
+        self.database.call(move |conn| {
+            let changed = conn.execute(
+                "UPDATE tool_mcp_servers SET diagnostics_json = ?1, updated_at = ?2 WHERE server_id = ?3",
+                params![serde_json::to_string(&diagnostics)?, now_rfc3339(), server_id.to_string()],
+            )?;
+            if changed == 0 {
+                return Err(AppError::NotFound);
+            }
             Ok(())
         }).await
     }
@@ -294,7 +379,7 @@ impl Store {
             tx.execute("DELETE FROM tool_mcp_agent_servers WHERE agent_id = ?1", [agent_id.to_string()])?;
             tx.execute("DELETE FROM tool_mcp_agent_tools WHERE agent_id = ?1", [agent_id.to_string()])?;
             for item in copy.servers.iter().filter(|item| item.enabled.is_some()) {
-                tx.execute("INSERT INTO tool_mcp_agent_servers(agent_id, server_id, enabled) VALUES (?1, ?2, ?3)", params![agent_id.to_string(), item.server_id.to_string(), bool_to_i64(item.enabled.unwrap_or(true))])?;
+                tx.execute("INSERT INTO tool_mcp_agent_servers(agent_id, server_id, enabled, customized) VALUES (?1, ?2, ?3, ?4)", params![agent_id.to_string(), item.server_id.to_string(), bool_to_i64(item.enabled.unwrap_or(true)), bool_to_i64(item.customized)])?;
             }
             for item in copy.tools.iter().filter(|item| item.enabled.is_some()) {
                 tx.execute("INSERT INTO tool_mcp_agent_tools(agent_id, server_id, tool_name, enabled) VALUES (?1, ?2, ?3, ?4)", params![agent_id.to_string(), item.server_id.to_string(), item.tool_name, bool_to_i64(item.enabled.unwrap_or(true))])?;
@@ -312,21 +397,23 @@ impl Store {
 }
 
 fn read_servers_conn(conn: &Connection) -> AppResult<Vec<McpServer>> {
-    let mut statement = conn.prepare("SELECT server_id, name, description, enabled, provider, provider_url, logo_url, tags_json, transport_json, status, last_synced_at, last_error FROM tool_mcp_servers ORDER BY name COLLATE NOCASE")?;
+    let mut statement = conn.prepare("SELECT server_id, name, description, enabled, supports_parallel_tool_calls, provider, provider_url, logo_url, tags_json, transport_json, status, last_synced_at, last_error, diagnostics_json FROM tool_mcp_servers ORDER BY name COLLATE NOCASE")?;
     let rows = statement.query_map([], |row| {
         let id = Uuid::parse_str(&row.get::<_, String>(0)?)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
         let tags =
-            serde_json::from_str::<Vec<String>>(&row.get::<_, String>(7)?).unwrap_or_default();
-        let transport = serde_json::from_str::<McpTransport>(&row.get::<_, String>(8)?)
+            serde_json::from_str::<Vec<String>>(&row.get::<_, String>(8)?).unwrap_or_default();
+        let transport = serde_json::from_str::<McpTransport>(&row.get::<_, String>(9)?)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
-        let status = match row.get::<_, String>(9)?.as_str() {
+        let status = match row.get::<_, String>(10)?.as_str() {
             "connecting" => McpServerStatus::Connecting,
             "ready" => McpServerStatus::Ready,
             "offline" => McpServerStatus::Offline,
             "error" => McpServerStatus::Error,
             _ => McpServerStatus::Unknown,
         };
+        let diagnostics = serde_json::from_str::<McpDiagnostics>(&row.get::<_, String>(13)?)
+            .unwrap_or_default();
         Ok((
             id,
             McpServer {
@@ -334,15 +421,17 @@ fn read_servers_conn(conn: &Connection) -> AppResult<Vec<McpServer>> {
                 name: row.get(1)?,
                 description: row.get(2)?,
                 enabled: row.get::<_, i64>(3)? != 0,
-                provider: row.get(4)?,
-                provider_url: row.get(5)?,
-                logo_url: row.get(6)?,
+                supports_parallel_tool_calls: row.get::<_, i64>(4)? != 0,
+                provider: row.get(5)?,
+                provider_url: row.get(6)?,
+                logo_url: row.get(7)?,
                 tags,
                 transport,
                 tools: Vec::new(),
                 status,
-                last_synced_at: row.get(10)?,
-                last_error: row.get(11)?,
+                last_synced_at: row.get(11)?,
+                last_error: row.get(12)?,
+                diagnostics,
             },
         ))
     })?;
@@ -387,14 +476,16 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<
 
 fn read_overrides_conn(conn: &Connection, agent_id: Uuid) -> AppResult<McpAgentOverrides> {
     let mut servers = Vec::new();
-    let mut statement =
-        conn.prepare("SELECT server_id, enabled FROM tool_mcp_agent_servers WHERE agent_id = ?1")?;
+    let mut statement = conn.prepare(
+        "SELECT server_id, enabled, customized FROM tool_mcp_agent_servers WHERE agent_id = ?1",
+    )?;
     for row in statement.query_map([agent_id.to_string()], |row| {
         let id = Uuid::parse_str(&row.get::<_, String>(0)?)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
         Ok(McpServerOverride {
             server_id: id,
             enabled: Some(row.get::<_, i64>(1)? != 0),
+            customized: row.get::<_, i64>(2)? != 0,
         })
     })? {
         servers.push(row?);
@@ -462,6 +553,7 @@ mod tests {
                 name: "Local MCP".to_string(),
                 description: "Test server".to_string(),
                 enabled: true,
+                supports_parallel_tool_calls: false,
                 provider: Some("WeiAgent".to_string()),
                 provider_url: Some("https://example.test".to_string()),
                 logo_url: None,
@@ -471,6 +563,8 @@ mod tests {
                     args: vec!["--stdio".to_string()],
                     cwd: None,
                     env: Default::default(),
+                    inherit_env: false,
+                    env_allowlist: Vec::new(),
                     long_running: false,
                     timeout_ms: 60_000,
                 },
@@ -495,7 +589,14 @@ mod tests {
             .await
             .unwrap();
 
-        let agent_id = Uuid::new_v4();
+        let agent_id = store
+            .list_agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .id;
         let settings = store
             .update_mcp_agent_overrides(
                 agent_id,
@@ -503,6 +604,7 @@ mod tests {
                     servers: vec![McpServerOverride {
                         server_id: server.id,
                         enabled: Some(false),
+                        customized: true,
                     }],
                     tools: vec![McpToolOverride {
                         server_id: server.id,
@@ -535,6 +637,8 @@ mod tests {
             args: Vec::new(),
             cwd: None,
             env: Default::default(),
+            inherit_env: false,
+            env_allowlist: Vec::new(),
             long_running: false,
             timeout_ms: 60_000,
         };
@@ -544,6 +648,7 @@ mod tests {
                 name: "Local MCP".to_string(),
                 description: String::new(),
                 enabled: true,
+                supports_parallel_tool_calls: false,
                 provider: None,
                 provider_url: None,
                 logo_url: None,
@@ -559,6 +664,7 @@ mod tests {
                 name: " local mcp ".to_string(),
                 description: String::new(),
                 enabled: true,
+                supports_parallel_tool_calls: false,
                 provider: None,
                 provider_url: None,
                 logo_url: None,
@@ -574,6 +680,7 @@ mod tests {
                 name: " local mcp ".to_string(),
                 description: String::new(),
                 enabled: true,
+                supports_parallel_tool_calls: false,
                 provider: None,
                 provider_url: None,
                 logo_url: None,
@@ -583,5 +690,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated.name, "local mcp");
+    }
+
+    #[tokio::test]
+    async fn mcp_server_enabled_switch_updates_only_server_state() {
+        let directory = tempdir().unwrap();
+        let store = Store::new(directory.path()).await.unwrap();
+        let server = store
+            .create_mcp_server(McpServerDraft {
+                id: None,
+                name: "Toggle MCP".to_string(),
+                description: String::new(),
+                enabled: true,
+                supports_parallel_tool_calls: false,
+                provider: None,
+                provider_url: None,
+                logo_url: None,
+                tags: Vec::new(),
+                transport: McpTransport::Stdio {
+                    command: "fake-mcp".to_string(),
+                    args: Vec::new(),
+                    cwd: None,
+                    env: Default::default(),
+                    inherit_env: false,
+                    env_allowlist: Vec::new(),
+                    long_running: false,
+                    timeout_ms: 60_000,
+                },
+            })
+            .await
+            .unwrap();
+        let disabled = store
+            .update_mcp_server_enabled(server.id, false)
+            .await
+            .unwrap();
+        assert!(!disabled.enabled);
+        assert_eq!(disabled.name, "Toggle MCP");
+        assert_eq!(store.list_mcp_servers().await.unwrap()[0].enabled, false);
     }
 }

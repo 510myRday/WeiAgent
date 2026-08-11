@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Braces, Cable, CheckCircle2, ChevronDown, ChevronUp, Code2, Eye, EyeOff, HelpCircle, Plus, Save, TestTube2, X } from 'lucide-react';
 
-import type { McpServer, McpServerDraft, McpTransport } from '../../api';
+import type { McpIdentityHeader, McpOAuthConfig, McpServer, McpServerDraft, McpTransport } from '../../api';
 import { useI18n } from '../../i18n';
 import { Button, Dialog, FormField, IconButton } from '../../components/ui';
 
@@ -12,21 +12,30 @@ const EMPTY_DRAFT: McpServerDraft = {
   name: '',
   description: '',
   enabled: true,
+  supports_parallel_tool_calls: false,
   provider: null,
   provider_url: null,
   logo_url: null,
   tags: [],
-  transport: { type: 'stdio', command: '', args: [], cwd: null, env: {}, long_running: false, timeout_ms: 60000 },
+  transport: { type: 'stdio', command: '', args: [], cwd: null, env: {}, inherit_env: false, env_allowlist: [], long_running: true, timeout_ms: 60000 },
 };
 
 function redactTransport(transport: McpTransport): McpTransport {
   if (transport.type === 'stdio') {
     return { ...transport, env: Object.fromEntries(Object.entries(transport.env).map(([key, value]) => [key, value ? '__preserve__' : value])) };
   }
+  const oauth = transport.oauth
+    ? { ...transport.oauth, client_secret: transport.oauth.client_secret ? '__preserve__' : transport.oauth.client_secret }
+    : transport.oauth;
+  const identity_header = transport.identity_header
+    ? { ...transport.identity_header, value: transport.identity_header.value ? '__preserve__' : transport.identity_header.value }
+    : transport.identity_header;
   return {
     ...transport,
     bearer_token: transport.bearer_token ? '__preserve__' : transport.bearer_token,
     headers: Object.fromEntries(Object.entries(transport.headers).map(([key, value]) => [key, value ? '__preserve__' : value])),
+    identity_header,
+    oauth,
   };
 }
 
@@ -51,6 +60,7 @@ function draftFromServer(server?: McpServer, secrets?: McpTransport): McpServerD
     name: server.name,
     description: server.description,
     enabled: server.enabled,
+    supports_parallel_tool_calls: server.supports_parallel_tool_calls ?? false,
     provider: server.provider ?? null,
     provider_url: server.provider_url ?? null,
     logo_url: server.logo_url ?? null,
@@ -146,15 +156,21 @@ export function McpServerDialog({
   const environmentRowSequence = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
+  const dirtyRef = useRef(false);
+  const initializedServerRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
+    const serverKey = server?.id ?? 'new';
+    if (initializedServerRef.current === serverKey && dirtyRef.current) return;
     const next = draftFromServer(server, secrets);
+    initializedServerRef.current = serverKey;
+    dirtyRef.current = false;
     setDraft(next);
     setJsonText(serializeJsonDraft(next));
     setJsonError('');
     setMode('visual');
-    setAdvancedOpen(Boolean(next.provider || next.provider_url || next.logo_url || next.tags.length || (next.transport.type === 'stdio' && next.transport.cwd)));
+        setAdvancedOpen(Boolean(next.provider || next.provider_url || next.logo_url || next.tags.length || (next.transport.type === 'stdio' && next.transport.cwd)));
     setStdioArgsText(getStdioArgsText(next.transport));
     setEnvironmentRows(createEnvironmentRows(next.transport));
   }, [open, server, secrets]);
@@ -168,6 +184,7 @@ export function McpServerDialog({
     : Math.round((httpTransport?.timeout_ms ?? 30000) / 1000);
 
   function updateDraft(patch: Partial<McpServerDraft>) {
+    dirtyRef.current = true;
     const next = { ...draft, ...patch };
     setDraft(next);
     setJsonText(serializeJsonDraft(next));
@@ -253,6 +270,7 @@ export function McpServerDialog({
   }
 
   function handleJsonChange(value: string) {
+    dirtyRef.current = true;
     setJsonText(value);
     try {
       const parsed = JSON.parse(value) as McpServerDraft;
@@ -261,6 +279,7 @@ export function McpServerDialog({
       const nextDraft = {
         ...parsed,
         id: draft.id,
+        supports_parallel_tool_calls: parsed.supports_parallel_tool_calls ?? false,
         provider: parsed.provider ?? null,
         provider_url: parsed.provider_url ?? null,
         logo_url: parsed.logo_url ?? null,
@@ -278,10 +297,11 @@ export function McpServerDialog({
     try {
       const parsed = JSON.parse(jsonText) as McpServerDraft;
       const validationError = validateMcpDraft(parsed, t);
-      const nextDraft = { ...parsed, id: draft.id, provider: parsed.provider ?? null, provider_url: parsed.provider_url ?? null, logo_url: parsed.logo_url ?? null, tags: parsed.tags ?? [] };
+      const nextDraft = { ...parsed, id: draft.id, supports_parallel_tool_calls: parsed.supports_parallel_tool_calls ?? false, provider: parsed.provider ?? null, provider_url: parsed.provider_url ?? null, logo_url: parsed.logo_url ?? null, tags: parsed.tags ?? [] };
       const formatted = serializeJsonDraft(nextDraft);
       setJsonText(formatted);
       if (!validationError) {
+        dirtyRef.current = true;
         setDraft(nextDraft);
         syncStdioEditorText(nextDraft.transport);
       }
@@ -402,7 +422,7 @@ export function McpServerDialog({
               <select id="mcp-transport" value={transportType} onChange={(event) => {
                 const type = event.target.value as McpTransport['type'];
                 updateTransport(type === 'stdio'
-                  ? { type: 'stdio', command: '', args: [], cwd: null, env: {}, long_running: false, timeout_ms: 60000 }
+                  ? { type: 'stdio', command: '', args: [], cwd: null, env: {}, inherit_env: false, env_allowlist: [], long_running: true, timeout_ms: 60000 }
                   : { type, url: '', bearer_token: null, headers: {}, timeout_ms: 30000 });
               }}>
                 <option value="stdio">{t('tools.mcp.transportStdio')}</option>
@@ -410,6 +430,9 @@ export function McpServerDialog({
                 <option value="sse">{t('tools.mcp.transportSse')}</option>
               </select>
             </FormField>
+            <div className="mcp-long-running-setting">
+              <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.parallelToolCalls')}</strong><small>{t('tools.mcp.parallelToolCallsHint')}</small></div><span className="toggle-switch"><input id="mcp-parallel-tool-calls" aria-label={t('tools.mcp.parallelToolCalls')} type="checkbox" checked={draft.supports_parallel_tool_calls} onChange={(event) => updateDraft({ supports_parallel_tool_calls: event.target.checked })} /><span className="toggle-slider" /></span></div>
+            </div>
           </section>
           {stdioTransport ? (
             <section className="mcp-form-section">
@@ -457,6 +480,12 @@ export function McpServerDialog({
                   ))}
                 </div>
               </FormField>
+              <FormField label={t('tools.mcp.environmentAllowlist')} htmlFor="mcp-environment-allowlist" hint={t('tools.mcp.environmentAllowlistHint')}>
+                <textarea id="mcp-environment-allowlist" value={(stdioTransport.env_allowlist ?? []).join('\n')} placeholder={t('tools.mcp.environmentAllowlistPlaceholder')} onChange={(event) => updateTransport({ ...stdioTransport, env_allowlist: parseLines(event.target.value) })} rows={3} />
+              </FormField>
+              <div className="mcp-long-running-setting">
+                <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.inheritEnvironment')}</strong><small>{t('tools.mcp.inheritEnvironmentHint')}</small></div><span className="toggle-switch"><input id="mcp-inherit-environment" aria-label={t('tools.mcp.inheritEnvironment')} type="checkbox" checked={stdioTransport.inherit_env ?? false} onChange={(event) => updateTransport({ ...stdioTransport, inherit_env: event.target.checked })} /><span className="toggle-slider" /></span></div>
+              </div>
               <div className="mcp-long-running-setting">
                 <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.longRunning')}</strong><small>{t('tools.mcp.longRunningHint')}</small></div><span className="toggle-switch"><input id="mcp-long-running" aria-label={t('tools.mcp.longRunning')} type="checkbox" checked={stdioTransport.long_running ?? false} onChange={(event) => updateTransport({ ...stdioTransport, long_running: event.target.checked })} /><span className="toggle-slider" /></span></div>
               </div>
@@ -468,6 +497,40 @@ export function McpServerDialog({
                 <input id="mcp-bearer-token" type="password" value={httpTransport?.bearer_token === '__preserve__' ? '' : httpTransport?.bearer_token ?? ''} placeholder={httpTransport?.bearer_token === '__preserve__' ? t('tools.mcp.secretPreserved') : t('tools.mcp.tokenPlaceholder')} onChange={(event) => httpTransport && updateTransport({ ...httpTransport, bearer_token: event.target.value || null })} />
               </FormField>
               <FormField label={<span className="mcp-label-with-help">{t('tools.mcp.headers')}<span title={t('tools.mcp.headersHelp')}><HelpCircle size={14} /></span></span>} htmlFor="mcp-headers" hint={t('tools.mcp.keyValueHint')}><textarea id="mcp-headers" value={headerText} placeholder={t('tools.mcp.headersPlaceholder')} onChange={(event) => httpTransport && updateTransport({ ...httpTransport, headers: mapEntries(event.target.value) })} rows={6} /></FormField>
+              <div className="form-grid two-column">
+                <FormField label={t('tools.mcp.clientCert')} htmlFor="mcp-client-cert" hint={t('tools.mcp.pathHint')}><input id="mcp-client-cert" value={httpTransport?.client_cert ?? ''} placeholder={t('tools.mcp.clientCertPlaceholder')} onChange={(event) => httpTransport && updateTransport({ ...httpTransport, client_cert: event.target.value || null })} /></FormField>
+                <FormField label={t('tools.mcp.clientKey')} htmlFor="mcp-client-key" hint={t('tools.mcp.pathHint')}><input id="mcp-client-key" value={httpTransport?.client_key ?? ''} placeholder={t('tools.mcp.clientKeyPlaceholder')} onChange={(event) => httpTransport && updateTransport({ ...httpTransport, client_key: event.target.value || null })} /></FormField>
+              </div>
+              <FormField label={t('tools.mcp.identityHeader')} htmlFor="mcp-identity-header-name" hint={t('tools.mcp.identityHeaderHint')}>
+                <div className="form-grid two-column">
+                  <input id="mcp-identity-header-name" value={httpTransport?.identity_header?.name ?? ''} placeholder={t('tools.mcp.identityHeaderNamePlaceholder')} onChange={(event) => {
+                    if (!httpTransport) return;
+                    const identity_header: McpIdentityHeader | null = event.target.value || httpTransport.identity_header?.value ? { name: event.target.value, value: httpTransport.identity_header?.value ?? '' } : null;
+                    updateTransport({ ...httpTransport, identity_header });
+                  }} />
+                  <input aria-label={t('tools.mcp.identityHeaderValue')} type="password" value={httpTransport?.identity_header?.value === '__preserve__' ? '' : httpTransport?.identity_header?.value ?? ''} placeholder={httpTransport?.identity_header?.value === '__preserve__' ? t('tools.mcp.secretPreserved') : t('tools.mcp.identityHeaderValuePlaceholder')} onChange={(event) => {
+                    if (!httpTransport) return;
+                    const identity_header: McpIdentityHeader | null = httpTransport.identity_header?.name || event.target.value ? { name: httpTransport.identity_header?.name ?? '', value: event.target.value } : null;
+                    updateTransport({ ...httpTransport, identity_header });
+                  }} />
+                </div>
+              </FormField>
+              <div className="mcp-oauth-editor">
+                <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.oauth')}</strong><small>{t('tools.mcp.oauthHint')}</small></div><span className="toggle-switch"><input id="mcp-oauth-enabled" aria-label={t('tools.mcp.oauth')} type="checkbox" checked={Boolean(httpTransport?.oauth)} onChange={(event) => {
+                  if (!httpTransport) return;
+                  const oauth: McpOAuthConfig | null = event.target.checked ? (httpTransport.oauth ?? { authorize_url: '', token_url: '', client_id: '', client_secret: null, scopes: [], redirect_port: null, redirect_uri: null }) : null;
+                  updateTransport({ ...httpTransport, oauth });
+                }} /><span className="toggle-slider" /></span></div>
+                {httpTransport?.oauth ? <div className="form-grid two-column">
+                  <FormField label={t('tools.mcp.authorizeUrl')} htmlFor="mcp-authorize-url"><input id="mcp-authorize-url" type="url" value={httpTransport.oauth.authorize_url} onChange={(event) => updateTransport({ ...httpTransport, oauth: { ...httpTransport.oauth!, authorize_url: event.target.value } })} /></FormField>
+                  <FormField label={t('tools.mcp.tokenUrl')} htmlFor="mcp-token-url"><input id="mcp-token-url" type="url" value={httpTransport.oauth.token_url} onChange={(event) => updateTransport({ ...httpTransport, oauth: { ...httpTransport.oauth!, token_url: event.target.value } })} /></FormField>
+                  <FormField label={t('tools.mcp.clientId')} htmlFor="mcp-client-id"><input id="mcp-client-id" value={httpTransport.oauth.client_id} onChange={(event) => updateTransport({ ...httpTransport, oauth: { ...httpTransport.oauth!, client_id: event.target.value } })} /></FormField>
+                  <FormField label={t('tools.mcp.clientSecret')} htmlFor="mcp-client-secret" hint={t('tools.mcp.secretHint')}><input id="mcp-client-secret" type="password" value={httpTransport.oauth.client_secret === '__preserve__' ? '' : httpTransport.oauth.client_secret ?? ''} placeholder={httpTransport.oauth.client_secret === '__preserve__' ? t('tools.mcp.secretPreserved') : ''} onChange={(event) => updateTransport({ ...httpTransport, oauth: { ...httpTransport.oauth!, client_secret: event.target.value || null } })} /></FormField>
+                  <FormField label={t('tools.mcp.scopes')} htmlFor="mcp-oauth-scopes"><input id="mcp-oauth-scopes" value={httpTransport.oauth.scopes.join(' ')} placeholder={t('tools.mcp.scopesPlaceholder')} onChange={(event) => updateTransport({ ...httpTransport, oauth: { ...httpTransport.oauth!, scopes: event.target.value.split(/\s+/).map((item) => item.trim()).filter(Boolean) } })} /></FormField>
+                  <FormField label={t('tools.mcp.redirectPort')} htmlFor="mcp-redirect-port"><input id="mcp-redirect-port" type="number" min={1} max={65535} value={httpTransport.oauth.redirect_port ?? ''} onChange={(event) => updateTransport({ ...httpTransport, oauth: { ...httpTransport.oauth!, redirect_port: event.target.value ? Number(event.target.value) : null } })} /></FormField>
+                  <FormField label={t('tools.mcp.redirectUri')} htmlFor="mcp-redirect-uri"><input id="mcp-redirect-uri" value={httpTransport.oauth.redirect_uri ?? ''} placeholder={t('tools.mcp.redirectUriPlaceholder')} onChange={(event) => updateTransport({ ...httpTransport, oauth: { ...httpTransport.oauth!, redirect_uri: event.target.value || null } })} /></FormField>
+                </div> : null}
+              </div>
             </section>
           )}
           <section className={`mcp-advanced-section${advancedOpen ? ' is-open' : ''}`}>
@@ -480,7 +543,7 @@ export function McpServerDialog({
                 {renderTimeoutField()}
                 <FormField label={t('tools.mcp.provider')} htmlFor="mcp-provider"><input id="mcp-provider" value={draft.provider ?? ''} placeholder={t('tools.mcp.providerPlaceholder')} onChange={(event) => updateDraft({ provider: event.target.value || null })} /></FormField>
                 <FormField label={t('tools.mcp.providerUrl')} htmlFor="mcp-provider-url"><input id="mcp-provider-url" type="url" value={draft.provider_url ?? ''} placeholder={t('tools.mcp.providerUrlPlaceholder')} onChange={(event) => updateDraft({ provider_url: event.target.value || null })} /></FormField>
-                <FormField label={t('tools.mcp.logoUrl')} htmlFor="mcp-logo-url"><input id="mcp-logo-url" type="url" value={draft.logo_url ?? ''} placeholder={t('tools.mcp.logoUrlPlaceholder')} onChange={(event) => updateDraft({ logo_url: event.target.value || null })} /></FormField>
+                <FormField label={t('tools.mcp.logoUrl')} htmlFor="mcp-logo-url" hint={t('tools.mcp.logoUrlHint')}><input id="mcp-logo-url" type="text" value={draft.logo_url ?? ''} placeholder={t('tools.mcp.logoUrlPlaceholder')} onChange={(event) => updateDraft({ logo_url: event.target.value || null })} /></FormField>
                 <FormField label={t('tools.mcp.tags')} htmlFor="mcp-tags"><input id="mcp-tags" value={(draft.tags ?? []).join(', ')} placeholder={t('tools.mcp.tagsPlaceholder')} onChange={(event) => updateDraft({ tags: parseTags(event.target.value) })} /></FormField>
               </div>
             </div> : null}

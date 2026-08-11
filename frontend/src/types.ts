@@ -346,8 +346,12 @@ export type ToolResultData = {
   output_cursor?: number;
   message?: string;
   reason?: string;
+  code?: string;
   /** Execution backend used for the terminal command. */
   runtime?: string;
+  /** Structured protocol payload preserved from MCP-backed tools. */
+  structured_content?: unknown;
+  is_error?: boolean;
 };
 
 export type ToolArguments = Record<string, unknown>;

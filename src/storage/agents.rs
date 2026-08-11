@@ -150,6 +150,14 @@ impl Store {
         match self
             .database
             .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM tool_mcp_agent_tools WHERE agent_id = ?1",
+                    [id.to_string()],
+                )?;
+                conn.execute(
+                    "DELETE FROM tool_mcp_agent_servers WHERE agent_id = ?1",
+                    [id.to_string()],
+                )?;
                 crate::storage::conversation_db::delete_agent_conversations_conn(conn, id)
             })
             .await

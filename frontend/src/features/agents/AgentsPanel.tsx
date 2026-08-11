@@ -185,12 +185,13 @@ export function AgentsPanel({
 
   useEffect(() => {
     let cancelled = false;
-    if (!activeAgent) {
+    const workspaceAgentId = activeAgent?.id ?? '';
+    if (!workspaceAgentId || !activeAgent) {
       setWorkspaceForm(defaultWorkspaceForm);
       return;
     }
     setIsLoadingWorkspace(true);
-    readAgentWorkspace(activeAgent.id)
+    readAgentWorkspace(workspaceAgentId)
       .then((workspace) => {
         if (cancelled) return;
         const nextWorkspace = {
@@ -200,7 +201,7 @@ export function AgentsPanel({
         };
         const initialPayload = agentPayloadFromAgent(activeAgent);
         const serialized = serializeAgentSnapshot(initialPayload, nextWorkspace);
-        loadedWorkspaceAgentIdRef.current = activeAgent.id;
+        loadedWorkspaceAgentIdRef.current = workspaceAgentId;
         persistedSerializedRef.current = serialized;
         latestSerializedRef.current = serialized;
         pendingSaveRef.current = null;
@@ -216,7 +217,7 @@ export function AgentsPanel({
     return () => {
       cancelled = true;
     };
-  }, [activeAgent, activeAgent?.id, agentActionError, t, toast]);
+  }, [activeAgent?.id, agentActionError, t, toast]);
 
   useEffect(() => {
     if (

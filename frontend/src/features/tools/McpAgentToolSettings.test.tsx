@@ -30,7 +30,7 @@ const settings: McpAgentSettings = {
           name: 'read_file',
           qualified_name: 'mcp__server1__read_file',
           title: 'Read file',
-          description: 'Read a local file',
+          description: 'Read a local file. '.repeat(20),
           input_schema: {},
           enabled: true,
         },
@@ -48,7 +48,7 @@ const settings: McpAgentSettings = {
   ],
   overrides: {
     servers: [],
-    tools: [{ server_id: 'server-1', tool_name: 'write_file', enabled: false }],
+    tools: [],
   },
   effective: [],
 };
@@ -69,40 +69,81 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.setItem('weiagent-locale', 'zh');
   vi.mocked(readAgentMcpConfig).mockResolvedValue(structuredClone(settings));
-  vi.mocked(updateAgentMcpConfig).mockResolvedValue(structuredClone(settings));
+  vi.mocked(updateAgentMcpConfig).mockImplementation(async (_agentId, overrides) => {
+    const next = structuredClone(settings);
+    next.overrides = structuredClone(overrides);
+    next.effective = structuredClone(next.defaults);
+    for (const serverOverride of overrides.servers) {
+      const server = next.effective.find((item) => item.id === serverOverride.server_id);
+      if (server && serverOverride.enabled !== undefined) server.enabled = serverOverride.enabled;
+    }
+    for (const toolOverride of overrides.tools) {
+      const server = next.effective.find((item) => item.id === toolOverride.server_id);
+      const tool = server?.tools.find((item) => item.name === toolOverride.tool_name);
+      if (tool && toolOverride.enabled !== undefined) tool.enabled = toolOverride.enabled;
+    }
+    return next;
+  });
 });
 
-test('summary renders each MCP tool as an independent agent tool row', async () => {
+test('summary renders configured MCP servers instead of individual tools', async () => {
   renderSettings({ agentId: 'agent-1', view: 'summary', onEdit: vi.fn() });
 
-  expect(await screen.findByText('Read file')).toBeVisible();
-  expect(screen.getByText('Write file')).toBeVisible();
-  expect(screen.queryByText('MCP 服务设置')).not.toBeInTheDocument();
-  expect(screen.getAllByText('MCP')).toHaveLength(2);
-  expect(screen.getAllByRole('button', { name: '编辑工具配置' })).toHaveLength(2);
+  expect(await screen.findByText('Local MCP')).toBeVisible();
+  expect(screen.queryByText('Read file')).not.toBeInTheDocument();
+  expect(screen.getAllByText('MCP')).toHaveLength(1);
+  expect(screen.getByRole('checkbox', { name: 'Local MCP 继承全局默认' })).toBeChecked();
+  expect(screen.getByRole('checkbox', { name: 'Local MCP 已启用' })).toBeChecked();
+  expect(screen.getByRole('checkbox', { name: 'Local MCP 已启用' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '修改服务工具' })).toBeDisabled();
 });
 
-test('editing an MCP tool targets its server and tool name', async () => {
+test('unchecking inheritance enables editing the MCP server tools', async () => {
   const user = userEvent.setup();
   const onEdit = vi.fn();
   renderSettings({ agentId: 'agent-1', view: 'summary', onEdit });
 
-  const row = (await screen.findByText('Read file')).closest('.agent-tool-row');
+  const checkbox = await screen.findByRole('checkbox', { name: 'Local MCP 继承全局默认' });
+  await user.click(checkbox);
+
+  expect(updateAgentMcpConfig).toHaveBeenCalledWith('agent-1', {
+    servers: [{ server_id: 'server-1', enabled: true, customized: true }],
+    tools: [],
+  });
+  const row = (await screen.findByText('Local MCP')).closest('.agent-tool-row');
   expect(row).not.toBeNull();
-  const editButton = within(row as HTMLElement).getByRole('button', { name: '编辑工具配置' });
+  const editButton = within(row as HTMLElement).getByRole('button', { name: '修改服务工具' });
+  expect(editButton).toBeEnabled();
+  expect(within(row as HTMLElement).getByRole('checkbox', { name: 'Local MCP 已启用' })).toBeEnabled();
   await user.click(editButton);
 
-  expect(onEdit).toHaveBeenCalledWith({ serverId: 'server-1', toolName: 'read_file' });
+  expect(onEdit).toHaveBeenCalledWith({ serverId: 'server-1' });
 });
 
-test('single MCP editor only shows the selected tool', async () => {
+test('MCP server editor shows all tools and edits individual switches', async () => {
+  const user = userEvent.setup();
   renderSettings({
     agentId: 'agent-1',
     view: 'edit',
-    selection: { serverId: 'server-1', toolName: 'write_file' },
+    selection: { serverId: 'server-1' },
   });
 
-  expect(await screen.findByRole('heading', { name: 'Write file' })).toBeVisible();
-  expect(screen.queryByRole('heading', { name: 'Read file' })).not.toBeInTheDocument();
-  expect(screen.getByText('跟随全局默认')).toBeVisible();
+  expect(await screen.findByRole('heading', { name: 'Local MCP' })).toBeVisible();
+  expect(screen.getByText('Read file')).toBeVisible();
+  expect(screen.getByText('Write file')).toBeVisible();
+  expect(screen.getAllByText('查看 Schema')).toHaveLength(2);
+  const search = screen.getByRole('textbox', { name: '搜索工具' });
+  await user.type(search, 'write');
+  expect(screen.queryByText('Read file')).not.toBeInTheDocument();
+  expect(screen.getByText('Write file')).toBeVisible();
+  await user.clear(search);
+  const expandDescription = screen.getByRole('button', { name: '展开描述' });
+  await user.click(expandDescription);
+  expect(screen.getByRole('button', { name: '收起描述' })).toBeVisible();
+
+  await user.click(screen.getByRole('checkbox', { name: 'Read file 已启用' }));
+  expect(updateAgentMcpConfig).toHaveBeenCalledWith('agent-1', {
+    servers: [{ server_id: 'server-1', enabled: true, customized: true }],
+    tools: [{ server_id: 'server-1', tool_name: 'read_file', enabled: false }],
+  });
 });

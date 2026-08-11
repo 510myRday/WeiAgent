@@ -30,6 +30,15 @@ function hasText(value?: string | null): boolean {
   return Boolean(value && value.trim().length > 0);
 }
 
+function formatStructuredContent(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  try {
+    return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 function formatToolArguments(args: ToolArguments): string | null {
   const display: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
@@ -193,18 +202,22 @@ function ToolPayload({
 function TerminalOutputs({
   stdout,
   stderr,
+  structuredContent,
   failed,
   t,
 }: {
   stdout?: string | null;
   stderr?: string | null;
+  structuredContent?: unknown;
   failed: boolean;
   t: (path: string, vars?: Record<string, string | number>) => string;
 }) {
   const hasStdout = hasText(stdout);
   const hasStderr = hasText(stderr);
+  const structuredText = formatStructuredContent(structuredContent);
+  const hasStructured = hasText(structuredText);
 
-  if (!hasStdout && !hasStderr) {
+  if (!hasStdout && !hasStderr && !hasStructured) {
     return (
       <div className={`tool-card__output-shell tool-card__output-shell--empty${failed ? ' tool-card__output-shell--empty-failed' : ''}`}>
         <pre className="tool-card__output tool-card__output--empty">
@@ -220,6 +233,7 @@ function TerminalOutputs({
       {hasStderr ? (
         <TerminalContent content={stderr!.trimEnd()} tone={failed ? 'stderr' : 'stdout'} t={t} />
       ) : null}
+      {hasStructured ? <TerminalContent content={structuredText!} tone="stdout" t={t} /> : null}
     </>
   );
 }
@@ -310,13 +324,14 @@ export function ToolCallCard({
   }
 
   if (status === 'completed' && result) {
-    const failed = (result.exit_code ?? 0) !== 0;
+    const failed = result.is_error === true || (result.exit_code ?? 0) !== 0;
     return (
       <div className={`tool-card ${failed ? 'tool-card--error' : 'tool-card--done'} tool-card--embedded`}>
         <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
         <TerminalOutputs
           stdout={result.stdout}
           stderr={result.stderr}
+          structuredContent={result.structured_content}
           failed={failed}
           t={t}
         />

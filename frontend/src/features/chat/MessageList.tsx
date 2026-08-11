@@ -10,6 +10,7 @@ import {
   useState,
   type FormEvent,
   type KeyboardEvent,
+  type SyntheticEvent,
 } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -53,6 +54,13 @@ import { useImageAttachments } from './useImageAttachments';
 import { ReasoningDisclosure } from './ReasoningDisclosure';
 import { ToolDisclosure } from './ToolDisclosure';
 import { userErrorMessage } from '../../utils/userError';
+
+const MAX_MESSAGE_IMAGE_EDGE = 360;
+
+type MessageImageDisplaySize = {
+  width: number;
+  height: number;
+};
 
 interface MessageListProps {
   conversationId: string;
@@ -988,6 +996,7 @@ function MessageContent({
   const { t } = useI18n();
   const { toast } = useFeedback();
   const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
+  const [imageDisplaySizes, setImageDisplaySizes] = useState<Record<string, MessageImageDisplaySize>>({});
   const blocks = message.blocks ?? [];
   const tools = blocks
     .filter((block): block is Extract<NonNullable<UiMessage['blocks']>[number], { type: 'tool' }> => block.type === 'tool')
@@ -1002,6 +1011,31 @@ function MessageContent({
   if (emptyStreaming) {
     return <TypingIndicator label={t('chat.sending')} />;
   }
+
+  function handleImageLoad(attachmentId: string, event: SyntheticEvent<HTMLImageElement>) {
+    const image = event.currentTarget;
+    if (!image.naturalWidth || !image.naturalHeight) return;
+
+    const scale = Math.min(
+      MAX_MESSAGE_IMAGE_EDGE / image.naturalWidth,
+      MAX_MESSAGE_IMAGE_EDGE / image.naturalHeight,
+      1,
+    );
+    const nextSize = {
+      width: Math.round(image.naturalWidth * scale),
+      height: Math.round(image.naturalHeight * scale),
+    };
+
+    setImageDisplaySizes((current) => {
+      const previous = current[attachmentId];
+      if (previous?.width === nextSize.width && previous.height === nextSize.height) return current;
+      return { ...current, [attachmentId]: nextSize };
+    });
+  }
+
+  const singleImageDisplaySize = message.attachments?.length === 1
+    ? imageDisplaySizes[message.attachments[0].id]
+    : undefined;
 
   async function handleApprove(tool: ToolCallState, decision: 'approve' | 'reject' | 'always_approve') {
     const approvalId = typeof tool.arguments.approval_id === 'string' ? tool.arguments.approval_id : '';
@@ -1022,11 +1056,27 @@ function MessageContent({
   return (
     <>
       {message.attachments?.length ? (
-        <div className={`message-image-grid${message.attachments.length === 1 ? ' is-single' : ''}`}>
+        <div
+          className={`message-image-grid${message.attachments.length === 1 ? ' is-single' : ''}${
+            singleImageDisplaySize ? ' has-sized-single' : ''
+          }`}
+          style={singleImageDisplaySize ? { width: `${singleImageDisplaySize.width}px` } : undefined}
+        >
           {message.attachments.map((attachment) => {
             const imageUrl = attachmentImageUrl(attachment);
+            const displaySize = message.attachments?.length === 1
+              ? imageDisplaySizes[attachment.id]
+              : undefined;
             return (
-              <div className="message-image-preview" key={attachment.id}>
+              <div
+                className="message-image-preview"
+                key={attachment.id}
+                style={displaySize ? {
+                  width: `${displaySize.width}px`,
+                  aspectRatio: `${displaySize.width} / ${displaySize.height}`,
+                  minHeight: 0,
+                } : undefined}
+              >
                 <button
                   className="message-image-preview__open"
                   type="button"
@@ -1034,7 +1084,13 @@ function MessageContent({
                   title={t('chat.openImage')}
                   aria-label={`${t('chat.openImage')}: ${attachment.name}`}
                 >
-                  <img src={imageUrl} alt={attachment.name} loading="lazy" referrerPolicy="no-referrer" />
+                  <img
+                    src={imageUrl}
+                    alt={attachment.name}
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    onLoad={(event) => handleImageLoad(attachment.id, event)}
+                  />
                 </button>
                 <div className="message-image-preview__actions">
                   <a

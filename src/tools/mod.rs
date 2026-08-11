@@ -1,6 +1,7 @@
 pub mod approval;
 pub mod mcp;
 pub mod multi_edit;
+pub mod process_job;
 pub mod prompt;
 pub mod registry;
 pub mod runtime;

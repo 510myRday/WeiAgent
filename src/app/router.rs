@@ -163,6 +163,10 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             put(tools::update_mcp_server).delete(tools::delete_mcp_server),
         )
         .route(
+            "/api/tools/mcp/{server_id}/enabled",
+            put(tools::update_mcp_server_enabled),
+        )
+        .route(
             "/api/tools/mcp/{server_id}/secrets",
             get(tools::read_mcp_server_secrets),
         )
@@ -189,6 +193,10 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
         .route(
             "/api/tools/mcp/{server_id}/tools/{tool_name}",
             put(tools::update_mcp_tool_enabled),
+        )
+        .route(
+            "/api/tools/mcp/{server_id}/tools",
+            put(tools::update_mcp_tools_enabled),
         )
         .route(
             "/api/agents/{agent_id}/mcp-config",

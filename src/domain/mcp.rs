@@ -16,6 +16,10 @@ pub enum McpTransport {
         #[serde(default)]
         env: BTreeMap<String, String>,
         #[serde(default)]
+        inherit_env: bool,
+        #[serde(default)]
+        env_allowlist: Vec<String>,
+        #[serde(default = "default_long_running")]
         long_running: bool,
         #[serde(default = "default_mcp_timeout_ms")]
         timeout_ms: u64,
@@ -26,6 +30,14 @@ pub enum McpTransport {
         bearer_token: Option<String>,
         #[serde(default)]
         headers: BTreeMap<String, String>,
+        #[serde(default)]
+        client_cert: Option<String>,
+        #[serde(default)]
+        client_key: Option<String>,
+        #[serde(default)]
+        identity_header: Option<McpIdentityHeader>,
+        #[serde(default)]
+        oauth: Option<McpOAuthConfig>,
         #[serde(default = "default_mcp_timeout_ms")]
         timeout_ms: u64,
     },
@@ -35,6 +47,14 @@ pub enum McpTransport {
         bearer_token: Option<String>,
         #[serde(default)]
         headers: BTreeMap<String, String>,
+        #[serde(default)]
+        client_cert: Option<String>,
+        #[serde(default)]
+        client_key: Option<String>,
+        #[serde(default)]
+        identity_header: Option<McpIdentityHeader>,
+        #[serde(default)]
+        oauth: Option<McpOAuthConfig>,
         #[serde(default = "default_mcp_timeout_ms")]
         timeout_ms: u64,
     },
@@ -44,6 +64,10 @@ fn default_mcp_timeout_ms() -> u64 {
     30_000
 }
 
+fn default_long_running() -> bool {
+    true
+}
+
 impl Default for McpTransport {
     fn default() -> Self {
         Self::Stdio {
@@ -51,10 +75,56 @@ impl Default for McpTransport {
             args: Vec::new(),
             cwd: None,
             env: BTreeMap::new(),
-            long_running: false,
+            inherit_env: false,
+            env_allowlist: Vec::new(),
+            long_running: true,
             timeout_ms: default_mcp_timeout_ms(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpIdentityHeader {
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct McpOAuthConfig {
+    pub authorize_url: String,
+    pub token_url: String,
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub redirect_port: Option<u16>,
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct McpDiagnostics {
+    #[serde(default)]
+    pub protocol_version: Option<String>,
+    #[serde(default)]
+    pub server_name: Option<String>,
+    #[serde(default)]
+    pub server_version: Option<String>,
+    #[serde(default)]
+    pub capabilities: Value,
+    #[serde(default)]
+    pub last_operation: Option<String>,
+    #[serde(default)]
+    pub last_operation_at: Option<String>,
+    #[serde(default)]
+    pub last_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub retry_count: u32,
+    #[serde(default)]
+    pub last_error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -90,6 +160,8 @@ pub struct McpServer {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
+    pub supports_parallel_tool_calls: bool,
+    #[serde(default)]
     pub provider: Option<String>,
     #[serde(default)]
     pub provider_url: Option<String>,
@@ -107,6 +179,8 @@ pub struct McpServer {
     pub last_synced_at: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub diagnostics: McpDiagnostics,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -178,6 +252,8 @@ pub struct McpServerDraft {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
+    pub supports_parallel_tool_calls: bool,
+    #[serde(default)]
     pub provider: Option<String>,
     #[serde(default)]
     pub provider_url: Option<String>,
@@ -194,6 +270,8 @@ pub struct McpServerOverride {
     pub server_id: Uuid,
     #[serde(default)]
     pub enabled: Option<bool>,
+    #[serde(default)]
+    pub customized: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -233,11 +311,15 @@ impl McpTransport {
             Self::StreamableHttp {
                 bearer_token,
                 headers,
+                identity_header,
+                oauth,
                 ..
             }
             | Self::Sse {
                 bearer_token,
                 headers,
+                identity_header,
+                oauth,
                 ..
             } => {
                 if let Some(value) = bearer_token.as_mut() {
@@ -246,6 +328,16 @@ impl McpTransport {
                 for value in headers.values_mut() {
                     if !value.is_empty() {
                         *value = mask_secret(value);
+                    }
+                }
+                if let Some(identity) = identity_header.as_mut() {
+                    if !identity.value.is_empty() {
+                        identity.value = mask_secret(&identity.value);
+                    }
+                }
+                if let Some(oauth) = oauth.as_mut() {
+                    if let Some(secret) = oauth.client_secret.as_mut() {
+                        *secret = mask_secret(secret);
                     }
                 }
             }
@@ -269,11 +361,15 @@ impl McpTransport {
                 Self::StreamableHttp {
                     bearer_token: current_token,
                     headers: current,
+                    identity_header: current_identity,
+                    oauth: current_oauth,
                     ..
                 },
                 Self::StreamableHttp {
                     bearer_token: old_token,
                     headers: old,
+                    identity_header: old_identity,
+                    oauth: old_oauth,
                     ..
                 },
             )
@@ -281,11 +377,15 @@ impl McpTransport {
                 Self::Sse {
                     bearer_token: current_token,
                     headers: current,
+                    identity_header: current_identity,
+                    oauth: current_oauth,
                     ..
                 },
                 Self::Sse {
                     bearer_token: old_token,
                     headers: old,
+                    identity_header: old_identity,
+                    oauth: old_oauth,
                     ..
                 },
             ) => {
@@ -298,6 +398,16 @@ impl McpTransport {
                             *value = previous_value.clone();
                         }
                     }
+                }
+                if let Some(identity) = current_identity.as_mut().filter(|identity| identity.value == "__preserve__") {
+                    if let Some(previous) = old_identity {
+                        identity.value = previous.value.clone();
+                    } else {
+                        identity.value.clear();
+                    }
+                }
+                if let Some(oauth) = current_oauth.as_mut().filter(|oauth| oauth.client_secret.as_deref() == Some("__preserve__")) {
+                    oauth.client_secret = old_oauth.as_ref().and_then(|previous| previous.client_secret.clone());
                 }
             }
             _ => {}
@@ -330,12 +440,24 @@ impl McpServer {
     }
 }
 
-pub fn qualify_tool_name(server_id: Uuid, name: &str) -> String {
-    qualify_tool_name_with_suffix(server_id, name, 1)
+pub fn qualify_tool_name(server_name: &str, name: &str) -> String {
+    qualify_tool_name_with_suffix(server_name, name, 1)
 }
 
-pub fn qualify_tool_name_with_suffix(server_id: Uuid, name: &str, occurrence: usize) -> String {
-    let short_id = server_id.to_string().replace('-', "");
+pub fn qualify_tool_name_with_suffix(server_name: &str, name: &str, occurrence: usize) -> String {
+    let mut server = server_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if server.is_empty() {
+        server.push_str("server");
+    }
     let mut sanitized = name
         .chars()
         .map(|ch| {
@@ -354,7 +476,7 @@ pub fn qualify_tool_name_with_suffix(server_id: Uuid, name: &str, occurrence: us
     } else {
         String::new()
     };
-    let prefix = format!("mcp__{}__", &short_id[..8]);
+    let prefix = format!("mcp_{}_", server);
     let max_name_chars = 64usize.saturating_sub(prefix.len() + suffix.len());
     format!(
         "{}{}{}",
@@ -370,16 +492,15 @@ mod tests {
 
     #[test]
     fn qualifies_tool_names_with_sanitization_and_collision_suffixes() {
-        let server_id = Uuid::from_u128(0x1234567890abcdef1234567890abcdef);
-        let first = qualify_tool_name(server_id, "read.file");
-        let collision = qualify_tool_name_with_suffix(server_id, "read/file", 2);
-        let long_name = qualify_tool_name(server_id, &"x".repeat(200));
+        let first = qualify_tool_name("Local MCP", "read.file");
+        let collision = qualify_tool_name_with_suffix("Local MCP", "read/file", 2);
+        let long_name = qualify_tool_name("Local MCP", &"x".repeat(200));
 
-        assert_eq!(first, "mcp__12345678__read_file");
-        assert_eq!(collision, "mcp__12345678__read_file_2");
+        assert_eq!(first, "mcp_local_mcp_read_file");
+        assert_eq!(collision, "mcp_local_mcp_read_file_2");
         assert_ne!(first, collision);
         assert!(long_name.len() <= 64);
-        assert!(long_name.starts_with("mcp__12345678__"));
+        assert!(long_name.starts_with("mcp_local_mcp_"));
     }
 
     #[test]
@@ -390,6 +511,10 @@ mod tests {
             headers: [("X-Api-Key".to_string(), "key-5678".to_string())]
                 .into_iter()
                 .collect(),
+            client_cert: None,
+            client_key: None,
+            identity_header: None,
+            oauth: None,
             timeout_ms: 30_000,
         };
         let redacted = transport.redacted();
@@ -401,6 +526,10 @@ mod tests {
                 headers: [("X-Api-Key".to_string(), "****5678".to_string())]
                     .into_iter()
                     .collect(),
+                client_cert: None,
+                client_key: None,
+                identity_header: None,
+                oauth: None,
                 timeout_ms: 30_000,
             }
         );
@@ -411,6 +540,10 @@ mod tests {
             headers: [("X-Api-Key".to_string(), "__preserve__".to_string())]
                 .into_iter()
                 .collect(),
+            client_cert: None,
+            client_key: None,
+            identity_header: None,
+            oauth: None,
             timeout_ms: 30_000,
         }
         .merge_redacted_secrets(&transport);

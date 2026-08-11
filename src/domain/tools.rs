@@ -1558,6 +1558,11 @@ pub enum ToolResult {
         runtime: Option<String>,
         #[serde(default)]
         output_cursor: u64,
+        /// Structured payload preserved from protocol-backed tools such as MCP.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        structured_content: Option<serde_json::Value>,
+        #[serde(default)]
+        is_error: bool,
     },
     Running {
         process_id: String,

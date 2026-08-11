@@ -1,5 +1,5 @@
 import type { ImageAttachment } from '../../types';
-import { apiAuthorizationToken } from '../../apiAuth';
+import { apiAuthorizationHeaders, apiAuthorizationToken } from '../../apiAuth';
 
 export const MAX_IMAGE_COUNT = 8;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -56,6 +56,39 @@ export function attachmentImageUrl(attachment: ImageAttachment): string {
   } catch {
     return '';
   }
+}
+
+export async function materializeImageAttachment(
+  attachment: ImageAttachment,
+): Promise<ImageAttachment> {
+  if (attachment.source_type !== 'local') return attachment;
+
+  const imageUrl = attachmentImageUrl(attachment);
+  if (!imageUrl) throw new Error('Generated image URL is unavailable');
+
+  const response = await fetch(imageUrl, {
+    credentials: 'same-origin',
+    headers: apiAuthorizationHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error(`Generated image request failed (${response.status})`);
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+
+  return {
+    id: attachment.id,
+    name: attachment.name,
+    media_type: attachment.media_type,
+    is_mask: attachment.is_mask,
+    source_type: 'base64',
+    data: btoa(binary),
+  };
 }
 
 export function attachmentByteLength(attachment: ImageAttachment): number {

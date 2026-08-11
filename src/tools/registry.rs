@@ -159,18 +159,41 @@ impl ToolRegistry {
                             .as_str()
                             .is_some_and(|planning_id| !planning_id.trim().is_empty())
                 });
-                let code = if planning_id.is_some() || invalid_argument {
-                    "PlanningIdInvalid"
-                } else {
-                    "PlanningRequired"
+                let has_provided_id = planning_id.is_some() || invalid_argument;
+                let (code, reason) = match active_plan.as_ref() {
+                    Some(active_plan) if has_provided_id => (
+                        "PlanningIdInvalid",
+                        format!(
+                            "本次工具调用的 planning_id 无效，或不属于当前会话。请使用当前 active 计划的 planning_id 重试：{}",
+                            active_plan.planning_id
+                        ),
+                    ),
+                    Some(active_plan) => (
+                        "PlanningRequired",
+                        format!(
+                            "当前会话已有 active 任务计划，但本次工具调用缺少 planning_id。请使用下面的 planning_id 重试：{}",
+                            active_plan.planning_id
+                        ),
+                    ),
+                    None if has_provided_id => (
+                        "PlanningIdInvalid",
+                        "本次工具调用提供的 planning_id 无效，当前会话也没有 active 任务计划。请先调用 task_planning 创建计划，再使用新返回的 planning_id 重试。"
+                            .to_string(),
+                    ),
+                    None => (
+                        "PlanningRequired",
+                        "当前会话没有 active 任务计划，请先调用 task_planning 创建计划，再重试本次工具调用。"
+                            .to_string(),
+                    ),
                 };
                 return ToolResult::Blocked {
-                    reason: "请先调用 task_planning 创建计划，并将返回的 planning_id 传入本工具。"
-                        .to_string(),
+                    reason,
                     code: Some(code.to_string()),
                     details: Some(serde_json::json!({
                         "tool": name,
                         "planning_id": planning_id,
+                        "provided_planning_id": planning_id,
+                        "active_planning_id": active_plan.as_ref().map(|plan| plan.planning_id),
                         "required_argument": "planning_id"
                     })),
                 };
@@ -927,6 +950,8 @@ impl AgentTool for WebSearchSourcesTool {
                 duration_ms: 0,
                 runtime: Some("builtin_web_search_sources".to_string()),
                 output_cursor: 0,
+                structured_content: None,
+                is_error: false,
             },
             Err(error) => ToolResult::Error {
                 message: format!("failed to serialize web search sources: {error}"),
@@ -1715,10 +1740,7 @@ mod tests {
         else {
             panic!("expected missing planning id to be blocked");
         };
-        assert_eq!(
-            reason,
-            "请先调用 task_planning 创建计划，并将返回的 planning_id 传入本工具。"
-        );
+        assert!(reason.contains("没有 active 任务计划"));
         assert_eq!(code.as_deref(), Some("PlanningRequired"));
         assert_eq!(details.unwrap()["required_argument"], "planning_id");
 
@@ -1733,6 +1755,24 @@ mod tests {
             )
             .await
             .unwrap();
+        let result = registry
+            .execute("web_search_sources", json!({}), context(conversation_id))
+            .await;
+        let ToolResult::Blocked {
+            reason,
+            code,
+            details,
+        } = result
+        else {
+            panic!("expected an active plan to require its planning id");
+        };
+        assert!(reason.contains(&plan.planning_id.to_string()));
+        assert_eq!(code.as_deref(), Some("PlanningRequired"));
+        assert_eq!(
+            details.unwrap()["active_planning_id"],
+            plan.planning_id.to_string()
+        );
+
         let other_conversation = Uuid::new_v4();
         let result = registry
             .execute(
@@ -1741,10 +1781,14 @@ mod tests {
                 context(other_conversation),
             )
             .await;
-        let ToolResult::Blocked { code, .. } = result else {
+        let ToolResult::Blocked { code, details, .. } = result else {
             panic!("expected cross-conversation planning id to be blocked");
         };
         assert_eq!(code.as_deref(), Some("PlanningIdInvalid"));
+        assert_eq!(
+            details.unwrap()["provided_planning_id"],
+            plan.planning_id.to_string()
+        );
 
         let mut disabled_context = context(conversation_id);
         disabled_context.tools_config.task_planning.enabled = false;

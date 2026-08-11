@@ -28,8 +28,9 @@ pub use ip_proxies::{
     IpProxyQualityTestUpdate, IpProxyStatus, IpProxyTestUpdate, UpdateIpProxyRequest,
 };
 pub use mcp::{
-    McpAgentOverrides, McpAgentSettings, McpAuthState, McpAuthStatus, McpServer, McpServerDraft,
-    McpServerOverride, McpServerStatus, McpTool, McpToolOverride, McpTransport, qualify_tool_name,
+    McpAgentOverrides, McpAgentSettings, McpAuthState, McpAuthStatus, McpDiagnostics,
+    McpIdentityHeader, McpServer, McpServerDraft, McpServerOverride,
+    McpServerStatus, McpTool, McpToolOverride, McpTransport, qualify_tool_name,
     qualify_tool_name_with_suffix,
 };
 pub use providers::{

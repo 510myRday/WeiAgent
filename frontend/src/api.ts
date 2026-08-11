@@ -408,9 +408,20 @@ export type WebSearchSourceOverrides = {
 };
 
 export type McpTransport =
-  | { type: 'stdio'; command: string; args: string[]; cwd?: string | null; env: Record<string, string>; long_running?: boolean; timeout_ms?: number }
-  | { type: 'streamable_http'; url: string; bearer_token?: string | null; headers: Record<string, string>; timeout_ms: number }
-  | { type: 'sse'; url: string; bearer_token?: string | null; headers: Record<string, string>; timeout_ms: number };
+  | { type: 'stdio'; command: string; args: string[]; cwd?: string | null; env: Record<string, string>; inherit_env?: boolean; env_allowlist?: string[]; long_running?: boolean; timeout_ms?: number }
+  | { type: 'streamable_http'; url: string; bearer_token?: string | null; headers: Record<string, string>; client_cert?: string | null; client_key?: string | null; identity_header?: McpIdentityHeader | null; oauth?: McpOAuthConfig | null; timeout_ms: number }
+  | { type: 'sse'; url: string; bearer_token?: string | null; headers: Record<string, string>; client_cert?: string | null; client_key?: string | null; identity_header?: McpIdentityHeader | null; oauth?: McpOAuthConfig | null; timeout_ms: number };
+
+export type McpIdentityHeader = { name: string; value: string };
+export type McpOAuthConfig = {
+  authorize_url: string;
+  token_url: string;
+  client_id: string;
+  client_secret?: string | null;
+  scopes: string[];
+  redirect_port?: number | null;
+  redirect_uri?: string | null;
+};
 
 export type McpTool = {
   name: string;
@@ -437,6 +448,7 @@ export type McpServer = {
   name: string;
   description: string;
   enabled: boolean;
+  supports_parallel_tool_calls?: boolean;
   provider?: string | null;
   provider_url?: string | null;
   logo_url?: string | null;
@@ -446,6 +458,19 @@ export type McpServer = {
   status: 'unknown' | 'connecting' | 'ready' | 'offline' | 'error';
   last_synced_at?: string;
   last_error?: string;
+  diagnostics?: McpDiagnostics;
+};
+
+export type McpDiagnostics = {
+  protocol_version?: string | null;
+  server_name?: string | null;
+  server_version?: string | null;
+  capabilities?: unknown;
+  last_operation?: string | null;
+  last_operation_at?: string | null;
+  last_duration_ms?: number | null;
+  retry_count: number;
+  last_error_code?: string | null;
 };
 
 export type McpServerDraft = {
@@ -453,6 +478,7 @@ export type McpServerDraft = {
   name: string;
   description: string;
   enabled: boolean;
+  supports_parallel_tool_calls: boolean;
   provider?: string | null;
   provider_url?: string | null;
   logo_url?: string | null;
@@ -460,7 +486,7 @@ export type McpServerDraft = {
   transport: McpTransport;
 };
 
-export type McpServerOverride = { server_id: string; enabled?: boolean };
+export type McpServerOverride = { server_id: string; enabled?: boolean; customized?: boolean };
 export type McpToolOverride = { server_id: string; tool_name: string; enabled?: boolean };
 export type McpAgentOverrides = { servers: McpServerOverride[]; tools: McpToolOverride[] };
 export type McpAgentSettings = { defaults: McpServer[]; overrides: McpAgentOverrides; effective: McpServer[] };
@@ -744,16 +770,23 @@ export function updateMcpServer(id: string, draft: McpServerDraft): Promise<McpS
   return request<McpServer>(`/api/tools/mcp/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(draft) });
 }
 
+export function updateMcpServerEnabled(id: string, enabled: boolean): Promise<McpServer> {
+  return request<McpServer>(`/api/tools/mcp/${encodeURIComponent(id)}/enabled`, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  });
+}
+
 export function deleteMcpServer(id: string): Promise<void> {
   return request<void>(`/api/tools/mcp/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export function refreshMcpServer(id: string): Promise<McpServer> {
-  return request<McpServer>(`/api/tools/mcp/${encodeURIComponent(id)}/refresh`, { method: 'POST' }, undefined, 60000);
+  return request<McpServer>(`/api/tools/mcp/${encodeURIComponent(id)}/refresh`, { method: 'POST' }, undefined, 180000);
 }
 
 export function testMcpServer(id: string): Promise<McpServer> {
-  return request<McpServer>(`/api/tools/mcp/${encodeURIComponent(id)}/test`, { method: 'POST' }, undefined, 60000);
+  return request<McpServer>(`/api/tools/mcp/${encodeURIComponent(id)}/test`, { method: 'POST' }, undefined, 180000);
 }
 
 export function getMcpAuthState(id: string): Promise<McpAuthState> {
@@ -772,6 +805,13 @@ export function updateMcpToolEnabled(serverId: string, toolName: string, enabled
   return request<McpServer>(`/api/tools/mcp/${encodeURIComponent(serverId)}/tools/${encodeURIComponent(toolName)}`, {
     method: 'PUT',
     body: JSON.stringify({ enabled }),
+  });
+}
+
+export function updateMcpToolsEnabled(serverId: string, toolNames: string[], enabled: boolean): Promise<McpServer> {
+  return request<McpServer>(`/api/tools/mcp/${encodeURIComponent(serverId)}/tools`, {
+    method: 'PUT',
+    body: JSON.stringify({ tool_names: toolNames, enabled }),
   });
 }
 

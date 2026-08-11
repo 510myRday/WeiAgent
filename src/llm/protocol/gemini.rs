@@ -12,7 +12,8 @@ use crate::{
         http::StreamLineParser,
         protocol::common::{
             ProtocolAdapter, SseData, add_query_parameter, encode_path_segment, merge_extra_body,
-            message_tool_calls, parse_json_object, parse_sse_data_line, validate_tool_calls,
+            message_tool_calls, parse_json_object, parse_sse_data_line,
+            unwrap_provider_response_item, validate_tool_calls, wrap_provider_response_item,
         },
         types::{
             ChatCompletionOutput, StreamEvent, ToolCall, ToolCallFunction, ToolDefinition,
@@ -193,18 +194,30 @@ fn build_gemini_request(
             }
             ChatRole::Assistant => {
                 let mut parts = Vec::new();
-                if !message.content.is_empty() {
-                    parts.push(json!({"text": message.content}));
-                }
-                for call in calls {
-                    let args =
-                        parse_json_object(&call.function.arguments, "stored tool call arguments")?;
-                    parts.push(json!({
-                        "functionCall": {
-                            "name": call.function.name,
-                            "args": args,
-                        }
-                    }));
+                let replayed_parts = message
+                    .openai_response_items
+                    .iter()
+                    .filter_map(|item| unwrap_provider_response_item(item, "gemini"))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if replayed_parts.is_empty() {
+                    if !message.content.is_empty() {
+                        parts.push(json!({"text": message.content}));
+                    }
+                    for call in calls {
+                        let args = parse_json_object(
+                            &call.function.arguments,
+                            "stored tool call arguments",
+                        )?;
+                        parts.push(json!({
+                            "functionCall": {
+                                "name": call.function.name,
+                                "args": args,
+                            }
+                        }));
+                    }
+                } else {
+                    parts.extend(replayed_parts);
                 }
                 ("model", parts)
             }
@@ -409,6 +422,13 @@ fn parse_gemini_output(value: &Value) -> AppResult<ChatCompletionOutput> {
 
     let mut content = String::new();
     let mut reasoning_content = String::new();
+    let response_items = candidate["content"]["parts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .cloned()
+        .map(|part| wrap_provider_response_item("gemini", part))
+        .collect();
     let mut tool_calls = Vec::new();
     for part in candidate["content"]["parts"]
         .as_array()
@@ -440,7 +460,7 @@ fn parse_gemini_output(value: &Value) -> AppResult<ChatCompletionOutput> {
     validate_tool_calls(tool_calls).map(|tool_calls| ChatCompletionOutput {
         content,
         reasoning_content,
-        openai_response_items: Vec::new(),
+        openai_response_items: response_items,
         tool_calls,
         usage: parse_gemini_usage(&value["usageMetadata"]),
     })
@@ -566,6 +586,9 @@ impl GeminiStreamParser {
                         .unwrap_or_else(|_| "{}".to_string()),
                 }));
             }
+            events.push(Ok(StreamEvent::OpenAiResponseItem(
+                wrap_provider_response_item("gemini", part.clone()),
+            )));
         }
         if let Some(reason) = candidate["finishReason"].as_str() {
             match validate_gemini_finish_reason(Some(reason)) {
@@ -817,6 +840,54 @@ mod tests {
             events.last().unwrap().as_ref().unwrap(),
             StreamEvent::Finished
         ));
+    }
+
+    #[test]
+    fn replays_raw_parts_with_thought_signature() {
+        let messages = vec![ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            conversation_id: Uuid::new_v4(),
+            role: ChatRole::Assistant,
+            content: "done".to_string(),
+            reasoning_content: Some("plan".to_string()),
+            openai_response_items: vec![
+                wrap_provider_response_item("gemini", json!({"thought":true,"text":"plan"})),
+                wrap_provider_response_item(
+                    "gemini",
+                    json!({
+                        "functionCall": {
+                            "name": "run",
+                            "args": {"x": 1}
+                        },
+                        "thoughtSignature": "SIG-G"
+                    }),
+                ),
+            ],
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: Some(json!([{
+                "id": "call-g",
+                "type": "function",
+                "function": {"name": "run", "arguments": "{\"x\":1}"}
+            }])),
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        }];
+        let request = build_gemini_request(
+            "gemini-3-pro",
+            &test_provider(),
+            &messages,
+            "system",
+            &Value::Null,
+            None,
+            None,
+        )
+        .unwrap();
+        let parts = request["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts[0]["thought"], true);
+        assert_eq!(parts[1]["thoughtSignature"], "SIG-G");
     }
 
     #[test]

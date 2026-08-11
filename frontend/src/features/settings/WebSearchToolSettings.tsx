@@ -395,14 +395,6 @@ export function WebSearchToolSettings({
     });
   }
 
-  function setEnabledInherited(inherited: boolean) {
-    if (!overrides || !config) return;
-    const next = { ...overrides, web_search: { ...overrides.web_search } };
-    if (inherited) delete next.web_search.enabled;
-    else next.web_search.enabled = config.web_search.enabled;
-    updateOverrides(next);
-  }
-
   function setMaxResultsInherited(inherited: boolean) {
     if (!overrides || !config) return;
     const next = { ...overrides, web_search: { ...overrides.web_search } };
@@ -865,7 +857,6 @@ export function WebSearchToolSettings({
     ? webSearch.sources.find((source) => source.id === addKeySourceId) ?? null
     : null;
   const isAddingKeys = addKeySource ? Boolean(importingKeys[addKeySource.id]) : false;
-  const enabledInherited = isAgentScope && overrides?.web_search?.enabled === undefined;
   const maxResultsInherited = isAgentScope && overrides?.web_search?.max_results === undefined;
 
   return (
@@ -898,29 +889,23 @@ export function WebSearchToolSettings({
             ) : null}
           </div>
           <div className="card-body">
-            <div className="setting-row">
-              <div className="setting-info">
-                <label>{t('tools.webSearch.enabled')}</label>
-                <p className="setting-desc">{t('tools.webSearch.enabledDesc')}</p>
+            {!isAgentScope ? (
+              <div className="setting-row">
+                <div className="setting-info">
+                  <label>{t('tools.webSearch.enabled')}</label>
+                  <p className="setting-desc">{t('tools.webSearch.enabledDesc')}</p>
+                </div>
+                <label className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    aria-label={t('tools.webSearch.enabled')}
+                    checked={webSearch.enabled}
+                    onChange={(e) => updateWebSearch({ enabled: e.target.checked })}
+                  />
+                  <span className="toggle-slider" />
+                </label>
               </div>
-              {isAgentScope ? (
-                <InheritanceControl
-                  inherited={Boolean(enabledInherited)}
-                  onChange={setEnabledInherited}
-                  t={t}
-                />
-              ) : null}
-              <label className="toggle-switch">
-                <input
-                  type="checkbox"
-                  aria-label={t('tools.webSearch.enabled')}
-                  checked={webSearch.enabled}
-                  disabled={Boolean(isAgentScope && enabledInherited)}
-                  onChange={(e) => updateWebSearch({ enabled: e.target.checked })}
-                />
-                <span className="toggle-slider" />
-              </label>
-            </div>
+            ) : null}
 
             <div className="setting-row">
               <div className="setting-info">
