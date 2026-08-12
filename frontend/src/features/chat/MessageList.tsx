@@ -53,6 +53,7 @@ import {
 import { useImageAttachments } from './useImageAttachments';
 import { ReasoningDisclosure } from './ReasoningDisclosure';
 import { ToolDisclosure } from './ToolDisclosure';
+import { classifyRetryReason } from './retryReason';
 import { userErrorMessage } from '../../utils/userError';
 
 const MAX_MESSAGE_IMAGE_EDGE = 360;
@@ -640,10 +641,11 @@ function WaitingBubble({
   // including any retries inside that request.
   const isCompacting = runPhase === 'compacting_context';
   const isRetrying = Boolean(retryStatus) && !isCompacting;
+  const retryKind = retryStatus ? classifyRetryReason(retryStatus.reason) : null;
   const label = isCompacting
     ? t('chat.compactingContext')
     : isRetrying && retryStatus
-      ? t('chat.retrying', { attempt: retryStatus.attempt, max: retryStatus.maxAttempts })
+      ? t(`chat.retryingByReason.${retryKind}`)
       : t('chat.sending');
   return (
     <article
@@ -662,13 +664,16 @@ function WaitingBubble({
                 <LoaderCircle size={14} />
               </span>
               <div className="message-retry-copy">
-                <span className="message-retry-title">{label}</span>
-                <span className="message-retry-hint">{t('chat.retryingHint')}</span>
-                <span className="message-retry-reason">{t('chat.retryingReason', { reason: retryStatus.reason })}</span>
+                <div className="message-retry-heading">
+                  <span className="message-retry-title">{label}</span>
+                  <span className="message-retry-progress">
+                    {retryStatus.attempt}/{retryStatus.maxAttempts}
+                  </span>
+                </div>
+                <span className="message-retry-reason" title={retryStatus.reason}>
+                  {retryStatus.reason}
+                </span>
               </div>
-              <span className="message-retry-badge">
-                {retryStatus.attempt}/{retryStatus.maxAttempts}
-              </span>
             </div>
           ) : (
             <TypingIndicator label={label} />

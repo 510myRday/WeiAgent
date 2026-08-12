@@ -145,9 +145,14 @@
       "x_high": "超高"
     },
     "contextUsage": "上下文 {used} / {limit}",
-    "retrying": "请求超时，正在重试（{attempt}/{max}）",
-    "retryingHint": "模型暂时未响应，正在自动重试…",
-    "retryingReason": "原因：{reason}",
+    "retrying": "正在重试",
+    "retryingByReason": {
+      "timeout": "请求超时，正在重试",
+      "rateLimited": "服务限流，正在重试",
+      "upstream": "上游服务异常，正在重试",
+      "connection": "连接中断，正在重试",
+      "request": "请求失败，正在重试"
+    },
     "contextUsageTitle": "上下文占用",
     "contextUsageUsed": "{percent}% 已用（剩余 {remaining}%）",
     "contextUsageStats": "已用 {used}，共 {limit}",

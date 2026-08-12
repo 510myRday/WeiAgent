@@ -786,8 +786,8 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(explicit.get("prompt_cache_key").is_some());
-        // Non-5.6 models still get retention/key but no content breakpoints.
+        assert!(explicit.get("prompt_cache_key").is_none());
+        // Explicit mode stays disabled until the provider declares support.
         assert!(explicit.get("prompt_cache_options").is_none());
         assert!(
             explicit["input"]
@@ -798,13 +798,39 @@ mod tests {
                 .flatten()
                 .all(|block| block.get("prompt_cache_breakpoint").is_none())
         );
+
+        provider.cache_capabilities = Some(crate::llm::cache::ProviderCacheCapabilities {
+            automatic_prefix_cache: true,
+            explicit_breakpoints: true,
+            stable_cache_key: true,
+            supports_cache_retention: false,
+        });
+        let explicit = build_openai_responses_request(
+            &agent,
+            &provider,
+            &messages,
+            false,
+            "system",
+            &Value::Null,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(explicit.get("prompt_cache_key").is_some());
     }
 
     #[test]
     fn gpt56_requests_mark_explicit_breakpoints_and_options() {
         let (mut agent, messages) = fixture();
         agent.model_id = "gpt-5.6".to_string();
-        let provider = test_provider();
+        let mut provider = test_provider();
+        provider.prompt_cache.retention = Some("24h".to_string());
+        provider.cache_capabilities = Some(crate::llm::cache::ProviderCacheCapabilities {
+            automatic_prefix_cache: true,
+            explicit_breakpoints: true,
+            stable_cache_key: true,
+            supports_cache_retention: true,
+        });
         let request = build_openai_responses_request(
             &agent,
             &provider,

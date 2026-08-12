@@ -139,6 +139,8 @@ export function AgentsPanel({
   );
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  const activeAgentRef = useRef<Agent | undefined>(activeAgent);
+  activeAgentRef.current = activeAgent;
   const selectedAgentProvider = providers.find((provider) => provider.id === agentForm.model_provider_id);
   const visibleSections = agentConfigSections.filter((section) => activeAgent || !section.requiresAgent);
   const displayedAgentName = activeAgent?.is_builtin
@@ -185,8 +187,9 @@ export function AgentsPanel({
 
   useEffect(() => {
     let cancelled = false;
-    const workspaceAgentId = activeAgent?.id ?? '';
-    if (!workspaceAgentId || !activeAgent) {
+    const workspaceAgent = activeAgentRef.current;
+    const workspaceAgentId = workspaceAgent?.id ?? '';
+    if (!workspaceAgentId || !workspaceAgent) {
       setWorkspaceForm(defaultWorkspaceForm);
       return;
     }
@@ -199,7 +202,7 @@ export function AgentsPanel({
           memory: workspace.memory,
           instructions: workspace.instructions,
         };
-        const initialPayload = agentPayloadFromAgent(activeAgent);
+        const initialPayload = agentPayloadFromAgent(workspaceAgent);
         const serialized = serializeAgentSnapshot(initialPayload, nextWorkspace);
         loadedWorkspaceAgentIdRef.current = workspaceAgentId;
         persistedSerializedRef.current = serialized;
@@ -217,7 +220,7 @@ export function AgentsPanel({
     return () => {
       cancelled = true;
     };
-  }, [activeAgent?.id, agentActionError, t, toast]);
+  }, [activeAgent?.id, agentActionError, toast]);
 
   useEffect(() => {
     if (

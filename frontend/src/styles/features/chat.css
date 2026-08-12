@@ -177,11 +177,13 @@
   top: 0;
   left: 0;
   width: 100%;
+  min-width: 0;
   padding-bottom: 13px;
 }
 
 .message-list-virtual-row > * {
   width: 100%;
+  min-width: 0;
 }
 
 .message-time-separator {
@@ -195,14 +197,17 @@
 }
 
 .message-row {
+  display: flex;
   gap: 10px;
   min-width: 0;
   max-width: 100%;
 }
 
 .message-body {
+  width: min(var(--reading-max-width), 80%);
   min-width: 0;
   max-width: min(var(--reading-max-width), 80%);
+  flex: 0 1 auto;
 }
 
 .message-row--tool .message-body {
@@ -211,8 +216,11 @@
 }
 
 .message-bubble {
+  width: auto;
   min-width: 0;
   max-width: 100%;
+  min-height: 0;
+  overflow: visible;
   padding: 12px 16px;
   border-color: var(--border-subtle);
   border-radius: 4px 14px 14px 14px;
@@ -741,6 +749,7 @@
 
 .message-markdown,
 .message-plain {
+  width: auto;
   min-width: 0;
   max-width: 100%;
   color: var(--color-message-text);
@@ -1169,7 +1178,18 @@
 .message-markdown h6,
 .message-markdown pre,
 .message-markdown table {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   margin-top: 12px;
+}
+
+.message-bubble > *,
+.message-markdown > *,
+.message-plain > *,
+.message-reasoning__content > *,
+.message-tool__content > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .message-markdown ul,
@@ -1178,6 +1198,8 @@
 }
 
 .message-markdown blockquote {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   margin-left: 0;
   padding: 8px 12px;
   border-left: 3px solid var(--color-primary-border);
@@ -1186,6 +1208,11 @@
 }
 
 .message-markdown .code-block-wrap pre {
+  max-width: 100%;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
   border-color: var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--surface-code);
@@ -1471,6 +1498,17 @@
   background: rgba(25, 35, 30, 0.76);
   color: var(--color-on-primary);
   cursor: pointer;
+}
+
+.message-markdown .code-block-wrap {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.message-markdown a {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .composer-image-preview.is-mask {
@@ -2012,7 +2050,7 @@
   color: var(--color-text);
   background: var(--surface-subtle);
   font-weight: var(--font-weight-emphasis);
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .message-tool__elapsed {
@@ -2102,15 +2140,19 @@
 
 /* Auto-retry status inside assistant waiting bubble */
 .message-row.assistant.is-retrying .message-bubble {
-  min-width: min(280px, 100%);
+  width: min(100%, 520px);
+  min-width: 0;
 }
 
 .message-retry-status {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
   gap: 10px;
-  min-height: 28px;
-  padding: 2px 0;
+  min-height: 30px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .message-retry-spinner {
@@ -2120,7 +2162,7 @@
   flex-shrink: 0;
   width: 22px;
   height: 22px;
-  border-radius: 999px;
+  border-radius: 50%;
   background: color-mix(in srgb, var(--status-warning-text) 16%, transparent);
   color: var(--status-warning-text);
 }
@@ -2131,42 +2173,58 @@
 
 .message-retry-copy {
   display: grid;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
-  flex: 1;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.message-retry-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  row-gap: 3px;
 }
 
 .message-retry-title {
+  min-width: 0;
+  max-width: 100%;
   font-size: var(--font-size-label, 13px);
   font-weight: 600;
-  color: var(--text-primary);
-  line-height: 1.3;
+  color: var(--color-text);
+  line-height: var(--line-height-tight);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.message-retry-hint {
-  font-size: 12px;
-  color: var(--color-muted);
-  line-height: 1.35;
+.message-retry-progress {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid var(--status-warning-border);
+  border-radius: var(--radius-round);
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
+  font-size: var(--font-size-micro);
+  font-weight: var(--font-weight-emphasis);
+  line-height: var(--line-height-tight);
+  font-variant-numeric: tabular-nums;
 }
 
 .message-retry-reason {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: none;
+  overflow: visible;
   overflow-wrap: anywhere;
   color: var(--color-muted);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.message-retry-badge {
-  flex-shrink: 0;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--status-warning-text) 35%, var(--border-strong));
-  background: color-mix(in srgb, var(--status-warning-text) 12%, var(--surface-elevated));
-  color: var(--status-warning-text);
-  font-size: 11px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-snug);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 @keyframes message-retry-spin {
@@ -2177,5 +2235,15 @@
 @media (prefers-reduced-motion: reduce) {
   .message-retry-spinner svg {
     animation: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .message-retry-heading {
+    align-items: flex-start;
+  }
+
+  .message-retry-title {
+    white-space: normal;
   }
 }

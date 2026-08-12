@@ -145,9 +145,14 @@
       "x_high": "Extra high"
     },
     "contextUsage": "Context {used} / {limit}",
-    "retrying": "Timed out, retrying ({attempt}/{max})",
-    "retryingHint": "The model did not respond in time. Retrying automatically…",
-    "retryingReason": "Reason: {reason}",
+    "retrying": "Retrying",
+    "retryingByReason": {
+      "timeout": "Request timed out, retrying",
+      "rateLimited": "Rate limited, retrying",
+      "upstream": "Upstream service error, retrying",
+      "connection": "Connection interrupted, retrying",
+      "request": "Request failed, retrying"
+    },
     "contextUsageTitle": "Context usage",
     "contextUsageUsed": "{percent}% used ({remaining}% left)",
     "contextUsageStats": "Used {used} of {limit}",

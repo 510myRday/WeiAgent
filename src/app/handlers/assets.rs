@@ -85,7 +85,6 @@ fn validate_image_bytes(path: &std::path::Path, bytes: &[u8]) -> AppResult<&'sta
 async fn resolve_local_asset_path(root: &std::path::Path, raw_path: &str) -> AppResult<PathBuf> {
     let requested = path_from_local_source(raw_path)?;
     let root = tokio::fs::canonicalize(root).await?;
-    let is_absolute = requested.is_absolute();
     let requested = if requested.is_absolute() {
         requested
     } else {
@@ -98,7 +97,7 @@ async fn resolve_local_asset_path(root: &std::path::Path, raw_path: &str) -> App
                 std::io::ErrorKind::NotFound => AppError::NotFound,
                 _ => AppError::Storage(error),
             })?;
-    if !is_absolute && !fsutil::path_is_within(&resolved, &root) {
+    if !fsutil::path_is_within(&resolved, &root) {
         return Err(AppError::BadRequest(
             "local asset must be inside the WeiAgent attachments directory".to_string(),
         ));

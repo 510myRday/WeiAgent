@@ -15,19 +15,13 @@ pub enum PromptCacheMode {
     Explicit,
 }
 
-fn default_prompt_cache_retention() -> Option<String> {
-    Some("24h".to_string())
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PromptCacheConfig {
     #[serde(default)]
     pub mode: PromptCacheMode,
     #[serde(default)]
     pub use_stable_key: bool,
-    /// Extended retention for OpenAI-style prefix caches. Defaults to `24h`.
-    /// Set to `null` to omit the field and use the provider's native default.
-    #[serde(default = "default_prompt_cache_retention")]
+    #[serde(default)]
     pub retention: Option<String>,
     #[serde(default)]
     pub anthropic_ttl: Option<String>,
@@ -40,7 +34,7 @@ impl Default for PromptCacheConfig {
         Self {
             mode: PromptCacheMode::Automatic,
             use_stable_key: false,
-            retention: default_prompt_cache_retention(),
+            retention: None,
             anthropic_ttl: None,
             gemini_cached_content: None,
         }
@@ -88,11 +82,13 @@ pub fn effective_capabilities(provider: &ModelProvider) -> ProviderCacheCapabili
         ProviderType::OpenAiCompatible => ProviderCacheCapabilities::default(),
         ProviderType::OpenAiResponses => ProviderCacheCapabilities {
             automatic_prefix_cache: true,
-            // GPT-5.6+ supports content-block breakpoints; model gating happens
-            // at request build time so older Responses models stay untouched.
-            explicit_breakpoints: true,
+            // Explicit breakpoint fields are opt-in because many Responses
+            // compatible gateways reject fields they do not implement.
+            explicit_breakpoints: false,
             stable_cache_key: true,
-            supports_cache_retention: true,
+            // Retention is opt-in for compatibility with Responses gateways
+            // that support prompt_cache_key but reject retention fields.
+            supports_cache_retention: false,
         },
         ProviderType::AnthropicMessages => ProviderCacheCapabilities {
             automatic_prefix_cache: true,
@@ -233,8 +229,6 @@ pub fn apply_openai_fields(
     {
         body.insert("prompt_cache_retention".to_string(), json!(retention));
     }
-    // Disable the GPT-5.6+ implicit latest-message breakpoint so only the
-    // stable prefixes we mark are eligible for cache writes.
     if context.explicit_breakpoints {
         body.insert(
             "prompt_cache_options".to_string(),
@@ -302,7 +296,19 @@ mod tests {
         let mut body = Map::new();
         apply_openai_fields(&mut body, &p, &context);
         assert!(body.contains_key("prompt_cache_key"));
-        assert_eq!(body["prompt_cache_retention"], "24h");
+        assert!(!body.contains_key("prompt_cache_retention"));
+        assert!(!body.contains_key("prompt_cache_options"));
+        assert!(!context.explicit_breakpoints);
+
+        p.cache_capabilities = Some(ProviderCacheCapabilities {
+            automatic_prefix_cache: true,
+            explicit_breakpoints: true,
+            stable_cache_key: true,
+            supports_cache_retention: true,
+        });
+        let context = build_context(&p, "gpt-5.6", Uuid::nil(), "responses", "system", None);
+        let mut body = Map::new();
+        apply_openai_fields(&mut body, &p, &context);
         assert_eq!(body["prompt_cache_options"]["mode"], "explicit");
         assert!(context.explicit_breakpoints);
 
@@ -353,14 +359,11 @@ mod tests {
     }
 
     #[test]
-    fn default_retention_is_24h_and_nullable() {
-        assert_eq!(
-            PromptCacheConfig::default().retention.as_deref(),
-            Some("24h")
-        );
+    fn default_retention_is_omitted_and_nullable() {
+        assert_eq!(PromptCacheConfig::default().retention, None);
         let parsed: PromptCacheConfig = serde_json::from_str(r#"{"retention":null}"#).unwrap();
         assert_eq!(parsed.retention, None);
         let omitted: PromptCacheConfig = serde_json::from_str(r#"{}"#).unwrap();
-        assert_eq!(omitted.retention.as_deref(), Some("24h"));
+        assert_eq!(omitted.retention, None);
     }
 }
