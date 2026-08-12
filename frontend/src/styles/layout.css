@@ -89,6 +89,7 @@
   height: 100%;
   padding: clamp(20px, 2.4vw, 36px) var(--page-inline-padding);
   overflow-y: auto;
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
 }
 

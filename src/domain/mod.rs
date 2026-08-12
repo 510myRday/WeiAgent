@@ -6,6 +6,7 @@ pub mod mcp;
 pub mod providers;
 pub mod runtime;
 pub mod settings;
+pub mod skills;
 pub mod task_planning;
 pub mod tools;
 
@@ -29,9 +30,8 @@ pub use ip_proxies::{
 };
 pub use mcp::{
     McpAgentOverrides, McpAgentSettings, McpAuthState, McpAuthStatus, McpDiagnostics,
-    McpIdentityHeader, McpServer, McpServerDraft, McpServerOverride,
-    McpServerStatus, McpTool, McpToolOverride, McpTransport, qualify_tool_name,
-    qualify_tool_name_with_suffix,
+    McpIdentityHeader, McpServer, McpServerDraft, McpServerOverride, McpServerStatus, McpTool,
+    McpToolOverride, McpTransport, qualify_tool_name, qualify_tool_name_with_suffix,
 };
 pub use providers::{
     ApiKeyStrategy, CreateModelProviderRequest, FetchProviderModelsRequest, ImageModelConfig,
@@ -42,6 +42,11 @@ pub use runtime::{
     EnvironmentRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, RuntimeSource,
 };
 pub use settings::AppSettings;
+pub use skills::{
+    SkillAgentOverridesRequest, SkillChangeEvent, SkillChangeFeed, SkillConflict, SkillContent,
+    SkillDiagnostic, SkillFile, SkillGroupOverride, SkillGroupState, SkillImportTask,
+    SkillManifest, SkillOverride, SkillOverrides, SkillSettings,
+};
 pub use task_planning::{TaskPlan, TaskPlanItem, TaskPlanItemStatus};
 pub use tools::{
     AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision, ApprovalRequest,

@@ -3,7 +3,6 @@ use std::{io::Cursor, path::PathBuf};
 use crate::{
     app::AppState,
     error::{AppError, AppResult},
-    fsutil,
 };
 use axum::{
     body::Body,
@@ -26,7 +25,7 @@ pub async fn read_local_asset(
     State(state): State<AppState>,
     Query(query): Query<LocalAssetQuery>,
 ) -> AppResult<Response> {
-    let path = resolve_local_asset_path(&state.store.attachments_dir, &query.path).await?;
+    let path = resolve_local_asset_path(&query.path, &state.store.terminal_workspace_dir).await?;
     let metadata = tokio::fs::metadata(&path).await?;
     if !metadata.is_file() {
         return Err(AppError::NotFound);
@@ -82,13 +81,15 @@ fn validate_image_bytes(path: &std::path::Path, bytes: &[u8]) -> AppResult<&'sta
     Ok(image_content_type(expected_format))
 }
 
-async fn resolve_local_asset_path(root: &std::path::Path, raw_path: &str) -> AppResult<PathBuf> {
+async fn resolve_local_asset_path(
+    raw_path: &str,
+    relative_root: &std::path::Path,
+) -> AppResult<PathBuf> {
     let requested = path_from_local_source(raw_path)?;
-    let root = tokio::fs::canonicalize(root).await?;
     let requested = if requested.is_absolute() {
         requested
     } else {
-        std::env::current_dir()?.join(requested)
+        relative_root.join(requested)
     };
     let resolved =
         tokio::fs::canonicalize(&requested)
@@ -97,11 +98,6 @@ async fn resolve_local_asset_path(root: &std::path::Path, raw_path: &str) -> App
                 std::io::ErrorKind::NotFound => AppError::NotFound,
                 _ => AppError::Storage(error),
             })?;
-    if !fsutil::path_is_within(&resolved, &root) {
-        return Err(AppError::BadRequest(
-            "local asset must be inside the WeiAgent attachments directory".to_string(),
-        ));
-    }
     Ok(resolved)
 }
 
@@ -190,7 +186,7 @@ mod tests {
             .unwrap();
         tokio::fs::write(&image, valid_png).await.unwrap();
 
-        let resolved = resolve_local_asset_path(&root, image.to_string_lossy().as_ref())
+        let resolved = resolve_local_asset_path(image.to_string_lossy().as_ref(), directory.path())
             .await
             .unwrap();
 
@@ -198,17 +194,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_images_outside_the_attachment_directory() {
+    async fn resolves_images_outside_the_attachment_directory() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("attachments");
         tokio::fs::create_dir_all(&root).await.unwrap();
         let outside = directory.path().join("outside.png");
         tokio::fs::write(&outside, valid_png()).await.unwrap();
 
-        assert!(matches!(
-            resolve_local_asset_path(&root, outside.to_string_lossy().as_ref()).await,
-            Err(AppError::BadRequest(_))
-        ));
+        let resolved =
+            resolve_local_asset_path(outside.to_string_lossy().as_ref(), directory.path())
+                .await
+                .unwrap();
+
+        assert_eq!(resolved, tokio::fs::canonicalize(outside).await.unwrap());
     }
 
     #[test]
@@ -243,7 +241,24 @@ mod tests {
         tokio::fs::write(&image, valid_png()).await.unwrap();
         let relative = image.strip_prefix(&current_dir).unwrap();
 
-        let resolved = resolve_local_asset_path(&root, relative.to_string_lossy().as_ref())
+        let resolved = resolve_local_asset_path(relative.to_string_lossy().as_ref(), &current_dir)
+            .await
+            .unwrap();
+
+        assert_eq!(resolved, tokio::fs::canonicalize(image).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn resolves_relative_workspace_image_paths_from_the_workspace_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let image = workspace.join("attachments").join("linuxdo.png");
+        tokio::fs::create_dir_all(image.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&image, valid_png()).await.unwrap();
+
+        let resolved = resolve_local_asset_path("attachments/linuxdo.png", &workspace)
             .await
             .unwrap();
 

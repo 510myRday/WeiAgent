@@ -11,6 +11,7 @@ import { userErrorMessage } from './utils/userError';
 
 const AgentsPanel = lazy(() => import('./features/agents/AgentsPanel').then((module) => ({ default: module.AgentsPanel })));
 const ToolsPanel = lazy(() => import('./features/tools/ToolsPanel').then((module) => ({ default: module.ToolsPanel })));
+const SkillsPanel = lazy(() => import('./features/tools/SkillsPanel').then((module) => ({ default: module.SkillsPanel })));
 const SettingsPanel = lazy(() => import('./features/settings/SettingsPanel').then((module) => ({ default: module.SettingsPanel })));
 const MonitorPanel = lazy(() => import('./features/monitor/MonitorPanel').then((module) => ({ default: module.MonitorPanel })));
 
@@ -230,6 +231,13 @@ export function App() {
             onOpenIpProxies={openIpProxySettings}
             onOpenMain={openMainPane}
             onBackToList={openListPane}
+          />
+        )}
+        {activeNav === 'skills' && (
+          <SkillsPanel
+            onOpenMain={openMainPane}
+            onBackToList={openListPane}
+            onOpenIpProxies={openIpProxySettings}
           />
         )}
         {activeNav === 'settings' && (

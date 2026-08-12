@@ -110,7 +110,16 @@ export function isLocalImageSource(source: string): boolean {
     || /^[a-z]:[\\/]/i.test(decoded)
     || /^\\\\/.test(decoded)
     || /^\/(?!\/)/.test(decoded)
+    || isRelativeImageSource(decoded)
   );
+}
+
+function isRelativeImageSource(source: string): boolean {
+  const trimmed = source.trim();
+  return Boolean(trimmed)
+    && !trimmed.startsWith('/')
+    && !trimmed.startsWith('//')
+    && !/^[a-z][a-z\d+.-]*:/i.test(trimmed);
 }
 
 function isInlineImageSource(source: string): boolean {

@@ -10,7 +10,9 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::app::{
     AppState,
-    handlers::{agents, assets, conversations, ip_proxies, llm_logs, providers, settings, tools},
+    handlers::{
+        agents, assets, conversations, ip_proxies, llm_logs, providers, settings, skills, tools,
+    },
     security::enforce_api_security,
     static_assets::serve_frontend,
 };
@@ -149,6 +151,34 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
         .route(
             "/api/agents/{agent_id}/tools-config",
             get(tools::read_agent_tools_config).put(tools::update_agent_tools_config),
+        )
+        .route("/api/skills", get(skills::list_skills))
+        .route("/api/skills/changes", get(skills::skill_changes))
+        .route("/api/skills/import", post(skills::import_skill))
+        .route("/api/skills/import-tasks", get(skills::list_import_tasks))
+        .route("/api/skills/cleanup-orphans", post(skills::cleanup_orphans))
+        .route(
+            "/api/skills/{skill_name}/content",
+            get(skills::read_skill_content),
+        )
+        .route(
+            "/api/skills/{skill_name}/enabled",
+            put(skills::update_skill_enabled),
+        )
+        .route(
+            "/api/skills/{skill_name}",
+            get(skills::read_skill)
+                .put(skills::update_skill_icon)
+                .post(skills::update_skill)
+                .delete(skills::delete_skill),
+        )
+        .route(
+            "/api/skills/groups/{group_name}/enabled",
+            put(skills::update_skill_group_enabled),
+        )
+        .route(
+            "/api/agents/{agent_id}/skills-config",
+            get(skills::read_agent_skills).put(skills::update_agent_skills),
         )
         .route(
             "/api/tools/defaults",

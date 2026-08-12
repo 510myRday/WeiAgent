@@ -301,9 +301,7 @@ mod tests {
 
         // Different affinity may land on a different key; either way retries
         // still advance within the same request.
-        let mut other_cycle = ApiKeyCycle::new(&rr)
-            .unwrap()
-            .with_affinity(Some(&other));
+        let mut other_cycle = ApiKeyCycle::new(&rr).unwrap().with_affinity(Some(&other));
         let other_first = other_cycle.next_key().to_string();
         let other_retry = other_cycle.next_key().to_string();
         assert_ne!(other_first, other_retry);

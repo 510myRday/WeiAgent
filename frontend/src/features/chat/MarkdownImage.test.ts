@@ -31,4 +31,13 @@ describe('markdown image sources', () => {
     });
     expect(isLocalImageSource('//cdn.example.com/chart.png')).toBe(false);
   });
+
+  test('maps relative workspace image paths to the local asset endpoint', () => {
+    const resolved = resolveMarkdownImageSource('attachments/linuxdo.png');
+    const url = new URL(resolved!.url, 'http://localhost');
+
+    expect(resolved?.isLocal).toBe(true);
+    expect(url.pathname).toBe('/api/assets/local');
+    expect(url.searchParams.get('path')).toBe('attachments/linuxdo.png');
+  });
 });

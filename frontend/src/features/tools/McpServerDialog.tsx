@@ -12,7 +12,7 @@ const EMPTY_DRAFT: McpServerDraft = {
   name: '',
   description: '',
   enabled: true,
-  supports_parallel_tool_calls: false,
+  supports_parallel_tool_calls: true,
   provider: null,
   provider_url: null,
   logo_url: null,
@@ -60,7 +60,7 @@ function draftFromServer(server?: McpServer, secrets?: McpTransport): McpServerD
     name: server.name,
     description: server.description,
     enabled: server.enabled,
-    supports_parallel_tool_calls: server.supports_parallel_tool_calls ?? false,
+    supports_parallel_tool_calls: server.supports_parallel_tool_calls ?? true,
     provider: server.provider ?? null,
     provider_url: server.provider_url ?? null,
     logo_url: server.logo_url ?? null,
@@ -279,7 +279,7 @@ export function McpServerDialog({
       const nextDraft = {
         ...parsed,
         id: draft.id,
-        supports_parallel_tool_calls: parsed.supports_parallel_tool_calls ?? false,
+        supports_parallel_tool_calls: parsed.supports_parallel_tool_calls ?? true,
         provider: parsed.provider ?? null,
         provider_url: parsed.provider_url ?? null,
         logo_url: parsed.logo_url ?? null,
@@ -297,7 +297,7 @@ export function McpServerDialog({
     try {
       const parsed = JSON.parse(jsonText) as McpServerDraft;
       const validationError = validateMcpDraft(parsed, t);
-      const nextDraft = { ...parsed, id: draft.id, supports_parallel_tool_calls: parsed.supports_parallel_tool_calls ?? false, provider: parsed.provider ?? null, provider_url: parsed.provider_url ?? null, logo_url: parsed.logo_url ?? null, tags: parsed.tags ?? [] };
+      const nextDraft = { ...parsed, id: draft.id, supports_parallel_tool_calls: parsed.supports_parallel_tool_calls ?? true, provider: parsed.provider ?? null, provider_url: parsed.provider_url ?? null, logo_url: parsed.logo_url ?? null, tags: parsed.tags ?? [] };
       const formatted = serializeJsonDraft(nextDraft);
       setJsonText(formatted);
       if (!validationError) {
@@ -430,9 +430,6 @@ export function McpServerDialog({
                 <option value="sse">{t('tools.mcp.transportSse')}</option>
               </select>
             </FormField>
-            <div className="mcp-long-running-setting">
-              <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.parallelToolCalls')}</strong><small>{t('tools.mcp.parallelToolCallsHint')}</small></div><span className="toggle-switch"><input id="mcp-parallel-tool-calls" aria-label={t('tools.mcp.parallelToolCalls')} type="checkbox" checked={draft.supports_parallel_tool_calls} onChange={(event) => updateDraft({ supports_parallel_tool_calls: event.target.checked })} /><span className="toggle-slider" /></span></div>
-            </div>
           </section>
           {stdioTransport ? (
             <section className="mcp-form-section">
@@ -484,10 +481,13 @@ export function McpServerDialog({
                 <textarea id="mcp-environment-allowlist" value={(stdioTransport.env_allowlist ?? []).join('\n')} placeholder={t('tools.mcp.environmentAllowlistPlaceholder')} onChange={(event) => updateTransport({ ...stdioTransport, env_allowlist: parseLines(event.target.value) })} rows={3} />
               </FormField>
               <div className="mcp-long-running-setting">
-                <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.inheritEnvironment')}</strong><small>{t('tools.mcp.inheritEnvironmentHint')}</small></div><span className="toggle-switch"><input id="mcp-inherit-environment" aria-label={t('tools.mcp.inheritEnvironment')} type="checkbox" checked={stdioTransport.inherit_env ?? false} onChange={(event) => updateTransport({ ...stdioTransport, inherit_env: event.target.checked })} /><span className="toggle-slider" /></span></div>
+                <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.inheritEnvironment')}</strong><small>{t('tools.mcp.inheritEnvironmentHint')}</small></div><label className="toggle-switch"><input id="mcp-inherit-environment" aria-label={t('tools.mcp.inheritEnvironment')} type="checkbox" checked={stdioTransport.inherit_env ?? false} onChange={(event) => updateTransport({ ...stdioTransport, inherit_env: event.target.checked })} /><span className="toggle-slider" /></label></div>
               </div>
               <div className="mcp-long-running-setting">
-                <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.longRunning')}</strong><small>{t('tools.mcp.longRunningHint')}</small></div><span className="toggle-switch"><input id="mcp-long-running" aria-label={t('tools.mcp.longRunning')} type="checkbox" checked={stdioTransport.long_running ?? false} onChange={(event) => updateTransport({ ...stdioTransport, long_running: event.target.checked })} /><span className="toggle-slider" /></span></div>
+                <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.longRunning')}</strong><small>{t('tools.mcp.longRunningHint')}</small></div><label className="toggle-switch"><input id="mcp-long-running" aria-label={t('tools.mcp.longRunning')} type="checkbox" checked={stdioTransport.long_running ?? false} onChange={(event) => updateTransport({ ...stdioTransport, long_running: event.target.checked })} /><span className="toggle-slider" /></label></div>
+              </div>
+              <div className="mcp-long-running-setting">
+                <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.parallelToolCalls')}</strong><small>{t('tools.mcp.parallelToolCallsHint')}</small></div><label className="toggle-switch"><input id="mcp-parallel-tool-calls" aria-label={t('tools.mcp.parallelToolCalls')} type="checkbox" checked={draft.supports_parallel_tool_calls} onChange={(event) => updateDraft({ supports_parallel_tool_calls: event.target.checked })} /><span className="toggle-slider" /></label></div>
               </div>
             </section>
           ) : (
@@ -516,11 +516,11 @@ export function McpServerDialog({
                 </div>
               </FormField>
               <div className="mcp-oauth-editor">
-                <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.oauth')}</strong><small>{t('tools.mcp.oauthHint')}</small></div><span className="toggle-switch"><input id="mcp-oauth-enabled" aria-label={t('tools.mcp.oauth')} type="checkbox" checked={Boolean(httpTransport?.oauth)} onChange={(event) => {
+                <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.oauth')}</strong><small>{t('tools.mcp.oauthHint')}</small></div><label className="toggle-switch"><input id="mcp-oauth-enabled" aria-label={t('tools.mcp.oauth')} type="checkbox" checked={Boolean(httpTransport?.oauth)} onChange={(event) => {
                   if (!httpTransport) return;
                   const oauth: McpOAuthConfig | null = event.target.checked ? (httpTransport.oauth ?? { authorize_url: '', token_url: '', client_id: '', client_secret: null, scopes: [], redirect_port: null, redirect_uri: null }) : null;
                   updateTransport({ ...httpTransport, oauth });
-                }} /><span className="toggle-slider" /></span></div>
+                }} /><span className="toggle-slider" /></label></div>
                 {httpTransport?.oauth ? <div className="form-grid two-column">
                   <FormField label={t('tools.mcp.authorizeUrl')} htmlFor="mcp-authorize-url"><input id="mcp-authorize-url" type="url" value={httpTransport.oauth.authorize_url} onChange={(event) => updateTransport({ ...httpTransport, oauth: { ...httpTransport.oauth!, authorize_url: event.target.value } })} /></FormField>
                   <FormField label={t('tools.mcp.tokenUrl')} htmlFor="mcp-token-url"><input id="mcp-token-url" type="url" value={httpTransport.oauth.token_url} onChange={(event) => updateTransport({ ...httpTransport, oauth: { ...httpTransport.oauth!, token_url: event.target.value } })} /></FormField>
@@ -533,9 +533,12 @@ export function McpServerDialog({
               </div>
             </section>
           )}
+          {!stdioTransport ? <div className="mcp-long-running-setting">
+            <div className="mcp-setting-toggle"><div><strong>{t('tools.mcp.parallelToolCalls')}</strong><small>{t('tools.mcp.parallelToolCallsHint')}</small></div><label className="toggle-switch"><input id="mcp-parallel-tool-calls" aria-label={t('tools.mcp.parallelToolCalls')} type="checkbox" checked={draft.supports_parallel_tool_calls} onChange={(event) => updateDraft({ supports_parallel_tool_calls: event.target.checked })} /><span className="toggle-slider" /></label></div>
+          </div> : null}
           <section className={`mcp-advanced-section${advancedOpen ? ' is-open' : ''}`}>
             <button type="button" className="mcp-advanced-toggle" onClick={() => setAdvancedOpen((value) => !value)} aria-expanded={advancedOpen}>
-              <span><strong>{t('tools.mcp.advancedSettings')}</strong><small>{t('tools.mcp.advancedSettingsHint')}</small></span>{advancedOpen ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
+              <span><strong>{t('tools.mcp.advancedSettings')}</strong></span>{advancedOpen ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
             </button>
             {advancedOpen ? <div className="mcp-advanced-content">
               <div className="form-grid two-column">
@@ -543,7 +546,7 @@ export function McpServerDialog({
                 {renderTimeoutField()}
                 <FormField label={t('tools.mcp.provider')} htmlFor="mcp-provider"><input id="mcp-provider" value={draft.provider ?? ''} placeholder={t('tools.mcp.providerPlaceholder')} onChange={(event) => updateDraft({ provider: event.target.value || null })} /></FormField>
                 <FormField label={t('tools.mcp.providerUrl')} htmlFor="mcp-provider-url"><input id="mcp-provider-url" type="url" value={draft.provider_url ?? ''} placeholder={t('tools.mcp.providerUrlPlaceholder')} onChange={(event) => updateDraft({ provider_url: event.target.value || null })} /></FormField>
-                <FormField label={t('tools.mcp.logoUrl')} htmlFor="mcp-logo-url" hint={t('tools.mcp.logoUrlHint')}><input id="mcp-logo-url" type="text" value={draft.logo_url ?? ''} placeholder={t('tools.mcp.logoUrlPlaceholder')} onChange={(event) => updateDraft({ logo_url: event.target.value || null })} /></FormField>
+                <FormField label={t('tools.mcp.logoUrl')} htmlFor="mcp-logo-url"><input id="mcp-logo-url" type="text" value={draft.logo_url ?? ''} placeholder={t('tools.mcp.logoUrlPlaceholder')} onChange={(event) => updateDraft({ logo_url: event.target.value || null })} /></FormField>
                 <FormField label={t('tools.mcp.tags')} htmlFor="mcp-tags"><input id="mcp-tags" value={(draft.tags ?? []).join(', ')} placeholder={t('tools.mcp.tagsPlaceholder')} onChange={(event) => updateDraft({ tags: parseTags(event.target.value) })} /></FormField>
               </div>
             </div> : null}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Cable, Globe, ListChecks, Plus, ShieldCheck, Terminal } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Cable, CircleCheck, CircleOff, Globe, ListChecks, LoaderCircle, Plus, Power, ShieldCheck, Terminal } from 'lucide-react';
 
 import type { Agent } from '../../types';
 import type { McpAuthState, McpServer, McpServerDraft, McpTransport } from '../../api';
@@ -251,16 +251,24 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList, onOpenIpProxies }
                   title={<span className="tool-list-title"><span>{server.name}</span><span className="mini-status-badge mcp-badge"><Cable size={12} />MCP</span></span>}
                   subtitle={(
                     <span className="mcp-list-subtitle">
-                      <span>{server.tools.filter((tool) => tool.enabled).length}/{server.tools.length} {t('tools.mcp.toolsSummaryLabel')}</span>
-                      <span className="mcp-list-separator" aria-hidden="true">·</span>
-                      <span className={`mcp-list-state mcp-list-connection mcp-list-connection-${server.status}`}>
-                        <span className="mcp-list-dot" aria-hidden="true" />
-                        {t(`tools.mcp.statuses.${server.status}`)}
-                      </span>
-                      <span className="mcp-list-separator" aria-hidden="true">·</span>
-                      <span className={`mcp-list-state mcp-list-enabled-${server.enabled ? 'on' : 'off'}`}>
-                        <span className="mcp-list-dot" aria-hidden="true" />
-                        {t(server.enabled ? 'tools.enabled' : 'tools.disabled')}
+                      <span className="mcp-list-tools-count">{server.tools.filter((tool) => tool.enabled).length}/{server.tools.length} {t('tools.mcp.toolsLabel')}</span>
+                      <span className="mcp-list-statuses">
+                        <span
+                          className={`mcp-list-status-icon mcp-list-connection mcp-list-connection-${server.status}`}
+                          role="img"
+                          aria-label={`${t('tools.mcp.status')}: ${t(`tools.mcp.statuses.${server.status}`)}`}
+                          title={`${t('tools.mcp.status')}: ${t(`tools.mcp.statuses.${server.status}`)}`}
+                        >
+                          {server.status === 'ready' ? <CircleCheck size={15} aria-hidden="true" /> : server.status === 'connecting' ? <LoaderCircle size={15} aria-hidden="true" /> : server.status === 'error' ? <AlertCircle size={15} aria-hidden="true" /> : <CircleOff size={15} aria-hidden="true" />}
+                        </span>
+                        <span
+                          className={`mcp-list-status-icon mcp-list-enabled-${server.enabled ? 'on' : 'off'}`}
+                          role="img"
+                          aria-label={`${t('tools.enabled')}: ${t(server.enabled ? 'tools.enabled' : 'tools.disabled')}`}
+                          title={`${t('tools.enabled')}: ${t(server.enabled ? 'tools.enabled' : 'tools.disabled')}`}
+                        >
+                          <Power size={15} aria-hidden="true" />
+                        </span>
                       </span>
                     </span>
                   )}

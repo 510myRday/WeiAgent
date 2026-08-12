@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::{
     app::{run_manager::RunManager, security::ApiSecurity},
     llm::registry::DynLlmRegistry,
+    skills::SkillManager,
     storage::{LlmLogger, Store},
     tools::{
         approval::ApprovalManager, mcp::McpManager, registry::ToolRegistry,
@@ -21,5 +22,6 @@ pub struct AppState {
     pub environment_runtime: Arc<EnvironmentRuntimeManager>,
     pub tool_registry: Arc<ToolRegistry>,
     pub mcp_manager: Arc<McpManager>,
+    pub skill_manager: Arc<SkillManager>,
     pub run_manager: Arc<RunManager>,
 }

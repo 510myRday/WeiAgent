@@ -31,6 +31,7 @@ pub struct Store {
     pub(super) ip_proxy_lock: Mutex<()>,
     pub(super) tool_settings_lock: Mutex<()>,
     pub(super) mcp_lock: Mutex<()>,
+    pub(super) skill_lock: Mutex<()>,
 }
 
 impl Store {
@@ -64,9 +65,11 @@ impl Store {
             ip_proxy_lock: Mutex::new(()),
             tool_settings_lock: Mutex::new(()),
             mcp_lock: Mutex::new(()),
+            skill_lock: Mutex::new(()),
         };
         store.initialize_tool_settings().await?;
         store.initialize_mcp_settings().await?;
+        store.initialize_skill_settings().await?;
         store.ensure_builtin_agents().await?;
         Ok(store)
     }

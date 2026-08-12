@@ -446,7 +446,7 @@ export type StreamEvent =
       };
     };
 
-export type NavKey = 'chat' | 'monitor' | 'agents' | 'tools' | 'settings';
+export type NavKey = 'chat' | 'monitor' | 'agents' | 'tools' | 'skills' | 'settings';
 
 export type MobileView = 'list' | 'main';
 

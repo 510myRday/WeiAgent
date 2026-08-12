@@ -89,9 +89,9 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
     }
 }
 
-fn notify_retry(options: &RequestOptions, attempt: u32, max_attempts: u32, error: &AppError) {
+fn notify_retry(options: &RequestOptions, retry_number: u32, max_retries: u32, error: &AppError) {
     if let Some(on_retry) = options.on_retry.as_ref() {
-        on_retry(attempt, max_attempts, &error.to_string());
+        on_retry(retry_number, max_retries, &error.to_string());
     }
 }
 
@@ -178,8 +178,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             .map(|message| message.conversation_id.to_string());
         // Keep the same upstream key for a conversation so provider-side
         // prompt caches stay warm across multi-turn / tool-loop requests.
-        let mut api_keys =
-            ApiKeyCycle::new(provider)?.with_affinity(conversation_id.as_deref());
+        let mut api_keys = ApiKeyCycle::new(provider)?.with_affinity(conversation_id.as_deref());
         let url = self.adapter.completion_url(provider, agent, false);
         let client = self.http.client_for(provider.proxy_url.as_deref())?;
         let log_enabled = self.http.log_enabled();
@@ -193,15 +192,15 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
         let started = Instant::now();
         let agent_id = agent.id.to_string();
 
-        let response = match self
+        let (status, body) = match self
             .http
-            .retry_send(&options, &mut api_keys, |api_key| {
+            .retry_send_read_body(&options, &mut api_keys, |api_key| {
                 self.adapter
                     .authenticated_post(&client, &url, api_key, &request, provider)
             })
             .await
         {
-            Ok(response) => response,
+            Ok(result) => result,
             Err(error) => {
                 spawn_log(
                     &self.http.logger(),
@@ -226,8 +225,6 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             }
         };
 
-        let status = response.status();
-        let body = read_response_body_limited(response, options.timeout).await?;
         if !status.is_success() {
             let error = format!("upstream returned {status}: {body}");
             spawn_log(
@@ -364,7 +361,8 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
         let started = Instant::now();
         let agent_id = agent.id.to_string();
 
-        let attempts = options.retry_attempts.max(1);
+        let max_retries = options.retry_attempts.max(1);
+        let max_requests = max_retries.saturating_add(1);
         let adapter = self.adapter.clone();
         let http = self.http.clone();
         let provider = provider.clone();
@@ -389,15 +387,15 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
 
         let stream = async_stream::stream! {
             let mut api_keys = api_keys;
-            for attempt in 1..=attempts {
+            for request_number in 1..=max_requests {
                 let response = match http.send_once(&stream_options, &mut api_keys, |api_key| {
                     adapter.authenticated_post(&client, &url, api_key, &request, &provider)
                 }).await {
                     Ok(response) => response,
                     Err(error) => {
-                        if attempt < attempts {
-                            notify_retry(&stream_options, attempt + 1, attempts, &error);
-                            tokio::time::sleep(retry_delay(attempt, None)).await;
+                        if request_number < max_requests {
+                            notify_retry(&stream_options, request_number, max_retries, &error);
+                            tokio::time::sleep(retry_delay(request_number, None)).await;
                             continue;
                         }
                         log_stream_open_error(&stream_context, &error);
@@ -416,13 +414,13 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                         .await
                         .unwrap_or_else(|_| "failed to read error body".to_string());
                     let error = AppError::Llm(format!("upstream returned {status}: {body}"));
-                    if attempt < attempts
+                    if request_number < max_requests
                         && (is_retryable_status(status)
                             || (api_keys.has_alternatives() && is_rotatable_status(status)))
                     {
                         api_keys.note_failure();
-                        notify_retry(&stream_options, attempt + 1, attempts, &error);
-                        tokio::time::sleep(retry_delay(attempt, retry_after)).await;
+                        notify_retry(&stream_options, request_number, max_retries, &error);
+                        tokio::time::sleep(retry_delay(request_number, retry_after)).await;
                         continue;
                     }
                     log_stream_status_error(&stream_context, &body, status.as_u16(), &error);
@@ -445,9 +443,9 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                             yield Ok(event);
                         }
                         Err(error) => {
-                            if !saw_event && attempt < attempts && is_retryable_stream_error(&error) {
-                                notify_retry(&stream_options, attempt + 1, attempts, &error);
-                                tokio::time::sleep(retry_delay(attempt, None)).await;
+                            if !saw_event && request_number < max_requests && is_retryable_stream_error(&error) {
+                                notify_retry(&stream_options, request_number, max_retries, &error);
+                                tokio::time::sleep(retry_delay(request_number, None)).await;
                                 retry_stream = true;
                             } else {
                                 yield Err(error);

@@ -240,6 +240,10 @@ pub async fn run_agent(
         .tool_registry
         .definitions(&prepared.tools_config)
         .unwrap_or_default();
+    if !prepared.skill_snapshot.is_empty() {
+        frozen_tools.extend(state.skill_manager.tool_definitions());
+    }
+    frozen_tools.sort_by(|left, right| left.function.name.cmp(&right.function.name));
     if let Some(mcp_tools) = state.mcp_manager.definitions(prepared.agent.id).await {
         frozen_tools.extend(mcp_tools);
         frozen_tools.sort_by(|left, right| left.function.name.cmp(&right.function.name));
@@ -645,6 +649,7 @@ async fn execute_tool_calls(
                     };
                     execute_tool_with_events(
                         state,
+                        &prepared.skill_snapshot,
                         &call.function.name,
                         Value::Object(map),
                         context,
@@ -696,6 +701,7 @@ async fn execute_parallel_mcp_calls(
     append_task_plan_progress: bool,
 ) -> AppResult<()> {
     let call_count = tool_calls.len();
+    let skill_snapshot = prepared.skill_snapshot.clone();
     let mut pending = Vec::new();
     let mut results = Vec::new();
     for (index, call) in tool_calls.into_iter().enumerate() {
@@ -776,23 +782,26 @@ async fn execute_parallel_mcp_calls(
         pending.push((index, call, map, context));
     }
 
-    let mut completed = futures_util::stream::iter(pending.into_iter().map(
-        |(index, call, map, context)| async move {
-            let result = execute_tool_with_events(
-                state,
-                &call.function.name,
-                Value::Object(map),
-                context,
-                events,
-                iteration,
-            )
-            .await;
-            (index, call, result)
-        },
-    ))
-    .buffer_unordered(MAX_TOOL_CALLS_PER_ITERATION)
-    .collect::<Vec<_>>()
-    .await;
+    let mut completed =
+        futures_util::stream::iter(pending.into_iter().map(|(index, call, map, context)| {
+            let skill_snapshot = skill_snapshot.clone();
+            async move {
+                let result = execute_tool_with_events(
+                    state,
+                    &skill_snapshot,
+                    &call.function.name,
+                    Value::Object(map),
+                    context,
+                    events,
+                    iteration,
+                )
+                .await;
+                (index, call, result)
+            }
+        }))
+        .buffer_unordered(MAX_TOOL_CALLS_PER_ITERATION)
+        .collect::<Vec<_>>()
+        .await;
     results.append(&mut completed);
     results.sort_by_key(|(index, _, _)| *index);
 
@@ -1471,12 +1480,19 @@ struct ToolCallBuilder {
 
 async fn execute_tool_with_events(
     state: &AppState,
+    skill_snapshot: &[crate::domain::SkillManifest],
     name: &str,
     arguments: Value,
     mut context: ToolExecutionContext,
     events: &Option<mpsc::Sender<AgentRunEvent>>,
     iteration: usize,
 ) -> ToolResult {
+    if crate::skills::is_skill_tool(name) {
+        return state
+            .skill_manager
+            .execute_tool_with_snapshot(skill_snapshot, name, arguments)
+            .await;
+    }
     if crate::tools::mcp::is_mcp_tool(name) {
         let execution = state
             .mcp_manager

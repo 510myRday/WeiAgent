@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, FormEvent, type KeyboardEvent } from 'react';
-import { ArrowLeft, Brain, FileText, IdCard, Plus, SlidersHorizontal, Trash2, Wrench } from 'lucide-react';
+import { ArrowLeft, Brain, FileText, IdCard, Plus, Sparkles, SlidersHorizontal, Trash2, Wrench } from 'lucide-react';
 
 import type {
   Agent,
@@ -18,6 +18,7 @@ import { AgentListItem, agentDisplayDescription, agentDisplayName } from '../../
 import { PanelShell } from '../../components/layout';
 import { AutoSaveIndicator, AvatarPopover, Button, FormField, IconButton, PaneHeader, useFeedback } from '../../components/ui';
 import { TerminalToolSettings } from '../settings/TerminalToolSettings';
+import { SkillsPanel } from '../tools/SkillsPanel';
 import { userErrorMessage } from '../../utils/userError';
 import { compareNames, sortByName } from '../../utils/sort';
 
@@ -58,7 +59,7 @@ const defaultWorkspaceForm: Pick<AgentWorkspace, 'personality' | 'memory' | 'ins
 };
 
 type AgentAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
-type AgentConfigSection = 'basic' | 'prompt' | 'memory' | 'tools';
+type AgentConfigSection = 'basic' | 'prompt' | 'memory' | 'tools' | 'skills';
 type PendingAgentSave = {
   agentId: string;
   serialized: string;
@@ -75,6 +76,7 @@ const agentConfigSections: {
   { key: 'prompt', icon: FileText, requiresAgent: true },
   { key: 'memory', icon: Brain, requiresAgent: true },
   { key: 'tools', icon: Wrench, requiresAgent: true },
+  { key: 'skills', icon: Sparkles, requiresAgent: true },
 ];
 const AGENT_AUTO_SAVE_DELAY_MS = 600;
 const AGENT_AUTO_SAVE_RETRY_DELAY_MS = 1200;
@@ -703,6 +705,17 @@ export function AgentsPanel({
                 aria-labelledby="agent-config-tab-tools"
               >
                 <TerminalToolSettings scope="agent" agentId={activeAgent.id} onOpenIpProxies={onOpenIpProxies} />
+              </section>
+            ) : null}
+
+            {activeAgent && activeSection === 'skills' ? (
+              <section
+                id="agent-config-panel-skills"
+                className="agent-tools-section"
+                role="tabpanel"
+                aria-labelledby="agent-config-tab-skills"
+              >
+                <SkillsPanel embedded embeddedAgentId={activeAgent.id} onOpenMain={() => undefined} onBackToList={() => undefined} onOpenIpProxies={onOpenIpProxies} />
               </section>
             ) : null}
 

@@ -11,13 +11,15 @@ use crate::{
 
 pub type ChatStream = Pin<Box<dyn Stream<Item = AppResult<StreamEvent>> + Send>>;
 
-/// Called before sleeping between LLM request attempts.
-/// Arguments: next_attempt (1-based, the attempt that will run next), max_attempts, reason.
+/// Called before sleeping between LLM request retries.
+/// Arguments: retry_number (1-based), max_retries, reason.
 pub type RetryHook = Arc<dyn Fn(u32, u32, &str) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct RequestOptions {
     pub timeout: Duration,
+    /// Number of retries after the initial request. A value of 5 allows up to
+    /// 6 total HTTP requests in one model turn.
     pub retry_attempts: u32,
     pub thinking_level: Option<ThinkingLevel>,
     pub on_retry: Option<RetryHook>,

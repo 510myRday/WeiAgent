@@ -8,7 +8,7 @@ use crate::{
     app::AppState,
     domain::{
         Agent, AgentToolsConfig, ChatMessage, ChatMessageStatus, ChatRole, ImageAttachment,
-        ImageSource, ModelProvider, ThinkingLevel,
+        ImageSource, ModelProvider, SkillManifest, ThinkingLevel,
     },
     error::{AppError, AppResult},
 };
@@ -31,6 +31,7 @@ pub struct PreparedChat {
     pub messages_for_llm: Vec<ChatMessage>,
     pub system_prompt: String,
     pub tools_config: AgentToolsConfig,
+    pub skill_snapshot: Vec<SkillManifest>,
     pub thinking_level: Option<ThinkingLevel>,
 }
 
@@ -89,10 +90,40 @@ pub async fn prepare_chat(
     };
     let tools_config = effective_tools_config(state, agent.id).await?;
     state.mcp_manager.prepare_agent(agent.id).await?;
-    let system_prompt = state
+    let skill_settings = state.skill_manager.settings(Some(agent.id)).await?;
+    let mut tools_config = tools_config;
+    for skill in &skill_settings.effective {
+        let root = std::path::Path::new(&skill.root_dir);
+        if let Ok(canonical) = std::fs::canonicalize(root) {
+            let value = canonical.to_string_lossy().to_string();
+            if !tools_config
+                .terminal
+                .allowed_cwd_roots
+                .iter()
+                .any(|item| item == &value)
+            {
+                tools_config.terminal.allowed_cwd_roots.push(value);
+            }
+        }
+    }
+    let mut system_prompt = state
         .store
         .build_agent_system_prompt(&agent, &tools_config)
         .await?;
+    if !skill_settings.effective.is_empty() {
+        system_prompt.push_str("\n\n## Available Skills\n\n");
+        system_prompt.push_str("Use skills_list and skill_view when a Skill is relevant.\n\n");
+        for skill in &skill_settings.effective {
+            if let Some(group) = &skill.group {
+                system_prompt.push_str(&format!(
+                    "- {} [{}]: {}\n",
+                    skill.name, group, skill.description
+                ));
+            } else {
+                system_prompt.push_str(&format!("- {}: {}\n", skill.name, skill.description));
+            }
+        }
+    }
     if system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
         return Err(AppError::BadRequest(format!(
             "agent system prompt exceeds {MAX_SYSTEM_PROMPT_BYTES} bytes"
@@ -151,6 +182,42 @@ pub async fn prepare_chat(
     let mut llm_user_message = user_message.clone();
     llm_user_message.attachments = llm_attachments;
     let mut messages_for_llm = history_for_llm;
+    if let Some((skill_name, task)) = parse_skill_command(content)
+        && skill_settings
+            .defaults
+            .iter()
+            .any(|skill| skill.name == skill_name)
+    {
+        let selected = skill_settings
+            .effective
+            .iter()
+            .find(|skill| skill.name == skill_name)
+            .ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "Skill '{skill_name}' is not enabled for this Agent"
+                ))
+            })?;
+        let skill_content = state
+            .skill_manager
+            .content_from_manifest(selected, None)
+            .await?
+            .content;
+        messages_for_llm.push(ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: agent.id,
+            conversation_id,
+            role: ChatRole::User,
+            content: format!("The user explicitly selected the '{skill_name}' Skill. Follow this Skill for the current task only:\n\n{skill_content}\n\nCurrent task:\n{task}"),
+            reasoning_content: None,
+            openai_response_items: Vec::new(),
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        });
+    }
     messages_for_llm.push(llm_user_message);
 
     Ok(PreparedChat {
@@ -160,8 +227,25 @@ pub async fn prepare_chat(
         messages_for_llm,
         system_prompt,
         tools_config,
+        skill_snapshot: skill_settings.effective,
         thinking_level,
     })
+}
+
+fn parse_skill_command(content: &str) -> Option<(String, String)> {
+    let content = content.trim();
+    let rest = content.strip_prefix('/')?;
+    let boundary = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let name = rest[..boundary].trim().to_ascii_lowercase();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
+    {
+        return None;
+    }
+    let task = rest[boundary..].trim().to_string();
+    Some((name, task))
 }
 
 async fn normalize_history_for_llm(
@@ -271,6 +355,28 @@ mod tool_result_tests {
         assert_eq!(value["status"], "pending_approval");
         assert_eq!(value["command"], "COMMAND");
         assert!(value.get("approval_id").is_none());
+    }
+}
+
+#[cfg(test)]
+mod skill_command_tests {
+    use super::parse_skill_command;
+
+    #[test]
+    fn parses_explicit_skill_commands_only_at_message_start() {
+        assert_eq!(
+            parse_skill_command("/rust-review check this"),
+            Some(("rust-review".to_string(), "check this".to_string()))
+        );
+        assert_eq!(
+            parse_skill_command("/rust-review"),
+            Some(("rust-review".to_string(), String::new()))
+        );
+        assert_eq!(parse_skill_command("please /rust-review check"), None);
+        assert_eq!(
+            parse_skill_command("/rust-reviewer check"),
+            Some(("rust-reviewer".to_string(), "check".to_string()))
+        );
     }
 }
 

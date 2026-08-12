@@ -4,6 +4,7 @@ mod domain;
 mod error;
 mod fsutil;
 mod llm;
+mod skills;
 mod storage;
 mod tools;
 
@@ -67,6 +68,8 @@ async fn main() -> AppResult<()> {
     ));
     tokio::spawn(mcp_manager.clone().cleanup_loop());
     mcp_manager.load_cached().await?;
+    let skill_manager = Arc::new(skills::SkillManager::new(store.clone()).await?);
+    skill_manager.clone().start_monitor();
     let state = AppState {
         api_security: api_security.clone(),
         store,
@@ -77,6 +80,7 @@ async fn main() -> AppResult<()> {
         environment_runtime,
         tool_registry,
         mcp_manager,
+        skill_manager,
         run_manager: Arc::new(app::RunManager::new()),
     };
     let app = if is_dev {

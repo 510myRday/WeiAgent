@@ -122,8 +122,14 @@ pub fn model_supports_prompt_cache_breakpoints(model_id: &str) -> bool {
         return false;
     }
     let mut parts = version.split('.');
-    let major = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
-    let minor = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+    let major = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
     major > 5 || (major == 5 && minor >= 6)
 }
 
@@ -198,7 +204,10 @@ pub fn apply_responses_prompt_cache_breakpoints(input: &mut [Value]) {
         let Some(index) = last_idx else {
             continue;
         };
-        if let Some(block) = content.get_mut(index).and_then(|value| value.as_object_mut()) {
+        if let Some(block) = content
+            .get_mut(index)
+            .and_then(|value| value.as_object_mut())
+        {
             block.insert(
                 "prompt_cache_breakpoint".to_string(),
                 json!({ "mode": "explicit" }),
@@ -324,7 +333,9 @@ mod tests {
     #[test]
     fn gpt56_family_detects_breakpoint_support() {
         assert!(model_supports_prompt_cache_breakpoints("gpt-5.6"));
-        assert!(model_supports_prompt_cache_breakpoints("openai/gpt-5.6-pro"));
+        assert!(model_supports_prompt_cache_breakpoints(
+            "openai/gpt-5.6-pro"
+        ));
         assert!(model_supports_prompt_cache_breakpoints("GPT-5.7-mini"));
         assert!(model_supports_prompt_cache_breakpoints("gpt-6"));
         assert!(!model_supports_prompt_cache_breakpoints("gpt-5.5"));
@@ -354,7 +365,11 @@ mod tests {
             input[0]["content"][1]["prompt_cache_breakpoint"]["mode"],
             "explicit"
         );
-        assert!(input[0]["content"][0].get("prompt_cache_breakpoint").is_none());
+        assert!(
+            input[0]["content"][0]
+                .get("prompt_cache_breakpoint")
+                .is_none()
+        );
         assert!(input[1].get("prompt_cache_breakpoint").is_none());
     }
 

@@ -129,6 +129,8 @@ pub struct McpDiagnostics {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct McpTool {
+    #[serde(default = "new_mcp_tool_id")]
+    pub tool_id: Uuid,
     pub name: String,
     pub qualified_name: String,
     #[serde(default)]
@@ -141,6 +143,10 @@ pub struct McpTool {
     pub enabled: bool,
     #[serde(default)]
     pub updated_at: Option<String>,
+}
+
+fn new_mcp_tool_id() -> Uuid {
+    Uuid::new_v4()
 }
 
 fn default_input_schema() -> Value {
@@ -159,7 +165,7 @@ pub struct McpServer {
     pub description: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub supports_parallel_tool_calls: bool,
     #[serde(default)]
     pub provider: Option<String>,
@@ -251,7 +257,7 @@ pub struct McpServerDraft {
     pub description: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub supports_parallel_tool_calls: bool,
     #[serde(default)]
     pub provider: Option<String>,
@@ -399,15 +405,23 @@ impl McpTransport {
                         }
                     }
                 }
-                if let Some(identity) = current_identity.as_mut().filter(|identity| identity.value == "__preserve__") {
+                if let Some(identity) = current_identity
+                    .as_mut()
+                    .filter(|identity| identity.value == "__preserve__")
+                {
                     if let Some(previous) = old_identity {
                         identity.value = previous.value.clone();
                     } else {
                         identity.value.clear();
                     }
                 }
-                if let Some(oauth) = current_oauth.as_mut().filter(|oauth| oauth.client_secret.as_deref() == Some("__preserve__")) {
-                    oauth.client_secret = old_oauth.as_ref().and_then(|previous| previous.client_secret.clone());
+                if let Some(oauth) = current_oauth
+                    .as_mut()
+                    .filter(|oauth| oauth.client_secret.as_deref() == Some("__preserve__"))
+                {
+                    oauth.client_secret = old_oauth
+                        .as_ref()
+                        .and_then(|previous| previous.client_secret.clone());
                 }
             }
             _ => {}
@@ -448,8 +462,8 @@ pub fn qualify_tool_name_with_suffix(server_name: &str, name: &str, occurrence: 
     let mut server = server_name
         .chars()
         .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-                ch.to_ascii_lowercase()
+            if ch.is_alphanumeric() || ch == '_' || ch == '-' {
+                ch
             } else {
                 '_'
             }
@@ -461,7 +475,7 @@ pub fn qualify_tool_name_with_suffix(server_name: &str, name: &str, occurrence: 
     let mut sanitized = name
         .chars()
         .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            if ch.is_alphanumeric() || ch == '_' || ch == '-' {
                 ch
             } else {
                 '_'
@@ -496,11 +510,15 @@ mod tests {
         let collision = qualify_tool_name_with_suffix("Local MCP", "read/file", 2);
         let long_name = qualify_tool_name("Local MCP", &"x".repeat(200));
 
-        assert_eq!(first, "mcp_local_mcp_read_file");
-        assert_eq!(collision, "mcp_local_mcp_read_file_2");
+        assert_eq!(first, "mcp_Local_MCP_read_file");
+        assert_eq!(collision, "mcp_Local_MCP_read_file_2");
+        assert_eq!(
+            qualify_tool_name("本地MCP网关工具", "codegraph"),
+            "mcp_本地MCP网关工具_codegraph"
+        );
         assert_ne!(first, collision);
         assert!(long_name.len() <= 64);
-        assert!(long_name.starts_with("mcp_local_mcp_"));
+        assert!(long_name.starts_with("mcp_Local_MCP_"));
     }
 
     #[test]

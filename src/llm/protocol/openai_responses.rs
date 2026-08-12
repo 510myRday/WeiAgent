@@ -7,7 +7,10 @@ use crate::{
     domain::{Agent, ChatMessage, ChatRole, ModelProvider, ThinkingLevel},
     error::{AppError, AppResult},
     llm::{
-        cache::{PromptCacheMode, apply_openai_fields, apply_responses_prompt_cache_breakpoints, build_context, effective_capabilities},
+        cache::{
+            PromptCacheMode, apply_openai_fields, apply_responses_prompt_cache_breakpoints,
+            build_context, effective_capabilities,
+        },
         http::StreamLineParser,
         protocol::common::{
             ProtocolAdapter, SseData, bearer_get, bearer_post, default_models, merge_extra_body,
@@ -853,8 +856,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(
             user_blocks.iter().any(|block| {
-                block.get("prompt_cache_breakpoint")
-                    == Some(&json!({ "mode": "explicit" }))
+                block.get("prompt_cache_breakpoint") == Some(&json!({ "mode": "explicit" }))
             }),
             "expected at least one user content breakpoint: {user_blocks:?}"
         );

@@ -8,7 +8,7 @@
 
 .agent-config-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 4px;
   margin-bottom: 16px;
   padding: 4px;
@@ -18,6 +18,7 @@
 }
 
 .agent-config-tab {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -32,6 +33,16 @@
   font-size: var(--font-size-label);
   font-weight: var(--font-weight-emphasis);
   line-height: var(--line-height-tight);
+}
+
+.agent-config-tab + .agent-config-tab::before {
+  position: absolute;
+  inset-block: 8px;
+  inset-inline-start: -3px;
+  width: 1px;
+  background: var(--border-subtle);
+  content: '';
+  pointer-events: none;
 }
 
 .agent-config-tab span {
@@ -284,6 +295,10 @@
   max-width: 760px;
   font-size: var(--font-size-label);
   line-height: var(--line-height-normal);
+}
+
+.agent-tools-section .skills-agent-overview {
+  gap: 18px;
 }
 
 .agent-tools-section > .terminal-tool-settings-v2.is-agent-scope {

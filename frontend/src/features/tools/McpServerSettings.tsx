@@ -159,7 +159,9 @@ export function McpServerSettings({
         description={server.description || t('tools.mcp.noDescription')}
         actions={(
           <div className="mcp-page-actions">
-            <Button variant="secondary" type="button" onClick={onRefresh} icon={<RefreshCw size={15} />}>{t('tools.mcp.refresh')}</Button>
+            <IconButton variant="default" type="button" onClick={onRefresh} label={t('tools.mcp.refresh')}>
+              <RefreshCw size={15} />
+            </IconButton>
             <IconButton type="button" label={t('tools.mcp.edit')} onClick={onEdit}><Pencil size={17} /></IconButton>
             <IconButton variant="danger" type="button" label={t('tools.mcp.delete')} onClick={() => void removeServer()}><Trash2 size={17} /></IconButton>
           </div>
@@ -249,7 +251,7 @@ export function McpServerSettings({
           ) : null}
           <div className="card-body">
             {tools.length > 0 ? <div className="mcp-tool-list">{tools.map((tool) => (
-              <div className={`mcp-tool-row${tool.enabled ? '' : ' is-disabled'}${selectedToolNames.has(tool.name) ? ' is-selected' : ''}`} key={tool.qualified_name}>
+              <div className={`mcp-tool-row${tool.enabled ? '' : ' is-disabled'}${selectedToolNames.has(tool.name) ? ' is-selected' : ''}`} key={tool.tool_id}>
                 <label className="mcp-tool-selection" aria-label={t('tools.mcp.selectTool', { name: tool.title || tool.name })}>
                   <input type="checkbox" checked={selectedToolNames.has(tool.name)} disabled={saving} onChange={(event) => toggleToolSelection(tool.name, event.target.checked)} />
                 </label>

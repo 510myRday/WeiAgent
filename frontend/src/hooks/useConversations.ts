@@ -725,6 +725,7 @@ export function useConversations({
     setConversationUsage(EMPTY_USAGE);
     setHasOlderMessages(false);
     setIsLoadingOlderMessages(false);
+    setRetryStatus(null);
     olderMessagesCursorRef.current = '';
     setIsLoadingChat(Boolean(conversationId));
   }, []);
@@ -819,6 +820,7 @@ export function useConversations({
     setConversationsError('');
     setIsLoadingChat(false);
     setRunPhase('idle');
+    setRetryStatus(null);
   }, []);
 
   const refreshRunningConversations = useCallback(async (agentId: string) => {
@@ -1034,9 +1036,10 @@ export function useConversations({
       if (evt.event === 'phase') {
         const phase = (evt.data as { phase: Exclude<AgentRunPhase, 'idle'> }).phase;
         setRunPhase(phase);
-        if (phase !== 'waiting_for_model') {
-          setRetryStatus(null);
-        }
+        // Each waiting_for_model phase starts a fresh model-request retry
+        // budget. Keep the status during the wait itself, then clear it when
+        // the next model turn or another run phase begins.
+        setRetryStatus(null);
         return;
       }
       if (evt.event === 'retry') {
@@ -1071,6 +1074,10 @@ export function useConversations({
         return;
       }
       if (evt.event === 'assistant') {
+        // A successful model response ends the current retry budget. The next
+        // model turn will receive its own waiting_for_model phase and start at
+        // zero again.
+        setRetryStatus(null);
         const msg = toUiMessage(evt.data as Parameters<typeof toUiMessage>[0]);
         setMessages((current) => {
           const last = current[current.length - 1];
@@ -1109,6 +1116,7 @@ export function useConversations({
         return;
       }
       if (evt.event === 'tool_call_started') {
+        setRetryStatus(null);
         setRunPhase('executing_tool');
         const d = evt.data;
         const startedAtMs = readToolStartTime(d.call_id) ?? Date.now();

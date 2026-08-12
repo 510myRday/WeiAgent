@@ -8,6 +8,7 @@ pub mod llm_logs;
 mod mcp;
 mod migrations;
 mod providers;
+mod skills;
 mod sql_util;
 mod store;
 mod task_plans;
@@ -131,6 +132,9 @@ mod tests {
             tool_table_names(&conn),
             vec![
                 "task_plans",
+                "tool_mcp_agent_baselines",
+                "tool_mcp_agent_seen_servers",
+                "tool_mcp_agent_seen_tools",
                 "tool_mcp_agent_servers",
                 "tool_mcp_agent_tools",
                 "tool_mcp_servers",

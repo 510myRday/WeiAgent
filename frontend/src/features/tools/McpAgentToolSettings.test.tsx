@@ -27,6 +27,7 @@ const settings: McpAgentSettings = {
       transport: { type: 'stdio', command: 'local-mcp', args: [], env: {} },
       tools: [
         {
+          tool_id: 'tool-1',
           name: 'read_file',
           qualified_name: 'mcp__server1__read_file',
           title: 'Read file',
@@ -35,6 +36,7 @@ const settings: McpAgentSettings = {
           enabled: true,
         },
         {
+          tool_id: 'tool-2',
           name: 'write_file',
           qualified_name: 'mcp__server1__write_file',
           title: 'Write file',

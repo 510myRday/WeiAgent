@@ -235,7 +235,7 @@ export function McpAgentToolSettings({
             {tools.length > 0 ? (
               <div className="mcp-agent-tool-list">
                 {tools.map((tool) => (
-                  <div className={`setting-row mcp-agent-tool-row${tool.enabled ? '' : ' is-disabled'}`} key={tool.qualified_name}>
+                  <div className={`setting-row mcp-agent-tool-row${tool.enabled ? '' : ' is-disabled'}`} key={tool.tool_id}>
                     <div className="setting-info mcp-agent-tool-copy">
                       <label>{toolLabel(tool)}</label>
                       <code>{tool.name}</code>

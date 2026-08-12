@@ -5,4 +5,5 @@ pub mod ip_proxies;
 pub mod llm_logs;
 pub mod providers;
 pub mod settings;
+pub mod skills;
 pub mod tools;

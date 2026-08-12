@@ -424,6 +424,7 @@ export type McpOAuthConfig = {
 };
 
 export type McpTool = {
+  tool_id: string;
   name: string;
   qualified_name: string;
   title?: string;
@@ -490,6 +491,93 @@ export type McpServerOverride = { server_id: string; enabled?: boolean; customiz
 export type McpToolOverride = { server_id: string; tool_name: string; enabled?: boolean };
 export type McpAgentOverrides = { servers: McpServerOverride[]; tools: McpToolOverride[] };
 export type McpAgentSettings = { defaults: McpServer[]; overrides: McpAgentOverrides; effective: McpServer[] };
+
+export type SkillFile = { path: string; kind: string; size_bytes: number };
+export type SkillDiagnostic = { path: string; message: string };
+export type SkillConflict = { name: string; count: number; paths: string[] };
+export type SkillManifest = {
+  name: string;
+  description: string;
+  version?: string | null;
+  group?: string | null;
+  tags: string[];
+  icon_url?: string | null;
+  source_url?: string | null;
+  root_dir: string;
+  skill_md: string;
+  scripts: SkillFile[];
+  references: SkillFile[];
+  examples: SkillFile[];
+  content_hash: string;
+  modified_at: string;
+  created_at: string;
+  updated_at: string;
+  diagnostics: SkillDiagnostic[];
+  enabled: boolean;
+  global_override?: boolean | null;
+  group_override?: boolean | null;
+  agent_override?: boolean | null;
+  agent_group_override?: boolean | null;
+};
+export type SkillGroupState = {
+  name: string;
+  enabled: boolean;
+  global_override?: boolean | null;
+  agent_override?: boolean | null;
+};
+export type SkillOverride = { name: string; enabled?: boolean | null };
+export type SkillGroupOverride = { group: string; enabled?: boolean | null };
+export type SkillOverrides = { skills: SkillOverride[]; groups: SkillGroupOverride[] };
+export type SkillSettings = {
+  skills_dir: string;
+  defaults: SkillManifest[];
+  overrides: SkillOverrides;
+  effective: SkillManifest[];
+  groups: SkillGroupState[];
+  orphan_skills: string[];
+  orphan_groups: string[];
+  diagnostics: SkillDiagnostic[];
+  conflicts: SkillConflict[];
+};
+export type SkillImportTask = {
+  id: string;
+  source: string;
+  kind: 'local' | 'network' | string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | string;
+  phase: string;
+  progress: number;
+  error?: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at?: string | null;
+};
+export type SkillContent = {
+  name: string;
+  path: string;
+  root_dir: string;
+  cwd: string;
+  content: string;
+  media_type: string;
+  data_base64?: string | null;
+  files: SkillFile[];
+  created_at: string;
+  updated_at: string;
+  scripts: SkillFile[];
+  references: SkillFile[];
+  examples: SkillFile[];
+};
+
+export type SkillChangeEvent = {
+  version: number;
+  list_changed: boolean;
+  changed_skills: string[];
+};
+
+export type SkillChangeFeed = {
+  version: number;
+  events: SkillChangeEvent[];
+  full_refresh: boolean;
+};
 
 export type TaskPlan = {
   conversation_id: string;
@@ -817,6 +905,83 @@ export function updateMcpToolsEnabled(serverId: string, toolNames: string[], ena
 
 export function readAgentMcpConfig(agentId: string): Promise<McpAgentSettings> {
   return request<McpAgentSettings>(`/api/agents/${encodeURIComponent(agentId)}/mcp-config`);
+}
+
+export function listSkills(): Promise<SkillSettings> {
+  return request<SkillSettings>('/api/skills');
+}
+
+export function readSkillChanges(since: number): Promise<SkillChangeFeed> {
+  return request<SkillChangeFeed>(`/api/skills/changes?since=${since}`);
+}
+
+export function importSkill(source: string, proxyId?: string, kind?: 'local' | 'network'): Promise<SkillImportTask> {
+  return request<SkillImportTask>('/api/skills/import', {
+    method: 'POST',
+    body: JSON.stringify({
+      source,
+      proxy_id: proxyId,
+      kind,
+    }),
+  });
+}
+
+export function listSkillImportTasks(): Promise<SkillImportTask[]> {
+  return request<SkillImportTask[]>('/api/skills/import-tasks');
+}
+
+export function readSkillContent(name: string, path?: string): Promise<SkillContent> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : '';
+  return request<SkillContent>(`/api/skills/${encodeURIComponent(name)}/content${query}`);
+}
+
+export function updateSkillEnabled(name: string, enabled: boolean): Promise<SkillSettings> {
+  return request<SkillSettings>(`/api/skills/${encodeURIComponent(name)}/enabled`, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function updateSkillIcon(name: string, iconUrl: string | null): Promise<SkillSettings> {
+  return request<SkillSettings>(`/api/skills/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ icon_url: iconUrl }),
+  });
+}
+
+export function updateSkill(name: string, sourceUrl: string, proxyId?: string): Promise<SkillImportTask> {
+  return request<SkillImportTask>(`/api/skills/${encodeURIComponent(name)}`, {
+    method: 'POST',
+    body: JSON.stringify({ source_url: sourceUrl, proxy_id: proxyId }),
+  });
+}
+
+export function deleteSkill(name: string): Promise<SkillSettings> {
+  return request<SkillSettings>(`/api/skills/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function updateSkillGroupEnabled(group: string, enabled: boolean): Promise<SkillSettings> {
+  return request<SkillSettings>(`/api/skills/groups/${encodeURIComponent(group)}/enabled`, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function cleanupSkillOrphans(): Promise<SkillSettings> {
+  return request<SkillSettings>('/api/skills/cleanup-orphans', { method: 'POST' });
+}
+
+export function readAgentSkillsConfig(agentId: string): Promise<SkillSettings> {
+  return request<SkillSettings>(`/api/agents/${encodeURIComponent(agentId)}/skills-config`);
+}
+
+export function updateAgentSkillsConfig(agentId: string, overrides: SkillOverrides): Promise<SkillSettings> {
+  return request<SkillSettings>(`/api/agents/${encodeURIComponent(agentId)}/skills-config`, {
+    method: 'PUT',
+    body: JSON.stringify(overrides),
+  });
 }
 
 export function updateAgentMcpConfig(agentId: string, overrides: McpAgentOverrides): Promise<McpAgentSettings> {

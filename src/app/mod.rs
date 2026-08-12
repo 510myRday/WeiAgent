@@ -152,6 +152,11 @@ mod tests {
             .unwrap();
         let environment_runtime = test_environment_runtime(&temp_dir);
         let mcp_manager = Arc::new(McpManager::new(store.clone(), environment_runtime.clone()));
+        let skill_manager = Arc::new(
+            crate::skills::SkillManager::new(store.clone())
+                .await
+                .unwrap(),
+        );
         let app = build_router(AppState {
             api_security: ApiSecurity::disabled_for_tests(),
             store,
@@ -166,6 +171,7 @@ mod tests {
             environment_runtime,
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             mcp_manager,
+            skill_manager,
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         });
         (app, agent.id, provider.id, conversation.id)
@@ -615,6 +621,11 @@ mod tests {
         let client = Arc::new(ScriptedChatClient::new(outputs));
         let environment_runtime = test_environment_runtime(&root);
         let mcp_manager = Arc::new(McpManager::new(store.clone(), environment_runtime.clone()));
+        let skill_manager = Arc::new(
+            crate::skills::SkillManager::new(store.clone())
+                .await
+                .unwrap(),
+        );
         let state = AppState {
             api_security: ApiSecurity::disabled_for_tests(),
             store,
@@ -627,6 +638,7 @@ mod tests {
             environment_runtime,
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             mcp_manager,
+            skill_manager,
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         };
         (
@@ -1370,6 +1382,11 @@ mod tests {
         });
         let environment_runtime = test_environment_runtime(&root);
         let mcp_manager = Arc::new(McpManager::new(store.clone(), environment_runtime.clone()));
+        let skill_manager = Arc::new(
+            crate::skills::SkillManager::new(store.clone())
+                .await
+                .unwrap(),
+        );
         let state = AppState {
             api_security: ApiSecurity::disabled_for_tests(),
             store: store.clone(),
@@ -1380,6 +1397,7 @@ mod tests {
             environment_runtime,
             tool_registry: Arc::new(ToolRegistry::with_builtin_tools()),
             mcp_manager,
+            skill_manager,
             run_manager: Arc::new(crate::app::run_manager::RunManager::new()),
         };
         (build_router(state), store, conversation.id)

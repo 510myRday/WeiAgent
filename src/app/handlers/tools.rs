@@ -11,8 +11,8 @@ use crate::{
     domain::{
         AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision,
         ApprovalRequest, ApprovalResponse, EnvironmentRuntimeStatus, McpAgentOverrides,
-        McpAgentSettings, McpAuthState, McpServer, McpServerDraft, ProcessInfo,
-        McpServerStatus, RuntimeComponentKind, WebSearchKeyStatusRecord, WebSearchProviderKind,
+        McpAgentSettings, McpAuthState, McpServer, McpServerDraft, McpServerStatus, ProcessInfo,
+        RuntimeComponentKind, WebSearchKeyStatusRecord, WebSearchProviderKind,
         WebSearchSourceConfig,
     },
     error::{AppError, AppResult},
@@ -380,7 +380,9 @@ pub async fn update_mcp_tools_enabled(
         .filter(|name| !name.is_empty())
         .collect::<Vec<_>>();
     if names.is_empty() {
-        return Err(AppError::BadRequest("at least one MCP tool is required".to_string()));
+        return Err(AppError::BadRequest(
+            "at least one MCP tool is required".to_string(),
+        ));
     }
     state
         .store

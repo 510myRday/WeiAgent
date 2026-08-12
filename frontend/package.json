@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "lint:styles": "stylelint \"src/styles/**/*.css\"",
+    "check:i18n": "node scripts/check-i18n.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
