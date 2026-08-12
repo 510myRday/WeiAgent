@@ -173,7 +173,13 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             tools,
             options.thinking_level,
         )?;
-        let mut api_keys = ApiKeyCycle::new(provider)?;
+        let conversation_id = messages
+            .last()
+            .map(|message| message.conversation_id.to_string());
+        // Keep the same upstream key for a conversation so provider-side
+        // prompt caches stay warm across multi-turn / tool-loop requests.
+        let mut api_keys =
+            ApiKeyCycle::new(provider)?.with_affinity(conversation_id.as_deref());
         let url = self.adapter.completion_url(provider, agent, false);
         let client = self.http.client_for(provider.proxy_url.as_deref())?;
         let log_enabled = self.http.log_enabled();
@@ -186,9 +192,6 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
         };
         let started = Instant::now();
         let agent_id = agent.id.to_string();
-        let conversation_id = messages
-            .last()
-            .map(|message| message.conversation_id.to_string());
 
         let response = match self
             .http
@@ -346,7 +349,10 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             tools,
             options.thinking_level,
         )?;
-        let api_keys = ApiKeyCycle::new(provider)?;
+        let conversation_id = messages
+            .last()
+            .map(|message| message.conversation_id.to_string());
+        let api_keys = ApiKeyCycle::new(provider)?.with_affinity(conversation_id.as_deref());
         let url = self.adapter.completion_url(provider, agent, true);
         let client = self.http.client_for(provider.proxy_url.as_deref())?;
         let log_enabled = self.http.log_enabled();
@@ -357,9 +363,6 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
         };
         let started = Instant::now();
         let agent_id = agent.id.to_string();
-        let conversation_id = messages
-            .last()
-            .map(|message| message.conversation_id.to_string());
 
         let attempts = options.retry_attempts.max(1);
         let adapter = self.adapter.clone();

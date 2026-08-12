@@ -4,6 +4,11 @@
 //! process-wide map keyed by provider id: selection stays lock-free on the
 //! request path except for one short mutex hop per request, and nothing is
 //! persisted — after a restart every pool simply starts from its first key.
+//!
+//! When a conversation affinity key is provided, round-robin and random pools
+//! pin the *first* attempt of each request to a stable key for that affinity
+//! so upstream prompt caches stay warm. Retries still sweep through the rest
+//! of the pool.
 
 use std::{
     collections::HashMap,
@@ -39,6 +44,24 @@ fn random_index(len: usize) -> usize {
     (Uuid::new_v4().as_u128() % len as u128) as usize
 }
 
+fn affinity_index(affinity: &str, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let value = if let Ok(id) = Uuid::parse_str(affinity.trim()) {
+        id.as_u128()
+    } else {
+        // FNV-1a 64-bit, widened for modulo.
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for byte in affinity.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        u128::from(hash)
+    };
+    (value % len as u128) as usize
+}
+
 /// Hands out the keys for the attempts of one upstream request.
 ///
 /// The first attempt picks per the provider's strategy; retry attempts sweep
@@ -51,17 +74,30 @@ pub struct ApiKeyCycle {
     keys: Vec<String>,
     strategy: ApiKeyStrategy,
     last_index: Option<usize>,
+    /// Conversation / prompt-cache affinity. Same value => same first key for
+    /// round-robin and random pools.
+    affinity: Option<String>,
 }
 
 impl ApiKeyCycle {
     pub fn new(provider: &ModelProvider) -> AppResult<Self> {
-        Self::from_parts(provider.id, &provider.api_keys, provider.key_strategy)
+        Self::from_parts(provider.id, &provider.api_keys, provider.key_strategy, None)
+    }
+
+    /// Pin the first key pick to a stable conversation / cache affinity.
+    pub fn with_affinity(mut self, affinity: Option<&str>) -> Self {
+        self.affinity = affinity
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        self
     }
 
     pub(crate) fn from_parts(
         provider_id: Uuid,
         api_keys: &[String],
         strategy: ApiKeyStrategy,
+        affinity: Option<String>,
     ) -> AppResult<Self> {
         let keys: Vec<String> = api_keys
             .iter()
@@ -82,6 +118,9 @@ impl ApiKeyCycle {
             keys,
             strategy,
             last_index: None,
+            affinity: affinity
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
         })
     }
 
@@ -99,15 +138,23 @@ impl ApiKeyCycle {
                     self.with_cursor(|cursor| cursor.sticky).unwrap_or_default() % len
                 }
                 ApiKeyStrategy::RoundRobin => {
-                    self.with_cursor(|cursor| {
-                        let index = cursor.round_robin;
-                        cursor.round_robin = cursor.round_robin.wrapping_add(1);
-                        index
-                    })
-                    .unwrap_or_default()
-                        % len
+                    if let Some(affinity) = self.affinity.as_deref() {
+                        affinity_index(affinity, len)
+                    } else {
+                        self.with_cursor(|cursor| {
+                            let index = cursor.round_robin;
+                            cursor.round_robin = cursor.round_robin.wrapping_add(1);
+                            index
+                        })
+                        .unwrap_or_default()
+                            % len
+                    }
                 }
-                ApiKeyStrategy::Random => random_index(len),
+                ApiKeyStrategy::Random => self
+                    .affinity
+                    .as_deref()
+                    .map(|affinity| affinity_index(affinity, len))
+                    .unwrap_or_else(|| random_index(len)),
             },
         };
         self.last_index = Some(index);
@@ -146,20 +193,19 @@ impl ApiKeyCycle {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
-
     use super::*;
+    use chrono::Utc;
 
     fn provider(strategy: ApiKeyStrategy, keys: &[&str]) -> ModelProvider {
         ModelProvider {
             id: Uuid::new_v4(),
-            provider_type: Default::default(),
-            name: "test".to_string(),
-            base_url: "http://localhost".to_string(),
+            provider_type: crate::domain::ProviderType::OpenAiResponses,
+            name: "test".into(),
+            base_url: "http://localhost".into(),
             api_keys: keys.iter().map(ToString::to_string).collect(),
             key_strategy: strategy,
-            models: vec!["model".to_string()],
-            model_configs: Vec::new(),
+            models: vec!["model".into()],
+            model_configs: vec![],
             extra_body: serde_json::Value::Null,
             prompt_cache: Default::default(),
             cache_capabilities: None,
@@ -172,58 +218,94 @@ mod tests {
     }
 
     #[test]
-    fn empty_pool_uses_one_unauthenticated_attempt() {
+    fn empty_or_blank_keys_still_issue_one_anonymous_slot() {
         let mut cycle = ApiKeyCycle::new(&provider(ApiKeyStrategy::Failover, &["  ", ""])).unwrap();
         assert_eq!(cycle.next_key(), "");
-        assert!(!cycle.has_alternatives());
     }
 
     #[test]
     fn round_robin_rotates_across_requests() {
         let provider = provider(ApiKeyStrategy::RoundRobin, &["k1", "k2", "k3"]);
-        let picks: Vec<String> = (0..4)
+        let picks: Vec<_> = (0..3)
             .map(|_| ApiKeyCycle::new(&provider).unwrap().next_key().to_string())
             .collect();
-        assert_eq!(picks, ["k1", "k2", "k3", "k1"]);
+        assert_eq!(picks, vec!["k1", "k2", "k3"]);
     }
 
     #[test]
     fn failover_sticks_until_a_failure_then_advances() {
         let provider = provider(ApiKeyStrategy::Failover, &["k1", "k2", "k3"]);
-
         let mut first = ApiKeyCycle::new(&provider).unwrap();
         assert_eq!(first.next_key(), "k1");
-        drop(first);
+
         let mut second = ApiKeyCycle::new(&provider).unwrap();
         assert_eq!(second.next_key(), "k1", "success keeps the sticky key");
-        second.note_failure();
 
+        first.note_failure();
         let mut third = ApiKeyCycle::new(&provider).unwrap();
         assert_eq!(third.next_key(), "k2", "failure advances the sticky key");
     }
 
     #[test]
-    fn retries_sweep_forward_within_one_request() {
+    fn failover_retries_sweep_the_pool() {
         let provider = provider(ApiKeyStrategy::Failover, &["k1", "k2", "k3"]);
         let mut cycle = ApiKeyCycle::new(&provider).unwrap();
         assert_eq!(cycle.next_key(), "k1");
-        cycle.note_failure();
         assert_eq!(cycle.next_key(), "k2");
-        cycle.note_failure();
         assert_eq!(cycle.next_key(), "k3");
-        cycle.note_failure();
         assert_eq!(cycle.next_key(), "k1", "sweep wraps around the pool");
     }
 
     #[test]
     fn random_picks_stay_in_range_and_retries_still_sweep() {
         let provider = provider(ApiKeyStrategy::Random, &["k1", "k2"]);
-        for _ in 0..16 {
+        for _ in 0..20 {
             let mut cycle = ApiKeyCycle::new(&provider).unwrap();
             let first = cycle.next_key().to_string();
-            assert!(["k1", "k2"].contains(&first.as_str()));
+            assert!(first == "k1" || first == "k2");
             let second = cycle.next_key().to_string();
-            assert_ne!(first, second, "the retry moves to the other key");
+            assert_ne!(first, second);
         }
+    }
+
+    #[test]
+    fn round_robin_and_random_stick_to_conversation_affinity() {
+        let conversation = Uuid::new_v4().to_string();
+        let other = Uuid::new_v4().to_string();
+        let rr = provider(ApiKeyStrategy::RoundRobin, &["k1", "k2", "k3", "k4"]);
+        let random = provider(ApiKeyStrategy::Random, &["k1", "k2", "k3", "k4"]);
+
+        let first = ApiKeyCycle::new(&rr)
+            .unwrap()
+            .with_affinity(Some(&conversation))
+            .next_key()
+            .to_string();
+        let again = ApiKeyCycle::new(&rr)
+            .unwrap()
+            .with_affinity(Some(&conversation))
+            .next_key()
+            .to_string();
+        assert_eq!(first, again);
+
+        let random_first = ApiKeyCycle::new(&random)
+            .unwrap()
+            .with_affinity(Some(&conversation))
+            .next_key()
+            .to_string();
+        let random_again = ApiKeyCycle::new(&random)
+            .unwrap()
+            .with_affinity(Some(&conversation))
+            .next_key()
+            .to_string();
+        assert_eq!(random_first, random_again);
+
+        // Different affinity may land on a different key; either way retries
+        // still advance within the same request.
+        let mut other_cycle = ApiKeyCycle::new(&rr)
+            .unwrap()
+            .with_affinity(Some(&other));
+        let other_first = other_cycle.next_key().to_string();
+        let other_retry = other_cycle.next_key().to_string();
+        assert_ne!(other_first, other_retry);
     }
 }

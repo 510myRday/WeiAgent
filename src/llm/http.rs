@@ -815,6 +815,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             &keys.iter().map(ToString::to_string).collect::<Vec<_>>(),
             crate::domain::ApiKeyStrategy::Failover,
+            None,
         )
         .unwrap()
     }

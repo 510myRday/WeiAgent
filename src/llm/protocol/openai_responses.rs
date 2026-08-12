@@ -7,7 +7,7 @@ use crate::{
     domain::{Agent, ChatMessage, ChatRole, ModelProvider, ThinkingLevel},
     error::{AppError, AppResult},
     llm::{
-        cache::{PromptCacheMode, apply_openai_fields, build_context, effective_capabilities},
+        cache::{PromptCacheMode, apply_openai_fields, apply_responses_prompt_cache_breakpoints, build_context, effective_capabilities},
         http::StreamLineParser,
         protocol::common::{
             ProtocolAdapter, SseData, bearer_get, bearer_post, default_models, merge_extra_body,
@@ -171,6 +171,16 @@ fn build_openai_responses_request(
         }
     }
 
+    let capabilities = effective_capabilities(provider);
+    let cache_enabled = !matches!(provider.prompt_cache.mode, PromptCacheMode::Disabled)
+        && capabilities.automatic_prefix_cache
+        && (!matches!(provider.prompt_cache.mode, PromptCacheMode::Explicit)
+            || capabilities.explicit_breakpoints);
+    // GPT-5.6+ no longer falls back to the longest common unmarked prefix.
+    // Mark stable user content so multi-turn agent loops can still hit cache.
+    if cache_enabled && context.explicit_breakpoints {
+        apply_responses_prompt_cache_breakpoints(&mut input);
+    }
     let replays_reasoning = input.iter().any(|item| {
         item["type"] == "reasoning"
             && item["encrypted_content"]
@@ -178,11 +188,6 @@ fn build_openai_responses_request(
                 .is_some_and(|content| !content.is_empty())
     });
     let mut body = Map::new();
-    let capabilities = effective_capabilities(provider);
-    let cache_enabled = !matches!(provider.prompt_cache.mode, PromptCacheMode::Disabled)
-        && capabilities.automatic_prefix_cache
-        && (!matches!(provider.prompt_cache.mode, PromptCacheMode::Explicit)
-            || capabilities.explicit_breakpoints);
     let prompt_cache_key = cache_enabled.then(|| {
         if provider.prompt_cache.use_stable_key && capabilities.stable_cache_key {
             context
@@ -259,6 +264,7 @@ fn build_openai_responses_request(
             "include",
             "prompt_cache_key",
             "prompt_cache_retention",
+            "prompt_cache_options",
             "store",
             "tool_choice",
             "parallel_tool_calls",
@@ -769,7 +775,7 @@ mod tests {
         assert!(disabled.get("prompt_cache_key").is_none());
 
         provider.prompt_cache.mode = PromptCacheMode::Explicit;
-        let unsupported_explicit = build_openai_responses_request(
+        let explicit = build_openai_responses_request(
             &agent,
             &provider,
             &messages,
@@ -780,7 +786,52 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(unsupported_explicit.get("prompt_cache_key").is_none());
+        assert!(explicit.get("prompt_cache_key").is_some());
+        // Non-5.6 models still get retention/key but no content breakpoints.
+        assert!(explicit.get("prompt_cache_options").is_none());
+        assert!(
+            explicit["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|item| item.get("content").and_then(|c| c.as_array()))
+                .flatten()
+                .all(|block| block.get("prompt_cache_breakpoint").is_none())
+        );
+    }
+
+    #[test]
+    fn gpt56_requests_mark_explicit_breakpoints_and_options() {
+        let (mut agent, messages) = fixture();
+        agent.model_id = "gpt-5.6".to_string();
+        let provider = test_provider();
+        let request = build_openai_responses_request(
+            &agent,
+            &provider,
+            &messages,
+            false,
+            "system",
+            &Value::Null,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(request["prompt_cache_options"]["mode"], "explicit");
+        assert_eq!(request["prompt_cache_retention"], "24h");
+        let user_blocks = request["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "message" && item["role"] == "user")
+            .flat_map(|item| item["content"].as_array().into_iter().flatten())
+            .collect::<Vec<_>>();
+        assert!(
+            user_blocks.iter().any(|block| {
+                block.get("prompt_cache_breakpoint")
+                    == Some(&json!({ "mode": "explicit" }))
+            }),
+            "expected at least one user content breakpoint: {user_blocks:?}"
+        );
     }
 
     #[test]
