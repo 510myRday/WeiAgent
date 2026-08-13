@@ -29,6 +29,8 @@ pub struct SkillManifest {
     #[serde(default)]
     pub group: Option<String>,
     #[serde(default)]
+    pub group_id: Option<String>,
+    #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
     pub icon_url: Option<String>,
@@ -57,7 +59,10 @@ pub struct SkillManifest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillGroupState {
+    pub id: String,
     pub name: String,
+    pub sort_order: i64,
+    pub skill_count: usize,
     pub enabled: bool,
     pub global_override: Option<bool>,
     pub agent_override: Option<bool>,
@@ -80,6 +85,8 @@ pub struct SkillOverride {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillGroupOverride {
     pub group: String,
+    #[serde(default)]
+    pub group_id: Option<String>,
     pub enabled: Option<bool>,
 }
 
@@ -105,6 +112,8 @@ pub struct SkillImportTask {
     pub id: uuid::Uuid,
     pub source: String,
     pub kind: String,
+    #[serde(default)]
+    pub group_id: Option<String>,
     pub status: String,
     pub phase: String,
     pub progress: u8,
@@ -120,6 +129,31 @@ pub struct SkillAgentOverridesRequest {
     pub skills: Vec<SkillOverride>,
     #[serde(default)]
     pub groups: Vec<SkillGroupOverride>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateSkillGroupRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RenameSkillGroupRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillGroupOrderRequest {
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillGroupAssignmentRequest {
+    pub group_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillGroupSkillOrderRequest {
+    pub skill_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

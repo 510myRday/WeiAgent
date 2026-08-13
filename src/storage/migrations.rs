@@ -11,7 +11,7 @@ use crate::error::AppResult;
 const QUERY_INDEXES_SCHEMA_VERSION: i64 = 12;
 const TASK_PLANNING_DEFAULT_SCHEMA_VERSION: i64 = 11;
 #[cfg(test)]
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 19;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 20;
 
 pub(super) fn initialize(conn: &mut Connection) -> AppResult<()> {
     super::db::migrate_base_schema(conn)?;
@@ -23,6 +23,14 @@ pub(super) fn initialize(conn: &mut Connection) -> AppResult<()> {
         "tool_settings_task_planning_default_v11",
     )?;
     ensure_query_indexes(conn)?;
+    ensure_schema_marker(conn, 13, "skills_groups_v1")?;
+    ensure_schema_marker(conn, 14, "skills_groups_v1_compat")?;
+    ensure_schema_marker(conn, 15, "skills_groups_v1_ordering")?;
+    ensure_schema_marker(conn, 16, "skills_groups_v1_assignments")?;
+    ensure_schema_marker(conn, 17, "skills_groups_v1_metadata")?;
+    ensure_schema_marker(conn, 18, "skills_groups_v1_legacy")?;
+    ensure_schema_marker(conn, 19, "skills_groups_v1_runtime")?;
+    ensure_schema_marker(conn, 20, "skills_groups_v1_complete")?;
     Ok(())
 }
 

@@ -24,7 +24,7 @@ import {
   Trash2,
 } from 'lucide-react';
 
-import type { SkillConflict, SkillContent, SkillManifest, SkillSettings } from '../../../toolTypes';
+import type { SkillConflict, SkillContent, SkillGroupState, SkillManifest, SkillSettings } from '../../../toolTypes';
 import { readSkillContent } from '../../../api';
 import { formatBytes, formatDateTime } from '../../../utils/format';
 import { useI18n } from '../../../i18n';
@@ -55,9 +55,9 @@ export function SkillConflictDetail({ conflict }: { conflict: SkillConflict }) {
   );
 }
 
-export function SkillOrphanDetail({ orphan, onClean, busy }: { orphan: { scope: 'skill' | 'group'; name: string }; onClean: () => void; busy: boolean }) {
+export function SkillOrphanDetail({ orphan, onClean, busy }: { orphan: { name: string }; onClean: () => void; busy: boolean }) {
   const { t } = useI18n();
-  const reason = orphan.scope === 'group' ? t('skills.orphanGroup') : t('skills.orphanMissing');
+  const reason = t('skills.orphanMissing');
   return (
     <section className="form-card skills-orphan-detail">
       <div className="skills-orphan-detail__header">
@@ -81,43 +81,61 @@ export function SkillOrphanDetail({ orphan, onClean, busy }: { orphan: { scope: 
 
 export function AgentSkillsOverview({ settings, busy, onToggle }: { settings: SkillSettings | null; busy: boolean; onToggle: (skill: SkillManifest, value: boolean | null) => Promise<void> }) {
   const { t } = useI18n();
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem('weiagent-skills-collapsed-groups') ?? '{}') as Record<string, boolean>; } catch { return {}; }
+  });
   if (!settings) return <div className="skills-loading-state">{t('chat.loading')}</div>;
   if (settings.defaults.length === 0) return <div className="agent-tool-empty">{t('skills.empty')}</div>;
+  const groups = [
+    { group: null as SkillGroupState | null, items: settings.defaults.filter((skill) => !skill.group_id) },
+    ...settings.groups.map((group) => ({ group, items: settings.defaults.filter((skill) => skill.group_id === group.id) })),
+  ];
+  function toggleGroup(group: SkillGroupState | null) {
+    const key = group?.id ?? 'ungrouped';
+    setCollapsed((current) => {
+      const next = { ...current, [key]: !current[key] };
+      try { localStorage.setItem('weiagent-skills-collapsed-groups', JSON.stringify(next)); } catch { /* localStorage unavailable */ }
+      return next;
+    });
+  }
   return (
     <div className="agent-tool-list skills-agent-list">
-      {settings.defaults.map((skill) => {
-        const inherited = skill.agent_override == null && skill.agent_group_override == null;
+      {groups.map(({ group, items }) => {
+        const key = group?.id ?? 'ungrouped';
+        const isCollapsed = collapsed[key] ?? false;
         return (
-          <div className="agent-tool-row skills-agent-row" key={skill.name}>
-            <div className="agent-tool-row__body">
-              <div className="agent-tool-row__title">
-                <strong>{skill.name}</strong>
-                <span className="mini-status-badge skill-badge"><BookOpen size={12} aria-hidden="true" />{t('skills.title')}</span>
-              </div>
-              <SkillDescription description={skill.description || t('skills.noDescription')} />
-              <span className="agent-tool-row__source">{inherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}</span>
+          <section className="skills-agent-group" key={key}>
+            <div className="skills-agent-group__header">
+              <button type="button" className="skills-agent-group__toggle" aria-expanded={!isCollapsed} onClick={() => toggleGroup(group)}>
+                {isCollapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+                <FolderOpen size={15} />
+                <strong>{group?.name ?? t('skills.ungrouped')}</strong>
+                <span>{items.length}</span>
+              </button>
             </div>
-            <div className="agent-tool-row__actions skills-agent-row__actions">
-              <InheritToggle
-                inherited={inherited}
-                disabled={busy}
-                title={t('skills.inheritDescription')}
-                ariaLabel={`${skill.name} ${t('tools.inheritsDefault')}`}
-                onChange={(value) => void onToggle(skill, value ? null : skill.enabled)}
-                label={t('tools.inheritsDefault')}
-              />
-              <label className={`toggle-switch${inherited ? ' is-disabled' : ''}`} title={skill.enabled ? t('skills.enabled') : t('skills.disabled')}>
-                <input
-                  type="checkbox"
-                  aria-label={`${skill.name} ${skill.enabled ? t('skills.enabled') : t('skills.disabled')}`}
-                  checked={skill.enabled}
-                  disabled={busy || inherited}
-                  onChange={(event) => void onToggle(skill, event.target.checked)}
-                />
-                <span className="toggle-slider" />
-              </label>
-            </div>
-          </div>
+            {!isCollapsed ? items.map((skill) => {
+              const inherited = skill.agent_override == null;
+              return (
+                <div className="agent-tool-row skills-agent-row" key={skill.name}>
+                  <div className="agent-tool-row__body">
+                    <div className="agent-tool-row__title">
+                      <strong>{skill.name}</strong>
+                      <span className="mini-status-badge skill-badge"><BookOpen size={12} aria-hidden="true" />{t('skills.title')}</span>
+                    </div>
+                    <SkillDescription description={skill.description || t('skills.noDescription')} />
+                    <span className="agent-tool-row__source">{inherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}</span>
+                  </div>
+                  <div className="agent-tool-row__actions skills-agent-row__actions">
+                    <InheritToggle inherited={inherited} disabled={busy} title={t('skills.inheritDescription')} ariaLabel={`${skill.name} ${t('tools.inheritsDefault')}`} onChange={(value) => void onToggle(skill, value ? null : skill.enabled)} label={t('tools.inheritsDefault')} />
+                    <label className={`toggle-switch${inherited ? ' is-disabled' : ''}`} title={skill.enabled ? t('skills.enabled') : t('skills.disabled')}>
+                      <input type="checkbox" aria-label={`${skill.name} ${skill.enabled ? t('skills.enabled') : t('skills.disabled')}`} checked={skill.enabled} disabled={busy || inherited} onChange={(event) => void onToggle(skill, event.target.checked)} />
+                      <span className="toggle-slider" />
+                    </label>
+                  </div>
+                </div>
+              );
+            }) : null}
+          </section>
         );
       })}
     </div>
@@ -329,19 +347,11 @@ function skillFileIcon(path: string, kind: string) {
 
 export function SkillToggle({ skill, agentMode, busy, onGlobalToggle, onAgentToggle }: { skill: SkillManifest; agentMode: boolean; busy: boolean; onGlobalToggle: (name: string, enabled: boolean) => Promise<void>; onAgentToggle: (skill: SkillManifest, value: boolean | null) => Promise<void> }) {
   const { t } = useI18n();
-  const inherited = agentMode && skill.agent_override == null && skill.agent_group_override == null;
+  const inherited = agentMode && skill.agent_override == null;
   return (
     <label className={`toggle-switch${inherited ? ' is-disabled' : ''}`} title={skill.enabled ? t('skills.enabled') : t('skills.disabled')}>
       <input aria-label={`${skill.name} ${skill.enabled ? t('skills.enabled') : t('skills.disabled')}`} type="checkbox" checked={skill.enabled} disabled={busy || inherited} onChange={(event) => void (agentMode ? onAgentToggle(skill, event.target.checked) : onGlobalToggle(skill.name, event.target.checked))} />
       <span className="toggle-slider" />
     </label>
   );
-}
-
-export function GroupEditor({ group, settings, agentMode, busy, onGlobalToggle, onAgentToggle }: { group: string; settings: SkillSettings | null; agentMode: boolean; busy: boolean; onGlobalToggle: (group: string, enabled: boolean) => Promise<void>; onAgentToggle: (group: string, value: boolean | null) => Promise<void> }) {
-  const { t } = useI18n();
-  const state = settings?.groups.find((item) => item.name === group);
-  if (!state) return null;
-  const override = agentMode ? state.agent_override : state.global_override;
-  return <section className="form-card skills-summary-card"><div><h2>{group}</h2><p>{t('skills.groupHint')}</p></div><label className={`toggle-switch${agentMode && override == null ? ' is-disabled' : ''}`}><input aria-label={`${group} ${state.enabled ? t('skills.enabled') : t('skills.disabled')}`} type="checkbox" checked={state.enabled} disabled={busy || (agentMode && override == null)} onChange={(event) => void (agentMode ? onAgentToggle(group, event.target.checked) : onGlobalToggle(group, event.target.checked))} /><span className="toggle-slider" /></label><span className="skills-inheritance-label">{agentMode ? (override == null ? t('skills.inherited') : t('skills.override')) : t('skills.globalDefault')}</span></section>;
 }

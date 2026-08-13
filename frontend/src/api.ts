@@ -586,13 +586,14 @@ export function readSkillChanges(since: number): Promise<SkillChangeFeed> {
   return request<SkillChangeFeed>(`/api/skills/changes?since=${since}`);
 }
 
-export function importSkill(source: string, proxyId?: string, kind?: 'local' | 'network'): Promise<SkillImportTask> {
+export function importSkill(source: string, proxyId?: string, kind?: 'local' | 'network', groupId?: string): Promise<SkillImportTask> {
   return request<SkillImportTask>('/api/skills/import', {
     method: 'POST',
     body: JSON.stringify({
       source,
       proxy_id: proxyId,
       kind,
+      group_id: groupId,
     }),
   });
 }
@@ -610,6 +611,45 @@ export function updateSkillEnabled(name: string, enabled: boolean): Promise<Skil
   return request<SkillSettings>(`/api/skills/${encodeURIComponent(name)}/enabled`, {
     method: 'PUT',
     body: JSON.stringify({ enabled }),
+  });
+}
+
+export function createSkillGroup(name: string): Promise<SkillSettings> {
+  return request<SkillSettings>('/api/skills/groups', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function renameSkillGroup(groupId: string, name: string): Promise<SkillSettings> {
+  return request<SkillSettings>(`/api/skills/groups/${encodeURIComponent(groupId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteSkillGroup(groupId: string): Promise<SkillSettings> {
+  return request<SkillSettings>(`/api/skills/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' });
+}
+
+export function reorderSkillGroups(ids: string[]): Promise<SkillSettings> {
+  return request<SkillSettings>('/api/skills/groups/order', {
+    method: 'PUT',
+    body: JSON.stringify({ ids }),
+  });
+}
+
+export function assignSkillGroup(name: string, groupId: string | null): Promise<SkillSettings> {
+  return request<SkillSettings>(`/api/skills/${encodeURIComponent(name)}/group`, {
+    method: 'PUT',
+    body: JSON.stringify({ group_id: groupId }),
+  });
+}
+
+export function reorderSkillGroupItems(groupId: string, skillNames: string[]): Promise<SkillSettings> {
+  return request<SkillSettings>(`/api/skills/groups/${encodeURIComponent(groupId)}/skills/order`, {
+    method: 'PUT',
+    body: JSON.stringify({ skill_names: skillNames }),
   });
 }
 
@@ -633,8 +673,8 @@ export function deleteSkill(name: string): Promise<SkillSettings> {
   });
 }
 
-export function updateSkillGroupEnabled(group: string, enabled: boolean): Promise<SkillSettings> {
-  return request<SkillSettings>(`/api/skills/groups/${encodeURIComponent(group)}/enabled`, {
+export function updateSkillGroupEnabled(groupId: string, enabled: boolean): Promise<SkillSettings> {
+  return request<SkillSettings>(`/api/skills/groups/${encodeURIComponent(groupId)}/enabled`, {
     method: 'PUT',
     body: JSON.stringify({ enabled }),
   });

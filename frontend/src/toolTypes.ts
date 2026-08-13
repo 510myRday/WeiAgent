@@ -285,6 +285,7 @@ export type SkillManifest = {
   description: string;
   version?: string | null;
   group?: string | null;
+  group_id?: string | null;
   tags: string[];
   icon_url?: string | null;
   source_url?: string | null;
@@ -306,7 +307,10 @@ export type SkillManifest = {
 };
 
 export type SkillGroupState = {
+  id: string;
   name: string;
+  sort_order: number;
+  skill_count: number;
   enabled: boolean;
   global_override?: boolean | null;
   agent_override?: boolean | null;
@@ -314,7 +318,7 @@ export type SkillGroupState = {
 
 export type SkillOverride = { name: string; enabled?: boolean | null };
 
-export type SkillGroupOverride = { group: string; enabled?: boolean | null };
+export type SkillGroupOverride = { group: string; group_id?: string | null; enabled?: boolean | null };
 
 export type SkillOverrides = { skills: SkillOverride[]; groups: SkillGroupOverride[] };
 
@@ -334,6 +338,7 @@ export type SkillImportTask = {
   id: string;
   source: string;
   kind: 'local' | 'network' | string;
+  group_id?: string | null;
   status: 'queued' | 'running' | 'completed' | 'failed' | string;
   phase: string;
   progress: number;

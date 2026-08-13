@@ -139,7 +139,7 @@ pub struct CompactOutcome {
 /// Current task-plan state that must remain visible to the next model turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveTaskPlanContext {
-    pub planning_id: Uuid,
+    pub planning_id: String,
     pub current_step: String,
     pub steps: Vec<String>,
 }
@@ -166,7 +166,7 @@ impl ActiveTaskPlanContext {
             })
             .collect();
         Self {
-            planning_id: plan.planning_id,
+            planning_id: plan.public_id().to_string(),
             current_step,
             steps,
         }
@@ -1167,7 +1167,7 @@ mod tests {
             source_tokens_estimate: 100,
         };
         let plan = ActiveTaskPlanContext {
-            planning_id: Uuid::new_v4(),
+            planning_id: "123456".to_string(),
             current_step: "Implement compaction".to_string(),
             steps: vec![
                 "1. [in_progress] Implement compaction".to_string(),
@@ -1340,7 +1340,7 @@ mod tests {
     #[test]
     fn emergency_trim_preserves_active_plan_inside_summary_anchor() {
         let plan = ActiveTaskPlanContext {
-            planning_id: Uuid::new_v4(),
+            planning_id: "123456".to_string(),
             current_step: "Keep the plan ID".to_string(),
             steps: vec!["1. [in_progress] Keep the plan ID".to_string()],
         };
@@ -1370,7 +1370,7 @@ mod tests {
     #[test]
     fn refreshing_summary_anchor_is_idempotent() {
         let plan = ActiveTaskPlanContext {
-            planning_id: Uuid::new_v4(),
+            planning_id: "123456".to_string(),
             current_step: "Keep one plan block".to_string(),
             steps: vec!["1. [in_progress] Keep one plan block".to_string()],
         };

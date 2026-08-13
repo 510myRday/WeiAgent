@@ -3,7 +3,7 @@ use axum::{
     extract::DefaultBodyLimit,
     http::{HeaderName, HeaderValue},
     middleware,
-    routing::{get, post, put},
+    routing::{get, patch, post, put},
 };
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -154,6 +154,8 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
         )
         .route("/api/skills", get(skills::list_skills))
         .route("/api/skills/changes", get(skills::skill_changes))
+        .route("/api/skills/groups", post(skills::create_skill_group))
+        .route("/api/skills/groups/order", put(skills::reorder_skill_groups))
         .route("/api/skills/import", post(skills::import_skill))
         .route("/api/skills/import-tasks", get(skills::list_import_tasks))
         .route("/api/skills/cleanup-orphans", post(skills::cleanup_orphans))
@@ -166,6 +168,10 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             put(skills::update_skill_enabled),
         )
         .route(
+            "/api/skills/{skill_name}/group",
+            put(skills::assign_skill_group),
+        )
+        .route(
             "/api/skills/{skill_name}",
             get(skills::read_skill)
                 .put(skills::update_skill_icon)
@@ -173,8 +179,16 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
                 .delete(skills::delete_skill),
         )
         .route(
-            "/api/skills/groups/{group_name}/enabled",
+            "/api/skills/groups/{group_id}/enabled",
             put(skills::update_skill_group_enabled),
+        )
+        .route(
+            "/api/skills/groups/{group_id}",
+            patch(skills::rename_skill_group).delete(skills::delete_skill_group),
+        )
+        .route(
+            "/api/skills/groups/{group_id}/skills/order",
+            put(skills::reorder_skill_group_items),
         )
         .route(
             "/api/agents/{agent_id}/skills-config",

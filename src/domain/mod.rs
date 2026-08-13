@@ -45,11 +45,15 @@ pub use runtime::{
 };
 pub use settings::AppSettings;
 pub use skills::{
-    SkillAgentOverridesRequest, SkillChangeEvent, SkillChangeFeed, SkillConflict, SkillContent,
-    SkillDiagnostic, SkillFile, SkillGroupOverride, SkillGroupState, SkillImportTask,
-    SkillManifest, SkillOverride, SkillOverrides, SkillSettings,
+    CreateSkillGroupRequest, RenameSkillGroupRequest, SkillAgentOverridesRequest,
+    SkillChangeEvent, SkillChangeFeed, SkillConflict, SkillContent, SkillDiagnostic, SkillFile,
+    SkillGroupAssignmentRequest, SkillGroupOverride, SkillGroupOrderRequest,
+    SkillGroupSkillOrderRequest, SkillGroupState, SkillImportTask, SkillManifest, SkillOverride,
+    SkillOverrides, SkillSettings,
 };
-pub use task_planning::{TaskPlan, TaskPlanItem, TaskPlanItemStatus};
+pub use task_planning::{
+    TaskPlan, TaskPlanItem, TaskPlanItemStatus, task_plan_public_id_candidate,
+};
 pub use tools::{
     AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, ApprovalDecision, ApprovalRequest,
     ApprovalResponse, EvidenceStorageConfig, PendingApproval, ProcessInfo, ProcessStatus,

@@ -3,7 +3,7 @@ use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
 use crate::{
-    domain::{TaskPlan, TaskPlanItem},
+    domain::{TaskPlan, TaskPlanItem, task_plan_public_id_candidate},
     error::{AppError, AppResult},
 };
 
@@ -13,6 +13,7 @@ fn task_plan_from_row(
 ) -> rusqlite::Result<TaskPlan> {
     let (
         planning_id,
+        public_id,
         conversation_message_id,
         explanation,
         plan_json,
@@ -21,12 +22,13 @@ fn task_plan_from_row(
         active,
     ) = (
         row.get::<_, String>(0)?,
-        row.get::<_, Option<String>>(1)?,
+        row.get::<_, String>(1)?,
         row.get::<_, Option<String>>(2)?,
-        row.get::<_, String>(3)?,
+        row.get::<_, Option<String>>(3)?,
         row.get::<_, String>(4)?,
         row.get::<_, String>(5)?,
-        row.get::<_, i64>(6)?,
+        row.get::<_, String>(6)?,
+        row.get::<_, i64>(7)?,
     );
 
     Ok(TaskPlan {
@@ -38,6 +40,7 @@ fn task_plan_from_row(
                 Box::new(error),
             )
         })?,
+        public_id,
         conversation_message_id: conversation_message_id
             .map(|value| {
                 Uuid::parse_str(&value).map_err(|error| {
@@ -85,7 +88,7 @@ impl super::Store {
             .call(move |conn| {
                 Ok(conn
                     .query_row(
-                        "SELECT planning_id, conversation_message_id, explanation, plan_json,
+                        "SELECT planning_id, public_id, conversation_message_id, explanation, plan_json,
                             created_at, updated_at, active
                      FROM task_plans
                      WHERE conversation_id = ?1 AND active = 1
@@ -103,7 +106,7 @@ impl super::Store {
         self.database
             .call(move |conn| {
                 let mut statement = conn.prepare(
-                    "SELECT planning_id, conversation_message_id, explanation, plan_json,
+                    "SELECT planning_id, public_id, conversation_message_id, explanation, plan_json,
                             created_at, updated_at, active
                      FROM task_plans
                      WHERE conversation_id = ?1
@@ -132,7 +135,7 @@ impl super::Store {
                 let tx = conn.unchecked_transaction()?;
                 let active_plan = tx
                     .query_row(
-                        "SELECT planning_id, conversation_message_id, explanation, plan_json,
+                        "SELECT planning_id, public_id, conversation_message_id, explanation, plan_json,
                                 created_at, updated_at, active
                          FROM task_plans
                          WHERE conversation_id = ?1 AND active = 1
@@ -148,13 +151,33 @@ impl super::Store {
                         "An active task plan already exists for this conversation. Do not create a new plan yet. Inspect the existing tasks and statuses. If all tasks are actually complete, use set_status to mark any remaining tasks as completed. If any task is still incomplete and the user has not decided to abandon it, ask the user whether to continue the existing plan. Only after the user confirms they do not want to continue may you mark the remaining tasks completed with set_status and create a new plan. active_task_plan={active_plan_json}"
                     )));
                 }
+                let mut nonce = 0;
+                let public_id = loop {
+                    let candidate = task_plan_public_id_candidate(
+                        planning_id,
+                        explanation.as_deref(),
+                        &plan_json,
+                        &now.to_rfc3339(),
+                        nonce,
+                    );
+                    let occupied = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM task_plans WHERE public_id = ?1)",
+                        [&candidate],
+                        |row| row.get::<_, bool>(0),
+                    )?;
+                    if !occupied {
+                        break candidate;
+                    }
+                    nonce += 1;
+                };
                 tx.execute(
                     "INSERT INTO task_plans (
-                        planning_id, conversation_id, conversation_message_id,
+                        planning_id, public_id, conversation_id, conversation_message_id,
                         explanation, plan_json, created_at, updated_at, active
-                     ) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?5, 1)",
+                     ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?6, 1)",
                     params![
                         planning_id.to_string(),
+                        public_id.clone(),
                         conversation_id.to_string(),
                         explanation_for_db,
                         plan_json,
@@ -165,6 +188,7 @@ impl super::Store {
                 Ok(TaskPlan {
                     conversation_id,
                     planning_id,
+                    public_id,
                     conversation_message_id: None,
                     explanation,
                     plan,
@@ -203,11 +227,15 @@ impl super::Store {
                 if changed == 0 {
                     return Ok(None);
                 }
-                let (created_at, conversation_message_id) = conn.query_row(
-                    "SELECT created_at, conversation_message_id FROM task_plans
+                let (created_at, conversation_message_id, public_id) = conn.query_row(
+                    "SELECT created_at, conversation_message_id, public_id FROM task_plans
                      WHERE conversation_id = ?1 AND planning_id = ?2",
                     params![conversation_id.to_string(), planning_id.to_string()],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    )),
                 )?;
                 let created_at = DateTime::parse_from_rfc3339(&created_at)
                     .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?
@@ -215,6 +243,7 @@ impl super::Store {
                 Ok(Some(TaskPlan {
                     conversation_id,
                     planning_id,
+                    public_id,
                     conversation_message_id: conversation_message_id
                         .map(|value| {
                             Uuid::parse_str(&value).map_err(|error| {
@@ -282,6 +311,37 @@ impl super::Store {
                     ],
                 )?;
                 Ok(changed > 0)
+            })
+            .await
+    }
+
+    pub async fn resolve_task_plan_public_id(
+        &self,
+        conversation_id: Uuid,
+        public_id: &str,
+    ) -> AppResult<Option<Uuid>> {
+        let public_id = public_id.trim().to_string();
+        self.database
+            .call(move |conn| {
+                let value = conn
+                    .query_row(
+                        "SELECT planning_id FROM task_plans
+                         WHERE conversation_id = ?1 AND public_id = ?2",
+                        params![conversation_id.to_string(), public_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                Ok(value
+                    .map(|value| {
+                        Uuid::parse_str(&value).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })
+                    })
+                    .transpose()?)
             })
             .await
     }

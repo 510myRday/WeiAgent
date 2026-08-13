@@ -8,7 +8,9 @@ use uuid::Uuid;
 use crate::{
     app::AppState,
     domain::{
-        SkillAgentOverridesRequest, SkillImportTask, SkillManifest, SkillOverrides, SkillSettings,
+        CreateSkillGroupRequest, RenameSkillGroupRequest, SkillAgentOverridesRequest,
+        SkillGroupAssignmentRequest, SkillGroupOrderRequest, SkillGroupSkillOrderRequest,
+        SkillImportTask, SkillManifest, SkillOverrides, SkillSettings,
     },
     error::{AppError, AppResult},
 };
@@ -51,6 +53,8 @@ pub struct SkillImportRequest {
     pub proxy_id: Option<Uuid>,
     #[serde(default)]
     pub kind: Option<String>,
+    #[serde(default)]
+    pub group_id: Option<String>,
 }
 
 pub async fn list_skills(State(state): State<AppState>) -> AppResult<Json<SkillSettings>> {
@@ -101,15 +105,18 @@ pub async fn import_skill(
     });
     let task = state
         .skill_manager
-        .create_import_task(&source, &kind)
+        .create_import_task(&source, &kind, request.group_id)
         .await?;
     let manager = state.skill_manager.clone();
+    let group_id = task.group_id.clone();
     tokio::spawn({
         let source = source.clone();
         let proxy_url = proxy_url.clone();
         let task_id = task.id;
         async move {
-            manager.run_import_task(task_id, source, proxy_url).await;
+            manager
+            .run_import_task(task_id, source, proxy_url, group_id)
+            .await;
         }
     });
     Ok(Json(task))
@@ -228,11 +235,11 @@ pub async fn update_skill(
     };
     let task = state
         .skill_manager
-        .create_import_task(&source, "network")
+        .create_import_task(&source, "network", None)
         .await?;
     let manager = state.skill_manager.clone();
     tokio::spawn(async move {
-        manager.run_import_task(task.id, source, proxy_url).await;
+        manager.run_import_task(task.id, source, proxy_url, None).await;
     });
     Ok(Json(task))
 }
@@ -247,12 +254,71 @@ pub async fn delete_skill(
 
 pub async fn update_skill_group_enabled(
     State(state): State<AppState>,
-    Path(group): Path<String>,
+    Path(group_id): Path<String>,
     Json(request): Json<SkillEnabledRequest>,
 ) -> AppResult<Json<SkillSettings>> {
+    let group = state.store.read_skill_group_name(&group_id).await?;
     state
         .store
         .update_skill_global_group_override(&group, Some(request.enabled))
+        .await?;
+    Ok(Json(state.skill_manager.settings(None).await?))
+}
+
+pub async fn create_skill_group(
+    State(state): State<AppState>,
+    Json(request): Json<CreateSkillGroupRequest>,
+) -> AppResult<Json<SkillSettings>> {
+    state.skill_manager.create_group(&request.name).await?;
+    Ok(Json(state.skill_manager.settings(None).await?))
+}
+
+pub async fn rename_skill_group(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+    Json(request): Json<RenameSkillGroupRequest>,
+) -> AppResult<Json<SkillSettings>> {
+    state.skill_manager.rename_group(&group_id, &request.name).await?;
+    Ok(Json(state.skill_manager.settings(None).await?))
+}
+
+pub async fn delete_skill_group(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+) -> AppResult<Json<SkillSettings>> {
+    state.skill_manager.delete_group(&group_id).await?;
+    Ok(Json(state.skill_manager.settings(None).await?))
+}
+
+pub async fn reorder_skill_groups(
+    State(state): State<AppState>,
+    Json(request): Json<SkillGroupOrderRequest>,
+) -> AppResult<Json<SkillSettings>> {
+    state.skill_manager.reorder_groups(&request.ids).await?;
+    Ok(Json(state.skill_manager.settings(None).await?))
+}
+
+pub async fn assign_skill_group(
+    State(state): State<AppState>,
+    Path(skill_name): Path<String>,
+    Json(request): Json<SkillGroupAssignmentRequest>,
+) -> AppResult<Json<SkillSettings>> {
+    state
+        .skill_manager
+        .assign_skill_group(&skill_name, request.group_id.as_deref())
+        .await?;
+    Ok(Json(state.skill_manager.settings(None).await?))
+}
+
+pub async fn reorder_skill_group_items(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+    Json(request): Json<SkillGroupSkillOrderRequest>,
+) -> AppResult<Json<SkillSettings>> {
+    let target_group = (group_id != "ungrouped").then_some(group_id.as_str());
+    state
+        .skill_manager
+        .reorder_group_skills(target_group, &request.skill_names)
         .await?;
     Ok(Json(state.skill_manager.settings(None).await?))
 }
@@ -261,7 +327,7 @@ pub async fn cleanup_orphans(State(state): State<AppState>) -> AppResult<Json<Sk
     let settings = state.skill_manager.settings(None).await?;
     state
         .store
-        .cleanup_skill_orphans(&settings.orphan_skills, &settings.orphan_groups)
+        .cleanup_skill_orphans(&settings.orphan_skills)
         .await?;
     Ok(Json(state.skill_manager.settings(None).await?))
 }

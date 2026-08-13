@@ -80,6 +80,7 @@ pub async fn parse_skill(root: PathBuf) -> AppResult<SkillManifest> {
             .get("group")
             .cloned()
             .filter(|v| !v.trim().is_empty()),
+        group_id: None,
         tags: fields
             .get("tags")
             .map(|v| parse_list(v))

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ArrowLeft, BookOpen, ChevronDown, Download, FolderOpen, Plus, Settings, Sparkles, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { createPortal } from 'react-dom';
+import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Download, FolderOpen, FolderInput, MoreHorizontal, Pencil, Plus, Settings, Sparkles, Trash2, FolderPlus, CheckSquare, X } from 'lucide-react';
 
-import type { SkillContent, SkillImportTask, SkillManifest, SkillOverrides, SkillSettings } from '../../toolTypes';
-import { cleanupSkillOrphans, deleteSkill, importSkill, listIpProxies, listSkillImportTasks, listSkills, pickDirectory, readAgentSkillsConfig, readSkillChanges, readSkillContent, updateAgentSkillsConfig, updateSkill, updateSkillEnabled, updateSkillGroupEnabled, updateSkillIcon } from '../../api';
+import type { SkillContent, SkillGroupState, SkillImportTask, SkillManifest, SkillOverrides, SkillSettings } from '../../toolTypes';
+import { assignSkillGroup, cleanupSkillOrphans, createSkillGroup, deleteSkill, deleteSkillGroup, importSkill, listIpProxies, listSkillImportTasks, listSkills, pickDirectory, readAgentSkillsConfig, readSkillChanges, readSkillContent, renameSkillGroup, reorderSkillGroupItems, reorderSkillGroups, updateAgentSkillsConfig, updateSkill, updateSkillEnabled, updateSkillIcon } from '../../api';
 import type { IpProxy } from '../../types';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
@@ -11,7 +12,7 @@ import { ProxyPickerDialog } from '../settings/web-search/ProxyPickerDialog';
 import { displayProxyUrl } from '../../utils/proxy';
 import { SkillIcon } from './SkillIcon';
 import { displayPath } from './skills/displayPath';
-import { AgentSkillsOverview, GroupEditor, SkillConflictDetail, SkillEditor, SkillOrphanDetail, SkillToggle } from './skills/SkillViews';
+import { AgentSkillsOverview, SkillConflictDetail, SkillEditor, SkillOrphanDetail, SkillToggle } from './skills/SkillViews';
 
 type SkillsPanelProps = {
   onOpenMain: () => void;
@@ -24,8 +25,7 @@ type SkillsPanelProps = {
 type ActiveSkill =
   | { kind: 'skill'; name: string }
   | { kind: 'conflict'; name: string }
-  | { kind: 'orphan'; scope: 'skill' | 'group'; name: string }
-  | { kind: 'group'; name: string };
+  | { kind: 'orphan'; name: string };
 
 export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embeddedAgentId, onOpenIpProxies }: SkillsPanelProps) {
   const { t } = useI18n();
@@ -44,6 +44,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
   const [importLocalPath, setImportLocalPath] = useState('');
   const [importNetworkUrl, setImportNetworkUrl] = useState('');
   const [importProxyId, setImportProxyId] = useState('');
+  const [importGroupId, setImportGroupId] = useState('');
   const [importProxies, setImportProxies] = useState<IpProxy[]>([]);
   const [importProxiesLoading, setImportProxiesLoading] = useState(false);
   const [importProxyPickerOpen, setImportProxyPickerOpen] = useState(false);
@@ -56,6 +57,18 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
   const [updateProxiesLoading, setUpdateProxiesLoading] = useState(false);
   const [updateProxyPickerOpen, setUpdateProxyPickerOpen] = useState(false);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
+  const [groupDialog, setGroupDialog] = useState<{ mode: 'create' | 'rename'; group?: SkillGroupState } | null>(null);
+  const [moveSkillDialog, setMoveSkillDialog] = useState<{ name: string; groupId: string } | null>(null);
+  const [groupDraft, setGroupDraft] = useState('');
+  const [groupMenu, setGroupMenu] = useState<string | null>(null);
+  const [groupMenuPosition, setGroupMenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const [moveMenuOpen, setMoveMenuOpen] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem('weiagent-skills-collapsed-groups') ?? '{}') as Record<string, boolean>; } catch { return {}; }
+  });
+  const [draggedGroupId, setDraggedGroupId] = useState<string | null>(null);
+  const [draggedSkillName, setDraggedSkillName] = useState<string | null>(null);
   const pendingImportTasks = useRef(new Set<string>());
   const skillChangeVersion = useRef(0);
 
@@ -68,11 +81,8 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
     : undefined;
   const activeOrphan = active?.kind === 'orphan'
     ? {
-        scope: active.scope,
         name: active.name,
-        exists: active.scope === 'skill'
-          ? visibleSettings?.orphan_skills.includes(active.name) ?? false
-          : visibleSettings?.orphan_groups.includes(active.name) ?? false,
+        exists: visibleSettings?.orphan_skills.includes(active.name) ?? false,
       }
     : undefined;
   const activeDownloadTasks = useMemo(
@@ -80,15 +90,152 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
     [importTasks],
   );
   const groupedSkills = useMemo(() => {
-    const map = new Map<string, SkillManifest[]>();
-    for (const skill of visibleSettings?.defaults ?? []) {
-      const group = skill.group || t('skills.ungrouped');
-      const items = map.get(group) ?? [];
-      items.push(skill);
-      map.set(group, items);
+    const skills = visibleSettings?.defaults ?? [];
+    const groups = (visibleSettings?.groups ?? []).map((group) => ({
+      group,
+      items: skills.filter((skill) => skill.group_id === group.id),
+    }));
+    const ungrouped = skills.filter((skill) => !skill.group_id);
+    return [{ group: null as SkillGroupState | null, items: ungrouped }, ...groups];
+  }, [visibleSettings]);
+
+  function collapseKey(group: SkillGroupState | null) { return group?.id ?? 'ungrouped'; }
+
+  function toggleCollapsed(group: SkillGroupState | null) {
+    const key = collapseKey(group);
+    setCollapsedGroups((current) => {
+      const next = { ...current, [key]: !current[key] };
+      try { localStorage.setItem('weiagent-skills-collapsed-groups', JSON.stringify(next)); } catch { /* localStorage unavailable */ }
+      return next;
+    });
+  }
+
+  function openCreateGroup() { setGroupDraft(''); setGroupDialog({ mode: 'create' }); }
+  function openRenameGroup(group: SkillGroupState) { setGroupDraft(group.name); setGroupDialog({ mode: 'rename', group }); setGroupMenu(null); setGroupMenuPosition(null); }
+
+  function openGroupMenu(event: MouseEvent<HTMLButtonElement>, groupId: string) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 160;
+    const menuHeight = 84;
+    const left = Math.max(8, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8));
+    const top = rect.bottom + menuHeight + 8 <= window.innerHeight ? rect.bottom + 4 : rect.top - menuHeight - 4;
+    setGroupMenu(groupMenu === groupId ? null : groupId);
+    setGroupMenuPosition(groupMenu === groupId ? null : { top, left });
+  }
+
+  useEffect(() => {
+    if (!groupMenu) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest('.skills-group-menu, .skills-group-menu-wrap')) {
+        setGroupMenu(null);
+        setGroupMenuPosition(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setGroupMenu(null);
+        setGroupMenuPosition(null);
+      }
+    };
+    const closeOnScroll = () => {
+      setGroupMenu(null);
+      setGroupMenuPosition(null);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    window.addEventListener('keydown', closeOnEscape);
+    window.addEventListener('scroll', closeOnScroll, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      window.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('scroll', closeOnScroll, true);
+    };
+  }, [groupMenu]);
+
+  async function saveGroup() {
+    const name = groupDraft.trim();
+    if (!name) return;
+    setBusy(true);
+    try {
+      const next = groupDialog?.mode === 'create'
+        ? await createSkillGroup(name)
+        : await renameSkillGroup(groupDialog?.group?.id ?? '', name);
+      setSettings(next);
+      setGroupDialog(null);
+      toast.success(t('skills.groupSaved'));
+    } catch (error) { toast.error(error instanceof Error ? error.message : t('skills.groupSaveFailed')); }
+    finally { setBusy(false); }
+  }
+
+  async function removeGroup(group: SkillGroupState) {
+    const accepted = await confirm({ title: t('skills.deleteGroupTitle'), message: t('skills.deleteGroupConfirm', { name: group.name, count: group.skill_count }), confirmLabel: t('common.delete'), tone: 'danger' });
+    if (!accepted) return;
+    setBusy(true);
+    try { setSettings(await deleteSkillGroup(group.id)); setGroupMenu(null); setGroupMenuPosition(null); toast.success(t('skills.groupDeleted')); }
+    catch (error) { toast.error(error instanceof Error ? error.message : t('skills.groupDeleteFailed')); }
+    finally { setBusy(false); }
+  }
+
+  async function moveSkills(groupId: string | null, names = selectedSkills) {
+    if (!names.length) return;
+    setBusy(true);
+    try {
+      let next = visibleSettings;
+      for (const name of names) next = await assignSkillGroup(name, groupId);
+      if (embedded) setAgentSettings(next); else setSettings(next);
+      setSelectedSkills([]);
+      setMoveMenuOpen(false);
+      toast.success(t('skills.skillsMoved', { count: names.length }));
+    } catch (error) { toast.error(error instanceof Error ? error.message : t('skills.moveFailed')); }
+    finally { setBusy(false); }
+  }
+
+  function openMoveSkillDialog(skill: SkillManifest) {
+    setMoveSkillDialog({ name: skill.name, groupId: skill.group_id ?? '' });
+  }
+
+  async function saveMoveSkill() {
+    if (!moveSkillDialog) return;
+    setBusy(true);
+    try {
+      const next = await assignSkillGroup(moveSkillDialog.name, moveSkillDialog.groupId || null);
+      if (embedded) setAgentSettings(next); else setSettings(next);
+      setMoveSkillDialog(null);
+      toast.success(t('skills.skillMoved'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('skills.moveFailed'));
+    } finally {
+      setBusy(false);
     }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [visibleSettings, t]);
+  }
+
+  function toggleSkillSelection(name: string) {
+    setSelectedSkills((current) => current.includes(name) ? current.filter((item) => item !== name) : [...current, name]);
+  }
+
+  async function dropGroup(targetId: string) {
+    if (!draggedGroupId || draggedGroupId === targetId || embedded || !settings) return;
+    const ids = settings.groups.map((group) => group.id);
+    const from = ids.indexOf(draggedGroupId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    ids.splice(from, 1); ids.splice(to, 0, draggedGroupId);
+    setDraggedGroupId(null);
+    try { setSettings(await reorderSkillGroups(ids)); } catch (error) { toast.error(error instanceof Error ? error.message : t('skills.saveFailed')); }
+  }
+
+  async function dropSkill(groupId: string | null, targetName: string) {
+    if (!draggedSkillName || embedded || !visibleSettings) return;
+    const items = visibleSettings.defaults.filter((skill) => skill.group_id === groupId).map((skill) => skill.name).filter((name) => name !== draggedSkillName);
+    const targetIndex = items.indexOf(targetName);
+    items.splice(Math.max(0, targetIndex), 0, draggedSkillName);
+    try {
+      let next = await assignSkillGroup(draggedSkillName, groupId);
+      next = await reorderSkillGroupItems(groupId ?? 'ungrouped', items);
+      setSettings(next);
+    } catch (error) { toast.error(error instanceof Error ? error.message : t('skills.saveFailed')); }
+    finally { setDraggedSkillName(null); }
+  }
   const skillConflicts = visibleSettings?.conflicts ?? [];
 
   async function loadGlobal() {
@@ -220,9 +367,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
         } else if (active?.kind === 'conflict' && !nextSettings?.conflicts.some((item) => item.name === active.name)) {
           setActive(null);
           onBackToList();
-        } else if (active?.kind === 'orphan' && !(active.scope === 'skill'
-          ? nextSettings?.orphan_skills.includes(active.name)
-          : nextSettings?.orphan_groups.includes(active.name))) {
+        } else if (active?.kind === 'orphan' && !nextSettings?.orphan_skills.includes(active.name)) {
           setActive(null);
           onBackToList();
         }
@@ -251,8 +396,8 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
     onOpenMain();
   }
 
-  function selectOrphan(scope: 'skill' | 'group', name: string) {
-    setActive({ kind: 'orphan', scope, name });
+  function selectOrphan(name: string) {
+    setActive({ kind: 'orphan', name });
     onOpenMain();
   }
 
@@ -274,6 +419,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
         source,
         importMode === 'network' ? importProxyId || undefined : undefined,
         importMode,
+        importGroupId || undefined,
       );
       setImportTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       pendingImportTasks.current.add(task.id);
@@ -282,6 +428,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
       setImportLocalPath('');
       setImportNetworkUrl('');
       setImportProxyId('');
+      setImportGroupId('');
       setImportProxyPickerOpen(false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('skills.importFailed'));
@@ -296,39 +443,22 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
     finally { setBusy(false); }
   }
 
-  async function toggleGroup(group: string, enabled: boolean) {
-    setBusy(true);
-    try { setSettings(await updateSkillGroupEnabled(group, enabled)); } catch (error) { toast.error(error instanceof Error ? error.message : t('skills.saveFailed')); }
-    finally { setBusy(false); }
-  }
-
   async function toggleAgentSkill(skill: SkillManifest, value: boolean | null) {
     if (!activeAgentId || !agentSettings) return;
     const skills = agentSettings.overrides.skills.filter((item) => item.name !== skill.name);
     skills.push({ name: skill.name, enabled: value });
-    const next: SkillOverrides = { skills, groups: agentSettings.overrides.groups };
+    const next: SkillOverrides = { skills, groups: [] };
     setBusy(true);
     try { setAgentSettings(await updateAgentSkillsConfig(activeAgentId, next)); } catch (error) { toast.error(error instanceof Error ? error.message : t('skills.saveFailed')); }
     finally { setBusy(false); }
   }
 
-  async function toggleAgentGroup(group: string, value: boolean | null) {
-    if (!activeAgentId || !agentSettings) return;
-    const groups = agentSettings.overrides.groups.filter((item) => item.group !== group);
-    groups.push({ group, enabled: value });
-    setBusy(true);
-    try { setAgentSettings(await updateAgentSkillsConfig(activeAgentId, { skills: agentSettings.overrides.skills, groups })); } catch (error) { toast.error(error instanceof Error ? error.message : t('skills.saveFailed')); }
-    finally { setBusy(false); }
-  }
-
   async function cleanOrphans() {
     const orphanSkills = settings?.orphan_skills ?? [];
-    const orphanGroups = settings?.orphan_groups ?? [];
     const accepted = await confirm({
       title: t('skills.cleanOrphansTitle'),
       message: t('skills.cleanOrphansConfirm', {
         skills: orphanSkills.length,
-        groups: orphanGroups.length,
       }),
       description: t('skills.cleanOrphansDescription'),
       confirmLabel: t('skills.cleanOrphans'),
@@ -445,25 +575,74 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                   </span>
                 </IconButton> : null}
                 {!embedded ? (
-                  <IconButton variant="ghost" type="button" label={t('skills.add')} onClick={() => void openImportDialog()} disabled={busy || importing}>
-                    <Plus size={18} />
-                  </IconButton>
+                  <div className="skills-add-actions">
+                    <button type="button" className="skills-add-group-button" onClick={openCreateGroup} disabled={busy} title={t('skills.newGroup')} aria-label={t('skills.newGroup')}>
+                      <FolderPlus size={15} />
+                    </button>
+                    <IconButton variant="ghost" type="button" label={t('skills.add')} onClick={() => void openImportDialog()} disabled={busy || importing}>
+                      <Plus size={18} />
+                    </IconButton>
+                  </div>
                 ) : null}
               </>
             )}
           />
-          <div className="list-stack">
-            {groupedSkills.map(([group, items]) => (
-              <div key={group} className="skills-group-list">
-                <div className="skills-group-heading">
-                  <span>{group}</span>
-                  <button type="button" onClick={() => setActive({ kind: 'group', name: group })}>{items.length}</button>
+          {selectedSkills.length > 0 && !embedded ? (
+            <div className="skills-selection-toolbar">
+              <span>{t('skills.selectedCount', { count: selectedSkills.length })}</span>
+              <div className="skills-selection-toolbar__actions">
+                <div className="skills-move-menu-wrap">
+                  <Button variant="secondary" type="button" onClick={() => setMoveMenuOpen((value) => !value)} disabled={busy} icon={<FolderOpen size={15} />}>
+                    {t('skills.moveToGroup')}
+                  </Button>
+                  {moveMenuOpen ? (
+                    <div className="skills-group-menu skills-move-menu" role="menu">
+                      <button type="button" onClick={() => void moveSkills(null)}>{t('skills.ungrouped')}</button>
+                      {(settings?.groups ?? []).map((group) => <button key={group.id} type="button" onClick={() => void moveSkills(group.id)}><FolderOpen size={14} />{group.name}</button>)}
+                    </div>
+                  ) : null}
                 </div>
-                {items.map((skill) => (
-                  <ListItem key={skill.name} className="skills-list-item" type="button" active={active?.kind === 'skill' && active.name === skill.name} title={<span className="tool-list-title"><span>{skill.name}</span><span className={`mini-status-badge ${skill.enabled ? 'skill-enabled' : 'skill-disabled'}`}><BookOpen size={11} />{skill.enabled ? t('skills.enabled') : t('skills.disabled')}</span></span>} subtitle={<span className="skills-list-description" title={skill.description}>{skill.description}</span>} leading={<SkillIcon iconUrl={skill.icon_url} size={19} />} onClick={() => selectSkill(skill.name)} />
-                ))}
+                <IconButton variant="ghost" type="button" label={t('skills.clearSelection')} onClick={() => setSelectedSkills([])}><X size={16} /></IconButton>
               </div>
-            ))}
+            </div>
+          ) : null}
+          <div className="list-stack">
+            {groupedSkills.map(({ group, items }) => {
+              const key = collapseKey(group);
+              const collapsed = collapsedGroups[key] ?? false;
+              const groupName = group?.name ?? t('skills.ungrouped');
+              return (
+              <div key={key} className="skills-group-list" onDragOver={(event) => { if (!embedded) event.preventDefault(); }} onDrop={() => { if (!embedded && draggedSkillName && !items.some((item) => item.name === draggedSkillName)) void moveSkills(group?.id ?? null, [draggedSkillName]); }}>
+                <div className="skills-group-heading" draggable={!embedded && Boolean(group)} onDragStart={() => setDraggedGroupId(group?.id ?? null)} onDragEnd={() => setDraggedGroupId(null)} onDragOver={(event) => { if (draggedGroupId && group) event.preventDefault(); }} onDrop={() => { if (group) void dropGroup(group.id); }}>
+                  <button type="button" className="skills-group-toggle" onClick={() => toggleCollapsed(group)} aria-expanded={!collapsed} aria-label={`${collapsed ? t('skills.expandGroup') : t('skills.collapseGroup')}: ${groupName}`}>
+                    {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+                    <FolderOpen size={15} />
+                    <span>{groupName}</span>
+                  </button>
+                  <span className="skills-group-heading-actions">
+                    <span className="skills-group-count">{items.length}</span>
+                    {!embedded && group ? <div className="skills-group-menu-wrap"><IconButton variant="ghost" type="button" label={t('skills.groupActions')} onClick={(event) => openGroupMenu(event, group.id)}><MoreHorizontal size={16} /></IconButton></div> : null}
+                  </span>
+                </div>
+                {!collapsed ? items.map((skill) => (
+                  <div key={skill.name} className={`skills-item-wrap${selectedSkills.includes(skill.name) ? ' is-selected' : ''}`} draggable={!embedded} onDragStart={() => setDraggedSkillName(skill.name)} onDragEnd={() => setDraggedSkillName(null)} onDragOver={(event) => { if (draggedSkillName && draggedSkillName !== skill.name) event.preventDefault(); }} onDrop={() => void dropSkill(group?.id ?? null, skill.name)}>
+                    {!embedded ? <button type="button" className="skills-select-button" aria-label={selectedSkills.includes(skill.name) ? t('skills.deselectSkill', { name: skill.name }) : t('skills.selectSkill', { name: skill.name })} onClick={() => toggleSkillSelection(skill.name)}>{selectedSkills.includes(skill.name) ? <CheckSquare size={15} /> : <span />}</button> : null}
+                    <div className="skills-list-item-row">
+                      <ListItem className="skills-list-item" type="button" active={active?.kind === 'skill' && active.name === skill.name} title={<span className="tool-list-title"><span>{skill.name}</span></span>} subtitle={<span className="skills-list-description" title={skill.description}>{skill.description}</span>} leading={<SkillIcon iconUrl={skill.icon_url} size={19} />} onClick={() => selectSkill(skill.name)} />
+                      {!embedded ? (
+                        <span className="skills-list-item-actions">
+                          <IconButton className="skills-move-action" variant="ghost" type="button" label={t('skills.moveSkill')} onClick={() => openMoveSkillDialog(skill)} disabled={busy}>
+                            <FolderInput size={16} />
+                          </IconButton>
+                          <span className={`skills-state-dot ${skill.enabled ? 'is-enabled' : 'is-disabled'}`} title={skill.enabled ? t('skills.enabled') : t('skills.disabled')} aria-label={skill.enabled ? t('skills.enabled') : t('skills.disabled')} />
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                )) : null}
+              </div>
+              );
+            })}
             {skillConflicts.length > 0 ? (
               <div className="skills-conflict-list">
                 <div className="skills-group-heading skills-conflict-heading">
@@ -484,34 +663,22 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                 ))}
               </div>
             ) : null}
-            {settings && (settings.orphan_skills.length > 0 || settings.orphan_groups.length > 0) ? (
+            {settings && settings.orphan_skills.length > 0 ? (
               <div className="skills-orphan-list">
                 <div className="skills-group-heading skills-conflict-heading">
                   <span>{t('skills.orphanCategory')}</span>
-                  <span className="mini-status-badge skills-conflict-badge"><AlertCircle size={11} />{settings.orphan_skills.length + settings.orphan_groups.length}</span>
+                  <span className="mini-status-badge skills-conflict-badge"><AlertCircle size={11} />{settings.orphan_skills.length}</span>
                 </div>
                 {settings.orphan_skills.map((name) => (
                   <ListItem
                     key={`orphan-skill:${name}`}
                     className="skills-list-item skills-orphan-item"
                     type="button"
-                    active={active?.kind === 'orphan' && active.scope === 'skill' && active.name === name}
+                    active={active?.kind === 'orphan' && active.name === name}
                     title={<span className="tool-list-title"><span>{name}</span><span className="mini-status-badge skills-conflict-badge"><AlertCircle size={11} />{t('skills.orphanBadge')}</span></span>}
                     subtitle={<span className="skills-list-description">{settings.conflicts.some((item) => item.name === name) ? t('skills.orphanConflict') : t('skills.orphanMissing')}</span>}
                     leading={<AlertCircle size={19} />}
-                    onClick={() => selectOrphan('skill', name)}
-                  />
-                ))}
-                {settings.orphan_groups.map((name) => (
-                  <ListItem
-                    key={`orphan-group:${name}`}
-                    className="skills-list-item skills-orphan-item"
-                    type="button"
-                    active={active?.kind === 'orphan' && active.scope === 'group' && active.name === name}
-                    title={<span className="tool-list-title"><span>{name}</span><span className="mini-status-badge skills-conflict-badge"><AlertCircle size={11} />{t('skills.orphanBadge')}</span></span>}
-                    subtitle={<span className="skills-list-description">{t('skills.orphanGroup')}</span>}
-                    leading={<AlertCircle size={19} />}
-                    onClick={() => selectOrphan('group', name)}
+                    onClick={() => selectOrphan(name)}
                   />
                 ))}
               </div>
@@ -548,13 +715,64 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
               )} />
               {activeOrphan?.exists ? <SkillOrphanDetail orphan={activeOrphan} onClean={() => void cleanOrphans()} busy={busy} /> : null}
               {activeConflict ? <SkillConflictDetail conflict={activeConflict} /> : null}
-              {active?.kind === 'group' ? <GroupEditor group={active.name} settings={visibleSettings} agentMode={false} busy={busy} onGlobalToggle={toggleGroup} onAgentToggle={toggleAgentGroup} /> : null}
               {activeSkill && content ? <SkillEditor skill={activeSkill} content={content} selectedPath={selectedContentPath} onPathChange={setSelectedContentPath} /> : null}
             </>
           )}
         </div>
       )}
       />
+      {groupMenu && groupMenuPosition ? createPortal(
+        <div className="skills-group-menu skills-group-menu--portal" role="menu" style={{ top: groupMenuPosition.top, left: groupMenuPosition.left }}>
+          <button type="button" onClick={() => { const group = settings?.groups.find((item) => item.id === groupMenu); if (group) openRenameGroup(group); }}><Pencil size={14} />{t('skills.renameGroup')}</button>
+          <button type="button" className="is-danger" onClick={() => { const group = settings?.groups.find((item) => item.id === groupMenu); if (group) void removeGroup(group); }}><Trash2 size={14} />{t('skills.deleteGroup')}</button>
+        </div>,
+        document.body,
+      ) : null}
+      {groupDialog ? (
+        <Dialog
+          open
+          title={groupDialog.mode === 'create' ? t('skills.newGroup') : t('skills.renameGroup')}
+          description={t('skills.groupDialogDescription')}
+          icon={<FolderOpen size={21} />}
+          closeLabel={t('common.close')}
+          onClose={() => { if (!busy) setGroupDialog(null); }}
+          size="sm"
+          footer={(
+            <>
+              <Button variant="ghost" type="button" onClick={() => setGroupDialog(null)} disabled={busy}>{t('common.cancel')}</Button>
+              <Button variant="primary" type="button" onClick={() => void saveGroup()} disabled={!groupDraft.trim() || busy} icon={<CheckSquare size={15} />}>{t('common.save')}</Button>
+            </>
+          )}
+        >
+          <FormField label={t('skills.groupName')} htmlFor="skill-group-name">
+            <input id="skill-group-name" type="text" value={groupDraft} onChange={(event) => setGroupDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void saveGroup(); }} maxLength={80} />
+          </FormField>
+        </Dialog>
+      ) : null}
+      {moveSkillDialog ? (
+        <Dialog
+          open
+          title={t('skills.moveSkill')}
+          description={t('skills.moveSkillDescription', { name: moveSkillDialog.name })}
+          icon={<FolderInput size={21} />}
+          closeLabel={t('common.close')}
+          onClose={() => { if (!busy) setMoveSkillDialog(null); }}
+          size="sm"
+          footer={(
+            <>
+              <Button variant="ghost" type="button" onClick={() => setMoveSkillDialog(null)} disabled={busy}>{t('common.cancel')}</Button>
+              <Button variant="primary" type="button" onClick={() => void saveMoveSkill()} disabled={busy} icon={<CheckSquare size={15} />}>{t('common.save')}</Button>
+            </>
+          )}
+        >
+          <FormField label={t('skills.addToGroup')} htmlFor="skill-move-group">
+            <select id="skill-move-group" value={moveSkillDialog.groupId} onChange={(event) => setMoveSkillDialog((current) => current ? { ...current, groupId: event.target.value } : current)} disabled={busy}>
+              <option value="">{t('skills.ungrouped')}</option>
+              {(settings?.groups ?? []).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+            </select>
+          </FormField>
+        </Dialog>
+      ) : null}
       {downloadsOpen ? (
         <Dialog
           open={downloadsOpen}
@@ -753,6 +971,13 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                 <p>{t('skills.networkHint')}</p>
               </div>
             )}
+            <label className="form-field skills-import-group-field">
+              <span>{t('skills.addToGroup')}</span>
+              <select value={importGroupId} onChange={(event) => setImportGroupId(event.target.value)} disabled={importing}>
+                <option value="">{t('skills.ungrouped')}</option>
+                {(settings?.groups ?? []).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+              </select>
+            </label>
           </div>
         </Dialog>
       ) : null}

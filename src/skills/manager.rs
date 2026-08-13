@@ -365,7 +365,7 @@ impl SkillManager {
         Ok(())
     }
 
-    pub async fn create_import_task(&self, source: &str, kind: &str) -> AppResult<SkillImportTask> {
+    pub async fn create_import_task(&self, source: &str, kind: &str, group_id: Option<String>) -> AppResult<SkillImportTask> {
         let source = source.trim();
         if source.is_empty() {
             return Err(AppError::BadRequest(
@@ -383,6 +383,7 @@ impl SkillManager {
             id: Uuid::new_v4(),
             source: source.to_string(),
             kind: kind.to_string(),
+            group_id,
             status: "queued".to_string(),
             phase: "preparing".to_string(),
             progress: 0,
@@ -410,14 +411,25 @@ impl SkillManager {
         result
     }
 
-    pub async fn run_import_task(&self, task_id: Uuid, source: String, proxy_url: Option<String>) {
+    pub async fn run_import_task(
+        &self,
+        task_id: Uuid,
+        source: String,
+        proxy_url: Option<String>,
+        group_id: Option<String>,
+    ) {
         self.update_import_task(task_id, "running", "preparing", 5, None, false)
             .await;
         let result = if looks_like_url(&source) {
-            self.import_source_with_progress(&source, proxy_url.as_deref(), Some(task_id))
+            self.import_source_with_progress(
+                &source,
+                proxy_url.as_deref(),
+                Some(task_id),
+                group_id.as_deref(),
+            )
                 .await
         } else {
-            self.import_directory_with_progress(&source, Some(task_id))
+            self.import_directory_with_progress(&source, Some(task_id), group_id.as_deref())
                 .await
         };
         match result {
@@ -465,6 +477,7 @@ impl SkillManager {
         &self,
         source_directory: &str,
         task_id: Option<Uuid>,
+        group_id: Option<&str>,
     ) -> AppResult<()> {
         let source = source_directory.trim();
         if source.is_empty() {
@@ -486,7 +499,7 @@ impl SkillManager {
             let _ = fs::remove_dir_all(&temporary).await;
             return Err(error);
         }
-        let result = self.finish_import(temporary.clone(), None).await;
+        let result = self.finish_import(temporary.clone(), None, group_id).await;
         if result.is_err() {
             let _ = fs::remove_dir_all(&temporary).await;
         }
@@ -498,6 +511,7 @@ impl SkillManager {
         source: &str,
         proxy_url: Option<&str>,
         task_id: Option<Uuid>,
+        group_id: Option<&str>,
     ) -> AppResult<()> {
         let source = source.trim();
         if source.is_empty() {
@@ -506,7 +520,7 @@ impl SkillManager {
             ));
         }
         if !looks_like_url(source) {
-            return self.import_directory_with_progress(source, task_id).await;
+            return self.import_directory_with_progress(source, task_id, group_id).await;
         }
 
         let parsed = normalize_remote_source(source)?;
@@ -603,7 +617,7 @@ impl SkillManager {
                 self.update_import_task(task_id, "running", "installing", 85, None, false)
                     .await;
             }
-            self.finish_import(temporary.clone(), Some(source)).await
+            self.finish_import(temporary.clone(), Some(source), group_id).await
         }
         .await;
 
@@ -613,7 +627,12 @@ impl SkillManager {
         result
     }
 
-    async fn finish_import(&self, temporary: PathBuf, source_url: Option<&str>) -> AppResult<()> {
+    async fn finish_import(
+        &self,
+        temporary: PathBuf,
+        source_url: Option<&str>,
+        group_id: Option<&str>,
+    ) -> AppResult<()> {
         let manifest = parse_skill(temporary.clone()).await?;
         let destination = self.root.join(&manifest.name);
         if temporary == destination {
@@ -635,13 +654,15 @@ impl SkillManager {
         self.store
             .update_skill_source(&manifest.name, source_url.map(str::to_string))
             .await?;
+        self.store.set_skill_group(&manifest.name, group_id).await?;
         self.refresh().await
     }
 
     pub async fn settings(&self, agent_id: Option<Uuid>) -> AppResult<SkillSettings> {
-        let global = self.store.read_skill_global_overrides().await?;
+        let mut global = self.store.read_skill_global_overrides().await?;
         let icons = self.store.read_skill_icons().await?;
         let sources = self.store.read_skill_sources().await?;
+        let group_records = self.store.list_skill_groups().await?;
         let catalog = self.catalog.read().await;
         let duplicate_names = duplicate_names(&catalog.manifests);
         let mut conflicts = duplicate_names
@@ -669,68 +690,81 @@ impl SkillManager {
             .map(|manifest| manifest.name.clone())
             .collect::<Vec<_>>();
         drop(catalog);
+        self.store.ensure_skill_group_assignments(&known_skill_names).await?;
+        let assignments = self.store.read_skill_group_assignments().await?;
+        let assignments_by_skill = assignments
+            .iter()
+            .map(|item| (item.skill_name.as_str(), item))
+            .collect::<HashMap<_, _>>();
+        let groups_by_id = group_records
+            .iter()
+            .map(|item| (item.id.as_str(), item))
+            .collect::<HashMap<_, _>>();
+        let groups_by_name = group_records
+            .iter()
+            .map(|item| (item.name.to_ascii_lowercase(), item))
+            .collect::<HashMap<_, _>>();
         if let Some(id) = agent_id {
             self.store
                 .sync_skill_agent_catalog(id, &known_skill_names)
                 .await?;
         }
-        let agent = match agent_id {
+        let mut agent = match agent_id {
             Some(id) => self.store.read_skill_agent_overrides(id).await?,
             None => SkillOverrides::default(),
         };
         let catalog = self.catalog.read().await;
         let mut defaults = Vec::new();
         let mut effective = Vec::new();
-        let mut groups = BTreeMap::<String, SkillGroupState>::new();
+        let groups = group_records
+            .iter()
+            .map(|group| {
+                (
+                    group.id.clone(),
+                    SkillGroupState {
+                        id: group.id.clone(),
+                        name: group.name.clone(),
+                        sort_order: group.sort_order,
+                        skill_count: assignments.iter().filter(|item| item.group_id.as_deref() == Some(group.id.as_str())).count(),
+                        enabled: true,
+                        global_override: None,
+                        agent_override: None,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         for manifest in &catalog.manifests {
             if duplicate_names.contains(&manifest.name) {
                 continue;
             }
             let global_item = find_skill(&global, &manifest.name);
-            let global_group = manifest
-                .group
-                .as_deref()
-                .and_then(|g| find_group(&global, g));
+            let assignment = assignments_by_skill.get(manifest.name.as_str()).copied();
+            let assigned_group = assignment
+                .and_then(|item| item.group_id.as_deref())
+                .and_then(|id| groups_by_id.get(id).copied());
             let agent_item = agent_id.and_then(|_| find_skill(&agent, &manifest.name));
-            let agent_group = agent_id.and_then(|_| {
-                manifest
-                    .group
-                    .as_deref()
-                    .and_then(|g| find_group(&agent, g))
-            });
             let enabled = agent_item
-                .or(agent_group)
                 .or(global_item)
-                .or(global_group)
                 .unwrap_or(true);
             let mut item = manifest.clone();
+            item.group = assigned_group.map(|group| group.name.clone());
+            item.group_id = assigned_group.map(|group| group.id.clone());
             item.icon_url = icons.get(&manifest.name).cloned();
             item.source_url = sources.get(&manifest.name).cloned();
             item.enabled = enabled;
             item.global_override = global_item;
-            item.group_override = global_group;
+            item.group_override = None;
             item.agent_override = agent_item;
-            item.agent_group_override = agent_group;
+            item.agent_group_override = None;
             defaults.push(item.clone());
             if enabled {
                 effective.push(item.clone());
-            }
-            if let Some(group) = &manifest.group {
-                groups
-                    .entry(group.clone())
-                    .or_insert_with(|| SkillGroupState {
-                        name: group.clone(),
-                        enabled: agent_group.or(global_group).unwrap_or(true),
-                        global_override: global_group,
-                        agent_override: agent_group,
-                    });
             }
         }
         let known_names = defaults
             .iter()
             .map(|s| s.name.as_str())
             .collect::<HashSet<_>>();
-        let known_groups = groups.keys().map(String::as_str).collect::<HashSet<_>>();
         let orphan_skills = global
             .skills
             .iter()
@@ -740,31 +774,70 @@ impl SkillManager {
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
-        let orphan_groups = global
-            .groups
-            .iter()
-            .chain(agent.groups.iter())
-            .map(|item| item.group.clone())
-            .filter(|group| !known_groups.contains(group.as_str()))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        let orphan_groups = Vec::new();
         let mut diagnostics = catalog.diagnostics.clone();
         for item in &defaults {
             diagnostics.extend(item.diagnostics.clone());
         }
+        global.groups = normalize_group_overrides(global.groups, &groups_by_name);
+        agent.groups = normalize_group_overrides(agent.groups, &groups_by_name);
         let overrides = if agent_id.is_some() { agent } else { global };
+        let mut group_values = groups.into_values().collect::<Vec<_>>();
+        group_values.sort_by_key(|group| group.sort_order);
+        let group_order = group_values
+            .iter()
+            .map(|group| (group.id.as_str(), group.sort_order))
+            .collect::<HashMap<_, _>>();
+        let assignment_order = assignments
+            .iter()
+            .map(|item| (item.skill_name.as_str(), item.sort_order))
+            .collect::<HashMap<_, _>>();
+        let sort_skills = |items: &mut Vec<SkillManifest>| {
+            items.sort_by(|a, b| {
+                let a_group = a.group_id.as_deref().and_then(|id| group_order.get(id)).copied().unwrap_or(i64::MAX);
+                let b_group = b.group_id.as_deref().and_then(|id| group_order.get(id)).copied().unwrap_or(i64::MAX);
+                a_group.cmp(&b_group)
+                    .then_with(|| assignment_order.get(a.name.as_str()).copied().unwrap_or(i64::MAX).cmp(&assignment_order.get(b.name.as_str()).copied().unwrap_or(i64::MAX)))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+        };
+        sort_skills(&mut defaults);
+        sort_skills(&mut effective);
         Ok(SkillSettings {
             skills_dir: Self::display_path(&self.root),
             defaults,
             overrides,
             effective,
-            groups: groups.into_values().collect(),
+            groups: group_values,
             orphan_skills,
             orphan_groups,
             diagnostics,
             conflicts,
         })
+    }
+
+    pub async fn create_group(&self, name: &str) -> AppResult<()> {
+        self.store.create_skill_group(name).await.map(|_| ())
+    }
+
+    pub async fn rename_group(&self, id: &str, name: &str) -> AppResult<()> {
+        self.store.rename_skill_group(id, name).await
+    }
+
+    pub async fn delete_group(&self, id: &str) -> AppResult<()> {
+        self.store.delete_skill_group(id).await
+    }
+
+    pub async fn reorder_groups(&self, ids: &[String]) -> AppResult<()> {
+        self.store.reorder_skill_groups(ids).await
+    }
+
+    pub async fn assign_skill_group(&self, skill_name: &str, group_id: Option<&str>) -> AppResult<()> {
+        self.store.set_skill_group(skill_name, group_id).await
+    }
+
+    pub async fn reorder_group_skills(&self, group_id: Option<&str>, skill_names: &[String]) -> AppResult<()> {
+        self.store.reorder_skill_group_items(group_id, skill_names).await
     }
 
     fn display_path(path: &Path) -> String {
@@ -1551,12 +1624,20 @@ fn find_skill(overrides: &SkillOverrides, name: &str) -> Option<bool> {
         .find(|item| item.name == name)
         .and_then(|item| item.enabled)
 }
-fn find_group(overrides: &SkillOverrides, group: &str) -> Option<bool> {
-    overrides
-        .groups
-        .iter()
-        .find(|item| item.group == group)
-        .and_then(|item| item.enabled)
+fn normalize_group_overrides(
+    groups: Vec<crate::domain::SkillGroupOverride>,
+    by_name: &HashMap<String, &crate::storage::SkillGroupRecord>,
+) -> Vec<crate::domain::SkillGroupOverride> {
+    groups
+        .into_iter()
+        .map(|mut item| {
+            if let Some(group) = by_name.get(&item.group.to_ascii_lowercase()) {
+                item.group_id = Some(group.id.clone());
+                item.group = group.name.clone();
+            }
+            item
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1798,6 +1879,7 @@ mod tests {
                     }],
                     groups: vec![SkillGroupOverride {
                         group: "development".to_string(),
+                        group_id: None,
                         enabled: Some(true),
                     }],
                 },

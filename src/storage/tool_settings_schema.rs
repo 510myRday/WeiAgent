@@ -104,6 +104,7 @@ CREATE INDEX IF NOT EXISTS idx_tool_terminal_grants_expiry
 
 CREATE TABLE IF NOT EXISTS task_plans (
     planning_id TEXT PRIMARY KEY NOT NULL,
+    public_id TEXT NOT NULL,
     conversation_id TEXT NOT NULL,
     conversation_message_id TEXT REFERENCES conversation_messages(id) ON DELETE CASCADE,
     explanation TEXT,
@@ -393,6 +394,69 @@ pub(super) fn migrate_task_plans_schema(conn: &Connection) -> AppResult<()> {
         tx.execute("ALTER TABLE task_plans_v8 RENAME TO task_plans", [])?;
         tx.commit()?;
     }
+    if !column_exists(conn, "task_plans", "public_id")? {
+        conn.execute("ALTER TABLE task_plans ADD COLUMN public_id TEXT", [])?;
+    }
+    let rows = {
+        let mut statement = conn.prepare(
+            "SELECT planning_id, public_id, explanation, plan_json, created_at
+             FROM task_plans",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (planning_id, existing_public_id, explanation, plan_json, created_at) in rows {
+        let is_lowercase_alphanumeric = existing_public_id.as_deref().is_some_and(|value| {
+            value.len() == 6
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase())
+        });
+        let is_legacy_numeric = existing_public_id
+            .as_deref()
+            .is_some_and(|value| value.bytes().all(|byte| byte.is_ascii_digit()));
+        if is_lowercase_alphanumeric && !is_legacy_numeric {
+            continue;
+        }
+        let planning_id = uuid::Uuid::parse_str(&planning_id)
+            .map_err(|error| crate::error::AppError::Database(error.to_string()))?;
+        let mut nonce = 0;
+        let public_id = loop {
+            let candidate = crate::domain::task_plan_public_id_candidate(
+                planning_id,
+                explanation.as_deref(),
+                &plan_json,
+                &created_at,
+                nonce,
+            );
+            let occupied = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM task_plans WHERE public_id = ?1 AND planning_id != ?2)",
+                rusqlite::params![candidate, planning_id.to_string()],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !occupied {
+                break candidate;
+            }
+            nonce += 1;
+        };
+        conn.execute(
+            "UPDATE task_plans SET public_id = ?1 WHERE planning_id = ?2",
+            rusqlite::params![public_id, planning_id.to_string()],
+        )?;
+    }
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_plans_public_id ON task_plans(public_id)",
+        [],
+    )?;
     Ok(())
 }
 

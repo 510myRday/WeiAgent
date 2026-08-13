@@ -1406,7 +1406,12 @@ async fn persist_tool_result(
             std::slice::from_ref(&tool_message),
         )
         .await?;
-    if let Some(planning_id) = task_plan_id_from_result(result) {
+    if let Some(public_id) = task_plan_public_id_from_result(result)
+        && let Some(planning_id) = state
+            .store
+            .resolve_task_plan_public_id(tool_message.conversation_id, &public_id)
+            .await?
+    {
         state
             .store
             .associate_task_plan_with_message(
@@ -1420,7 +1425,7 @@ async fn persist_tool_result(
     Ok(())
 }
 
-fn task_plan_id_from_result(result: &ToolResult) -> Option<Uuid> {
+fn task_plan_public_id_from_result(result: &ToolResult) -> Option<String> {
     let ToolResult::Completed { stdout, .. } = result else {
         return None;
     };
@@ -1431,7 +1436,7 @@ fn task_plan_id_from_result(result: &ToolResult) -> Option<Uuid> {
     value
         .get("planning_id")
         .and_then(Value::as_str)
-        .and_then(|value| Uuid::parse_str(value).ok())
+        .map(str::to_string)
 }
 
 fn partial_assistant(
@@ -1644,6 +1649,7 @@ mod tests {
         let plan = TaskPlan {
             conversation_id: Uuid::new_v4(),
             planning_id: Uuid::new_v4(),
+            public_id: "123456".to_string(),
             conversation_message_id: None,
             explanation: None,
             plan: vec![

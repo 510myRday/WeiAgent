@@ -86,7 +86,8 @@ impl AgentTool for TaskPlanningTool {
                     },
                     "planning_id": {
                         "type": "string",
-                        "description": "The active plan ID returned by create. Required for set_status."
+                        "pattern": "^[0-9a-z]{6}$",
+                        "description": "The six-character lowercase alphanumeric active plan ID returned by create. Required for set_status."
                     },
                     "item": {
                         "oneOf": [
@@ -196,7 +197,6 @@ impl AgentTool for TaskPlanningTool {
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty());
-                let planning_id = parse_planning_id(provided_planning_id);
                 let active_plan = match context.store.read_task_plan(context.conversation_id).await
                 {
                     Ok(active_plan) => active_plan,
@@ -206,6 +206,15 @@ impl AgentTool for TaskPlanningTool {
                         };
                     }
                 };
+                let planning_id = match (provided_planning_id, active_plan.as_ref()) {
+                    (Some(value), Some(active_plan)) if value == active_plan.public_id() => {
+                        Some(active_plan.planning_id)
+                    }
+                    (Some(value), Some(active_plan)) => Uuid::parse_str(value)
+                        .ok()
+                        .filter(|value| *value == active_plan.planning_id),
+                    _ => None,
+                };
                 if planning_id != active_plan.as_ref().map(|plan| plan.planning_id) {
                     let has_provided_id = provided_planning_id.is_some();
                     let (code, reason) = match active_plan.as_ref() {
@@ -213,14 +222,14 @@ impl AgentTool for TaskPlanningTool {
                             "PlanningIdInvalid",
                             format!(
                                 "本次 set_status 的 planning_id 无效，或不属于当前会话。请使用当前 active 计划的 planning_id 重试：{}",
-                                active_plan.planning_id
+                                active_plan.public_id()
                             ),
                         ),
                         Some(active_plan) => (
                             "PlanningRequired",
                             format!(
                                 "本次 set_status 缺少 planning_id。请使用当前 active 计划的 planning_id 重试：{}",
-                                active_plan.planning_id
+                                active_plan.public_id()
                             ),
                         ),
                         None if has_provided_id => (
@@ -240,7 +249,7 @@ impl AgentTool for TaskPlanningTool {
                         details: Some(serde_json::json!({
                             "tool": TASK_PLANNING_TOOL_NAME,
                             "provided_planning_id": provided_planning_id,
-                            "active_planning_id": active_plan.as_ref().map(|plan| plan.planning_id),
+                            "active_planning_id": active_plan.as_ref().map(|plan| plan.public_id()),
                             "required_argument": "planning_id"
                         })),
                     };
@@ -262,7 +271,7 @@ impl AgentTool for TaskPlanningTool {
                         code: Some("PlanningRequired".to_string()),
                         details: Some(serde_json::json!({
                             "tool": TASK_PLANNING_TOOL_NAME,
-                            "provided_planning_id": planning_id,
+                            "provided_planning_id": provided_planning_id,
                             "active_planning_id": null,
                             "required_argument": "planning_id"
                         })),
@@ -315,7 +324,7 @@ impl AgentTool for TaskPlanningTool {
                                 .await
                                 .ok()
                                 .flatten()
-                                .map(|plan| plan.planning_id),
+                                .map(|plan| plan.public_id().to_string()),
                             "required_argument": "planning_id"
                         })),
                     },
@@ -399,13 +408,6 @@ fn normalize_task_planning_item(item: &mut Value) {
         }
         _ => {}
     }
-}
-
-fn parse_planning_id(value: Option<&str>) -> Option<Uuid> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .and_then(|value| Uuid::parse_str(value).ok())
 }
 
 fn normalize_item_indexes(
@@ -512,7 +514,7 @@ fn plan_json_result(message: &str, plan: &TaskPlan, active: bool) -> ToolResult 
             "tool": TASK_PLANNING_TOOL_NAME,
             "message": message,
             "active": active,
-            "planning_id": plan.planning_id,
+            "planning_id": plan.public_id(),
             "explanation": plan.explanation,
             "plan": plan.plan,
             "created_at": plan.created_at,
@@ -797,6 +799,8 @@ mod tests {
         };
         let created: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         let planning_id = created["planning_id"].as_str().unwrap().to_string();
+        assert_eq!(planning_id.len(), 6);
+        assert!(planning_id.bytes().all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase()));
 
         let updated = tool
             .execute(
@@ -814,6 +818,12 @@ mod tests {
         };
         let updated: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         assert_eq!(updated["plan"][1]["status"], "in_progress");
+        let internal_planning_id = store
+            .read_task_plan(conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .planning_id;
 
         let completed = tool
             .execute(
@@ -835,11 +845,10 @@ mod tests {
         let retained: i64 = store
             .database()
             .call({
-                let planning_id = Uuid::parse_str(planning_id.as_str()).unwrap();
                 move |conn| {
                     Ok(conn.query_row(
                         "SELECT COUNT(*) FROM task_plans WHERE planning_id = ?1",
-                        [planning_id.to_string()],
+                        [internal_planning_id.to_string()],
                         |row| row.get(0),
                     )?)
                 }

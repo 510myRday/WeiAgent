@@ -134,8 +134,7 @@ impl ToolRegistry {
                 .ok()
                 .flatten();
             let valid = planning_id
-                .and_then(|value| Uuid::parse_str(value).ok())
-                .zip(active_plan.as_ref().map(|plan| plan.planning_id))
+                .zip(active_plan.as_ref().map(|plan| plan.public_id()))
                 .is_some_and(|(provided, active)| provided == active);
             if !valid {
                 let invalid_argument = planning_argument.is_some_and(|value| {
@@ -150,14 +149,14 @@ impl ToolRegistry {
                         "PlanningIdInvalid",
                         format!(
                             "本次工具调用的 planning_id 无效，或不属于当前会话。请使用当前 active 计划的 planning_id 重试：{}",
-                            active_plan.planning_id
+                            active_plan.public_id()
                         ),
                     ),
                     Some(active_plan) => (
                         "PlanningRequired",
                         format!(
                             "当前会话已有 active 任务计划，但本次工具调用缺少 planning_id。请使用下面的 planning_id 重试：{}",
-                            active_plan.planning_id
+                            active_plan.public_id()
                         ),
                     ),
                     None if has_provided_id => (
@@ -178,7 +177,7 @@ impl ToolRegistry {
                         "tool": name,
                         "planning_id": planning_id,
                         "provided_planning_id": planning_id,
-                        "active_planning_id": active_plan.as_ref().map(|plan| plan.planning_id),
+                        "active_planning_id": active_plan.as_ref().map(|plan| plan.public_id()),
                         "required_argument": "planning_id"
                     })),
                 };
@@ -226,7 +225,8 @@ pub(super) fn add_planning_id_parameter(definition: &mut ToolDefinition) {
         "planning_id".to_string(),
         serde_json::json!({
             "type": "string",
-            "description": "Required when task planning is enabled. Use the planning_id returned by task_planning."
+            "pattern": "^[0-9a-z]{6}$",
+            "description": "Required when task planning is enabled. Use the six-character lowercase alphanumeric planning_id returned by task_planning."
         }),
     );
     let required = schema
@@ -964,18 +964,18 @@ mod tests {
         else {
             panic!("expected an active plan to require its planning id");
         };
-        assert!(reason.contains(&plan.planning_id.to_string()));
+        assert!(reason.contains(plan.public_id()));
         assert_eq!(code.as_deref(), Some("PlanningRequired"));
         assert_eq!(
             details.unwrap()["active_planning_id"],
-            plan.planning_id.to_string()
+            plan.public_id()
         );
 
         let other_conversation = Uuid::new_v4();
         let result = registry
             .execute(
                 "web_search_sources",
-                json!({"planning_id": plan.planning_id}),
+                json!({"planning_id": plan.public_id()}),
                 context(other_conversation),
             )
             .await;
@@ -985,7 +985,7 @@ mod tests {
         assert_eq!(code.as_deref(), Some("PlanningIdInvalid"));
         assert_eq!(
             details.unwrap()["provided_planning_id"],
-            plan.planning_id.to_string()
+            plan.public_id()
         );
 
         let mut disabled_context = context(conversation_id);
