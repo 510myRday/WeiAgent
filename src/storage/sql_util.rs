@@ -71,3 +71,28 @@ pub(crate) fn parse_optional_datetime(
 pub(crate) fn parse_uuid(value: &str, field: &str) -> AppResult<Uuid> {
     Uuid::parse_str(value).map_err(|error| AppError::Database(format!("invalid {field}: {error}")))
 }
+
+pub(crate) fn table_columns(conn: &rusqlite::Connection, table: &str) -> AppResult<Vec<String>> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let mut columns = Vec::new();
+    for row in rows {
+        columns.push(row?);
+    }
+    Ok(columns)
+}
+
+pub(crate) fn column_exists(
+    conn: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+) -> AppResult<bool> {
+    Ok(table_columns(conn, table)?.iter().any(|name| name == column))
+}
+
+pub(crate) fn enum_value<T: serde::Serialize>(value: &T) -> AppResult<String> {
+    serde_json::to_value(value)?
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| AppError::Database("enum did not serialize to a string".to_string()))
+}

@@ -1245,20 +1245,15 @@ fn github_jsdelivr_source(source: &RemoteSkillSource) -> AppResult<Option<Remote
 }
 
 fn build_remote_client(proxy_url: Option<&str>, timeout: Duration) -> AppResult<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(timeout.min(Duration::from_secs(12)))
-        .user_agent("WeiAgent Skill importer");
-    if let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) {
-        let proxy_url = crate::domain::ip_proxies::proxy_url_with_remote_dns(proxy_url);
-        let proxy = reqwest::Proxy::all(proxy_url.as_ref()).map_err(|error| {
-            AppError::BadRequest(format!("invalid Skill download proxy: {error}"))
-        })?;
-        builder = builder.no_proxy().proxy(proxy);
-    }
-    builder.build().map_err(|error| {
-        AppError::Process(format!("failed to create Skill download client: {error}"))
-    })
+    crate::http_client::build_reqwest_client(
+        crate::http_client::HttpClientConfig::new()
+            .timeout(timeout)
+            .connect_timeout(timeout.min(Duration::from_secs(12)))
+            .user_agent("WeiAgent Skill importer")
+            .no_system_proxy()
+            .proxy_url(proxy_url),
+    )
+    .map_err(|error| AppError::Process(format!("failed to create Skill download client: {error}")))
 }
 
 async fn select_remote_route(

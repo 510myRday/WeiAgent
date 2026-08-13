@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react';
 import { AlertCircle, ArrowLeft, Cable, CircleCheck, CircleOff, Globe, ListChecks, LoaderCircle, Plus, Power, ShieldCheck, Terminal } from 'lucide-react';
 
 import type { Agent } from '../../types';
-import type { McpAuthState, McpServer, McpServerDraft, McpTransport } from '../../api';
+import type { McpAuthState, McpServer, McpServerDraft, McpTransport } from '../../toolTypes';
 import { clearMcpAuth, createMcpServer, deleteMcpServer, getMcpAuthState, getMcpServerSecrets, listMcpServers, reauthorizeMcpServer, refreshMcpServer, testMcpServer, updateMcpServer } from '../../api';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
 import { Button, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
-import { TerminalToolSettings } from '../settings/TerminalToolSettings';
+import { AgentToolsOverview } from '../settings/TerminalToolSettings';
 import { WebSearchToolSettings } from '../settings/WebSearchToolSettings';
 import { TaskPlanningToolSettings } from '../settings/TaskPlanningToolSettings';
 import { McpServerDialog } from './McpServerDialog';
@@ -292,7 +292,7 @@ export function ToolsPanel({ agents, onOpenMain, onBackToList, onOpenIpProxies }
                   title={builtin?.getLabel(t) ?? t('tools.title')}
                   description={builtin?.getDesc(t) ?? t('tools.description')}
                 />
-                {activeTool.kind === 'builtin' && activeTool.key === 'terminal' ? <TerminalToolSettings scope="defaults" agents={agents} onOpenIpProxies={onOpenIpProxies} /> : null}
+                {activeTool.kind === 'builtin' && activeTool.key === 'terminal' ? <AgentToolsOverview scope="defaults" agents={agents} onOpenIpProxies={onOpenIpProxies} /> : null}
                 {activeTool.kind === 'builtin' && activeTool.key === 'web_search' ? <WebSearchToolSettings scope="defaults" agents={agents} onOpenIpProxies={onOpenIpProxies} /> : null}
                 {activeTool.kind === 'builtin' && activeTool.key === 'task_planning' ? <TaskPlanningToolSettings scope="defaults" agents={agents} /> : null}
               </>

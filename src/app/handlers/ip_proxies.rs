@@ -83,20 +83,22 @@ pub async fn test_ip_proxy(
     Ok(Json(updated.remove(0)))
 }
 
+
+fn build_proxy_probe_client(proxy_url: &str) -> Result<reqwest::Client, String> {
+    crate::http_client::build_reqwest_client(
+        crate::http_client::HttpClientConfig::new()
+            .timeout(PROXY_TEST_TIMEOUT)
+            .connect_timeout(PROXY_CONNECT_TIMEOUT)
+            .proxy_url(Some(proxy_url))
+            .no_system_proxy()
+            .max_redirects(3),
+    )
+}
+
 async fn test_proxy_connection(proxy: IpProxy) -> IpProxyTestUpdate {
     let checked_at = Utc::now();
     let result = async {
-        let proxy_url = crate::domain::ip_proxies::proxy_url_with_remote_dns(&proxy.url);
-        let reqwest_proxy =
-            reqwest::Proxy::all(proxy_url.as_ref()).map_err(|error| error.to_string())?;
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .proxy(reqwest_proxy)
-            .connect_timeout(PROXY_CONNECT_TIMEOUT)
-            .timeout(PROXY_TEST_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::limited(3))
-            .build()
-            .map_err(|error| error.to_string())?;
+        let client = build_proxy_probe_client(&proxy.url)?;
         probe_proxy(&client).await
     }
     .await;
@@ -166,28 +168,7 @@ impl QualityApi {
 }
 
 async fn test_proxy_quality(proxy: IpProxy) -> IpProxyQualityTestUpdate {
-    let proxy_url = crate::domain::ip_proxies::proxy_url_with_remote_dns(&proxy.url);
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .proxy(match reqwest::Proxy::all(proxy_url.as_ref()) {
-            Ok(proxy) => proxy,
-            Err(error) => {
-                let message = compact_error(error.to_string());
-                return IpProxyQualityTestUpdate {
-                    id: proxy.id,
-                    api_quality: IpProxyQuality {
-                        google: quality_error(message.clone()),
-                        openai: quality_error(message.clone()),
-                        anthropic: quality_error(message.clone()),
-                        grok: quality_error(message),
-                    },
-                };
-            }
-        })
-        .connect_timeout(PROXY_CONNECT_TIMEOUT)
-        .timeout(PROXY_TEST_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(3))
-        .build();
+    let client = build_proxy_probe_client(&proxy.url);
 
     let api_quality = match client {
         Ok(client) => {

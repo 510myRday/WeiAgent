@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Cable, Pencil, RefreshCw, Search } from 'lucide-react';
 
-import type { McpAgentOverrides, McpAgentSettings, McpTool } from '../../api';
+import type { McpAgentOverrides, McpAgentSettings, McpTool } from '../../toolTypes';
 import { readAgentMcpConfig, updateAgentMcpConfig } from '../../api';
 import { useI18n } from '../../i18n';
-import { Button, IconButton } from '../../components/ui';
+import { Button, IconButton, InheritToggle } from '../../components/ui';
 import { McpToolDetails } from './McpToolDetails';
 
 export type McpServerSelection = {
@@ -133,16 +133,14 @@ export function McpAgentToolSettings({
                 </span>
               </div>
               <div className="agent-tool-row__actions">
-                <label className="inherit-control" title={t('tools.mcp.serverInheritanceDesc')}>
-                  <input
-                    type="checkbox"
-                    aria-label={`${server.name} ${t('tools.inheritsDefault')}`}
-                    checked={inherited}
-                    disabled={saving}
-                    onChange={(event) => setServerInherited(server.id, event.target.checked)}
-                  />
-                  <span>{t('tools.mcp.inheritServer')}</span>
-                </label>
+                <InheritToggle
+                  inherited={inherited}
+                  disabled={saving}
+                  title={t('tools.mcp.serverInheritanceDesc')}
+                  ariaLabel={`${server.name} ${t('tools.inheritsDefault')}`}
+                  onChange={(value) => setServerInherited(server.id, value)}
+                  label={t('tools.mcp.inheritServer')}
+                />
                 <label className={`toggle-switch${inherited ? ' is-disabled' : ''}`} title={server.enabled ? t('tools.enabled') : t('tools.disabled')}>
                   <input
                     type="checkbox"

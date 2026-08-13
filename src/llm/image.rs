@@ -793,15 +793,11 @@ fn validate_image_size(
 }
 
 fn detected_media_type(bytes: &[u8]) -> AppResult<String> {
-    match ::image::guess_format(bytes).ok() {
-        Some(::image::ImageFormat::Png) => Ok("image/png".to_string()),
-        Some(::image::ImageFormat::Jpeg) => Ok("image/jpeg".to_string()),
-        Some(::image::ImageFormat::WebP) => Ok("image/webp".to_string()),
-        Some(::image::ImageFormat::Gif) => Ok("image/gif".to_string()),
-        _ => Err(AppError::Llm(
-            "image response did not contain a supported image".to_string(),
-        )),
-    }
+    crate::image_util::detect_image_media_type(bytes)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            AppError::Llm("image response did not contain a supported image".to_string())
+        })
 }
 
 fn image_dimensions(bytes: &[u8], label: &str) -> AppResult<(u32, u32)> {

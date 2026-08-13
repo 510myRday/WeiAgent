@@ -3,18 +3,13 @@ import { useI18n } from '../i18n';
 import type {
   AgentRun,
   AgentRunPhase,
-  AssistantBlock,
-  ChatMessage,
   Conversation,
   ConversationUsage,
   ImageAttachment,
   GenerationMode,
   ThinkingLevel,
-  ToolCallState,
-  ToolCallStatus,
-  ToolArguments,
   StreamEvent,
-  UiMessage,
+  ToolCallState,
   UiMessageItem,
 } from '../types';
 import {
@@ -31,6 +26,36 @@ import {
   streamRunEvents,
   updateConversation,
 } from '../api';
+import {
+  appendTextDeltaToAssistant,
+  assistantHasVisibleBody,
+  genClientId,
+  interruptActiveRun,
+  isAbortError,
+  isAssistantMessage,
+  isUserMessage,
+  parseJsonObject,
+  patchToolOnMessages,
+  toUiMessage,
+  toUiMessageItems,
+  upsertToolOnMessages,
+} from './conversationMessages';
+import {
+  CONVERSATION_SNAPSHOTS_STORAGE_KEY,
+  UNREAD_CONVERSATIONS_STORAGE_KEY,
+  clearToolStartTime,
+  isEmptyConversation,
+  normalizeUnreadConversationMap,
+  readJsonStorage,
+  readToolStartTime,
+  sortConversationList,
+  sweepStaleToolStartTimes,
+  unreadMapsEqual,
+  writeJsonStorage,
+  writeToolStartTime,
+  type ConversationSnapshotMap,
+  type UnreadConversationMap,
+} from './conversationStorage';
 
 const EMPTY_USAGE: ConversationUsage = {
   input_tokens: 0,
@@ -40,510 +65,6 @@ const EMPTY_USAGE: ConversationUsage = {
   total_tokens: 0,
   cost_usd: 0,
 };
-
-const TOOL_START_STORAGE_PREFIX = 'weiagent:tool-start:';
-const UNREAD_CONVERSATIONS_STORAGE_KEY = 'weiagent:chat-unread-conversations:v1';
-const CONVERSATION_SNAPSHOTS_STORAGE_KEY = 'weiagent:chat-conversation-snapshots:v1';
-/** Entries persist the tool start timestamp; interrupted runs never clear them. */
-const TOOL_START_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-
-type UnreadConversationMap = Record<string, string[]>;
-type ConversationSnapshotMap = Record<string, number>;
-
-function readJsonStorage<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? JSON.parse(raw) as T : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJsonStorage<T>(key: string, value: T): void {
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Storage may be unavailable in privacy-restricted browser contexts.
-  }
-}
-
-function normalizeUnreadConversationMap(value: UnreadConversationMap): UnreadConversationMap {
-  return Object.fromEntries(Object.entries(value).flatMap(([agentId, ids]) => {
-    const normalized = Array.isArray(ids) ? [...new Set(ids)].filter(Boolean) : [];
-    return normalized.length > 0 ? [[agentId, normalized]] : [];
-  }));
-}
-
-function unreadMapsEqual(left: UnreadConversationMap, right: UnreadConversationMap): boolean {
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
-  if (leftKeys.length !== rightKeys.length) return false;
-  return leftKeys.every((agentId) => {
-    const leftIds = left[agentId] ?? [];
-    const rightIds = right[agentId] ?? [];
-    return leftIds.length === rightIds.length && leftIds.every((id, index) => id === rightIds[index]);
-  });
-}
-
-function toolStartStorageKey(callId: string): string {
-  return `${TOOL_START_STORAGE_PREFIX}${callId}`;
-}
-
-/**
- * Startup sweep: drop tool-start markers leaked by interrupted runs. The stored
- * value is the start timestamp in ms, so anything older than 7 days (or not
- * parseable as a timestamp) is stale.
- */
-function sweepStaleToolStartTimes(): void {
-  try {
-    const staleKeys: string[] = [];
-    for (let index = 0; index < window.localStorage.length; index += 1) {
-      const key = window.localStorage.key(index);
-      if (!key || !key.startsWith(TOOL_START_STORAGE_PREFIX)) continue;
-      const startedAtMs = Number(window.localStorage.getItem(key));
-      if (
-        !Number.isFinite(startedAtMs)
-        || startedAtMs <= 0
-        || Date.now() - startedAtMs > TOOL_START_MAX_AGE_MS
-      ) {
-        staleKeys.push(key);
-      }
-    }
-    staleKeys.forEach((key) => window.localStorage.removeItem(key));
-  } catch {
-    // Storage may be unavailable in privacy-restricted browser contexts.
-  }
-}
-
-function readToolStartTime(callId: string): number | undefined {
-  try {
-    const value = Number(window.localStorage.getItem(toolStartStorageKey(callId)));
-    return Number.isFinite(value) && value > 0 ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function writeToolStartTime(callId: string, startedAtMs: number): void {
-  try {
-    window.localStorage.setItem(toolStartStorageKey(callId), String(startedAtMs));
-  } catch {
-    // Storage may be unavailable in privacy-restricted browser contexts.
-  }
-}
-
-function clearToolStartTime(callId: string): void {
-  try {
-    window.localStorage.removeItem(toolStartStorageKey(callId));
-  } catch {
-    // Storage may be unavailable in privacy-restricted browser contexts.
-  }
-}
-
-function genClientId(): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return 'c' + Math.random().toString(36).slice(2, 10);
-}
-
-function isAbortError(cause: unknown): boolean {
-  return cause instanceof DOMException && cause.name === 'AbortError';
-}
-
-function toUiMessage(msg: ChatMessage & { role: 'user' | 'assistant' }): UiMessage {
-  return { ...msg, clientId: msg.id ?? genClientId() };
-}
-
-function parseJsonObject(value: string): ToolArguments {
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function statusFromToolResult(result: unknown): ToolCallStatus {
-  const status = isRecord(result) ? result.status : undefined;
-  if (
-    status === 'completed'
-    || status === 'running'
-    || status === 'blocked'
-    || status === 'rejected'
-    || status === 'interrupted'
-    || status === 'error'
-    || status === 'pending_approval'
-  ) {
-    return status;
-  }
-  return 'completed';
-}
-
-function isAssistantMessage(item: UiMessageItem): item is UiMessage & { role: 'assistant' } {
-  return item.role === 'assistant';
-}
-
-function isUserMessage(item: UiMessageItem): item is UiMessage & { role: 'user' } {
-  return item.role === 'user';
-}
-
-function listTools(message: UiMessage): ToolCallState[] {
-  return (message.blocks ?? [])
-    .filter((block): block is Extract<AssistantBlock, { type: 'tool' }> => block.type === 'tool')
-    .map((block) => block.tool);
-}
-
-function updateAssistantTools(
-  message: UiMessage,
-  mapper: (tool: ToolCallState) => ToolCallState,
-): UiMessage & { role: 'assistant' } {
-  if (!message.blocks?.length) return { ...message, role: 'assistant' };
-  let changed = false;
-  const blocks = message.blocks.map((block) => {
-    if (block.type !== 'tool') return block;
-    const nextTool = mapper(block.tool);
-    if (nextTool === block.tool) return block;
-    changed = true;
-    return { type: 'tool' as const, tool: nextTool };
-  });
-  return changed
-    ? { ...message, role: 'assistant', blocks }
-    : { ...message, role: 'assistant' };
-}
-
-function upsertToolOnAssistant(
-  message: UiMessage,
-  tool: ToolCallState,
-): UiMessage & { role: 'assistant' } {
-  const blocks = [...(message.blocks ?? [])];
-  const existingIndex = blocks.findIndex(
-    (block) => block.type === 'tool' && block.tool.call_id === tool.call_id,
-  );
-  if (existingIndex >= 0) {
-    const existing = blocks[existingIndex];
-    if (existing.type === 'tool') {
-      blocks[existingIndex] = {
-        type: 'tool',
-        tool: {
-          ...existing.tool,
-          ...tool,
-          arguments: { ...existing.tool.arguments, ...tool.arguments },
-          arguments_text: tool.arguments_text ?? existing.tool.arguments_text,
-          result: tool.result ?? existing.tool.result,
-        },
-      };
-    }
-  } else {
-    // Promote plain content into an ordered text block before the first tool.
-    if (
-      message.content
-      && !blocks.some((block) => block.type === 'text' || block.type === 'tool')
-    ) {
-      blocks.push({ type: 'text', content: message.content });
-    }
-    blocks.push({ type: 'tool', tool });
-  }
-  return { ...message, role: 'assistant', blocks };
-}
-
-function upsertToolOnMessages(
-  items: UiMessageItem[],
-  tool: ToolCallState,
-  agentId: string,
-  conversationId: string,
-): UiMessageItem[] {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    if (isUserMessage(item)) break;
-    if (isAssistantMessage(item)) {
-      return items.map((entry, entryIndex) => (
-        entryIndex === index ? upsertToolOnAssistant(entry, tool) : entry
-      ));
-    }
-  }
-  const seed: UiMessage = {
-    id: '',
-    agent_id: agentId,
-    conversation_id: conversationId,
-    role: 'assistant',
-    content: '',
-    status: 'streaming',
-    created_at: new Date().toISOString(),
-    clientId: genClientId(),
-    blocks: [{ type: 'tool', tool }],
-  };
-  return [...items, seed];
-}
-
-function patchToolOnMessages(
-  items: UiMessageItem[],
-  callId: string,
-  patch: Partial<ToolCallState> | ((tool: ToolCallState) => ToolCallState),
-): UiMessageItem[] {
-  return items.map((item) => {
-    if (!isAssistantMessage(item) || !item.blocks?.length) return item;
-    let changed = false;
-    const blocks = item.blocks.map((block) => {
-      if (block.type !== 'tool' || block.tool.call_id !== callId) return block;
-      changed = true;
-          const nextTool = typeof patch === 'function'
-        ? patch(block.tool)
-        : {
-          ...block.tool,
-          ...patch,
-            arguments: patch.arguments
-              ? { ...block.tool.arguments, ...patch.arguments }
-              : block.tool.arguments,
-            arguments_text: patch.arguments_text ?? block.tool.arguments_text,
-            result: patch.result ?? block.tool.result,
-        };
-      return { type: 'tool' as const, tool: nextTool };
-    });
-    return changed ? { ...item, blocks } : item;
-  });
-}
-
-function appendTextDeltaToAssistant(message: UiMessage, delta: string): UiMessage & { role: 'assistant' } {
-  const content = (message.content ?? '') + delta;
-  const blocks = [...(message.blocks ?? [])];
-  const last = blocks[blocks.length - 1];
-  if (last && last.type === 'text') {
-    blocks[blocks.length - 1] = { type: 'text', content: last.content + delta };
-  } else if (blocks.some((block) => block.type === 'tool')) {
-    blocks.push({ type: 'text', content: delta });
-  }
-  return {
-    ...message,
-    role: 'assistant',
-    content,
-    blocks: blocks.length ? blocks : message.blocks,
-    status: 'streaming',
-  };
-}
-
-function assistantHasVisibleBody(message: UiMessage): boolean {
-  if (message.content?.trim()) return true;
-  if (message.reasoning_content?.trim()) return true;
-  if (message.attachments?.length) return true;
-  if (listTools(message).length > 0) return true;
-  return false;
-}
-
-function interruptActiveRun(
-  items: UiMessageItem[],
-  reason: string,
-  toolStatus: 'rejected' | 'error',
-): UiMessageItem[] {
-  let activeRunStart = -1;
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (isUserMessage(items[index])) {
-      activeRunStart = index;
-      break;
-    }
-  }
-
-  const next = items.map((item, index) => {
-    if (index <= activeRunStart || !isAssistantMessage(item)) return item;
-    return updateAssistantTools(item, (tool) => {
-      if (tool.status !== 'running' && tool.status !== 'pending_approval') return tool;
-      return {
-        ...tool,
-        status: tool.status === 'pending_approval' ? 'rejected' as const : toolStatus,
-        result: toolStatus === 'error'
-          ? { ...tool.result, message: reason }
-          : { ...tool.result, reason },
-      };
-    });
-  });
-
-  let assistantIndex = -1;
-  for (let index = next.length - 1; index > activeRunStart; index -= 1) {
-    const item = next[index];
-    if (isAssistantMessage(item) && item.status === 'streaming') {
-      assistantIndex = index;
-      break;
-    }
-  }
-  if (assistantIndex < 0) return next;
-  const assistant = next[assistantIndex];
-  if (!isAssistantMessage(assistant)) return next;
-  if (!assistantHasVisibleBody(assistant)) {
-    return next.filter((_, index) => index !== assistantIndex);
-  }
-  return next.map((item, index) => (
-    index === assistantIndex && isAssistantMessage(item) ? { ...item, status: 'failed' as const } : item
-  ));
-}
-
-function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
-  const items: UiMessageItem[] = [];
-  const toolOwner = new Map<string, number>();
-  let lastAssistantIndex = -1;
-
-  for (const msg of raw) {
-    if (msg.role === 'assistant') {
-      const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
-      const tools: ToolCallState[] = toolCalls.map((call) => ({
-        call_id: call.id,
-        name: call.function.name,
-        arguments: parseJsonObject(call.function.arguments),
-        started_at_ms: call.started_at_ms ?? readToolStartTime(call.id),
-        permission_mode: call.permission_mode,
-        status: 'running' as const,
-      }));
-
-      // One bubble per user turn: fold all assistant/tool steps into the latest assistant.
-      if (lastAssistantIndex >= 0 && isAssistantMessage(items[lastAssistantIndex])) {
-        let merged = items[lastAssistantIndex];
-        if (msg.reasoning_content?.trim()) {
-          merged = {
-            ...merged,
-            role: 'assistant',
-            reasoning_content: [merged.reasoning_content, msg.reasoning_content]
-              .filter(Boolean)
-              .join("\n\n"),
-          };
-        }
-        if (msg.content.trim()) {
-          const blocks = [...(merged.blocks ?? [])];
-          if (
-            merged.content
-            && !blocks.some((block) => block.type === 'text' || block.type === 'tool')
-          ) {
-            blocks.push({ type: 'text', content: merged.content });
-          }
-          const lastBlock = blocks[blocks.length - 1];
-          if (lastBlock && lastBlock.type === 'text') {
-            blocks[blocks.length - 1] = {
-              type: 'text',
-              content: `${lastBlock.content}\n\n${msg.content}`,
-            };
-          } else {
-            blocks.push({ type: 'text', content: msg.content });
-          }
-          merged = {
-            ...merged,
-            role: 'assistant',
-            content: merged.content
-              ? `${merged.content}\n\n${msg.content}`
-              : msg.content,
-            blocks: blocks.length ? blocks : undefined,
-            usage: msg.usage ?? merged.usage,
-            status: msg.status ?? merged.status,
-            id: msg.id || merged.id,
-          };
-        }
-        for (const tool of tools) {
-          merged = upsertToolOnAssistant(merged, tool);
-          toolOwner.set(tool.call_id, lastAssistantIndex);
-        }
-        if (msg.usage) merged = { ...merged, role: 'assistant', usage: msg.usage };
-        items[lastAssistantIndex] = { ...merged, role: 'assistant' };
-        continue;
-      }
-
-      const blocks: AssistantBlock[] = [];
-      if (msg.content.trim()) {
-        blocks.push({ type: 'text', content: msg.content });
-      }
-      for (const tool of tools) {
-        blocks.push({ type: 'tool', tool });
-      }
-
-      const ui = toUiMessage({
-        ...msg,
-        role: 'assistant',
-        tool_calls: undefined,
-      });
-      ui.blocks = blocks.length ? blocks : undefined;
-      items.push(ui);
-      lastAssistantIndex = items.length - 1;
-      for (const tool of tools) {
-        toolOwner.set(tool.call_id, lastAssistantIndex);
-      }
-      continue;
-    }
-
-    if (msg.role === 'tool') {
-      const result = parseJsonObject(msg.content);
-      const callId = msg.tool_call_id ?? msg.id;
-      const ownerIndex = toolOwner.get(callId);
-      const status = statusFromToolResult(result);
-      if (ownerIndex !== undefined) {
-        const current = items[ownerIndex];
-        if (isAssistantMessage(current)) {
-          const existing = listTools(current).find((tool) => tool.call_id === callId);
-          items[ownerIndex] = upsertToolOnAssistant(current, {
-            call_id: callId,
-            name: existing?.name ?? 'tool',
-            arguments: existing?.arguments ?? {},
-            permission_mode: existing?.permission_mode,
-            status,
-            result,
-          });
-        }
-      } else if (lastAssistantIndex >= 0 && isAssistantMessage(items[lastAssistantIndex])) {
-        items[lastAssistantIndex] = upsertToolOnAssistant(items[lastAssistantIndex], {
-          call_id: callId,
-          name: 'tool',
-          arguments: {},
-          status,
-          result,
-        });
-        toolOwner.set(callId, lastAssistantIndex);
-      } else {
-        const orphan: UiMessage = {
-          id: msg.id,
-          agent_id: msg.agent_id,
-          conversation_id: msg.conversation_id,
-          role: 'assistant',
-          content: '',
-          status: 'done',
-          created_at: msg.created_at,
-          clientId: msg.id ?? genClientId(),
-          blocks: [{
-            type: 'tool',
-            tool: {
-              call_id: callId,
-              name: 'tool',
-              arguments: {},
-              status,
-              result,
-            },
-          }],
-        };
-        items.push(orphan);
-        lastAssistantIndex = items.length - 1;
-        toolOwner.set(callId, lastAssistantIndex);
-      }
-      continue;
-    }
-
-    if (msg.role === 'user') {
-      items.push(toUiMessage(msg as ChatMessage & { role: 'user' }));
-      lastAssistantIndex = -1;
-    }
-  }
-
-  return items;
-}
-
-function isEmptyConversation(conversation: Conversation): boolean {
-  return conversation.message_count === 0;
-}
-
-function sortConversationList(conversations: Conversation[]): Conversation[] {
-  return [...conversations].sort((left, right) => {
-    const pinOrder = Number(right.is_pinned) - Number(left.is_pinned);
-    if (pinOrder !== 0) return pinOrder;
-    return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
-  });
-}
 
 type UseConversationsOptions = {
   activeAgentId: string;

@@ -43,7 +43,7 @@ impl Default for PromptCacheConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderCacheCapabilities {
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::domain::serde_defaults::default_true")]
     pub automatic_prefix_cache: bool,
     #[serde(default)]
     pub explicit_breakpoints: bool,
@@ -51,10 +51,6 @@ pub struct ProviderCacheCapabilities {
     pub stable_cache_key: bool,
     #[serde(default)]
     pub supports_cache_retention: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 impl Default for ProviderCacheCapabilities {

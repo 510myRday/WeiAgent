@@ -157,7 +157,7 @@ impl From<&ModelProvider> for ModelProviderResponse {
             masked_api_keys: provider
                 .api_keys
                 .iter()
-                .map(|key| mask_api_key(key))
+                .map(|key| super::tools::mask_api_key(key))
                 .filter(|masked| !masked.is_empty())
                 .collect(),
             key_strategy: provider.key_strategy,
@@ -171,10 +171,6 @@ impl From<&ModelProvider> for ModelProviderResponse {
             updated_at: provider.updated_at,
         }
     }
-}
-
-fn mask_api_key(api_key: &str) -> String {
-    super::tools::mask_api_key(api_key)
 }
 
 /// Merge a submitted key list into the stored pool. Masked entries reference

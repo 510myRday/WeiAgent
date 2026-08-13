@@ -6,13 +6,15 @@ use std::{
 use tokio::{fs, sync::Mutex};
 use uuid::Uuid;
 
+use super::providers;
 use crate::{
     config::{load_or_init_settings, write_settings},
     domain::{Agent, AppSettings, ModelProvider},
     error::AppResult,
     storage::{
+        agents::{read_agents_conn, write_agents_conn},
         db,
-        files::{ensure_json_array, read_json, write_json},
+        files::{read_json},
     },
 };
 
@@ -46,7 +48,6 @@ impl Store {
         fs::create_dir_all(&terminal_workspace_dir).await?;
         fs::create_dir_all(&attachments_dir).await?;
         fs::create_dir_all(&agents_dir).await?;
-        ensure_json_array(&agents_file).await?;
         load_or_init_settings(&settings_file).await?;
         let database = Arc::new(db::Database::open(&root)?);
 
@@ -67,6 +68,7 @@ impl Store {
             mcp_lock: Mutex::new(()),
             skill_lock: Mutex::new(()),
         };
+        store.migrate_agents_from_json_if_needed().await?;
         store.initialize_tool_settings().await?;
         store.initialize_mcp_settings().await?;
         store.initialize_skill_settings().await?;
@@ -88,7 +90,7 @@ impl Store {
     pub(super) async fn read_providers(&self) -> AppResult<Vec<ModelProvider>> {
         let _guard = self.provider_lock.lock().await;
         self.database
-            .call(|connection| db::read_providers_conn(connection))
+            .call(|connection| providers::read_providers_conn(connection))
             .await
     }
 
@@ -102,11 +104,46 @@ impl Store {
     }
 
     pub(super) async fn read_agents_unlocked(&self) -> AppResult<Vec<Agent>> {
-        read_json(&self.agents_file).await
+        self.database
+            .call(|connection| read_agents_conn(connection))
+            .await
     }
 
     pub(super) async fn write_agents_unlocked(&self, agents: &[Agent]) -> AppResult<()> {
-        write_json(&self.agents_file, agents).await
+        let agents = agents.to_vec();
+        self.database
+            .call(move |connection| write_agents_conn(connection, &agents))
+            .await
+    }
+
+    async fn migrate_agents_from_json_if_needed(&self) -> AppResult<()> {
+        if fs::metadata(&self.agents_file).await.is_err() {
+            return Ok(());
+        }
+        let imported: Vec<Agent> = match read_json(&self.agents_file).await {
+            Ok(agents) => agents,
+            Err(error) => {
+                tracing::warn!(
+                    path = %self.agents_file.display(),
+                    %error,
+                    "failed to read legacy agents.json; leaving database agents unchanged"
+                );
+                return Ok(());
+            }
+        };
+        let existing = self.read_agents_unlocked().await?;
+        if existing.is_empty() && !imported.is_empty() {
+            self.write_agents_unlocked(&imported).await?;
+        }
+        let backup = self.agents_file.with_extension("json.bak");
+        if let Err(error) = fs::rename(&self.agents_file, &backup).await {
+            tracing::warn!(
+                path = %self.agents_file.display(),
+                %error,
+                "failed to archive legacy agents.json after database import"
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn agent_workspace_dir(&self, agent_id: Uuid) -> PathBuf {

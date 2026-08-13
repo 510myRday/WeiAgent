@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 
 import type { Agent } from '../../types';
-import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings } from '../../api';
+import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings } from '../../toolTypes';
 import {
   readAgentToolsConfig,
   readToolDefaults,
@@ -10,7 +10,7 @@ import {
   updateToolDefaults,
 } from '../../api';
 import { useI18n } from '../../i18n';
-import { Button, IconButton, useFeedback } from '../../components/ui';
+import { Button, IconButton, useFeedback, InheritToggle } from '../../components/ui';
 
 interface TaskPlanningToolSettingsProps {
   scope: 'defaults' | 'agent';
@@ -162,10 +162,12 @@ export function TaskPlanningToolSettings({ scope, agentId, onBack }: TaskPlannin
                 <p className="setting-desc">{t('tools.taskPlanning.progressIntervalDesc')}</p>
               </div>
               {scope === 'agent' ? (
-                <label className="inherit-control">
-                  <input type="checkbox" checked={progressIntervalInherited} disabled={saving} onChange={(event) => setProgressIntervalInherited(event.target.checked)} />
-                  <span>{t('tools.terminal.inheritDefault')}</span>
-                </label>
+                <InheritToggle
+                  inherited={progressIntervalInherited}
+                  disabled={saving}
+                  onChange={setProgressIntervalInherited}
+                  label={t('tools.terminal.inheritDefault')}
+                />
               ) : null}
               <div className="timeout-input">
                 <input

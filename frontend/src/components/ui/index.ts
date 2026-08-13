@@ -15,3 +15,4 @@ export { ListItem } from './ListItem';
 export { PaneHeader } from './PaneHeader';
 export { SearchInput } from './SearchInput';
 export { useDismissiblePopover } from './useDismissiblePopover';
+export { InheritToggle } from './InheritToggle';

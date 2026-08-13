@@ -7,7 +7,7 @@ pub struct ImageAttachment {
     pub id: String,
     pub name: String,
     pub media_type: String,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "crate::domain::serde_defaults::is_false")]
     pub is_mask: bool,
     #[serde(flatten)]
     pub source: ImageSource,
@@ -19,10 +19,6 @@ pub enum ImageSource {
     Base64 { data: String },
     Url { url: String },
     Local { path: String },
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

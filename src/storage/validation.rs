@@ -3,8 +3,9 @@ use uuid::Uuid;
 use crate::{
     domain::{Agent, ModelProvider},
     error::{AppError, AppResult},
-    storage::{DEFAULT_AGENT_COLOR, DEFAULT_AGENT_ICON},
 };
+
+pub(super) use crate::domain::avatar::{normalize_avatar_color, normalize_avatar_icon};
 
 pub(super) fn validate_non_empty(field: &str, value: &str) -> AppResult<String> {
     let trimmed = value.trim();
@@ -35,32 +36,6 @@ pub(super) fn validate_agent_text(name: &str, description: &str, model_id: &str)
     validate_non_empty("agent description", description)?;
     validate_non_empty("model_id", model_id)?;
     Ok(())
-}
-
-pub(super) fn normalize_avatar_icon(value: Option<&str>) -> AppResult<String> {
-    let icon = value.unwrap_or(DEFAULT_AGENT_ICON).trim();
-    if icon.is_empty() {
-        return Err(AppError::BadRequest(
-            "avatar_icon cannot be empty".to_string(),
-        ));
-    }
-    Ok(icon.to_string())
-}
-
-pub(super) fn normalize_avatar_color(value: Option<&str>) -> AppResult<String> {
-    let color = value.unwrap_or(DEFAULT_AGENT_COLOR).trim();
-    if !is_hex_color(color) {
-        return Err(AppError::BadRequest(
-            "avatar_color must be a hex color like #22c55e".to_string(),
-        ));
-    }
-    Ok(color.to_ascii_lowercase())
-}
-
-fn is_hex_color(value: &str) -> bool {
-    value.len() == 7
-        && value.starts_with('#')
-        && value.chars().skip(1).all(|ch| ch.is_ascii_hexdigit())
 }
 
 pub(super) fn validate_unique_avatar(

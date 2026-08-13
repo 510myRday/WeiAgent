@@ -20,7 +20,7 @@ use crate::domain::{
     ToolResult, WebSearchProviderKind, WebSearchSourceConfig, WebSearchToolConfig,
 };
 
-use super::providers::{self, exa, firecrawl, grok, jina, tavily};
+use super::providers::{GrokDispatch, dispatch_extract};
 use super::types::{
     ProviderError, ProviderExtractDocument, ProviderExtractOutput, ProviderExtractRequest,
     merge_status_update,
@@ -765,40 +765,20 @@ async fn execute_provider_extract(
         None
     };
     let provider_client = proxied_client.as_ref().unwrap_or(client);
-    match source.provider {
-        WebSearchProviderKind::Tavily => {
-            tavily::extract(provider_client, base_url, api_key, request).await
-        }
-        WebSearchProviderKind::Exa => {
-            exa::extract(provider_client, base_url, api_key, request).await
-        }
-        WebSearchProviderKind::Jina => {
-            jina::extract(provider_client, base_url, api_key, request).await
-        }
-        WebSearchProviderKind::Firecrawl => {
-            firecrawl::extract(provider_client, base_url, api_key, request).await
-        }
-        WebSearchProviderKind::Grok => {
-            let timeout = Duration::from_millis(request.timeout_ms).max(Duration::from_secs(90));
-            let emulated = providers::grok_support::build_emulated_client(
-                timeout,
-                source.proxy_url.as_deref(),
-            )
-            .map_err(ProviderError::Retryable)?;
-            grok::extract(
-                &emulated,
-                client,
-                base_url,
-                api_key,
-                request,
-                grok::GrokSearchOptions {
-                    source_id: &source.id,
-                    proxy_url: source.proxy_url.as_deref(),
-                },
-            )
-            .await
-        }
-    }
+    dispatch_extract(
+        source.provider.clone(),
+        provider_client,
+        client,
+        base_url,
+        api_key,
+        request,
+        GrokDispatch {
+            source_id: &source.id,
+            proxy_url: source.proxy_url.as_deref(),
+            timeout: Duration::from_millis(request.timeout_ms).max(Duration::from_secs(90)),
+        },
+    )
+    .await
 }
 
 fn ordered_extract_sources(

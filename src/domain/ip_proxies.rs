@@ -93,7 +93,7 @@ pub struct IpProxy {
     #[serde(serialize_with = "serialize_proxy_url")]
     pub url: String,
     pub protocol: IpProxyProtocol,
-    #[serde(default = "default_enabled")]
+    #[serde(default = "crate::domain::serde_defaults::default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub is_pinned: bool,
@@ -125,7 +125,7 @@ pub struct IpProxy {
 pub struct CreateIpProxyRequest {
     pub name: String,
     pub url: String,
-    #[serde(default = "default_enabled")]
+    #[serde(default = "crate::domain::serde_defaults::default_true")]
     pub enabled: bool,
 }
 
@@ -147,7 +147,7 @@ pub struct ImportIpProxyEntry {
 pub struct ImportIpProxiesRequest {
     #[serde(default)]
     pub entries: Vec<ImportIpProxyEntry>,
-    #[serde(default = "default_enabled")]
+    #[serde(default = "crate::domain::serde_defaults::default_true")]
     pub enabled: bool,
 }
 
@@ -177,10 +177,6 @@ pub struct IpProxyTestUpdate {
 pub struct IpProxyQualityTestUpdate {
     pub id: Uuid,
     pub api_quality: IpProxyQuality,
-}
-
-fn default_enabled() -> bool {
-    true
 }
 
 #[cfg(test)]

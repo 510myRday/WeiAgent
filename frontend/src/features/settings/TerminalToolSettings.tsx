@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, Download, Folder, FolderOpen, LoaderCircle, Pencil, Plus, RefreshCw, Send, ShieldCheck, Square, Trash2, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, Folder, FolderOpen, LoaderCircle, Pencil, Plus, RefreshCw, Send, ShieldCheck, Square, Trash2, X } from 'lucide-react';
 
-import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, EnvironmentRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, ToolProcessInfo } from '../../api';
+import type { AgentToolsConfig, AgentToolsOverrides, AgentToolsSettings, EnvironmentRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, ToolProcessInfo } from '../../toolTypes';
 import {
   installEnvironmentComponent,
   interruptTerminalSession,
@@ -20,13 +20,21 @@ import {
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
 import { userErrorMessage } from '../../utils/userError';
-import { updateToolProcessCache, useBeforeUnloadGuard, usePageVisibility } from '../../hooks';
-import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../components/ui';
+import { updateToolProcessCache, usePageVisibility, useSerializedAutoSave } from '../../hooks';
+import { AutoSaveIndicator, Button, IconButton, InheritToggle, useFeedback } from '../../components/ui';
 import { PermissionModeControl, type PermissionMode } from './PermissionModeControl';
 import { WebSearchToolSettings } from './WebSearchToolSettings';
 import { TaskPlanningToolSettings } from './TaskPlanningToolSettings';
 import { McpAgentToolSettings, type McpServerSelection } from '../tools/McpAgentToolSettings';
 import { mergeToolsConfig } from './web-search/utils';
+import {
+  RuntimeComponentRow,
+  ToolRecordRow,
+  agentName,
+  configWithClearedGrants,
+  normalizeRuntimeComponents,
+  serializeDefaultConfig,
+} from './agentToolsShared';
 
 interface TerminalToolSettingsProps {
   scope: 'defaults' | 'agent';
@@ -36,7 +44,6 @@ interface TerminalToolSettingsProps {
 }
 
 type OverrideField = 'permission_mode' | 'default_timeout_ms' | 'allowed_cwd_roots';
-export type TerminalAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type AgentToolView = 'list' | 'terminal' | 'web_search' | 'task_planning' | 'mcp';
 type PendingSave =
   | {
@@ -53,9 +60,6 @@ type PendingSave =
     overrides: AgentToolsOverrides;
   };
 
-const AUTO_SAVE_DELAY_MS = 600;
-const AUTO_SAVE_RETRY_DELAY_MS = 1200;
-const AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
 const PROCESS_POLL_RETRY_DELAY_MS = 1500;
 const PROCESS_POLL_MAX_RETRY_DELAY_MS = 30000;
 const RUNTIME_STATUS_POLL_INTERVAL_MS = 60_000;
@@ -78,7 +82,6 @@ export function TerminalToolSettings({
   const [runtimeLoadError, setRuntimeLoadError] = useState('');
   const [isRetryingRuntime, setIsRetryingRuntime] = useState(false);
   const [loadRequestKey, setLoadRequestKey] = useState(0);
-  const [autoSaveStatus, setAutoSaveStatus] = useState<TerminalAutoSaveStatus>('idle');
   const [agentToolView, setAgentToolView] = useState<AgentToolView>('list');
   const [activeMcpServer, setActiveMcpServer] = useState<McpServerSelection | null>(null);
   const [installingRuntimeComponent, setInstallingRuntimeComponent] = useState<RuntimeComponentKind | null>(null);
@@ -92,30 +95,60 @@ export function TerminalToolSettings({
   const [rootInput, setRootInput] = useState('');
   const [isPickingRoot, setIsPickingRoot] = useState(false);
   const isPageVisible = usePageVisibility();
-  const activeContextRef = useRef(contextKey);
   const loadedContextRef = useRef('');
-  const latestSerializedRef = useRef(new Map<string, string>());
-  const persistedSerializedRef = useRef(new Map<string, string>());
-  const pendingSavesRef = useRef(new Map<string, PendingSave>());
-  const retryCountsRef = useRef(new Map<string, number>());
-  const saveInFlightRef = useRef(false);
-  const debounceTimerRef = useRef<number | undefined>(undefined);
-  const debounceContextRef = useRef('');
-  const retryTimerRef = useRef<number | undefined>(undefined);
-  const flushSaveQueueRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const config = scope === 'defaults' ? defaults : agentSettings?.effective ?? null;
+  const overrides = agentSettings?.overrides;
+  const autoSaveItem = useMemo<PendingSave | null>(() => {
+    if (isLoading || !config || loadedContextRef.current !== contextKey) return null;
+    if (scope === 'defaults') {
+      return {
+        contextKey,
+        serialized: serializeDefaultConfig(config),
+        scope: 'defaults',
+        config: configWithClearedGrants(config),
+      };
+    }
+    if (agentId && overrides) {
+      return {
+        contextKey,
+        serialized: JSON.stringify(overrides),
+        scope: 'agent',
+        agentId,
+        overrides,
+      };
+    }
+    return null;
+  }, [agentId, config, contextKey, isLoading, overrides, scope]);
+  const {
+    status: autoSaveStatus,
+    retryNow: retryAutoSaveNow,
+    markPersisted,
+    resetContext,
+  } = useSerializedAutoSave<PendingSave>({
+    contextKey,
+    enabled: Boolean(autoSaveItem),
+    item: autoSaveItem,
+    persist: async (item) => {
+      if (item.scope === 'defaults') {
+        await updateToolDefaults(item.config);
+        return;
+      }
+      await updateAgentToolsConfig(item.agentId, item.overrides);
+    },
+    onError: (error, attempt) => {
+      if (attempt === 1) {
+        toast.error(userErrorMessage(error, {
+          summary: t('tools.terminal.saveFailed'),
+          recovery: t('error.retryConnection'),
+        }));
+      }
+    },
+  });
   const isMountedRef = useRef(true);
   const installWatchRef = useRef<{
     kind: RuntimeComponentKind;
     wasUpdate: boolean;
   } | null>(null);
-
-  activeContextRef.current = contextKey;
-
-  useBeforeUnloadGuard(
-    autoSaveStatus === 'pending'
-    || autoSaveStatus === 'saving'
-    || autoSaveStatus === 'error',
-  );
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -136,30 +169,22 @@ export function TerminalToolSettings({
     } else {
       setAgentSettings(null);
     }
-    setAutoSaveStatus('idle');
+    resetContext(contextKey);
     setAgentToolView('list');
     const configRequest = scope === 'defaults'
       ? readToolDefaults().then((next) => {
         if (!cancelled) {
-          const serialized = serializeDefaultConfig(next);
-          persistedSerializedRef.current.set(contextKey, serialized);
-          latestSerializedRef.current.set(contextKey, serialized);
-          pendingSavesRef.current.delete(contextKey);
           loadedContextRef.current = contextKey;
+          markPersisted(contextKey, serializeDefaultConfig(next));
           setDefaults(next);
-          setAutoSaveStatus('idle');
         }
       })
       : agentId
         ? readAgentToolsConfig(agentId).then((next) => {
           if (!cancelled) {
-            const serialized = JSON.stringify(next.overrides);
-            persistedSerializedRef.current.set(contextKey, serialized);
-            latestSerializedRef.current.set(contextKey, serialized);
-            pendingSavesRef.current.delete(contextKey);
             loadedContextRef.current = contextKey;
+            markPersisted(contextKey, JSON.stringify(next.overrides));
             setAgentSettings(next);
-            setAutoSaveStatus('idle');
           }
         })
         : Promise.reject(new Error(t('tools.terminal.agentRequired')));
@@ -193,14 +218,14 @@ export function TerminalToolSettings({
     return () => {
       cancelled = true;
     };
-  }, [agentId, contextKey, loadRequestKey, scope, t, toast]);
+  }, [agentId, contextKey, loadRequestKey, markPersisted, resetContext, scope, t, toast]);
 
   useEffect(() => {
     if (scope !== 'defaults') return;
     const timer = window.setInterval(() => {
       void readEnvironmentRuntime()
         .then((next) => {
-          if (!isMountedRef.current || activeContextRef.current !== contextKey) return;
+          if (!isMountedRef.current) return;
           setRuntime(next);
         })
         .catch(() => {
@@ -210,14 +235,6 @@ export function TerminalToolSettings({
     return () => window.clearInterval(timer);
   }, [contextKey, scope]);
 
-  useEffect(() => () => {
-    if (debounceContextRef.current === contextKey && debounceTimerRef.current !== undefined) {
-      window.clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = undefined;
-      debounceContextRef.current = '';
-    }
-    void flushSaveQueueRef.current();
-  }, [contextKey]);
 
   useEffect(() => {
     if (scope !== 'defaults') {
@@ -303,137 +320,6 @@ export function TerminalToolSettings({
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [isPageVisible, runtimeInstalling, t, toast]);
-
-  const config = scope === 'defaults' ? defaults : agentSettings?.effective ?? null;
-  const overrides = agentSettings?.overrides;
-
-  useEffect(() => {
-    if (isLoading || !config || loadedContextRef.current !== contextKey) return;
-
-    const pendingSave: PendingSave | null = scope === 'defaults'
-      ? {
-        contextKey,
-        serialized: serializeDefaultConfig(config),
-        scope: 'defaults',
-        config: configWithClearedGrants(config),
-      }
-      : agentId && overrides
-        ? {
-          contextKey,
-          serialized: JSON.stringify(overrides),
-          scope: 'agent',
-          agentId,
-          overrides,
-        }
-        : null;
-    if (!pendingSave) return;
-
-    const previousSerialized = latestSerializedRef.current.get(contextKey);
-    latestSerializedRef.current.set(contextKey, pendingSave.serialized);
-    if (previousSerialized !== pendingSave.serialized) {
-      retryCountsRef.current.delete(contextKey);
-    }
-
-    if (persistedSerializedRef.current.get(contextKey) === pendingSave.serialized) {
-      pendingSavesRef.current.delete(contextKey);
-      if (previousSerialized !== pendingSave.serialized) {
-        setAutoSaveStatus('saved');
-      }
-      return;
-    }
-
-    pendingSavesRef.current.set(contextKey, pendingSave);
-    setAutoSaveStatus('pending');
-    if (debounceTimerRef.current !== undefined) {
-      window.clearTimeout(debounceTimerRef.current);
-    }
-    debounceContextRef.current = contextKey;
-    debounceTimerRef.current = window.setTimeout(() => {
-      debounceTimerRef.current = undefined;
-      debounceContextRef.current = '';
-      void flushSaveQueueRef.current();
-    }, AUTO_SAVE_DELAY_MS);
-  }, [agentId, config, contextKey, isLoading, overrides, scope]);
-
-  async function flushSaveQueue() {
-    if (saveInFlightRef.current) return;
-    const nextSave = pendingSavesRef.current.values().next().value as PendingSave | undefined;
-    if (!nextSave) return;
-
-    pendingSavesRef.current.delete(nextSave.contextKey);
-    saveInFlightRef.current = true;
-    if (isMountedRef.current && activeContextRef.current === nextSave.contextKey) {
-      setAutoSaveStatus('saving');
-    }
-
-    let retryDelay = 0;
-    try {
-      if (nextSave.scope === 'defaults') {
-        await updateToolDefaults(nextSave.config);
-      } else {
-        await updateAgentToolsConfig(nextSave.agentId, nextSave.overrides);
-      }
-      persistedSerializedRef.current.set(nextSave.contextKey, nextSave.serialized);
-      retryCountsRef.current.delete(nextSave.contextKey);
-      if (
-        isMountedRef.current
-        && activeContextRef.current === nextSave.contextKey
-        && latestSerializedRef.current.get(nextSave.contextKey) === nextSave.serialized
-      ) {
-        setAutoSaveStatus('saved');
-      }
-    } catch (error) {
-      const attempt = (retryCountsRef.current.get(nextSave.contextKey) ?? 0) + 1;
-      retryCountsRef.current.set(nextSave.contextKey, attempt);
-      const isLatest = latestSerializedRef.current.get(nextSave.contextKey) === nextSave.serialized;
-      if (isLatest) {
-        pendingSavesRef.current.set(nextSave.contextKey, nextSave);
-        retryDelay = Math.min(
-          AUTO_SAVE_MAX_RETRY_DELAY_MS,
-          AUTO_SAVE_RETRY_DELAY_MS * (2 ** Math.min(attempt - 1, 5)),
-        );
-      }
-      if (isMountedRef.current && activeContextRef.current === nextSave.contextKey) {
-        setAutoSaveStatus('error');
-        if (attempt === 1) {
-          toast.error(userErrorMessage(error, {
-            summary: t('tools.terminal.saveFailed'),
-            recovery: t('error.retryConnection'),
-          }));
-        }
-      }
-    } finally {
-      saveInFlightRef.current = false;
-      if (pendingSavesRef.current.size > 0) {
-        const queuedContext = (pendingSavesRef.current.values().next().value as PendingSave).contextKey;
-        if (queuedContext !== nextSave.contextKey) {
-          retryDelay = 0;
-        }
-        if (retryTimerRef.current !== undefined) {
-          window.clearTimeout(retryTimerRef.current);
-        }
-        retryTimerRef.current = window.setTimeout(() => {
-          retryTimerRef.current = undefined;
-          void flushSaveQueueRef.current();
-        }, retryDelay);
-      }
-    }
-  }
-
-  flushSaveQueueRef.current = flushSaveQueue;
-
-  function retryAutoSaveNow() {
-    if (debounceTimerRef.current !== undefined) {
-      window.clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = undefined;
-      debounceContextRef.current = '';
-    }
-    if (retryTimerRef.current !== undefined) {
-      window.clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = undefined;
-    }
-    void flushSaveQueueRef.current();
-  }
 
   async function retryRuntimeLoad() {
     setIsRetryingRuntime(true);
@@ -780,7 +666,7 @@ export function TerminalToolSettings({
               <span className="agent-tool-row__source">{terminalEnabledInherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}</span>
             </div>
             <div className="agent-tool-row__actions">
-              <InheritanceControl inherited={Boolean(terminalEnabledInherited)} onChange={setTerminalEnabledInherited} t={t} />
+              <InheritToggle inherited={Boolean(terminalEnabledInherited)} onChange={setTerminalEnabledInherited} label={t('tools.terminal.inheritDefault')} />
               <label className={`toggle-switch${terminalEnabledInherited ? ' is-disabled' : ''}`} title={terminal.enabled ? t('tools.enabled') : t('tools.disabled')}>
                 <input
                   type="checkbox"
@@ -816,7 +702,7 @@ export function TerminalToolSettings({
               <span className="agent-tool-row__source">{webSearchEnabledInherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}</span>
             </div>
             <div className="agent-tool-row__actions">
-              <InheritanceControl inherited={Boolean(webSearchEnabledInherited)} onChange={setWebSearchEnabledInherited} t={t} />
+              <InheritToggle inherited={Boolean(webSearchEnabledInherited)} onChange={setWebSearchEnabledInherited} label={t('tools.terminal.inheritDefault')} />
               <label className={`toggle-switch${webSearchEnabledInherited ? ' is-disabled' : ''}`} title={config.web_search?.enabled ? t('tools.enabled') : t('tools.disabled')}>
                 <input
                   type="checkbox"
@@ -861,7 +747,7 @@ export function TerminalToolSettings({
               <span className="agent-tool-row__source">{taskPlanningEnabledInherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}</span>
             </div>
             <div className="agent-tool-row__actions">
-              <InheritanceControl inherited={Boolean(taskPlanningEnabledInherited)} onChange={setTaskPlanningEnabledInherited} t={t} />
+              <InheritToggle inherited={Boolean(taskPlanningEnabledInherited)} onChange={setTaskPlanningEnabledInherited} label={t('tools.terminal.inheritDefault')} />
               <label className={`toggle-switch${taskPlanningEnabledInherited ? ' is-disabled' : ''}`} title={config.task_planning.enabled ? t('tools.enabled') : t('tools.disabled')}>
                 <input
                   type="checkbox"
@@ -974,7 +860,7 @@ export function TerminalToolSettings({
           ) : null}
           <div className="setting-row">
             <div className="setting-info"><label>{t('tools.terminal.defaultTimeout')}</label><p className="setting-desc">{t('tools.terminal.timeoutDesc')}</p></div>
-            {isAgentScope ? <InheritanceControl inherited={fieldInherited('default_timeout_ms')} onChange={(value) => setTerminalInherited('default_timeout_ms', value)} t={t} /> : null}
+            {isAgentScope ? <InheritToggle inherited={fieldInherited('default_timeout_ms')} onChange={(value) => setTerminalInherited('default_timeout_ms', value)} label={t('tools.terminal.inheritDefault')} /> : null}
             <div className="timeout-input">
               <input type="number" min={1} disabled={fieldInherited('default_timeout_ms')} value={Math.max(1, Math.round(terminal.default_timeout_ms / 1000))} onChange={(event) => updateTerminal({ default_timeout_ms: Math.max(1, Number(event.target.value) || 1) * 1000 })} />
               <span>s</span>
@@ -982,7 +868,7 @@ export function TerminalToolSettings({
           </div>
           <div className="setting-row">
             <div className="setting-info"><label>{t('tools.terminal.maxLlmIterations')}</label><p className="setting-desc">{t('tools.terminal.maxLlmIterationsDesc')}</p></div>
-            {isAgentScope ? <InheritanceControl inherited={maxIterationsInherited} onChange={setMaxIterationsInherited} t={t} /> : null}
+            {isAgentScope ? <InheritToggle inherited={maxIterationsInherited} onChange={setMaxIterationsInherited} label={t('tools.terminal.inheritDefault')} /> : null}
             <div className="timeout-input">
               <input
                 type="number"
@@ -1002,7 +888,7 @@ export function TerminalToolSettings({
         <div className="card-body">
           <div className="setting-section-heading">
             <p className="card-description">{t('tools.terminal.permissionModeDesc')}</p>
-            {isAgentScope ? <InheritanceControl inherited={fieldInherited('permission_mode')} onChange={(value) => setTerminalInherited('permission_mode', value)} t={t} /> : null}
+            {isAgentScope ? <InheritToggle inherited={fieldInherited('permission_mode')} onChange={(value) => setTerminalInherited('permission_mode', value)} label={t('tools.terminal.inheritDefault')} /> : null}
           </div>
           <PermissionModeControl
             value={terminal.permission_mode}
@@ -1022,7 +908,7 @@ export function TerminalToolSettings({
         <div className="card-header">
           <h3>{t('tools.terminal.allowedRootsLabel')}</h3>
           <span className="badge">{terminal.allowed_cwd_roots.length}</span>
-          {isAgentScope ? <InheritanceControl inherited={fieldInherited('allowed_cwd_roots')} onChange={(value) => setTerminalInherited('allowed_cwd_roots', value)} t={t} /> : null}
+          {isAgentScope ? <InheritToggle inherited={fieldInherited('allowed_cwd_roots')} onChange={(value) => setTerminalInherited('allowed_cwd_roots', value)} label={t('tools.terminal.inheritDefault')} /> : null}
         </div>
         <div className="card-body">
           <p className="card-description">{t('tools.terminal.allowedRootsDesc')}</p>
@@ -1214,165 +1100,4 @@ export function TerminalToolSettings({
   );
 }
 
-function normalizeRuntimeComponents(runtime: EnvironmentRuntimeStatus | null): RuntimeComponentStatus[] {
-  if (runtime?.components?.length) return runtime.components;
-  return [
-    ...(['node', 'python', 'uv', 'git'] as const).map((kind) => ({
-      kind,
-      available: false,
-      required: false,
-      managed_installed: false,
-      installing: false,
-      update_available: false,
-    })),
-  ];
-}
-
-function RuntimeComponentRow({
-  component,
-  installing,
-  refreshing,
-  actionsDisabled,
-  onInstall,
-  onRefresh,
-  t,
-}: {
-  component: RuntimeComponentStatus;
-  installing: boolean;
-  refreshing: boolean;
-  actionsDisabled: boolean;
-  onInstall: () => void;
-  onRefresh: () => void;
-  t: (key: string, values?: Record<string, string | number>) => string;
-}) {
-  const icon = {
-    node: '/tool-icons/nodejs.svg',
-    python: '/tool-icons/python.svg',
-    uv: '/tool-icons/uv.svg',
-    git: '/tool-icons/git.svg',
-  }[component.kind];
-  const source = component.source ? t(`tools.terminal.runtimeSource.${component.source}`) : '';
-  const latest = component.target_version
-    ? t('tools.terminal.runtimeLatestVersion', { version: component.target_version })
-    : t('tools.terminal.runtimeLatestUnknown');
-  const meta = [component.detected_version, latest, source].filter(Boolean).join(' · ');
-  const statusLabel = installing
-    ? t(component.available ? 'tools.terminal.runtimeUpdating' : 'tools.terminal.runtimeInstalling')
-    : !component.available
-    ? t('tools.terminal.runtimeMissing')
-    : component.update_available
-      ? t('tools.terminal.runtimeUpdateAvailable', { version: component.target_version ?? '' })
-      : component.target_version
-        ? t('tools.terminal.runtimeLatest')
-        : t('tools.terminal.runtimeAvailable');
-
-  return (
-    <div className="runtime-component-row">
-      <span className={`runtime-component-row__icon is-${component.kind}`}>
-        <img src={icon} alt="" aria-hidden="true" />
-      </span>
-      <div className="runtime-component-row__details">
-        <div className="runtime-component-row__title">
-          <strong>{t(`tools.terminal.runtimeComponent.${component.kind}`)}</strong>
-          <span className={`runtime-status ${installing ? 'is-progress' : component.available && !component.update_available ? 'is-ready' : 'is-missing'}`}>
-            {statusLabel}
-          </span>
-          {component.required ? <span className="runtime-required">{t('tools.terminal.runtimeRequired')}</span> : null}
-        </div>
-        <small>{meta || t('tools.terminal.runtimeNotDetected')}</small>
-        {component.error ? <code className="runtime-component-row__error">{component.error}</code> : null}
-      </div>
-      <div className="runtime-component-row__actions">
-        {!component.available || component.update_available ? (
-          <Button
-            variant="secondary"
-            onClick={onInstall}
-            disabled={actionsDisabled}
-            icon={installing
-              ? <RefreshCw size={16} className="is-spinning" />
-              : <Download size={16} />}
-          >
-            {installing
-              ? t(component.available ? 'tools.terminal.runtimeUpdating' : 'tools.terminal.runtimeInstalling')
-              : component.update_available && component.target_version
-                ? t('tools.terminal.runtimeUpdateTo', { version: component.target_version })
-                : t('tools.terminal.runtimeInstall')}
-          </Button>
-        ) : null}
-        <IconButton
-          type="button"
-          variant="ghost"
-          onClick={onRefresh}
-          disabled={actionsDisabled}
-          label={t('tools.terminal.runtimeRefreshComponent', {
-            name: t(`tools.terminal.runtimeComponent.${component.kind}`),
-          })}
-        >
-          <RefreshCw size={17} className={refreshing ? 'is-spinning' : ''} />
-        </IconButton>
-      </div>
-    </div>
-  );
-}
-
-function ToolRecordRow({
-  command,
-  status,
-  meta,
-  action,
-  children,
-  className = '',
-}: {
-  command: string;
-  status: ReactNode;
-  meta: ReactNode;
-  action?: ReactNode;
-  children?: ReactNode;
-  className?: string;
-}) {
-  return (
-    <article className={`tool-process-row ${className}`.trim()}>
-      <div className="tool-process-row__header">
-        <code title={command}>{command}</code>
-        <span>{status}</span>
-        {action}
-      </div>
-      <small>{meta}</small>
-      {children}
-    </article>
-  );
-}
-
-
-function configWithClearedGrants(config: AgentToolsConfig): AgentToolsConfig {
-  return {
-    ...config,
-    terminal: {
-      ...config.terminal,
-      approval_grants: [],
-    },
-  };
-}
-
-function serializeDefaultConfig(config: AgentToolsConfig): string {
-  return JSON.stringify(configWithClearedGrants(config));
-}
-
-function InheritanceControl({ inherited, onChange, t }: {
-  inherited: boolean;
-  onChange: (inherited: boolean) => void;
-  t: (path: string) => string;
-}) {
-  return (
-    <label className="inherit-control">
-      <input type="checkbox" checked={inherited} onChange={(event) => onChange(event.target.checked)} />
-      <span>{t('tools.terminal.inheritDefault')}</span>
-    </label>
-  );
-}
-
-function agentName(agentId: string, agents: Agent[], t: (path: string) => string): string {
-  const agent = agents.find((item) => item.id === agentId);
-  if (!agent) return agentId;
-  return agent.is_builtin ? t('agentConfig.builtinAgentName') : agent.name;
-}
+export { TerminalToolSettings as AgentToolsOverview };

@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Check, CircleAlert, Clock, LoaderCircle, RotateCcw } from 'lucide-react';
 
-export type AutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+import type { AutoSaveStatus } from '../../hooks/useSerializedAutoSave';
+
+export type { AutoSaveStatus };
 
 const SAVED_VISIBLE_MS = 1800;
 

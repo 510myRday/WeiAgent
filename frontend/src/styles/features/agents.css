@@ -84,18 +84,12 @@
 
 .entity-form,
 .agent-form,
-.form-grid,
-.workspace-editor {
+.form-grid {
   gap: 18px;
 }
 
 .form-grid.two-column {
   gap: 18px 20px;
-}
-
-.agent-description-field {
-  grid-column: 1 / -1;
-  min-width: 0;
 }
 
 .agent-basics-layout {
@@ -245,11 +239,6 @@
   height: 100%;
 }
 
-.agent-description-field textarea {
-  min-height: 150px;
-  height: 100%;
-}
-
 .form-field,
 .field {
   gap: 8px;
@@ -266,12 +255,6 @@
 .form-field textarea,
 .agent-form textarea {
   min-height: 160px;
-}
-
-.workspace-editor {
-  margin-top: 2px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border-subtle);
 }
 
 .agent-tools-section {
@@ -322,10 +305,6 @@
   background: var(--surface-pane);
   color: var(--color-primary-deep);
   box-shadow: var(--shadow-xs);
-}
-
-.field-with-action .icon-button {
-  border-color: var(--border-strong);
 }
 
 .form-actions {

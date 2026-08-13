@@ -12,7 +12,7 @@ use crate::{
 };
 
 use super::{
-    sql_util::{bool_to_i64, now_rfc3339},
+    sql_util::{bool_to_i64, column_exists, now_rfc3339},
     store::Store,
 };
 
@@ -118,7 +118,7 @@ impl Store {
                     params![15_i64, "mcp_tools_v15", Utc::now().to_rfc3339()],
                 )?;
                 tx.execute_batch(MCP_SCHEMA_SQL)?;
-                if !has_column(&tx, "tool_mcp_tools", "tool_id")? {
+                if !column_exists(&tx, "tool_mcp_tools", "tool_id")? {
                     tx.execute("ALTER TABLE tool_mcp_tools ADD COLUMN tool_id TEXT", [])?;
                 }
                 backfill_mcp_tool_ids(&tx)?;
@@ -135,14 +135,14 @@ impl Store {
                     ("supports_parallel_tool_calls", "INTEGER NOT NULL DEFAULT 1"),
                     ("diagnostics_json", "TEXT NOT NULL DEFAULT '{}'"),
                 ] {
-                    if !has_column(&tx, "tool_mcp_servers", column)? {
+                    if !column_exists(&tx, "tool_mcp_servers", column)? {
                         tx.execute(
                             &format!("ALTER TABLE tool_mcp_servers ADD COLUMN {column} {definition}"),
                             [],
                         )?;
                     }
                 }
-                if !has_column(&tx, "tool_mcp_agent_servers", "customized")? {
+                if !column_exists(&tx, "tool_mcp_agent_servers", "customized")? {
                     tx.execute(
                         "ALTER TABLE tool_mcp_agent_servers ADD COLUMN customized INTEGER NOT NULL DEFAULT 0",
                         [],
@@ -160,7 +160,7 @@ impl Store {
                 tx.commit()?;
             } else {
                 conn.execute_batch(MCP_SCHEMA_SQL)?;
-                if !has_column(conn, "tool_mcp_tools", "tool_id")? {
+                if !column_exists(conn, "tool_mcp_tools", "tool_id")? {
                     conn.execute("ALTER TABLE tool_mcp_tools ADD COLUMN tool_id TEXT", [])?;
                 }
                 backfill_mcp_tool_ids(conn)?;
@@ -626,12 +626,6 @@ fn refresh_server_qualified_mcp_tool_names(
 ) -> rusqlite::Result<()> {
     let _ = server_id;
     refresh_qualified_mcp_tool_names(conn)
-}
-
-fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
-    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
-    Ok(columns.filter_map(Result::ok).any(|name| name == column))
 }
 
 fn read_overrides_conn(conn: &Connection, agent_id: Uuid) -> AppResult<McpAgentOverrides> {

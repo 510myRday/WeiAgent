@@ -222,9 +222,7 @@
     bottom: 126px;
   }
 
-  .config-main,
-  .agents-panel-main,
-  .settings-main {
+  .config-main {
     padding: 16px 14px 28px;
   }
 
@@ -258,9 +256,7 @@
     border-left: 0;
   }
 
-  .agent-description-field textarea {
-    height: auto;
-  }
+  
 
   .config-page-header {
     align-items: flex-start;
@@ -449,7 +445,7 @@
     padding: 14px;
   }
 
-  .llm-log-toggle-row,
+  
   .form-actions {
     align-items: stretch;
     flex-direction: column;
@@ -502,8 +498,7 @@
     padding-bottom: 14px;
   }
 
-  .form-actions .button,
-  .llm-log-toggle-row .button {
+  .form-actions .button {
     width: 100%;
   }
 

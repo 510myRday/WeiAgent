@@ -78,12 +78,10 @@ impl LlmHttp {
         {
             return Ok(client.clone());
         }
-        let proxy_config = reqwest::Proxy::all(&proxy)
-            .map_err(|error| AppError::Llm(format!("failed to configure LLM proxy: {error}")))?;
-        let client = reqwest::Client::builder()
-            .proxy(proxy_config)
-            .build()
-            .map_err(|error| AppError::Llm(format!("failed to build LLM HTTP client: {error}")))?;
+        let client = crate::http_client::build_reqwest_client(
+            crate::http_client::HttpClientConfig::new().proxy_url(Some(&proxy)),
+        )
+        .map_err(|error| AppError::Llm(format!("failed to build LLM HTTP client: {error}")))?;
         if let Ok(mut guard) = proxy_client_cache().lock() {
             if guard.len() >= MAX_CACHED_PROXY_CLIENTS {
                 guard.clear();
@@ -97,20 +95,12 @@ impl LlmHttp {
     /// redirects. Each redirect target would otherwise need a fresh private-IP
     /// check before it could be requested.
     pub fn client_for_image_fetch(&self, proxy_url: Option<&str>) -> AppResult<reqwest::Client> {
-        let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
-        if let Some(proxy) = proxy_url
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| crate::domain::ip_proxies::proxy_url_with_remote_dns(value).into_owned())
-        {
-            let proxy_config = reqwest::Proxy::all(&proxy).map_err(|error| {
-                AppError::Llm(format!("failed to configure LLM proxy: {error}"))
-            })?;
-            builder = builder.proxy(proxy_config);
-        }
-        builder
-            .build()
-            .map_err(|error| AppError::Llm(format!("failed to build image HTTP client: {error}")))
+        crate::http_client::build_reqwest_client(
+            crate::http_client::HttpClientConfig::new()
+                .no_redirects()
+                .proxy_url(proxy_url),
+        )
+        .map_err(|error| AppError::Llm(format!("failed to build image HTTP client: {error}")))
     }
 
     pub fn logger(&self) -> Option<Arc<LlmLogger>> {
@@ -167,16 +157,15 @@ impl LlmHttp {
                 }
                 Err(error) => last_error = Some(error),
             }
-            if request_number < max_requests {
-                let reason = last_error
-                    .as_ref()
-                    .map(|error| error.to_string())
-                    .unwrap_or_else(|| "request failed".to_string());
-                if let Some(on_retry) = options.on_retry.as_ref() {
-                    on_retry(request_number, max_retries, &reason);
-                }
-                tokio::time::sleep(retry_delay(request_number, retry_after)).await;
-            }
+            wait_before_retry(
+                options,
+                request_number,
+                max_retries,
+                max_requests,
+                &last_error,
+                retry_after,
+            )
+            .await;
         }
         Err(last_error.unwrap_or_else(|| AppError::Llm("request failed".to_string())))
     }
@@ -220,16 +209,15 @@ impl LlmHttp {
                 }
                 Err(error) => last_error = Some(error),
             }
-            if request_number < max_requests {
-                let reason = last_error
-                    .as_ref()
-                    .map(|error| error.to_string())
-                    .unwrap_or_else(|| "request failed".to_string());
-                if let Some(on_retry) = options.on_retry.as_ref() {
-                    on_retry(request_number, max_retries, &reason);
-                }
-                tokio::time::sleep(retry_delay(request_number, retry_after)).await;
-            }
+            wait_before_retry(
+                options,
+                request_number,
+                max_retries,
+                max_requests,
+                &last_error,
+                retry_after,
+            )
+            .await;
         }
         Err(last_error.unwrap_or_else(|| AppError::Llm("request failed".to_string())))
     }
@@ -267,6 +255,28 @@ impl LlmHttp {
             }
         }
     }
+}
+
+
+async fn wait_before_retry(
+    options: &RequestOptions,
+    request_number: u32,
+    max_retries: u32,
+    max_requests: u32,
+    last_error: &Option<AppError>,
+    retry_after: Option<Duration>,
+) {
+    if request_number >= max_requests {
+        return;
+    }
+    let reason = last_error
+        .as_ref()
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "request failed".to_string());
+    if let Some(on_retry) = options.on_retry.as_ref() {
+        on_retry(request_number, max_retries, &reason);
+    }
+    tokio::time::sleep(retry_delay(request_number, retry_after)).await;
 }
 
 /// These statuses generally indicate a transient upstream condition and are
@@ -413,6 +423,19 @@ pub struct StreamLogContext {
     pub request_json: String,
     pub status: u16,
     pub started: Instant,
+}
+
+impl StreamLogContext {
+    pub fn identity(&self) -> LlmLogIdentity {
+        LlmLogIdentity {
+            agent_name: self.agent_name.clone(),
+            agent_id: self.agent_id.clone(),
+            conversation_id: self.conversation_id.clone(),
+            is_compaction: self.is_compaction,
+            model_id: self.model_id.clone(),
+            provider_name: self.provider_name.clone(),
+        }
+    }
 }
 
 fn is_first_token_event(event: &StreamEvent) -> bool {

@@ -434,8 +434,6 @@ fn normalize_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Firecrawl historically truncates with an ASCII `...` suffix (asserted by
-/// tests and surfaced in error messages), unlike the other providers' `…`.
 fn truncate(value: &str, max: usize) -> String {
     truncate_with(value, max, "...")
 }

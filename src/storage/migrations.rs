@@ -11,11 +11,12 @@ use crate::error::AppResult;
 const QUERY_INDEXES_SCHEMA_VERSION: i64 = 12;
 const TASK_PLANNING_DEFAULT_SCHEMA_VERSION: i64 = 11;
 #[cfg(test)]
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 18;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 19;
 
 pub(super) fn initialize(conn: &mut Connection) -> AppResult<()> {
     super::db::migrate_base_schema(conn)?;
     super::conversation_db::migrate_conversations(conn)?;
+    super::agents::migrate_agents(conn)?;
     ensure_schema_marker(
         conn,
         TASK_PLANNING_DEFAULT_SCHEMA_VERSION,

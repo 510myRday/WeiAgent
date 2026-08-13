@@ -22,7 +22,7 @@ import type {
   WebSearchKeyCheckResult,
   WebSearchSourceRole,
   WebSearchSourceConfig,
-} from '../../../api';
+} from '../../../toolTypes';
 import type { IpProxy } from '../../../types';
 import { useI18n } from '../../../i18n';
 import { Button, IconButton } from '../../../components/ui';

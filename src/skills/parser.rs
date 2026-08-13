@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use tokio::fs;
 
 use crate::{
-    domain::{SkillDiagnostic, SkillFile, SkillManifest},
+    domain::{SkillFile, SkillManifest},
     error::{AppError, AppResult},
     skills::path_policy::MAX_SKILL_FILE_BYTES,
 };
@@ -229,14 +229,6 @@ pub async fn discover_all_files(root: &Path) -> AppResult<Vec<(PathBuf, std::fs:
     }
     result.sort_by(|(left, _), (right, _)| left.cmp(right));
     Ok(result)
-}
-
-#[allow(dead_code)]
-fn _diagnostic(path: &Path, message: &str) -> SkillDiagnostic {
-    SkillDiagnostic {
-        path: path.display().to_string(),
-        message: message.to_string(),
-    }
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ import type {
   WebSearchSourceRole,
   WebSearchSourceConfig,
   WebSearchToolConfig,
-} from '../../api';
+} from '../../toolTypes';
 import {
   readAgentToolsConfig,
   MAX_WEB_SEARCH_KEYS_PER_SOURCE,
@@ -24,19 +24,15 @@ import {
 } from '../../api';
 import type { Agent, IpProxy } from '../../types';
 import { useI18n } from '../../i18n';
-import { useBeforeUnloadGuard } from '../../hooks';
+import { useSerializedAutoSave } from '../../hooks';
 import { userErrorMessage } from '../../utils/userError';
-import { AutoSaveIndicator, Button, IconButton, useFeedback } from '../../components/ui';
+import { AutoSaveIndicator, Button, IconButton, InheritToggle, useFeedback } from '../../components/ui';
 import {
-  AUTO_SAVE_DELAY_MS,
-  AUTO_SAVE_MAX_RETRY_DELAY_MS,
-  AUTO_SAVE_RETRY_DELAY_MS,
   MAX_EVIDENCE_RETENTION_DAYS,
   MAX_EVIDENCE_TOTAL_MB,
   MAX_RESULTS,
 } from './web-search/types';
 import type {
-  AutoSaveStatus,
   ExpandedSourceSections,
   PendingSave,
   ProxyPickerField,
@@ -77,7 +73,6 @@ export function WebSearchToolSettings({
   const [isLoading, setIsLoading] = useState(true);
   const [configLoadError, setConfigLoadError] = useState('');
   const [loadRequestKey, setLoadRequestKey] = useState(0);
-  const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>('idle');
   const [keysState, dispatchKeys] = useReducer(keysReducer, undefined, initialKeysState);
   const {
     keysDirty,
@@ -97,16 +92,7 @@ export function WebSearchToolSettings({
   const [proxyPicker, setProxyPicker] = useState<{ sourceIndex: number; field: ProxyPickerField } | null>(null);
 
   const isMountedRef = useRef(true);
-  const activeContextRef = useRef(contextKey);
   const loadedContextRef = useRef('');
-  const latestSerializedRef = useRef(new Map<string, string>());
-  const persistedSerializedRef = useRef(new Map<string, string>());
-  const pendingSavesRef = useRef(new Map<string, PendingSave>());
-  const saveInFlightRef = useRef(false);
-  const debounceTimerRef = useRef<number | undefined>(undefined);
-  const debounceContextRef = useRef('');
-  const retryTimerRef = useRef<number | undefined>(undefined);
-  const retryCountsRef = useRef(new Map<string, number>());
   const checkPendingIndicesRef = useRef<Record<string, number[]>>({});
   const checkPauseRequestedRef = useRef<Record<string, boolean>>({});
 
@@ -117,6 +103,57 @@ export function WebSearchToolSettings({
   }, [agentSettings, defaults, scope]);
 
   const overrides = agentSettings?.overrides ?? null;
+  const autoSaveItem = useMemo<PendingSave | null>(() => {
+    if (isLoading || !config || loadedContextRef.current !== contextKey) return null;
+    if (scope === 'defaults') {
+      const { serialized, payload } = serializeDefaultsForAutosave(config, keysDirty);
+      return { contextKey, serialized, scope: 'defaults', config: payload };
+    }
+    if (overrides && agentId) {
+      return {
+        contextKey,
+        serialized: JSON.stringify(overrides),
+        scope: 'agent',
+        agentId,
+        overrides,
+      };
+    }
+    return null;
+  }, [agentId, config, contextKey, isLoading, keysDirty, overrides, scope]);
+  const {
+    status: autoSaveStatus,
+    retryNow: retryAutoSaveNow,
+    flushNow: flushAutoSave,
+    markPersisted,
+  } = useSerializedAutoSave<PendingSave>({
+    contextKey,
+    enabled: Boolean(autoSaveItem),
+    item: autoSaveItem,
+    persist: async (item) => {
+      if (item.scope === 'defaults') {
+        const saved = await updateToolDefaults(item.config);
+        setDefaults(withWebSearch(saved));
+        dispatchKeys({ type: 'setAllKeyStatuses', keyStatuses: hydrateKeyStatuses(saved.web_search.sources) });
+        dispatchKeys({ type: 'setKeysDirtyAll', keysDirty: {} });
+        return;
+      }
+      const saved = await updateAgentToolsConfig(item.agentId, item.overrides);
+      setAgentSettings({
+        ...saved,
+        defaults: withWebSearch(saved.defaults),
+        effective: withWebSearch(saved.effective),
+      });
+      dispatchKeys({ type: 'setAllKeyStatuses', keyStatuses: hydrateKeyStatuses(saved.effective.web_search.sources) });
+    },
+    onError: (error, attempt) => {
+      if (attempt === 1) {
+        toast.error(userErrorMessage(error, {
+          summary: t('tools.webSearch.saveFailed'),
+          recovery: t('error.retryConnection'),
+        }));
+      }
+    },
+  });
   const proxyPickerSource = proxyPicker && config
     ? config.web_search.sources[proxyPicker.sourceIndex]
     : null;
@@ -130,10 +167,6 @@ export function WebSearchToolSettings({
       isMountedRef.current = false;
     };
   }, []);
-
-  useEffect(() => {
-    activeContextRef.current = contextKey;
-  }, [contextKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -172,10 +205,8 @@ export function WebSearchToolSettings({
         setExpandedSources({});
         setExpandedSourceSections({});
         dispatchKeys({ type: 'setAllKeyStatuses', keyStatuses: hydrateKeyStatuses(normalized.web_search.sources) });
-        const serialized = serializeDefaultsForAutosave(normalized, {}).serialized;
-        latestSerializedRef.current.set(contextKey, serialized);
-        persistedSerializedRef.current.set(contextKey, serialized);
         loadedContextRef.current = contextKey;
+        markPersisted(contextKey, serializeDefaultsForAutosave(normalized, {}).serialized);
       })
       : agentId
         ? readAgentToolsConfig(agentId).then((next) => {
@@ -199,10 +230,8 @@ export function WebSearchToolSettings({
           setExpandedSources({});
           setExpandedSourceSections({});
           dispatchKeys({ type: 'setAllKeyStatuses', keyStatuses: hydrateKeyStatuses(normalized.effective.web_search.sources) });
-          const serialized = JSON.stringify(normalized.overrides);
-          latestSerializedRef.current.set(contextKey, serialized);
-          persistedSerializedRef.current.set(contextKey, serialized);
           loadedContextRef.current = contextKey;
+          markPersisted(contextKey, JSON.stringify(normalized.overrides));
         })
         : Promise.reject(new Error(t('tools.webSearch.agentRequired')));
 
@@ -218,140 +247,7 @@ export function WebSearchToolSettings({
     return () => {
       cancelled = true;
     };
-  }, [agentId, contextKey, loadRequestKey, scope, t]);
-
-  const flushSaveQueue = useCallback(async () => {
-    if (saveInFlightRef.current) return;
-    const nextSave = pendingSavesRef.current.values().next().value as PendingSave | undefined;
-    if (!nextSave) return;
-
-    pendingSavesRef.current.delete(nextSave.contextKey);
-    saveInFlightRef.current = true;
-    if (isMountedRef.current && activeContextRef.current === nextSave.contextKey) {
-      setAutoSaveStatus('saving');
-    }
-
-    let retryDelay = 0;
-    try {
-      if (nextSave.scope === 'defaults') {
-        const saved = await updateToolDefaults(nextSave.config);
-        if (isMountedRef.current && activeContextRef.current === nextSave.contextKey) {
-          setDefaults(withWebSearch(saved));
-          dispatchKeys({ type: 'setAllKeyStatuses', keyStatuses: hydrateKeyStatuses(saved.web_search.sources) });
-          dispatchKeys({ type: 'setKeysDirtyAll', keysDirty: {} });
-        }
-      } else {
-        const saved = await updateAgentToolsConfig(nextSave.agentId, nextSave.overrides);
-        if (isMountedRef.current && activeContextRef.current === nextSave.contextKey) {
-          setAgentSettings({
-            ...saved,
-            defaults: withWebSearch(saved.defaults),
-            effective: withWebSearch(saved.effective),
-          });
-          dispatchKeys({ type: 'setAllKeyStatuses', keyStatuses: hydrateKeyStatuses(saved.effective.web_search.sources) });
-        }
-      }
-      persistedSerializedRef.current.set(nextSave.contextKey, nextSave.serialized);
-      retryCountsRef.current.delete(nextSave.contextKey);
-      if (
-        isMountedRef.current
-        && activeContextRef.current === nextSave.contextKey
-        && latestSerializedRef.current.get(nextSave.contextKey) === nextSave.serialized
-      ) {
-        setAutoSaveStatus('saved');
-      }
-    } catch (error) {
-      const attempt = (retryCountsRef.current.get(nextSave.contextKey) ?? 0) + 1;
-      retryCountsRef.current.set(nextSave.contextKey, attempt);
-      const isLatest = latestSerializedRef.current.get(nextSave.contextKey) === nextSave.serialized;
-      if (isLatest) {
-        pendingSavesRef.current.set(nextSave.contextKey, nextSave);
-        retryDelay = Math.min(
-          AUTO_SAVE_MAX_RETRY_DELAY_MS,
-          AUTO_SAVE_RETRY_DELAY_MS * (2 ** Math.min(attempt - 1, 5)),
-        );
-      }
-      if (isMountedRef.current && activeContextRef.current === nextSave.contextKey) {
-        setAutoSaveStatus('error');
-        if (attempt === 1) {
-          toast.error(userErrorMessage(error, {
-            summary: t('tools.webSearch.saveFailed'),
-            recovery: t('error.retryConnection'),
-          }));
-        }
-      }
-    } finally {
-      saveInFlightRef.current = false;
-      if (pendingSavesRef.current.size > 0) {
-        if (retryTimerRef.current !== undefined) {
-          window.clearTimeout(retryTimerRef.current);
-        }
-        retryTimerRef.current = window.setTimeout(() => {
-          retryTimerRef.current = undefined;
-          void flushSaveQueue();
-        }, retryDelay);
-      }
-    }
-  }, [t, toast]);
-
-  useEffect(() => {
-    if (isLoading || !config || loadedContextRef.current !== contextKey) return;
-
-    let pendingSave: PendingSave;
-    if (scope === 'defaults') {
-      const { serialized, payload } = serializeDefaultsForAutosave(config, keysDirty);
-      latestSerializedRef.current.set(contextKey, serialized);
-      pendingSave = {
-        contextKey,
-        serialized,
-        scope: 'defaults',
-        config: payload,
-      };
-    } else if (overrides && agentId) {
-      const serialized = JSON.stringify(overrides);
-      latestSerializedRef.current.set(contextKey, serialized);
-      pendingSave = {
-        contextKey,
-        serialized,
-        scope: 'agent',
-        agentId,
-        overrides,
-      };
-    } else {
-      return;
-    }
-
-    if (persistedSerializedRef.current.get(contextKey) === pendingSave.serialized) {
-      pendingSavesRef.current.delete(contextKey);
-      return;
-    }
-
-    pendingSavesRef.current.set(contextKey, pendingSave);
-    setAutoSaveStatus('pending');
-    if (debounceTimerRef.current !== undefined) {
-      window.clearTimeout(debounceTimerRef.current);
-    }
-    debounceContextRef.current = contextKey;
-    debounceTimerRef.current = window.setTimeout(() => {
-      debounceTimerRef.current = undefined;
-      debounceContextRef.current = '';
-      void flushSaveQueue();
-    }, AUTO_SAVE_DELAY_MS);
-  }, [agentId, config, contextKey, flushSaveQueue, isLoading, keysDirty, overrides, scope]);
-
-  useBeforeUnloadGuard(autoSaveStatus === 'pending' || autoSaveStatus === 'saving' || autoSaveStatus === 'error');
-
-  function retryAutoSaveNow() {
-    if (debounceTimerRef.current !== undefined) {
-      window.clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = undefined;
-    }
-    if (retryTimerRef.current !== undefined) {
-      window.clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = undefined;
-    }
-    void flushSaveQueue();
-  }
+  }, [agentId, contextKey, loadRequestKey, markPersisted, scope, t]);
 
   const updateGlobalConfig = useCallback((next: AgentToolsConfig) => {
     setDefaults(withWebSearch(next));
@@ -537,6 +433,11 @@ export function WebSearchToolSettings({
     }
     const valuesToImport = values.slice(0, availableSlots);
 
+    if (!(await flushAutoSave())) {
+      toast.error(t('tools.webSearch.saveFailed'));
+      return;
+    }
+
     dispatchKeys({ type: 'setFlag', map: 'importingKeys', sourceId, value: true });
     try {
       const response = await importWebSearchKeys(sourceId, valuesToImport);
@@ -585,6 +486,7 @@ export function WebSearchToolSettings({
     const source = config.web_search.sources.find((item) => item.id === sourceId);
     if (!source) return;
     const keyHint = source.api_keys[keyIndex];
+    const keyFingerprint = source.api_key_fingerprints?.[keyIndex];
     if (keyHint === undefined) return;
     const confirmed = await confirm({
       title: t('tools.webSearch.deleteKeyTitle'),
@@ -594,9 +496,14 @@ export function WebSearchToolSettings({
     });
     if (!confirmed) return;
 
+    if (!(await flushAutoSave())) {
+      toast.error(t('tools.webSearch.saveFailed'));
+      return;
+    }
+
     dispatchKeys({ type: 'setFlag', map: 'deletingKeys', sourceId, value: true });
     try {
-      const response = await deleteWebSearchKey(sourceId, keyIndex, keyHint);
+      const response = await deleteWebSearchKey(sourceId, keyIndex, keyFingerprint, keyHint);
       const sources = config.web_search.sources.map((item) => (
         item.id === sourceId ? response.source : item
       ));
@@ -651,16 +558,25 @@ export function WebSearchToolSettings({
     });
     if (!confirmed) return;
 
+    if (!(await flushAutoSave())) {
+      toast.error(t('tools.webSearch.saveFailed'));
+      return;
+    }
+
     dispatchKeys({ type: 'setFlag', map: 'deletingKeys', sourceId, value: true });
     let latestSource = source;
     let deletedCount = 0;
     try {
       const indices = selected
-        .map((keyIndex) => ({ keyIndex, keyHint: source.api_keys[keyIndex] }))
-        .filter((entry): entry is { keyIndex: number; keyHint: string } => entry.keyHint !== undefined)
+        .map((keyIndex) => ({
+          keyIndex,
+          keyHint: source.api_keys[keyIndex],
+          keyFingerprint: source.api_key_fingerprints?.[keyIndex],
+        }))
+        .filter((entry): entry is { keyIndex: number; keyHint: string; keyFingerprint: string | undefined } => entry.keyHint !== undefined)
         .sort((left, right) => right.keyIndex - left.keyIndex);
-      for (const { keyIndex, keyHint } of indices) {
-        const response = await deleteWebSearchKey(sourceId, keyIndex, keyHint);
+      for (const { keyIndex, keyHint, keyFingerprint } of indices) {
+        const response = await deleteWebSearchKey(sourceId, keyIndex, keyFingerprint, keyHint);
         latestSource = response.source;
         deletedCount += 1;
       }
@@ -705,7 +621,9 @@ export function WebSearchToolSettings({
       source.id === sourceId ? { ...source, api_keys: [] } : source
     ));
     const nextSources = sources.map((source) => (
-      source.id === sourceId ? { ...source, key_statuses: [] } : source
+      source.id === sourceId
+        ? { ...source, api_key_fingerprints: [], key_statuses: [], extract_key_statuses: [] }
+        : source
     ));
     dispatchKeys({ type: 'markDirty', sourceId });
     dispatchKeys({ type: 'setSelected', sourceId, indices: [] });
@@ -913,10 +831,10 @@ export function WebSearchToolSettings({
                 <p className="setting-desc">{t('tools.webSearch.maxResultsDesc')}</p>
               </div>
               {isAgentScope ? (
-                <InheritanceControl
+                <InheritToggle
                   inherited={Boolean(maxResultsInherited)}
                   onChange={setMaxResultsInherited}
-                  t={t}
+                  label={t('tools.webSearch.inheritDefault')}
                 />
               ) : null}
               <div className="timeout-input">
@@ -1180,15 +1098,3 @@ export function WebSearchToolSettings({
   );
 }
 
-function InheritanceControl({ inherited, onChange, t }: {
-  inherited: boolean;
-  onChange: (inherited: boolean) => void;
-  t: (path: string) => string;
-}) {
-  return (
-    <label className="inherit-control">
-      <input type="checkbox" checked={inherited} onChange={(event) => onChange(event.target.checked)} />
-      <span>{t('tools.webSearch.inheritDefault')}</span>
-    </label>
-  );
-}

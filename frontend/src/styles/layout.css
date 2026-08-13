@@ -83,9 +83,7 @@
   background: var(--surface-main);
 }
 
-.config-main,
-.agents-panel-main,
-.settings-main {
+.config-main {
   height: 100%;
   padding: clamp(20px, 2.4vw, 36px) var(--page-inline-padding);
   overflow-y: auto;
@@ -93,9 +91,7 @@
   overscroll-behavior: contain;
 }
 
-.config-main > *,
-.agents-panel-main > *,
-.settings-main > * {
+.config-main > *{
   width: min(100%, var(--content-max-width));
   margin-inline: auto;
 }
@@ -106,19 +102,6 @@
   grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100%;
   min-height: 0;
-}
-
-.placeholder-pane {
-  position: relative;
-  display: grid;
-  place-items: center;
-  padding: var(--space-6);
-}
-
-.placeholder-back-button {
-  position: absolute;
-  top: var(--space-4);
-  left: var(--space-4);
 }
 
 .panel-loading {

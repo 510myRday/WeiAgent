@@ -18,7 +18,7 @@ use crate::{
         keys::ApiKeyCycle,
         types::{ChatCompletionOutput, ToolCall, ToolDefinition, normalize_tool_call_arguments},
     },
-    storage::{LlmLogger, llm_logs::LlmLogMetrics},
+    storage::{LlmLogger, llm_logs::{LlmLogIdentity, LlmLogMetrics}},
 };
 
 pub(crate) trait ProtocolAdapter: Clone + Send + Sync + 'static {
@@ -89,6 +89,23 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
     }
 }
 
+
+fn request_log_identity(
+    agent: &Agent,
+    provider: &ModelProvider,
+    conversation_id: Option<String>,
+    is_compaction: bool,
+) -> LlmLogIdentity {
+    LlmLogIdentity {
+        agent_name: agent.name.clone(),
+        agent_id: Some(agent.id.to_string()),
+        conversation_id,
+        is_compaction,
+        model_id: agent.model_id.clone(),
+        provider_name: provider.name.clone(),
+    }
+}
+
 fn notify_retry(options: &RequestOptions, retry_number: u32, max_retries: u32, error: &AppError) {
     if let Some(on_retry) = options.on_retry.as_ref() {
         on_retry(retry_number, max_retries, &error.to_string());
@@ -112,14 +129,7 @@ fn log_stream_open_error(context: &StreamLogContext, error: &AppError) {
     spawn_log(
         &context.logger,
         log_request(
-            crate::storage::llm_logs::LlmLogIdentity {
-                agent_name: context.agent_name.clone(),
-                agent_id: context.agent_id.clone(),
-                conversation_id: context.conversation_id.clone(),
-                is_compaction: context.is_compaction,
-                model_id: context.model_id.clone(),
-                provider_name: context.provider_name.clone(),
-            },
+            context.identity(),
             &context.request_json,
             None,
             None,
@@ -134,14 +144,7 @@ fn log_stream_status_error(context: &StreamLogContext, body: &str, status: u16, 
     spawn_log(
         &context.logger,
         log_request(
-            crate::storage::llm_logs::LlmLogIdentity {
-                agent_name: context.agent_name.clone(),
-                agent_id: context.agent_id.clone(),
-                conversation_id: context.conversation_id.clone(),
-                is_compaction: context.is_compaction,
-                model_id: context.model_id.clone(),
-                provider_name: context.provider_name.clone(),
-            },
+            context.identity(),
             &context.request_json,
             Some(body),
             Some(status),
@@ -190,7 +193,6 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             String::new()
         };
         let started = Instant::now();
-        let agent_id = agent.id.to_string();
 
         let (status, body) = match self
             .http
@@ -205,14 +207,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                 spawn_log(
                     &self.http.logger(),
                     log_request(
-                        crate::storage::llm_logs::LlmLogIdentity {
-                            agent_name: agent.name.clone(),
-                            agent_id: Some(agent_id.clone()),
-                            conversation_id: conversation_id.clone(),
-                            is_compaction: options.is_compaction,
-                            model_id: agent.model_id.clone(),
-                            provider_name: provider.name.clone(),
-                        },
+                        request_log_identity(agent, provider, conversation_id.clone(), options.is_compaction),
                         &request_json,
                         None,
                         None,
@@ -230,14 +225,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             spawn_log(
                 &self.http.logger(),
                 log_request(
-                    crate::storage::llm_logs::LlmLogIdentity {
-                        agent_name: agent.name.clone(),
-                        agent_id: Some(agent_id.clone()),
-                        conversation_id: conversation_id.clone(),
-                        is_compaction: options.is_compaction,
-                        model_id: agent.model_id.clone(),
-                        provider_name: provider.name.clone(),
-                    },
+                    request_log_identity(agent, provider, conversation_id.clone(), options.is_compaction),
                     &request_json,
                     Some(&body),
                     Some(status.as_u16()),
@@ -261,14 +249,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                 spawn_log(
                     &self.http.logger(),
                     log_request(
-                        crate::storage::llm_logs::LlmLogIdentity {
-                            agent_name: agent.name.clone(),
-                            agent_id: Some(agent_id.clone()),
-                            conversation_id: conversation_id.clone(),
-                            is_compaction: options.is_compaction,
-                            model_id: agent.model_id.clone(),
-                            provider_name: provider.name.clone(),
-                        },
+                        request_log_identity(agent, provider, conversation_id.clone(), options.is_compaction),
                         &request_json,
                         Some(&body),
                         Some(status.as_u16()),
@@ -284,14 +265,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                 spawn_log(
                     &self.http.logger(),
                     log_request(
-                        crate::storage::llm_logs::LlmLogIdentity {
-                            agent_name: agent.name.clone(),
-                            agent_id: Some(agent_id.clone()),
-                            conversation_id: conversation_id.clone(),
-                            is_compaction: options.is_compaction,
-                            model_id: agent.model_id.clone(),
-                            provider_name: provider.name.clone(),
-                        },
+                        request_log_identity(agent, provider, conversation_id.clone(), options.is_compaction),
                         &request_json,
                         Some(&body),
                         Some(status.as_u16()),
@@ -306,14 +280,7 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                 spawn_log(
                     &self.http.logger(),
                     log_request(
-                        crate::storage::llm_logs::LlmLogIdentity {
-                            agent_name: agent.name.clone(),
-                            agent_id: Some(agent_id.clone()),
-                            conversation_id: conversation_id.clone(),
-                            is_compaction: options.is_compaction,
-                            model_id: agent.model_id.clone(),
-                            provider_name: provider.name.clone(),
-                        },
+                        request_log_identity(agent, provider, conversation_id.clone(), options.is_compaction),
                         &request_json,
                         Some(&body),
                         Some(status.as_u16()),
@@ -576,6 +543,22 @@ pub(crate) fn validate_tool_calls(tool_calls: Vec<ToolCall>) -> AppResult<Vec<To
         )));
     }
     Ok(tool_calls)
+}
+
+pub(crate) fn append_role_items(
+    items: &mut Vec<Value>,
+    role: &str,
+    field: &str,
+    values: Vec<Value>,
+) {
+    if let Some(last) = items.last_mut()
+        && last["role"] == role
+        && let Some(existing) = last[field].as_array_mut()
+    {
+        existing.extend(values);
+        return;
+    }
+    items.push(serde_json::json!({"role": role, field: values}));
 }
 
 pub(crate) fn merge_extra_body(

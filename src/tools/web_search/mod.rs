@@ -15,9 +15,9 @@ use crate::domain::{
 };
 
 use self::key_pool::key_attempt_order;
-use self::providers::{exa, firecrawl, grok, jina, support::truncate, tavily};
+use self::providers::{GrokDispatch, dispatch_search, support::truncate};
 use self::types::{
-    AggregatedSearchResult, ProviderError, ProviderSearchOutput, ProviderSearchRequest,
+    AggregatedSearchResult, ProviderSearchOutput, ProviderSearchRequest,
     SearchHitKind, SearchMode, SearchSourceDescriptor, SourceRunSummary, WebSearchOutput,
     merge_status_update, sanitize_error_message,
 };
@@ -734,43 +734,19 @@ async fn execute_source_query(
         }
     };
     let base_url = source.provider.default_base_url();
-    let result = match source.provider {
-        WebSearchProviderKind::Tavily => {
-            tavily::search(&control_client, base_url, &api_key, &request).await
-        }
-        WebSearchProviderKind::Exa => {
-            exa::search(&control_client, base_url, &api_key, &request).await
-        }
-        WebSearchProviderKind::Jina => {
-            jina::search(&control_client, base_url, &api_key, &request).await
-        }
-        WebSearchProviderKind::Firecrawl => {
-            firecrawl::search(&control_client, base_url, &api_key, &request).await
-        }
-        WebSearchProviderKind::Grok => {
-            let grok_timeout = std::cmp::max(timeout, Duration::from_secs(90));
-            match providers::grok_support::build_emulated_client(
-                grok_timeout,
-                source.proxy_url.as_deref(),
-            ) {
-                Ok(client) => {
-                    grok::search(
-                        &client,
-                        &control_client,
-                        base_url,
-                        &api_key,
-                        &request,
-                        grok::GrokSearchOptions {
-                            source_id: &source.id,
-                            proxy_url: source.proxy_url.as_deref(),
-                        },
-                    )
-                    .await
-                }
-                Err(error) => Err(ProviderError::Retryable(error)),
-            }
-        }
-    };
+    let result = dispatch_search(
+        source.provider.clone(),
+        &control_client,
+        base_url,
+        &api_key,
+        &request,
+        GrokDispatch {
+            source_id: &source.id,
+            proxy_url: source.proxy_url.as_deref(),
+            timeout: std::cmp::max(timeout, Duration::from_secs(90)),
+        },
+    )
+    .await;
 
     match result {
         Ok(output) => {
@@ -1087,14 +1063,7 @@ fn key_status_update(
 }
 
 pub(crate) fn classify_key_status(provider: WebSearchProviderKind, message: &str) -> String {
-    match provider {
-        WebSearchProviderKind::Tavily => tavily::classify_key_status(message),
-        WebSearchProviderKind::Exa => exa::classify_key_status(message),
-        WebSearchProviderKind::Jina => jina::classify_key_status(message),
-        WebSearchProviderKind::Grok => grok::classify_key_status(message),
-        WebSearchProviderKind::Firecrawl => firecrawl::classify_key_status(message),
-    }
-    .to_string()
+    providers::classify_key_status(provider, message).to_string()
 }
 
 #[cfg(test)]

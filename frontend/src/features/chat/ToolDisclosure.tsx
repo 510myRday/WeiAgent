@@ -294,6 +294,7 @@ export function ToolDisclosure({
             arguments={tool.arguments}
             status={displayStatus}
             result={displayResult}
+            processSnapshot={processSnapshot}
             argumentsText={tool.arguments_text}
             phase={tool.phase}
             onApprove={onApprove}

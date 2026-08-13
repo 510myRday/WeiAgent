@@ -1,10 +1,22 @@
+import {
+  AUTO_SAVE_DELAY_MS,
+  AUTO_SAVE_MAX_RETRY_DELAY_MS,
+  AUTO_SAVE_RETRY_DELAY_MS,
+  type AutoSaveStatus,
+} from '../../../hooks/useSerializedAutoSave';
+
+export {
+  AUTO_SAVE_DELAY_MS,
+  AUTO_SAVE_MAX_RETRY_DELAY_MS,
+  AUTO_SAVE_RETRY_DELAY_MS,
+};
+export type { AutoSaveStatus };
+
 import type {
   AgentToolsConfig,
   AgentToolsOverrides,
   WebSearchSourceRole,
-} from '../../../api';
-
-export type AutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+} from '../../../toolTypes';
 
 export type SourceSection = 'preferences' | 'keys' | 'connection';
 export type ExpandedSourceSections = Record<string, Partial<Record<SourceSection, boolean>>>;
@@ -36,9 +48,6 @@ export type PendingSave =
 export type ProxyPickerField = 'proxy_url';
 export type ProxyLatencySort = 'latency_asc' | 'latency_desc';
 
-export const AUTO_SAVE_DELAY_MS = 600;
-export const AUTO_SAVE_RETRY_DELAY_MS = 1200;
-export const AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
 export const MAX_RESULTS = 20;
 export const MAX_EVIDENCE_RETENTION_DAYS = 3650;
 export const MAX_EVIDENCE_TOTAL_MB = 10240;

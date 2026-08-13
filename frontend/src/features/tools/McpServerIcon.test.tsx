@@ -1,7 +1,8 @@
 import { fireEvent, render } from '@testing-library/react';
 import { expect, test } from 'vitest';
 
-import { isLocalMcpLogoSource, McpServerIcon } from './McpServerIcon';
+import { isLocalAssetSource } from '../../hooks';
+import { McpServerIcon } from './McpServerIcon';
 
 test.each([
   ['https://example.com/icon.png', false],
@@ -10,7 +11,7 @@ test.each([
   ['/home/me/icon.png', true],
   ['file:///Users/me/icon.png', true],
 ] as const)('detects local logo source: %s', (source, expected) => {
-  expect(isLocalMcpLogoSource(source)).toBe(expected);
+  expect(isLocalAssetSource(source)).toBe(expected);
 });
 
 test('MCP server icon falls back to the default icon when the custom image fails', () => {

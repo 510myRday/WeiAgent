@@ -16,9 +16,11 @@ import type {
   ModelProvider,
   ModelProviderPayload,
   ProviderType,
+  SettingsSection,
 } from '../../types';
 import { fetchModels, fetchModelsForProvider, listIpProxies } from '../../api';
 import { useBeforeUnloadGuard } from '../../hooks';
+import { nextAutoSaveRetryDelay } from '../../hooks/useSerializedAutoSave';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
 import { AutoSaveIndicator, Button, FormField, ListItem, PaneHeader, useFeedback } from '../../components/ui';
@@ -35,11 +37,7 @@ import { protocolPresetByType, providerTemplateById } from './settings-panel/pro
 import type { ProviderTemplateId } from './settings-panel/providerTemplates';
 import {
   PROVIDER_AUTO_SAVE_DELAY_MS,
-  PROVIDER_AUTO_SAVE_MAX_RETRY_DELAY_MS,
-  PROVIDER_AUTO_SAVE_RETRY_DELAY_MS,
   RUNTIME_AUTO_SAVE_DELAY_MS,
-  RUNTIME_AUTO_SAVE_MAX_RETRY_DELAY_MS,
-  RUNTIME_AUTO_SAVE_RETRY_DELAY_MS,
   buildProviderPayload,
   commitPendingApiKeys,
   defaultProviderForm,
@@ -80,7 +78,6 @@ interface SettingsPanelProps {
   onBackToList: () => void;
 }
 
-type SettingsSection = 'runtime' | 'agent' | 'providers' | 'proxies';
 
 export function SettingsPanel({
   settingsForm,
@@ -405,10 +402,7 @@ export function SettingsPanel({
       saveRetryCountRef.current = attempt;
       if (latestSerializedRef.current === pending.serialized) {
         pendingSaveRef.current = pending;
-        retryDelay = Math.min(
-          RUNTIME_AUTO_SAVE_MAX_RETRY_DELAY_MS,
-          RUNTIME_AUTO_SAVE_RETRY_DELAY_MS * (2 ** Math.min(attempt - 1, 5)),
-        );
+        retryDelay = nextAutoSaveRetryDelay(attempt);
       }
       if (isMountedRef.current) {
         setAutoSaveStatus('error');
@@ -503,10 +497,7 @@ export function SettingsPanel({
       providerSaveRetryCountRef.current = attempt;
       if (providerLatestSerializedByIdRef.current.get(pending.providerId) === pending.serialized) {
         pendingProviderSaveRef.current = pending;
-        retryDelay = Math.min(
-          PROVIDER_AUTO_SAVE_MAX_RETRY_DELAY_MS,
-          PROVIDER_AUTO_SAVE_RETRY_DELAY_MS * (2 ** Math.min(attempt - 1, 5)),
-        );
+        retryDelay = nextAutoSaveRetryDelay(attempt);
       }
       if (isMountedRef.current && activeProviderIdRef.current === pending.providerId) {
         setProviderAutoSaveStatus('error');

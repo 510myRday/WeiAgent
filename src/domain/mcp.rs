@@ -139,7 +139,7 @@ pub struct McpTool {
     pub description: String,
     #[serde(default = "default_input_schema")]
     pub input_schema: Value,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::domain::serde_defaults::default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub updated_at: Option<String>,
@@ -153,19 +153,15 @@ fn default_input_schema() -> Value {
     serde_json::json!({"type": "object"})
 }
 
-fn default_true() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct McpServer {
     pub id: Uuid,
     pub name: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::domain::serde_defaults::default_true")]
     pub enabled: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::domain::serde_defaults::default_true")]
     pub supports_parallel_tool_calls: bool,
     #[serde(default)]
     pub provider: Option<String>,
@@ -255,9 +251,9 @@ pub struct McpServerDraft {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::domain::serde_defaults::default_true")]
     pub enabled: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::domain::serde_defaults::default_true")]
     pub supports_parallel_tool_calls: bool,
     #[serde(default)]
     pub provider: Option<String>,
@@ -431,19 +427,7 @@ impl McpTransport {
 }
 
 fn mask_secret(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.len() <= 4 {
-        return "****".to_string();
-    }
-    let suffix = trimmed
-        .chars()
-        .rev()
-        .take(4)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<String>();
-    format!("****{suffix}")
+    crate::domain::tools::mask_secret_tail(value, true)
 }
 
 impl McpServer {

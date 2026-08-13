@@ -1,10 +1,12 @@
 pub mod agents;
+pub mod avatar;
 pub mod chat;
 pub mod conversations;
 pub mod ip_proxies;
 pub mod mcp;
 pub mod providers;
 pub mod runtime;
+pub mod serde_defaults;
 pub mod settings;
 pub mod skills;
 pub mod task_planning;

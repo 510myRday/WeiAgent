@@ -10,14 +10,15 @@ import type {
   UpdateAgentWorkspacePayload,
 } from '../../types';
 import { readAgentWorkspace } from '../../api';
-import { useBeforeUnloadGuard } from '../../hooks';
+import { useBeforeUnloadGuard, type AutoSaveStatus } from '../../hooks';
+import { AUTO_SAVE_DELAY_MS, nextAutoSaveRetryDelay } from '../../hooks/useSerializedAutoSave';
 import { useI18n } from '../../i18n';
 import { defaultAvatarColor } from '../../avatarPresets';
 import { AvatarBadge } from '../../components/AvatarPicker';
 import { AgentListItem, agentDisplayDescription, agentDisplayName } from '../../components/AgentListItem';
 import { PanelShell } from '../../components/layout';
 import { AutoSaveIndicator, AvatarPopover, Button, FormField, IconButton, PaneHeader, useFeedback } from '../../components/ui';
-import { TerminalToolSettings } from '../settings/TerminalToolSettings';
+import { AgentToolsOverview } from '../settings/TerminalToolSettings';
 import { SkillsPanel } from '../tools/SkillsPanel';
 import { userErrorMessage } from '../../utils/userError';
 import { compareNames, sortByName } from '../../utils/sort';
@@ -58,7 +59,6 @@ const defaultWorkspaceForm: Pick<AgentWorkspace, 'personality' | 'memory' | 'ins
   instructions: '',
 };
 
-type AgentAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 type AgentConfigSection = 'basic' | 'prompt' | 'memory' | 'tools' | 'skills';
 type PendingAgentSave = {
   agentId: string;
@@ -78,9 +78,6 @@ const agentConfigSections: {
   { key: 'tools', icon: Wrench, requiresAgent: true },
   { key: 'skills', icon: Sparkles, requiresAgent: true },
 ];
-const AGENT_AUTO_SAVE_DELAY_MS = 600;
-const AGENT_AUTO_SAVE_RETRY_DELAY_MS = 1200;
-const AGENT_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
 
 export function AgentsPanel({
   agents,
@@ -104,7 +101,7 @@ export function AgentsPanel({
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(false);
   const [agentFormDirty, setAgentFormDirty] = useState(false);
   const [isSubmittingAgent, setIsSubmittingAgent] = useState(false);
-  const [autoSaveStatus, setAutoSaveStatus] = useState<AgentAutoSaveStatus>('idle');
+  const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>('idle');
   const activeAgentIdRef = useRef(activeAgentId);
   const loadedAgentIdRef = useRef('');
   const loadedWorkspaceAgentIdRef = useRef('');
@@ -283,7 +280,7 @@ export function AgentsPanel({
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = undefined;
       void flushAgentSaveQueueRef.current();
-    }, AGENT_AUTO_SAVE_DELAY_MS);
+    }, AUTO_SAVE_DELAY_MS);
   }, [activeAgent, agentForm, agentFormDirty, agents, isLoadingWorkspace, t, toast, workspaceForm]);
 
   async function flushAgentSaveQueue(): Promise<boolean> {
@@ -325,10 +322,7 @@ export function AgentsPanel({
         saveRetryCountRef.current = attempt;
         if (latestSerializedRef.current === pending.serialized) {
           pendingSaveRef.current = pending;
-          retryDelay = Math.min(
-            AGENT_AUTO_SAVE_MAX_RETRY_DELAY_MS,
-            AGENT_AUTO_SAVE_RETRY_DELAY_MS * (2 ** Math.min(attempt - 1, 5)),
-          );
+          retryDelay = nextAutoSaveRetryDelay(attempt);
         }
         if (isMountedRef.current && activeAgentIdRef.current === pending.agentId) {
           setAutoSaveStatus('error');
@@ -704,7 +698,7 @@ export function AgentsPanel({
                 role="tabpanel"
                 aria-labelledby="agent-config-tab-tools"
               >
-                <TerminalToolSettings scope="agent" agentId={activeAgent.id} onOpenIpProxies={onOpenIpProxies} />
+                <AgentToolsOverview scope="agent" agentId={activeAgent.id} onOpenIpProxies={onOpenIpProxies} />
               </section>
             ) : null}
 

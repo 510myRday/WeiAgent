@@ -3,9 +3,14 @@ mod config;
 mod domain;
 mod error;
 mod fsutil;
+mod http_client;
+mod image_util;
 mod llm;
 mod skills;
 mod storage;
+mod textutil;
+#[cfg(test)]
+mod test_support;
 mod tools;
 
 use std::{io::ErrorKind, process::Stdio, sync::Arc};

@@ -1,3 +1,5 @@
+import { isRecord } from '../../utils/isRecord';
+
 type JsonRecord = Record<string, unknown>;
 
 const DISPLAY_TRUNCATION_MARKER = '[..., 此处已截断, ...]';
@@ -324,6 +326,5 @@ function copyDefined(target: JsonRecord, source: JsonRecord, keys: string[]) {
   }
 }
 
-function isRecord(value: unknown): value is JsonRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+
+

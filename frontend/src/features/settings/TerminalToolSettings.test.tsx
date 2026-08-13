@@ -9,7 +9,7 @@ import {
   readEnvironmentRuntime,
   readToolDefaults,
 } from '../../api';
-import type { AgentToolsSettings } from '../../api';
+import type { AgentToolsSettings } from '../../toolTypes';
 import { FeedbackProvider } from '../../components/ui';
 import { I18nProvider } from '../../i18n';
 import { TerminalToolSettings } from './TerminalToolSettings';

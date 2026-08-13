@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useState, useEffect } from 'react';
 import { RefreshCw } from 'lucide-react';
-import type { AppSettings, MobileView, NavKey } from './types';
+import type { AppSettings, MobileView, NavKey, SettingsSection } from './types';
 import { useSettings, useProviders, useAgents } from './hooks';
 import { Sidebar } from './components/layout';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
@@ -15,7 +15,6 @@ const SkillsPanel = lazy(() => import('./features/tools/SkillsPanel').then((modu
 const SettingsPanel = lazy(() => import('./features/settings/SettingsPanel').then((module) => ({ default: module.SettingsPanel })));
 const MonitorPanel = lazy(() => import('./features/monitor/MonitorPanel').then((module) => ({ default: module.MonitorPanel })));
 
-type SettingsSection = 'runtime' | 'agent' | 'providers' | 'proxies';
 
 export function App() {
   const { t, locale, setLocale } = useI18n();

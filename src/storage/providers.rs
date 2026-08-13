@@ -1,15 +1,16 @@
 use chrono::Utc;
+use rusqlite::{Connection, params};
 use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::{
     domain::{
-        CreateModelProviderRequest, ImageModelConfig, ModelConfig, ModelProvider,
+        ApiKeyStrategy, CreateModelProviderRequest, ImageModelConfig, ModelConfig, ModelProvider,
         ModelProviderResponse, ProviderType, UpdateModelProviderRequest, merge_api_keys,
     },
     error::{AppError, AppResult},
     storage::{
-        db,
+        sql_util::enum_value,
         store::Store,
         validation::{normalize_models, validate_non_empty},
     },
@@ -62,7 +63,7 @@ impl Store {
         };
         let stored = provider.clone();
         self.database
-            .call(move |connection| db::upsert_provider_conn(connection, &stored))
+            .call(move |connection| upsert_provider_conn(connection, &stored))
             .await?;
         Ok(ModelProviderResponse::from(&provider))
     }
@@ -76,7 +77,7 @@ impl Store {
         let _agents_guard = self.agents_lock.lock().await;
         let mut providers = self
             .database
-            .call(|connection| db::read_providers_conn(connection))
+            .call(|connection| read_providers_conn(connection))
             .await?;
         let mut agents = self.read_agents_unlocked().await?;
         let original_agents = agents.clone();
@@ -149,7 +150,7 @@ impl Store {
         let stored = updated.clone();
         if let Err(error) = self
             .database
-            .call(move |connection| db::upsert_provider_conn(connection, &stored))
+            .call(move |connection| upsert_provider_conn(connection, &stored))
             .await
         {
             if agents_changed {
@@ -182,7 +183,7 @@ impl Store {
 
         let deleted = self
             .database
-            .call(move |connection| db::delete_provider_conn(connection, id))
+            .call(move |connection| delete_provider_conn(connection, id))
             .await;
         let deleted = match deleted {
             Ok(deleted) => deleted,
@@ -564,3 +565,177 @@ mod tests {
         );
     }
 }
+
+
+const API_KEY_SEPARATOR: char = '\n';
+
+pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, provider_type, name, base_url, api_key, key_strategy, models_json,
+                model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, proxy_url,
+                image_generation_url, image_edit_url, created_at, updated_at
+         FROM model_providers
+         ORDER BY created_at ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ProviderRow {
+            id: row.get(0)?,
+            provider_type: row.get(1)?,
+            name: row.get(2)?,
+            base_url: row.get(3)?,
+            api_key: row.get(4)?,
+            key_strategy: row.get(5)?,
+            models_json: row.get(6)?,
+            model_configs_json: row.get(7)?,
+            extra_body_json: row.get(8)?,
+            prompt_cache_json: row.get(9)?,
+            cache_capabilities_json: row.get(10)?,
+            proxy_url: row.get(11)?,
+            image_generation_url: row.get(12)?,
+            image_edit_url: row.get(13)?,
+            created_at: row.get(14)?,
+            updated_at: row.get(15)?,
+        })
+    })?;
+
+    let mut providers = Vec::new();
+    for row in rows {
+        providers.push(row_to_provider(row?)?);
+    }
+    Ok(providers)
+}
+
+pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) -> AppResult<()> {
+    let provider_type = enum_value(&provider.provider_type)?;
+    let key_strategy = enum_value(&provider.key_strategy)?;
+    let api_key = join_api_keys(&provider.api_keys);
+    let models_json = serde_json::to_string(&provider.models)?;
+    let model_configs_json = serde_json::to_string(&provider.model_configs)?;
+    let extra_body_json = serde_json::to_string(&provider.extra_body)?;
+    let prompt_cache_json = serde_json::to_string(&provider.prompt_cache)?;
+    let cache_capabilities_json = serde_json::to_string(&provider.cache_capabilities)?;
+    conn.execute(
+        "INSERT INTO model_providers (
+            id, provider_type, name, base_url, api_key, key_strategy, models_json,
+            model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, proxy_url,
+            image_generation_url, image_edit_url, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+         ON CONFLICT(id) DO UPDATE SET
+            provider_type = excluded.provider_type,
+            name = excluded.name,
+            base_url = excluded.base_url,
+            api_key = excluded.api_key,
+            key_strategy = excluded.key_strategy,
+            models_json = excluded.models_json,
+            model_configs_json = excluded.model_configs_json,
+            extra_body_json = excluded.extra_body_json,
+            prompt_cache_json = excluded.prompt_cache_json,
+            cache_capabilities_json = excluded.cache_capabilities_json,
+            proxy_url = excluded.proxy_url,
+            image_generation_url = excluded.image_generation_url,
+            image_edit_url = excluded.image_edit_url,
+            updated_at = excluded.updated_at",
+        params![
+            provider.id.to_string(),
+            provider_type,
+            provider.name,
+            provider.base_url,
+            api_key,
+            key_strategy,
+            models_json,
+            model_configs_json,
+            extra_body_json,
+            prompt_cache_json,
+            cache_capabilities_json,
+            provider.proxy_url,
+            provider.image_generation_url,
+            provider.image_edit_url,
+            provider.created_at.to_rfc3339(),
+            provider.updated_at.to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn join_api_keys(api_keys: &[String]) -> String {
+    api_keys
+        .iter()
+        .map(|key| key.trim())
+        .filter(|key| !key.is_empty())
+        .collect::<Vec<_>>()
+        .join(&API_KEY_SEPARATOR.to_string())
+}
+
+fn split_api_keys(api_key: &str) -> Vec<String> {
+    api_key
+        .split(API_KEY_SEPARATOR)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+pub(super) fn delete_provider_conn(conn: &Connection, id: Uuid) -> AppResult<bool> {
+    Ok(conn.execute(
+        "DELETE FROM model_providers WHERE id = ?1",
+        [id.to_string()],
+    )? > 0)
+}
+
+struct ProviderRow {
+    id: String,
+    provider_type: String,
+    name: String,
+    base_url: String,
+    api_key: String,
+    key_strategy: String,
+    models_json: String,
+    model_configs_json: String,
+    extra_body_json: String,
+    prompt_cache_json: String,
+    cache_capabilities_json: String,
+    proxy_url: Option<String>,
+    image_generation_url: Option<String>,
+    image_edit_url: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+fn row_to_provider(row: ProviderRow) -> AppResult<ModelProvider> {
+    let provider_type: ProviderType =
+        serde_json::from_value(serde_json::Value::String(row.provider_type))?;
+    // Tolerate unknown strategy values so a listing never bricks on bad data.
+    let key_strategy: ApiKeyStrategy =
+        serde_json::from_value(serde_json::Value::String(row.key_strategy)).unwrap_or_default();
+    let models: Vec<String> = serde_json::from_str(&row.models_json)?;
+    let model_configs: Vec<ModelConfig> = serde_json::from_str(&row.model_configs_json)?;
+    let extra_body: serde_json::Value = serde_json::from_str(&row.extra_body_json)?;
+    let prompt_cache = serde_json::from_str(&row.prompt_cache_json)?;
+    let cache_capabilities = serde_json::from_str(&row.cache_capabilities_json)?;
+    let created_at = chrono::DateTime::parse_from_rfc3339(&row.created_at)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|error| crate::error::AppError::Database(error.to_string()))?;
+    let updated_at = chrono::DateTime::parse_from_rfc3339(&row.updated_at)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|error| crate::error::AppError::Database(error.to_string()))?;
+    Ok(ModelProvider {
+        id: Uuid::parse_str(&row.id)
+            .map_err(|error| crate::error::AppError::Database(error.to_string()))?,
+        provider_type,
+        name: row.name,
+        base_url: row.base_url,
+        api_keys: split_api_keys(&row.api_key),
+        key_strategy,
+        models,
+        model_configs,
+        extra_body,
+        prompt_cache,
+        cache_capabilities,
+        proxy_url: row.proxy_url,
+        image_generation_url: row.image_generation_url,
+        image_edit_url: row.image_edit_url,
+        created_at,
+        updated_at,
+    })
+}
+

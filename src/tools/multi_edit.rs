@@ -15,7 +15,10 @@ use uuid::Uuid;
 use crate::{
     domain::{TerminalPermissionMode, TerminalToolConfig, ToolResult},
     fsutil,
-    tools::terminal::SandboxPermissions,
+    tools::{
+        terminal::SandboxPermissions,
+        workspace::{self, WorkspaceResolutionError, expand_home_path},
+    },
 };
 
 pub const MULTI_EDIT_TOOL_NAME: &str = "multi_edit_file";
@@ -366,21 +369,28 @@ pub async fn execute_multi_edit(
     let escalation_requested =
         request.args.sandbox_permissions == SandboxPermissions::RequireEscalated;
     let allow_outside_workspace = full_access || escalation_requested || request.approved;
-    let workspace = match resolve_edit_workspace(
-        request.args.cwd.as_deref(),
-        config,
-        default_workspace,
+    let workspace = match workspace::resolve_workspace_async(
+        request.args.cwd.clone(),
+        config.allowed_cwd_roots.clone(),
+        default_workspace.to_path_buf(),
         allow_outside_workspace,
-    ) {
+        workspace::WorkspaceResolveOptions {
+            expand_home: true,
+            blocked_message:
+                "Filesystem roots and the entire user home directory cannot be workspace roots",
+        },
+    )
+    .await
+    {
         Ok(workspace) => workspace,
-        Err(EditWorkspaceResolutionError::Outside) => {
+        Err(WorkspaceResolutionError::Outside) => {
             return ToolResult::PendingApproval {
                 command: build_approval_summary(&operations),
                 approval_id: Uuid::new_v4().to_string(),
             };
         }
-        Err(EditWorkspaceResolutionError::Invalid(message))
-        | Err(EditWorkspaceResolutionError::Blocked(message)) => {
+        Err(WorkspaceResolutionError::Invalid(message))
+        | Err(WorkspaceResolutionError::Blocked(message)) => {
             return ToolResult::Blocked {
                 reason: message,
                 code: None,
@@ -464,12 +474,12 @@ pub async fn execute_multi_edit(
 
 fn has_multi_edit_grant(
     config: &TerminalToolConfig,
-    workspace: &ResolvedEditWorkspace,
+    workspace: &workspace::ResolvedWorkspace,
     requested_cwd: Option<&str>,
 ) -> bool {
     let now = chrono::Utc::now();
     let mut candidates = vec![
-        workspace.root.display().to_string(),
+        workspace.root().display().to_string(),
         workspace.cwd.display().to_string(),
     ];
     if let Some(cwd) = requested_cwd
@@ -496,90 +506,6 @@ fn has_multi_edit_grant(
             }),
         }
     })
-}
-
-struct ResolvedEditWorkspace {
-    root: PathBuf,
-    cwd: PathBuf,
-    roots: Vec<PathBuf>,
-}
-
-fn resolve_edit_workspace(
-    cwd: Option<&str>,
-    config: &TerminalToolConfig,
-    default_workspace: &Path,
-    allow_outside: bool,
-) -> Result<ResolvedEditWorkspace, EditWorkspaceResolutionError> {
-    let default_root = std::fs::canonicalize(default_workspace).map_err(|error| {
-        EditWorkspaceResolutionError::Invalid(format!(
-            "Default terminal workspace '{}' does not exist or cannot be accessed: {error}",
-            default_workspace.display()
-        ))
-    })?;
-    let mut roots = vec![default_root.clone()];
-    for root in &config.allowed_cwd_roots {
-        let Ok(root) = std::fs::canonicalize(root) else {
-            continue;
-        };
-        if !roots
-            .iter()
-            .any(|existing| fsutil::paths_equal(existing, &root))
-        {
-            roots.push(root);
-        }
-    }
-
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .and_then(|path| std::fs::canonicalize(path).ok());
-    if roots.iter().any(|root| {
-        root.parent().is_none()
-            || home
-                .as_ref()
-                .is_some_and(|home| fsutil::paths_equal(home, root))
-    }) {
-        return Err(EditWorkspaceResolutionError::Blocked(
-            "Filesystem roots and the entire user home directory cannot be workspace roots"
-                .to_string(),
-        ));
-    }
-
-    let requested = match cwd.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(path) => {
-            let path = PathBuf::from(expand_home_path(path));
-            if path.is_absolute() {
-                path
-            } else {
-                default_root.join(path)
-            }
-        }
-        None => default_root.clone(),
-    };
-    let canonical_cwd = std::fs::canonicalize(&requested).map_err(|error| {
-        EditWorkspaceResolutionError::Invalid(format!(
-            "Working directory '{}' does not exist or cannot be accessed: {error}",
-            requested.display()
-        ))
-    })?;
-    let matching_root = roots
-        .iter()
-        .find(|root| fsutil::path_is_within(&canonical_cwd, root))
-        .cloned();
-    if matching_root.is_none() && !allow_outside {
-        return Err(EditWorkspaceResolutionError::Outside);
-    }
-    Ok(ResolvedEditWorkspace {
-        root: matching_root.unwrap_or(default_root),
-        cwd: canonical_cwd,
-        roots,
-    })
-}
-
-#[derive(Debug)]
-enum EditWorkspaceResolutionError {
-    Invalid(String),
-    Outside,
-    Blocked(String),
 }
 
 fn enforce_path_policy(
@@ -747,26 +673,6 @@ fn collect_affected_paths(
     let mut seen = BTreeSet::new();
     paths.retain(|path| seen.insert(fsutil::path_identity_key(path)));
     Ok(paths)
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-}
-
-fn expand_home_path(raw: &str) -> String {
-    if raw == "~"
-        && let Some(home) = home_dir()
-    {
-        return home.to_string_lossy().into_owned();
-    }
-    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\"))
-        && let Some(home) = home_dir()
-    {
-        return home.join(rest).to_string_lossy().into_owned();
-    }
-    raw.to_string()
 }
 
 fn resolve_operation_path(cwd: &Path, path: &str) -> Result<PathBuf, String> {
@@ -2263,7 +2169,7 @@ mod tests {
 
     #[test]
     fn expand_home_path_resolves_tilde_prefix() {
-        let home = home_dir().expect("home directory available in test environment");
+        let home = workspace::home_dir().expect("home directory available in test environment");
         let expanded = expand_home_path("~/wei-agent-test.txt");
         assert!(Path::new(&expanded).starts_with(&home));
         assert_eq!(expand_home_path("plain.txt"), "plain.txt");

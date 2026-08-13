@@ -10,3 +10,4 @@ mod supporting_runtime;
 pub mod task_planning;
 pub mod terminal;
 pub mod web_search;
+pub mod workspace;

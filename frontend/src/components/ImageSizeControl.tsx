@@ -3,7 +3,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useI18n } from '../i18n';
 import { Button, Dialog } from './ui';
 
-export const IMAGE_SIZE_OPTIONS = [
+const IMAGE_SIZE_OPTIONS = [
   'auto',
   '1024x1024',
   '1536x1024',
@@ -21,7 +21,7 @@ export const CUSTOM_IMAGE_SIZE = '__custom__';
 
 type CustomImageSizeMode = 'dimensions' | 'ratio';
 
-export function isValidCustomImageSize(value: string): boolean {
+function isValidCustomImageSize(value: string): boolean {
   const match = value.trim().match(/^(\d{1,5})(x|:)(\d{1,5})$/i);
   if (!match) return false;
   const width = Number(match[1]);

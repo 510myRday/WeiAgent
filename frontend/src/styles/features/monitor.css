@@ -779,9 +779,6 @@
   border-color: var(--status-neutral-border);
 }
 
-
-
-
 .monitor-pagination {
   display: flex;
   align-items: center;
@@ -974,11 +971,6 @@
 .monitor-request-table .monitor-agent-cell {
   justify-content: center;
 }
-
-
-.text-warning {
-  color: var(--status-warning-text);
-}
 .monitor-model-cell {
   display: inline-flex;
   flex-direction: column;
@@ -1016,7 +1008,6 @@
   background: var(--status-neutral-bg);
   border: 1px solid var(--status-neutral-border);
 }
-
 
 /* Request detail modal */
 .monitor-detail-modal {
@@ -1250,7 +1241,6 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-
 
 .monitor-empty-metric {
   color: var(--color-muted);

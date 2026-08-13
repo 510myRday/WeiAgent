@@ -21,7 +21,11 @@ use uuid::Uuid;
 use crate::{
     domain::{ProcessInfo, ProcessStatus, TerminalPermissionMode, TerminalToolConfig, ToolResult},
     error::{AppError, AppResult},
-    tools::shell::{HostShellKind, selected_host_shell},
+    tools::{
+        process_job::{TerminateMode, terminate_process},
+        shell::{HostShellKind, selected_host_shell},
+        workspace::{self, WorkspaceResolutionError},
+    },
 };
 
 pub const MAX_TERMINAL_TIMEOUT_MS: u64 = 120_000;
@@ -548,41 +552,7 @@ fn respond_to_terminal_queries(
 }
 
 async fn terminate_host_process_group(pid: u32) -> AppResult<()> {
-    #[cfg(windows)]
-    {
-        let status = tokio::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .status()
-            .await?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(AppError::Process(format!(
-                "taskkill failed for Windows process tree rooted at {pid} with status {status}"
-            )))
-        }
-    }
-
-    #[cfg(unix)]
-    {
-        let group = format!("-{pid}");
-        let term = tokio::process::Command::new("kill")
-            .args(["-TERM", &group])
-            .status()
-            .await?;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let kill = tokio::process::Command::new("kill")
-            .args(["-KILL", &group])
-            .status()
-            .await?;
-        if term.success() || kill.success() {
-            Ok(())
-        } else {
-            Err(AppError::Process(format!(
-                "failed to terminate Unix process group rooted at {pid}"
-            )))
-        }
-    }
+    terminate_process(pid, TerminateMode::GroupGraceful).await
 }
 
 /// Builds the native host-shell argv used by the local process backend.
@@ -1211,12 +1181,19 @@ pub async fn execute_terminal(
     let context_granted = config.has_context_grant(&request.command, request.cwd.as_deref());
     let allow_outside_workspace =
         full_access_mode || escalation_requested || context_granted || request.approved;
-    let workspace = match resolve_workspace(
-        request.cwd.as_deref(),
-        config,
-        default_workspace,
+    let workspace = match workspace::resolve_workspace_async(
+        request.cwd.clone(),
+        config.allowed_cwd_roots.clone(),
+        default_workspace.to_path_buf(),
         allow_outside_workspace,
-    ) {
+        workspace::WorkspaceResolveOptions {
+            expand_home: false,
+            blocked_message:
+                "Filesystem roots and the entire user home directory cannot be terminal workspace roots",
+        },
+    )
+    .await
+    {
         Ok(workspace) => workspace,
         Err(WorkspaceResolutionError::Invalid(message)) => {
             return ToolResult::Error { message };
@@ -1395,76 +1372,24 @@ impl Drop for TerminalLease {
     }
 }
 
-struct ResolvedWorkspace {
-    cwd: PathBuf,
-}
-
-#[derive(Debug)]
-enum WorkspaceResolutionError {
-    Invalid(String),
-    Outside,
-    Blocked(String),
-}
-
-fn resolve_workspace(
+#[cfg(test)]
+fn resolve_terminal_workspace(
     cwd: Option<&str>,
     config: &TerminalToolConfig,
     default_workspace: &Path,
     allow_outside_workspace: bool,
-) -> Result<ResolvedWorkspace, WorkspaceResolutionError> {
-    let default_root = std::fs::canonicalize(default_workspace).map_err(|error| {
-        WorkspaceResolutionError::Invalid(format!(
-            "Default terminal workspace '{}' does not exist or cannot be accessed: {error}",
-            default_workspace.display()
-        ))
-    })?;
-    let mut roots = vec![default_root.clone()];
-    for root in &config.allowed_cwd_roots {
-        let Ok(root) = std::fs::canonicalize(root) else {
-            continue;
-        };
-        if !roots
-            .iter()
-            .any(|existing| crate::fsutil::paths_equal(existing, &root))
-        {
-            roots.push(root);
-        }
-    }
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .and_then(|path| std::fs::canonicalize(path).ok());
-    if roots.iter().any(|root| {
-        root.parent().is_none()
-            || home
-                .as_ref()
-                .is_some_and(|home| crate::fsutil::paths_equal(home, root))
-    }) {
-        return Err(WorkspaceResolutionError::Blocked(
-            "Filesystem roots and the entire user home directory cannot be terminal workspace roots"
-                .to_string(),
-        ));
-    }
-
-    let requested = match cwd.map(PathBuf::from) {
-        Some(path) if path.is_absolute() => path,
-        Some(path) => default_root.join(path),
-        None => default_root.clone(),
-    };
-    let canonical_cwd = std::fs::canonicalize(&requested).map_err(|error| {
-        WorkspaceResolutionError::Invalid(format!(
-            "Working directory '{}' does not exist or cannot be accessed: {error}. Retry without cwd to use the default workspace '{}'.",
-            requested.display(),
-            default_root.display()
-        ))
-    })?;
-    let matching_root = roots
-        .iter()
-        .find(|root| crate::fsutil::path_is_within(&canonical_cwd, root))
-        .cloned();
-    if matching_root.is_none() && !allow_outside_workspace {
-        return Err(WorkspaceResolutionError::Outside);
-    }
-    Ok(ResolvedWorkspace { cwd: canonical_cwd })
+) -> Result<workspace::ResolvedWorkspace, WorkspaceResolutionError> {
+    workspace::resolve_workspace(
+        cwd,
+        &config.allowed_cwd_roots,
+        default_workspace,
+        allow_outside_workspace,
+        workspace::WorkspaceResolveOptions {
+            expand_home: false,
+            blocked_message:
+                "Filesystem roots and the entire user home directory cannot be terminal workspace roots",
+        },
+    )
 }
 
 async fn snapshot(record: &ProcessRecord) -> ProcessInfo {
@@ -1821,17 +1746,7 @@ impl TerminalBackend for TestTerminalBackend {
             .get(process_id)
             .map(|entry| entry.value().clone())
             .ok_or_else(|| AppError::Process("test process was not found".to_string()))?;
-        if cfg!(windows) {
-            tokio::process::Command::new("taskkill")
-                .args(["/PID", &process.pid.to_string(), "/T", "/F"])
-                .output()
-                .await?;
-        } else {
-            tokio::process::Command::new("kill")
-                .args(["-KILL", &process.pid.to_string()])
-                .output()
-                .await?;
-        }
+        let _ = terminate_process(process.pid, TerminateMode::Force).await;
         Ok(())
     }
 
@@ -2087,7 +2002,7 @@ mod tests {
     fn empty_roots_use_explicit_default_workspace() {
         let data_dir = tempfile::tempdir().unwrap();
         let config = TerminalToolConfig::default();
-        let workspace = match resolve_workspace(None, &config, data_dir.path(), false) {
+        let workspace = match resolve_terminal_workspace(None, &config, data_dir.path(), false) {
             Ok(workspace) => workspace,
             Err(_) => {
                 panic!("expected the dedicated directory to resolve as the default workspace")
@@ -2109,14 +2024,14 @@ mod tests {
         let expected_default = std::fs::canonicalize(default_workspace.path()).unwrap();
         let expected_configured = std::fs::canonicalize(configured_root.path()).unwrap();
 
-        let implicit = resolve_workspace(None, &config, default_workspace.path(), false).unwrap();
+        let implicit = resolve_terminal_workspace(None, &config, default_workspace.path(), false).unwrap();
         assert_eq!(implicit.cwd, expected_default);
 
         let relative =
-            resolve_workspace(Some("."), &config, default_workspace.path(), false).unwrap();
+            resolve_terminal_workspace(Some("."), &config, default_workspace.path(), false).unwrap();
         assert_eq!(relative.cwd, expected_default);
 
-        let explicit = resolve_workspace(
+        let explicit = resolve_terminal_workspace(
             Some(configured_root.path().to_string_lossy().as_ref()),
             &config,
             default_workspace.path(),

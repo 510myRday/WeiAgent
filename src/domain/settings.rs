@@ -13,9 +13,9 @@ pub struct AppSettings {
     pub port: u16,
     #[serde(default = "default_log_level")]
     pub log_level: String,
-    #[serde(default = "default_avatar_icon")]
+    #[serde(default = "crate::domain::avatar::default_avatar_icon")]
     pub avatar_icon: String,
-    #[serde(default = "default_avatar_color")]
+    #[serde(default = "crate::domain::avatar::default_avatar_color")]
     pub avatar_color: String,
     #[serde(default = "default_language")]
     pub language: String,
@@ -42,8 +42,8 @@ impl Default for AppSettings {
             host: default_host(),
             port: default_port(),
             log_level: default_log_level(),
-            avatar_icon: default_avatar_icon(),
-            avatar_color: default_avatar_color(),
+            avatar_icon: crate::domain::avatar::default_avatar_icon(),
+            avatar_color: crate::domain::avatar::default_avatar_color(),
             language: default_language(),
             request_timeout_seconds: default_request_timeout_seconds(),
             request_retry_attempts: default_request_retry_attempts(),
@@ -65,14 +65,6 @@ fn default_port() -> u16 {
 
 fn default_log_level() -> String {
     "info".to_string()
-}
-
-fn default_avatar_icon() -> String {
-    "bot".to_string()
-}
-
-fn default_avatar_color() -> String {
-    "#22c55e".to_string()
 }
 
 fn default_language() -> String {

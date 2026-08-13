@@ -1,128 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Braces, Cable, CheckCircle2, ChevronDown, ChevronUp, Code2, Eye, EyeOff, HelpCircle, Plus, Save, TestTube2, X } from 'lucide-react';
 
-import type { McpIdentityHeader, McpOAuthConfig, McpServer, McpServerDraft, McpTransport } from '../../api';
+import type { McpIdentityHeader, McpOAuthConfig, McpServer, McpServerDraft, McpTransport } from '../../toolTypes';
 import { useI18n } from '../../i18n';
 import { Button, Dialog, FormField, IconButton } from '../../components/ui';
+import {
+  EMPTY_MCP_DRAFT,
+  draftFromServer,
+  entriesText,
+  getStdioArgsText,
+  mapEntries,
+  parseLines,
+  parseTags,
+  serializeJsonDraft,
+  textToArgs,
+  validateMcpDraft,
+} from './mcpDraft';
 
 type EditorMode = 'visual' | 'json';
 type EnvironmentRow = { id: string; key: string; value: string; preserved: boolean; visible: boolean };
-
-const EMPTY_DRAFT: McpServerDraft = {
-  name: '',
-  description: '',
-  enabled: true,
-  supports_parallel_tool_calls: true,
-  provider: null,
-  provider_url: null,
-  logo_url: null,
-  tags: [],
-  transport: { type: 'stdio', command: '', args: [], cwd: null, env: {}, inherit_env: false, env_allowlist: [], long_running: true, timeout_ms: 60000 },
-};
-
-function redactTransport(transport: McpTransport): McpTransport {
-  if (transport.type === 'stdio') {
-    return { ...transport, env: Object.fromEntries(Object.entries(transport.env).map(([key, value]) => [key, value ? '__preserve__' : value])) };
-  }
-  const oauth = transport.oauth
-    ? { ...transport.oauth, client_secret: transport.oauth.client_secret ? '__preserve__' : transport.oauth.client_secret }
-    : transport.oauth;
-  const identity_header = transport.identity_header
-    ? { ...transport.identity_header, value: transport.identity_header.value ? '__preserve__' : transport.identity_header.value }
-    : transport.identity_header;
-  return {
-    ...transport,
-    bearer_token: transport.bearer_token ? '__preserve__' : transport.bearer_token,
-    headers: Object.fromEntries(Object.entries(transport.headers).map(([key, value]) => [key, value ? '__preserve__' : value])),
-    identity_header,
-    oauth,
-  };
-}
-
-function argsToText(args: string[]): string {
-  return args.map((arg) => (arg.includes(' ') ? `"${arg}"` : arg)).join(' ');
-}
-
-function textToArgs(value: string): string[] {
-  return value.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((arg) => arg.replace(/^"|"$/g, '')) ?? [];
-}
-
-function normalizeStdioArgs(args: string[]): string[] {
-  if (args.length !== 1 || !args[0].trim().startsWith('-') || !/[\s]/.test(args[0])) return args;
-  return textToArgs(args[0]);
-}
-
-function draftFromServer(server?: McpServer, secrets?: McpTransport): McpServerDraft {
-  if (!server) return structuredClone(EMPTY_DRAFT);
-  const transport = secrets ?? redactTransport(server.transport);
-  return {
-    id: server.id,
-    name: server.name,
-    description: server.description,
-    enabled: server.enabled,
-    supports_parallel_tool_calls: server.supports_parallel_tool_calls ?? true,
-    provider: server.provider ?? null,
-    provider_url: server.provider_url ?? null,
-    logo_url: server.logo_url ?? null,
-    tags: server.tags ?? [],
-    transport: transport.type === 'stdio'
-      ? { ...transport, args: normalizeStdioArgs(transport.args) }
-      : transport,
-  };
-}
-
-function parseLines(value: string): string[] {
-  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-}
-
-function parseTags(value: string): string[] {
-  return value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean);
-}
-
-function mapEntries(value: string): Record<string, string> {
-  return Object.fromEntries(parseLines(value).map((line) => {
-    const separator = line.indexOf('=');
-    return separator < 0 ? [line, ''] : [line.slice(0, separator).trim(), line.slice(separator + 1).trim()];
-  }).filter(([key]) => key));
-}
-
-function entriesText(entries: Record<string, string>): string {
-  return Object.entries(entries).map(([key, value]) => `${key}=${value}`).join('\n');
-}
-
-function serializeJsonDraft(draft: McpServerDraft): string {
-  const jsonDraft = { ...draft };
-  Reflect.deleteProperty(jsonDraft, 'id');
-  jsonDraft.transport = redactTransport(draft.transport);
-  return JSON.stringify(jsonDraft, null, 2);
-}
-
-function getStdioArgsText(transport: McpTransport): string {
-  return transport.type === 'stdio' ? argsToText(normalizeStdioArgs(transport.args ?? [])) : '';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function validateMcpDraft(value: unknown, t: (key: string) => string): string {
-  if (!isRecord(value) || typeof value.name !== 'string' || !value.name.trim()) return t('tools.mcp.jsonNameError');
-  if (!isRecord(value.transport) || typeof value.transport.type !== 'string') return t('tools.mcp.jsonTransportError');
-
-  const transport = value.transport;
-  const transportType = typeof transport.type === 'string' ? transport.type : '';
-  if (!['stdio', 'streamable_http', 'sse'].includes(transportType)) return t('tools.mcp.jsonTransportError');
-  if (value.tags !== undefined && (!Array.isArray(value.tags) || value.tags.some((item) => typeof item !== 'string'))) return t('tools.mcp.jsonTagsError');
-  if (transportType === 'stdio') {
-    if (typeof transport.command !== 'string' || !transport.command.trim()) return t('tools.mcp.jsonCommandError');
-    if (transport.args !== undefined && (!Array.isArray(transport.args) || transport.args.some((item) => typeof item !== 'string'))) return t('tools.mcp.jsonArrayError');
-    if (transport.timeout_ms !== undefined && (typeof transport.timeout_ms !== 'number' || !Number.isFinite(transport.timeout_ms))) return t('tools.mcp.jsonTimeoutError');
-  } else {
-    if (typeof transport.url !== 'string' || !transport.url.trim()) return t('tools.mcp.jsonUrlError');
-    if (transport.timeout_ms !== undefined && (typeof transport.timeout_ms !== 'number' || !Number.isFinite(transport.timeout_ms))) return t('tools.mcp.jsonTimeoutError');
-  }
-  return '';
-}
 
 export function McpServerDialog({
   open,
@@ -147,7 +43,7 @@ export function McpServerDialog({
 }) {
   const { t } = useI18n();
   const [mode, setMode] = useState<EditorMode>('visual');
-  const [draft, setDraft] = useState<McpServerDraft>(EMPTY_DRAFT);
+  const [draft, setDraft] = useState<McpServerDraft>(EMPTY_MCP_DRAFT);
   const [jsonText, setJsonText] = useState('');
   const [jsonError, setJsonError] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -556,3 +452,4 @@ export function McpServerDialog({
     </Dialog>
   );
 }
+

@@ -62,15 +62,11 @@ pub fn control_client(
         proxy: proxy.clone(),
     };
     get_or_build(key, || {
-        let mut builder = reqwest::Client::builder().timeout(timeout);
-        if let Some(proxy_url) = proxy.as_deref() {
-            let proxy = reqwest::Proxy::all(proxy_url)
-                .map_err(|error| format!("failed to configure proxy: {error}"))?;
-            builder = builder.proxy(proxy);
-        }
-        builder
-            .build()
-            .map_err(|error| format!("failed to build HTTP client: {error}"))
+        crate::http_client::build_reqwest_client(
+            crate::http_client::HttpClientConfig::new()
+                .timeout(timeout)
+                .proxy_url(proxy.as_deref()),
+        )
     })
 }
 
@@ -82,12 +78,12 @@ pub fn local_extract_client() -> Result<reqwest::Client, String> {
         proxy: None,
     };
     get_or_build(key, || {
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(45))
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent("WeiAgent/1.0 web_extract")
-            .build()
-            .map_err(|error| format!("failed to build local extraction client: {error}"))
+        crate::http_client::build_reqwest_client(
+            crate::http_client::HttpClientConfig::new()
+                .timeout(Duration::from_secs(45))
+                .no_redirects()
+                .user_agent("WeiAgent/1.0 web_extract"),
+        )
     })
 }
 
@@ -99,9 +95,8 @@ pub fn remote_extract_client(timeout: Duration) -> Result<reqwest::Client, Strin
         proxy: None,
     };
     get_or_build(key, || {
-        reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|error| format!("failed to build remote extraction client: {error}"))
+        crate::http_client::build_reqwest_client(
+            crate::http_client::HttpClientConfig::new().timeout(timeout),
+        )
     })
 }

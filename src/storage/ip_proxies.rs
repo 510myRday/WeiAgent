@@ -1,3 +1,4 @@
+use rusqlite::{Connection, params};
 use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
@@ -11,7 +12,11 @@ use crate::{
         IpProxyTestUpdate, UpdateIpProxyRequest,
     },
     error::{AppError, AppResult},
-    storage::{db, store::Store, validation::validate_non_empty},
+    storage::{
+        sql_util::{enum_value, parse_datetime, parse_optional_datetime},
+        store::Store,
+        validation::validate_non_empty,
+    },
 };
 
 impl Store {
@@ -123,7 +128,7 @@ impl Store {
         if !imported.is_empty() {
             let saved = imported.clone();
             self.database
-                .call(move |connection| db::upsert_ip_proxies_conn(connection, &saved))
+                .call(move |connection| upsert_ip_proxies_conn(connection, &saved))
                 .await?;
         }
         Ok(ImportIpProxiesResponse {
@@ -186,7 +191,7 @@ impl Store {
         let _guard = self.ip_proxy_lock.lock().await;
         let deleted = self
             .database
-            .call(move |connection| db::delete_ip_proxy_conn(connection, id))
+            .call(move |connection| delete_ip_proxy_conn(connection, id))
             .await?;
         if !deleted {
             return Err(AppError::NotFound);
@@ -245,7 +250,7 @@ impl Store {
         }
         let saved = updated.clone();
         self.database
-            .call(move |connection| db::upsert_ip_proxies_conn(connection, &saved))
+            .call(move |connection| upsert_ip_proxies_conn(connection, &saved))
             .await?;
         Ok(updated)
     }
@@ -276,20 +281,20 @@ impl Store {
         }
         let saved = updated.clone();
         self.database
-            .call(move |connection| db::upsert_ip_proxies_conn(connection, &saved))
+            .call(move |connection| upsert_ip_proxies_conn(connection, &saved))
             .await?;
         Ok(updated)
     }
 
     async fn read_ip_proxies_unlocked(&self) -> AppResult<Vec<IpProxy>> {
         self.database
-            .call(|connection| db::read_ip_proxies_conn(connection))
+            .call(|connection| read_ip_proxies_conn(connection))
             .await
     }
 
     async fn upsert_ip_proxy_unlocked(&self, proxy: IpProxy) -> AppResult<()> {
         self.database
-            .call(move |connection| db::upsert_ip_proxy_conn(connection, &proxy))
+            .call(move |connection| upsert_ip_proxy_conn(connection, &proxy))
             .await
     }
 }
@@ -560,3 +565,163 @@ mod tests {
         );
     }
 }
+
+pub fn read_ip_proxies_conn(conn: &Connection) -> AppResult<Vec<IpProxy>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, url, protocol, enabled, is_pinned, status, latency_ms,
+                last_checked_at, last_error, ip_address, country, country_code,
+                region, city, quality_json, created_at, updated_at
+         FROM ip_proxies
+         ORDER BY created_at ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(IpProxyRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            url: row.get(2)?,
+            protocol: row.get(3)?,
+            enabled: row.get(4)?,
+            is_pinned: row.get(5)?,
+            status: row.get(6)?,
+            latency_ms: row.get(7)?,
+            last_checked_at: row.get(8)?,
+            last_error: row.get(9)?,
+            ip_address: row.get(10)?,
+            country: row.get(11)?,
+            country_code: row.get(12)?,
+            region: row.get(13)?,
+            city: row.get(14)?,
+            quality_json: row.get(15)?,
+            created_at: row.get(16)?,
+            updated_at: row.get(17)?,
+        })
+    })?;
+
+    let mut proxies = Vec::new();
+    for row in rows {
+        proxies.push(row_to_ip_proxy(row?)?);
+    }
+    Ok(proxies)
+}
+
+pub(super) fn upsert_ip_proxy_conn(conn: &Connection, proxy: &IpProxy) -> AppResult<()> {
+    let protocol = enum_value(&proxy.protocol)?;
+    let status = enum_value(&proxy.status)?;
+    let latency_ms = proxy
+        .latency_ms
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let quality_json = serde_json::to_string(&proxy.api_quality)?;
+    conn.execute(
+        "INSERT INTO ip_proxies (
+            id, name, url, protocol, enabled, is_pinned, status, latency_ms,
+            last_checked_at, last_error, ip_address, country, country_code,
+            region, city, quality_json, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+         ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            url = excluded.url,
+            protocol = excluded.protocol,
+            enabled = excluded.enabled,
+            is_pinned = excluded.is_pinned,
+            status = excluded.status,
+            latency_ms = excluded.latency_ms,
+            last_checked_at = excluded.last_checked_at,
+            last_error = excluded.last_error,
+            ip_address = excluded.ip_address,
+            country = excluded.country,
+            country_code = excluded.country_code,
+            region = excluded.region,
+            city = excluded.city,
+            quality_json = excluded.quality_json,
+            updated_at = excluded.updated_at",
+        params![
+            proxy.id.to_string(),
+            proxy.name,
+            proxy.url,
+            protocol,
+            i64::from(proxy.enabled),
+            i64::from(proxy.is_pinned),
+            status,
+            latency_ms,
+            proxy.last_checked_at.map(|value| value.to_rfc3339()),
+            proxy.last_error,
+            proxy.ip_address,
+            proxy.country,
+            proxy.country_code,
+            proxy.region,
+            proxy.city,
+            quality_json,
+            proxy.created_at.to_rfc3339(),
+            proxy.updated_at.to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+pub(super) fn delete_ip_proxy_conn(conn: &Connection, id: Uuid) -> AppResult<bool> {
+    Ok(conn.execute("DELETE FROM ip_proxies WHERE id = ?1", [id.to_string()])? > 0)
+}
+
+pub(super) fn upsert_ip_proxies_conn(conn: &mut Connection, proxies: &[IpProxy]) -> AppResult<()> {
+    let tx = conn.transaction()?;
+    for proxy in proxies {
+        upsert_ip_proxy_conn(&tx, proxy)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+struct IpProxyRow {
+    id: String,
+    name: String,
+    url: String,
+    protocol: String,
+    enabled: i64,
+    is_pinned: i64,
+    status: String,
+    latency_ms: Option<i64>,
+    last_checked_at: Option<String>,
+    last_error: Option<String>,
+    ip_address: Option<String>,
+    country: Option<String>,
+    country_code: Option<String>,
+    region: Option<String>,
+    city: Option<String>,
+    quality_json: String,
+    created_at: String,
+    updated_at: String,
+}
+
+fn row_to_ip_proxy(row: IpProxyRow) -> AppResult<IpProxy> {
+    let protocol: IpProxyProtocol =
+        serde_json::from_value(serde_json::Value::String(row.protocol))?;
+    let status: IpProxyStatus = serde_json::from_value(serde_json::Value::String(row.status))?;
+    let latency_ms = row
+        .latency_ms
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    Ok(IpProxy {
+        id: Uuid::parse_str(&row.id).map_err(|error| AppError::Database(error.to_string()))?,
+        name: row.name,
+        url: row.url,
+        protocol,
+        enabled: row.enabled != 0,
+        is_pinned: row.is_pinned != 0,
+        status,
+        latency_ms,
+        last_checked_at: parse_optional_datetime(row.last_checked_at, "last_checked_at")?,
+        last_error: row.last_error,
+        ip_address: row.ip_address,
+        country: row.country,
+        country_code: row.country_code,
+        region: row.region,
+        city: row.city,
+        api_quality: serde_json::from_str(&row.quality_json).unwrap_or_default(),
+        created_at: parse_datetime(&row.created_at, "created_at")?,
+        updated_at: parse_datetime(&row.updated_at, "updated_at")?,
+    })
+}
+

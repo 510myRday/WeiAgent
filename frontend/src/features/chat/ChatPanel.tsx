@@ -1,16 +1,8 @@
-import { useRef, useEffect, useCallback, useMemo, useState, memo } from 'react';
+import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
 import {
   ArrowLeft,
-  CheckCircle2,
-  ChevronDown,
-  Circle,
-  CircleDot,
-  LoaderCircle,
-  ListChecks,
-  Pin,
   Plus,
   Settings2,
-  Trash2,
 } from 'lucide-react';
 import type {
   Agent,
@@ -25,18 +17,23 @@ import type {
   UiMessageItem,
   UpdateAgentPayload,
 } from '../../types';
-import { approveToolCall, readTaskPlans, type TaskPlan } from '../../api';
+import { approveToolCall, readTaskPlans } from '../../api';
+import type { TaskPlan } from '../../toolTypes';
 import { useI18n } from '../../i18n';
 import { useConversations, usePageVisibility } from '../../hooks';
+import { AUTO_SAVE_DELAY_MS } from '../../hooks/useSerializedAutoSave';
 import { AgentListItem, agentDisplayName } from '../../components/AgentListItem';
-import { Button, IconButton, ListItem, PaneHeader, SearchInput, useFeedback } from '../../components/ui';
+import { Button, IconButton, PaneHeader, SearchInput, useFeedback } from '../../components/ui';
 import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
 import { ChatAgentSelect } from './ChatAgentSelect';
+import { ConversationRow } from './ConversationRow';
+import { TaskPlanPanel } from './TaskPlanPanel';
 import { MessageAvatar, MessageList, type MessageListHandle } from './MessageList';
 import { MessageTimeline, type MessageTimelineItem } from './MessageTimeline';
 import { materializeImageAttachment } from './imageAttachments';
 import { userErrorMessage } from '../../utils/userError';
 import { compareNames, sortByName } from '../../utils/sort';
+import { createChatDateFormatters, formatChatDateTime, formatChatTimelineTime } from './chatDateFormat';
 
 interface ChatPanelProps {
   agents: Agent[];
@@ -78,8 +75,6 @@ type PendingImageOptionsSave = {
 
 type ComposerImageOptions = Pick<ImageModelConfig, 'size' | 'quality' | 'n'>;
 
-const MODEL_AUTO_SAVE_DELAY_MS = 600;
-const IMAGE_OPTIONS_AUTO_SAVE_DELAY_MS = 600;
 const EMPTY_MESSAGES: UiMessageItem[] = [];
 
 export function ChatPanel({
@@ -347,30 +342,7 @@ export function ChatPanel({
       conversation.title.toLowerCase().includes(query),
     );
   }, [conversations, conversationFilter]);
-  const dateFormatters = useMemo(() => {
-    const formatLocale = locale === 'zh' ? 'zh-CN' : 'en-US';
-    return {
-      time: new Intl.DateTimeFormat(formatLocale, { hour: '2-digit', minute: '2-digit' }),
-      dateTime: new Intl.DateTimeFormat(formatLocale, {
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-      }),
-      timelineDate: new Intl.DateTimeFormat(formatLocale, { month: 'long', day: 'numeric' }),
-      timelineDateWithYear: new Intl.DateTimeFormat(formatLocale, {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      }),
-      markerDate: new Intl.DateTimeFormat(formatLocale, { month: '2-digit', day: '2-digit' }),
-      markerTime: new Intl.DateTimeFormat(formatLocale, {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      }),
-    };
-  }, [locale]);
+  const dateFormatters = useMemo(() => createChatDateFormatters(locale), [locale]);
   const timelineItemsRef = useRef<MessageTimelineItem[]>([]);
   const timelineItems = useMemo<MessageTimelineItem[]>(() => {
     const result: MessageTimelineItem[] = [];
@@ -626,7 +598,7 @@ export function ChatPanel({
     modelSaveTimerRef.current = window.setTimeout(() => {
       modelSaveTimerRef.current = undefined;
       void persistPendingModelSelection(requestId);
-    }, MODEL_AUTO_SAVE_DELAY_MS);
+    }, AUTO_SAVE_DELAY_MS);
   }
 
   function handleImageOptionsChange(patch: Partial<ComposerImageOptions>) {
@@ -654,7 +626,7 @@ export function ChatPanel({
     imageOptionsSaveTimerRef.current = window.setTimeout(() => {
       imageOptionsSaveTimerRef.current = undefined;
       void flushPendingImageOptionsSave();
-    }, IMAGE_OPTIONS_AUTO_SAVE_DELAY_MS);
+    }, AUTO_SAVE_DELAY_MS);
   }
 
   async function flushPendingImageOptionsSave() {
@@ -881,27 +853,8 @@ export function ChatPanel({
     return () => window.removeEventListener('keydown', handleShortcut);
   }, [activeAgent, activeAgent?.id, activeConversation?.id, activeConversation?.message_count, handleNewConversation, isSending]);
 
-  const formatTime = useCallback((value: string) => {
-    return dateFormatters.time.format(new Date(value));
-  }, [dateFormatters]);
-
-  const formatDate = useCallback((value: string) => {
-    return dateFormatters.dateTime.format(new Date(value));
-  }, [dateFormatters]);
-
-  const formatTimelineTime = useCallback((value: string) => {
-    const date = new Date(value);
-    const now = new Date();
-    const isSameYear = date.getFullYear() === now.getFullYear();
-    const isSameDay = date.toDateString() === now.toDateString();
-
-    if (isSameDay) return formatTime(value);
-
-    const dateLabel = (isSameYear
-      ? dateFormatters.timelineDate
-      : dateFormatters.timelineDateWithYear).format(date);
-    return `${dateLabel} ${dateFormatters.time.format(date)}`;
-  }, [dateFormatters, formatTime]);
+  const formatDate = useCallback((value: string) => formatChatDateTime(value, dateFormatters), [dateFormatters]);
+  const formatTimelineTime = useCallback((value: string) => formatChatTimelineTime(value, dateFormatters), [dateFormatters]);
 
   return (
     <>
@@ -1126,215 +1079,3 @@ export function ChatPanel({
   );
 }
 
-function TaskPlanPanel({
-  plans,
-  isLoading,
-  isOpen,
-  onToggle,
-  t,
-}: {
-  plans: TaskPlan[];
-  isLoading: boolean;
-  isOpen: boolean;
-  onToggle: () => void;
-  t: (path: string, params?: Record<string, string | number>) => string;
-}) {
-  const currentPlan = plans[0];
-  const completed = currentPlan?.plan.filter((item) => item.status === 'completed').length ?? 0;
-  const total = currentPlan?.plan.length ?? 0;
-
-  return (
-    <section className={`task-plan-panel${isOpen ? ' is-open' : ''}`} aria-label={t('tools.taskPlanning.name')}>
-      <button
-        type="button"
-        className="task-plan-panel__summary"
-        aria-expanded={isOpen}
-        onClick={onToggle}
-      >
-        <span className="task-plan-panel__summary-icon" aria-hidden="true"><ListChecks size={16} /></span>
-          <span className="task-plan-panel__summary-copy">
-            <strong>{t('tools.taskPlanning.name')}</strong>
-          {plans.length > 0 ? (
-            <span
-              className="task-plan-panel__count-badge"
-              title={t('chat.taskPlanHistoryCount', { count: plans.length })}
-              aria-label={t('chat.taskPlanHistoryCount', { count: plans.length })}
-            >
-              {plans.length}
-            </span>
-            ) : null}
-          </span>
-          {currentPlan ? (
-            <span
-              className="task-plan-panel__summary-progress"
-              aria-label={t('chat.taskPlanCurrentProgress', { completed, total })}
-            >
-              <span className="task-plan-panel__progress-count">
-                {t('chat.taskPlanCurrentProgress', { completed, total })}
-              </span>
-              <span className="task-plan-panel__progress-track" aria-hidden="true">
-                {currentPlan.plan.map((item, index) => (
-                  <span
-                    key={`${currentPlan.planning_id}-progress-${index}`}
-                    className={item.status === 'completed' ? 'is-completed' : undefined}
-                  />
-                ))}
-              </span>
-            </span>
-          ) : null}
-          <ChevronDown className="task-plan-panel__chevron" size={17} aria-hidden="true" />
-      </button>
-      {isOpen ? (
-        <div className="task-plan-panel__details">
-          {isLoading ? <p className="task-plan-panel__empty">{t('chat.taskPlanLoading')}</p> : null}
-          {!isLoading && plans.length === 0 ? <p className="task-plan-panel__empty">{t('chat.taskPlanEmpty')}</p> : null}
-          {!isLoading && plans.length > 0 ? (
-            <div className="task-plan-panel__scroll">
-              <div className="task-plan-history">
-                {plans.map((plan, index) => (
-                  <TaskPlanHistoryCard
-                    key={plan.planning_id}
-                    plan={plan}
-                    planNumber={plans.length - index}
-                    t={t}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function TaskPlanHistoryCard({
-  plan,
-  planNumber,
-  t,
-}: {
-  plan: TaskPlan;
-  planNumber: number;
-  t: (path: string, params?: Record<string, string | number>) => string;
-}) {
-  return (
-    <article className="task-plan-history__card">
-      <div className="task-plan-history__title-row">
-        <span className="task-plan-history__number" aria-label={`第 ${planNumber} 个任务`}>{planNumber}</span>
-        <h3
-          className="task-plan-history__title"
-          title={plan.explanation || t('tools.taskPlanning.name')}
-        >
-          {plan.explanation || t('tools.taskPlanning.name')}
-        </h3>
-        <time className="task-plan-history__time" dateTime={plan.created_at}>
-          {formatTaskPlanStartTime(plan.created_at)}
-        </time>
-      </div>
-      <ol className="task-plan-panel__list">
-        {plan.plan.map((item, index) => (
-          <li key={`${plan.planning_id}-${index}-${item.step}`} className={`task-plan-item task-plan-item--${item.status}`}>
-            <span className="task-plan-item__index">{index + 1}</span>
-            <span
-              className="task-plan-item__step"
-              title={item.step}
-              aria-label={t(`chat.taskPlanStatus${item.status === 'in_progress' ? 'InProgress' : item.status === 'completed' ? 'Completed' : 'Pending'}`)}
-            >
-              {item.step}
-            </span>
-            <span className="task-plan-item__status-icon" aria-hidden="true">
-              {item.status === 'completed' ? <CheckCircle2 size={17} /> : item.status === 'in_progress' ? <CircleDot size={17} /> : <Circle size={17} />}
-            </span>
-          </li>
-        ))}
-      </ol>
-    </article>
-  );
-}
-
-function formatTaskPlanStartTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-
-  const pad = (part: number) => String(part).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
-
-function ConversationRowImpl({
-  conversation,
-  active,
-  isRunning,
-  isUnread,
-  unreadLabel,
-  formatDate,
-  runStatusLabel,
-  deleteLabel,
-  pinLabel,
-  isPinning,
-  onSelect,
-  onTogglePin,
-  onDelete,
-}: {
-  conversation: Conversation;
-  active: boolean;
-  isRunning: boolean;
-  isUnread: boolean;
-  unreadLabel: string;
-  formatDate: (value: string) => string;
-  runStatusLabel: string;
-  deleteLabel: string;
-  pinLabel: string;
-  isPinning: boolean;
-  onSelect: (conversationId: string) => void;
-  onTogglePin: (conversation: Conversation) => void;
-  onDelete: (conversationId: string) => void;
-}) {
-  return (
-    <div className={[
-      'conversation-row',
-      active ? 'is-active' : '',
-      conversation.is_pinned ? 'is-pinned' : '',
-    ].filter(Boolean).join(' ')}>
-      <ListItem
-        className="conversation-row-main"
-        type="button"
-        title={(
-          <span className="conversation-row-title">
-            <span>{conversation.title}</span>
-            {isUnread ? <span className="unread-dot" aria-label={unreadLabel} title={unreadLabel} /> : null}
-          </span>
-        )}
-        subtitle={(
-          <span className={isRunning ? 'conversation-run-status' : undefined}>
-            {isRunning ? <LoaderCircle size={12} aria-hidden="true" /> : null}
-            <span>{isRunning ? runStatusLabel : formatDate(conversation.updated_at)}</span>
-          </span>
-        )}
-        onClick={() => onSelect(conversation.id)}
-      />
-      <IconButton
-        className="conversation-action conversation-pin-action"
-        variant="ghost"
-        type="button"
-        active={conversation.is_pinned}
-        disabled={isPinning}
-        aria-pressed={conversation.is_pinned}
-        onClick={() => onTogglePin(conversation)}
-        label={pinLabel}
-      >
-        <Pin size={14} fill={conversation.is_pinned ? 'currentColor' : 'none'} />
-      </IconButton>
-      <IconButton
-        className="conversation-action conversation-delete-action"
-        variant="ghost"
-        type="button"
-        onClick={() => onDelete(conversation.id)}
-        label={deleteLabel}
-      >
-        <Trash2 size={14} />
-      </IconButton>
-    </div>
-  );
-}
-
-const ConversationRow = memo(ConversationRowImpl);

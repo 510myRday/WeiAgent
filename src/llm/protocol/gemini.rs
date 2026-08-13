@@ -11,7 +11,7 @@ use crate::{
         cache::{PromptCacheMode, effective_capabilities},
         http::StreamLineParser,
         protocol::common::{
-            ProtocolAdapter, SseData, add_query_parameter, encode_path_segment, merge_extra_body,
+            ProtocolAdapter, SseData, add_query_parameter, encode_path_segment, append_role_items, merge_extra_body,
             message_tool_calls, parse_json_object, parse_sse_data_line,
             unwrap_provider_response_item, validate_tool_calls, wrap_provider_response_item,
         },
@@ -245,7 +245,7 @@ fn build_gemini_request(
         if parts.is_empty() {
             continue;
         }
-        append_parts(&mut contents, role, parts);
+        append_role_items(&mut contents, role, "parts", parts);
     }
 
     let mut body = Map::new();
@@ -387,17 +387,6 @@ fn sanitize_gemini_schema(schema: &Value) -> Value {
         }
     }
     Value::Object(out)
-}
-
-fn append_parts(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
-    if let Some(last) = contents.last_mut()
-        && last["role"] == role
-        && let Some(existing) = last["parts"].as_array_mut()
-    {
-        existing.extend(parts);
-        return;
-    }
-    contents.push(json!({"role": role, "parts": parts}));
 }
 
 fn normalize_gemini_tool_result(content: &str) -> Value {

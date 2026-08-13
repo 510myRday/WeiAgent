@@ -463,13 +463,7 @@ fn compact_image_for_llm(bytes: &[u8], name: &str) -> AppResult<(String, String)
 }
 
 fn detect_image_media_type(bytes: &[u8]) -> Option<String> {
-    match image::guess_format(bytes).ok()? {
-        image::ImageFormat::Png => Some("image/png".to_string()),
-        image::ImageFormat::Jpeg => Some("image/jpeg".to_string()),
-        image::ImageFormat::WebP => Some("image/webp".to_string()),
-        image::ImageFormat::Gif => Some("image/gif".to_string()),
-        _ => None,
-    }
+    crate::image_util::detect_image_media_type(bytes).map(str::to_string)
 }
 
 fn validate_attachments(attachments: &[ImageAttachment]) -> AppResult<()> {

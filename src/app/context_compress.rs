@@ -18,6 +18,7 @@ use crate::{
         client::{DynChatClient, RequestOptions},
         types::ToolDefinition,
     },
+    textutil::truncate_preserving_tail as truncate_chars,
 };
 
 const MIN_OUTPUT_RESERVE_TOKENS: u64 = 512;
@@ -866,31 +867,6 @@ fn truncate_message_for_summary(message: &ChatMessage) -> ChatMessage {
     }
     cloned.usage = None;
     cloned
-}
-
-fn truncate_chars(input: &str, max_chars: usize) -> String {
-    let count = input.chars().count();
-    if count <= max_chars {
-        return input.to_string();
-    }
-    if max_chars < 64 {
-        return input.chars().take(max_chars).collect();
-    }
-    let keep_head = max_chars.saturating_mul(70) / 100;
-    let keep_tail = max_chars.saturating_sub(keep_head + 32);
-    let head: String = input.chars().take(keep_head).collect();
-    let tail: String = input
-        .chars()
-        .rev()
-        .take(keep_tail)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    format!(
-        "{head}\n…[truncated {omitted} chars]…\n{tail}",
-        omitted = count - keep_head - keep_tail
-    )
 }
 
 fn trim_messages_to_token_budget(

@@ -7,15 +7,19 @@ import type {
   ModelProviderPayload,
   ProviderType,
 } from '../../../types';
+import {
+  AUTO_SAVE_DELAY_MS,
+  type AutoSaveStatus,
+} from '../../../hooks/useSerializedAutoSave';
 import { protocolPresetByType } from './providerTemplates';
 import type { ProviderTemplate } from './providerTemplates';
 
-export type RuntimeAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+export type RuntimeAutoSaveStatus = AutoSaveStatus;
 export type PendingRuntimeSave = {
   serialized: string;
   payload: AppSettings;
 };
-export type ProviderAutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+export type ProviderAutoSaveStatus = AutoSaveStatus;
 export type PendingProviderSave = {
   providerId: string;
   serialized: string;
@@ -85,12 +89,8 @@ export function providerTemplateToForm(template: ProviderTemplate, name: string)
 
 export const VALID_HOSTS = new Set(['127.0.0.1', '::1']);
 export const VALID_LOG_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error']);
-export const RUNTIME_AUTO_SAVE_DELAY_MS = 600;
-export const RUNTIME_AUTO_SAVE_RETRY_DELAY_MS = 1200;
-export const RUNTIME_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
-export const PROVIDER_AUTO_SAVE_DELAY_MS = 600;
-export const PROVIDER_AUTO_SAVE_RETRY_DELAY_MS = 1200;
-export const PROVIDER_AUTO_SAVE_MAX_RETRY_DELAY_MS = 30000;
+export const RUNTIME_AUTO_SAVE_DELAY_MS = AUTO_SAVE_DELAY_MS;
+export const PROVIDER_AUTO_SAVE_DELAY_MS = AUTO_SAVE_DELAY_MS;
 
 export function parseModels(value: string): string[] {
   return Array.from(new Set(value.split(/\r?\n|,/).map((model) => model.trim()).filter(Boolean)));
@@ -413,3 +413,4 @@ export function clampCompressThreshold(value: number): number {
   if (!Number.isFinite(value)) return 85;
   return Math.min(99, Math.max(1, Math.round(value)));
 }
+

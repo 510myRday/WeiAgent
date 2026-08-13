@@ -12,20 +12,12 @@ pub struct Agent {
     pub model_id: String,
     #[serde(default)]
     pub is_builtin: bool,
-    #[serde(default = "default_avatar_icon")]
+    #[serde(default = "crate::domain::avatar::default_avatar_icon")]
     pub avatar_icon: String,
-    #[serde(default = "default_avatar_color")]
+    #[serde(default = "crate::domain::avatar::default_avatar_color")]
     pub avatar_color: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-}
-
-fn default_avatar_icon() -> String {
-    "bot".to_string()
-}
-
-fn default_avatar_color() -> String {
-    "#22c55e".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

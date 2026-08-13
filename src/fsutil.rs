@@ -5,6 +5,15 @@ use uuid::Uuid;
 
 use crate::error::AppResult;
 
+/// User home directory from USERPROFILE/HOME. Shared by config, workspace, and MCP expansion.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
+
 /// Write `content` to `path` via a synced same-directory temp file and atomic replace.
 pub async fn write_atomic(path: &Path, content: impl AsRef<[u8]>) -> AppResult<()> {
     let content = content.as_ref();

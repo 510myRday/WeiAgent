@@ -1,4 +1,4 @@
-import type { WebSearchKeyCheckResult } from '../../../api';
+import type { WebSearchKeyCheckResult } from '../../../toolTypes';
 import type { KeyCheckProgress } from './types';
 
 /**

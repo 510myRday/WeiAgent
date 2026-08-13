@@ -504,25 +504,6 @@
   display: none;
 }
 
-.provider-image-model-note {
-  display: grid;
-  align-content: center;
-  box-sizing: border-box;
-  min-height: var(--provider-model-editor-height);
-  gap: 10px;
-  padding: 20px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-xs);
-  background: var(--surface-pane);
-}
-
-.provider-image-model-note p {
-  margin: 0;
-  color: var(--color-muted);
-  font-size: var(--font-size-caption);
-  line-height: 1.6;
-}
-
 .image-model-config__label {
   gap: 8px;
 }
@@ -889,7 +870,6 @@
   appearance: none;
 }
 
-
 .model-config-empty {
   display: grid;
   min-height: 236px;
@@ -1030,13 +1010,6 @@
   text-decoration: underline;
 }
 
-.llm-log-toggle-row {
-  padding: 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--surface-subtle);
-}
-
 @media (max-width: 1500px) {
   .provider-model-workspace {
     grid-template-columns: 1fr;
@@ -1175,7 +1148,6 @@
   }
 
 }
-
 
 .settings-panel .config-main {
   display: flex;

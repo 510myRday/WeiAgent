@@ -1,6 +1,7 @@
 import { useCallback, useSyncExternalStore } from 'react';
 
-import { listToolProcesses, type ToolProcessInfo } from '../api';
+import { listToolProcesses } from '../api';
+import type { ToolProcessInfo } from '../toolTypes';
 
 type ToolProcessSnapshot = {
   process: ToolProcessInfo | null;

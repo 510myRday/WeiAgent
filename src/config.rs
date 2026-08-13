@@ -104,22 +104,12 @@ fn platform_user_data_dir() -> AppResult<PathBuf> {
 }
 
 fn user_home_dir() -> AppResult<PathBuf> {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .ok_or_else(|| {
-            AppError::BadRequest(
-                "user home directory is unset; set WEIAGENT_DATA_DIR or WEIAGENT_PORTABLE=1"
-                    .to_string(),
-            )
-        })?;
-    let home = PathBuf::from(home);
-    if home.as_os_str().is_empty() {
-        return Err(AppError::BadRequest(
-            "user home directory is empty; set WEIAGENT_DATA_DIR or WEIAGENT_PORTABLE=1"
+    crate::fsutil::home_dir().ok_or_else(|| {
+        AppError::BadRequest(
+            "user home directory is unset; set WEIAGENT_DATA_DIR or WEIAGENT_PORTABLE=1"
                 .to_string(),
-        ));
-    }
-    Ok(home)
+        )
+    })
 }
 
 pub async fn load_or_init_settings(path: &std::path::Path) -> AppResult<AppSettings> {
@@ -171,20 +161,8 @@ pub fn validate_settings(settings: &AppSettings) -> AppResult<()> {
                 .to_string(),
         ));
     }
-    if settings.avatar_icon.trim().is_empty() {
-        return Err(AppError::BadRequest(
-            "avatar_icon cannot be empty".to_string(),
-        ));
-    }
-    let color = settings.avatar_color.trim();
-    if color.len() != 7
-        || !color.starts_with('#')
-        || !color.chars().skip(1).all(|ch| ch.is_ascii_hexdigit())
-    {
-        return Err(AppError::BadRequest(
-            "avatar_color must be a hex color like #22c55e".to_string(),
-        ));
-    }
+    crate::domain::avatar::normalize_avatar_icon(Some(&settings.avatar_icon))?;
+    crate::domain::avatar::normalize_avatar_color(Some(&settings.avatar_color))?;
     let level = settings.log_level.trim().to_ascii_lowercase();
     match level.as_str() {
         "trace" | "debug" | "info" | "warn" | "error" => {}

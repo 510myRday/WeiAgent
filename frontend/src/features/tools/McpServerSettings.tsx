@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ArrowLeft, CheckCheck, CircleCheck, CircleOff, Clock3, ExternalLink, LoaderCircle, LogIn, Pencil, RefreshCw, Search, ShieldCheck, Trash2, XCircle } from 'lucide-react';
 
-import type { McpAuthState, McpServer } from '../../api';
+import type { McpAuthState, McpServer } from '../../toolTypes';
 import { updateMcpServerEnabled, updateMcpToolEnabled, updateMcpToolsEnabled } from '../../api';
 import { useI18n } from '../../i18n';
 import { Button, IconButton, PaneHeader, useFeedback } from '../../components/ui';

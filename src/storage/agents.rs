@@ -1,7 +1,9 @@
 use chrono::Utc;
+use rusqlite::{Connection, Transaction, params};
 use tokio::fs;
 use uuid::Uuid;
 
+use super::providers;
 use crate::{
     domain::{
         Agent, AgentProfileResponse, AgentResponse, AgentWorkspace, CreateAgentRequest,
@@ -9,7 +11,6 @@ use crate::{
     },
     error::{AppError, AppResult},
     storage::{
-        db,
         store::Store,
         validation::{
             normalize_avatar_color, normalize_avatar_icon, validate_agent_text,
@@ -41,7 +42,7 @@ impl Store {
         let _workspace_guard = self.workspace_lock.lock().await;
         let providers = self
             .database
-            .call(|connection| db::read_providers_conn(connection))
+            .call(|connection| providers::read_providers_conn(connection))
             .await?;
         validate_provider_model(&providers, request.model_provider_id, &request.model_id)?;
 
@@ -75,7 +76,7 @@ impl Store {
         let _workspace_guard = self.workspace_lock.lock().await;
         let providers = self
             .database
-            .call(|connection| db::read_providers_conn(connection))
+            .call(|connection| providers::read_providers_conn(connection))
             .await?;
         let mut agents = self.read_agents_unlocked().await?;
         let updated = apply_agent_update(&mut agents, &providers, id, request)?;
@@ -92,7 +93,7 @@ impl Store {
         let _workspace_guard = self.workspace_lock.lock().await;
         let providers = self
             .database
-            .call(|connection| db::read_providers_conn(connection))
+            .call(|connection| providers::read_providers_conn(connection))
             .await?;
         let mut agents = self.read_agents_unlocked().await?;
         let original_workspace = self.read_agent_workspace_unlocked(id).await?;
@@ -261,4 +262,150 @@ fn apply_agent_update(
     agent.avatar_color = next_avatar_color;
     agent.updated_at = Utc::now();
     Ok(agent.clone())
+}
+
+
+pub(super) const AGENTS_SCHEMA_VERSION: i64 = 19;
+
+const AGENTS_SCHEMA_SQL: &str = "
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    model_provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    is_builtin INTEGER NOT NULL DEFAULT 0 CHECK (is_builtin IN (0, 1)),
+    avatar_icon TEXT NOT NULL,
+    avatar_color TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name COLLATE NOCASE);
+";
+
+pub(super) fn migrate_agents(conn: &mut Connection) -> AppResult<()> {
+    let applied = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_schema_migrations WHERE version = ?1)",
+        [AGENTS_SCHEMA_VERSION],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if applied {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    tx.execute_batch(AGENTS_SCHEMA_SQL)?;
+    tx.execute(
+        "INSERT INTO app_schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+        params![
+            AGENTS_SCHEMA_VERSION,
+            "agents_table_v19",
+            crate::storage::sql_util::now_rfc3339()
+        ],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn read_agents_conn(conn: &Connection) -> AppResult<Vec<Agent>> {
+    let mut statement = conn.prepare(
+        "SELECT id, name, description, model_provider_id, model_id, is_builtin,
+                avatar_icon, avatar_color, created_at, updated_at
+         FROM agents
+         ORDER BY created_at, id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
+        ))
+    })?;
+    let mut agents = Vec::new();
+    for row in rows {
+        let (
+            id,
+            name,
+            description,
+            model_provider_id,
+            model_id,
+            is_builtin,
+            avatar_icon,
+            avatar_color,
+            created_at,
+            updated_at,
+        ) = row?;
+        agents.push(Agent {
+            id: crate::storage::sql_util::parse_uuid(&id, "agents.id")?,
+            name,
+            description,
+            model_provider_id: crate::storage::sql_util::parse_uuid(
+                &model_provider_id,
+                "agents.model_provider_id",
+            )?,
+            model_id,
+            is_builtin: crate::storage::sql_util::i64_to_bool(is_builtin, "agents.is_builtin")?,
+            avatar_icon,
+            avatar_color,
+            created_at: crate::storage::sql_util::parse_datetime(&created_at, "agents.created_at")?,
+            updated_at: crate::storage::sql_util::parse_datetime(&updated_at, "agents.updated_at")?,
+        });
+    }
+    Ok(agents)
+}
+
+fn upsert_agent_tx(tx: &Transaction<'_>, agent: &Agent) -> AppResult<()> {
+    tx.execute(
+        "INSERT INTO agents (
+            id, name, description, model_provider_id, model_id, is_builtin,
+            avatar_icon, avatar_color, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            description = excluded.description,
+            model_provider_id = excluded.model_provider_id,
+            model_id = excluded.model_id,
+            is_builtin = excluded.is_builtin,
+            avatar_icon = excluded.avatar_icon,
+            avatar_color = excluded.avatar_color,
+            updated_at = excluded.updated_at",
+        params![
+            agent.id.to_string(),
+            agent.name,
+            agent.description,
+            agent.model_provider_id.to_string(),
+            agent.model_id,
+            crate::storage::sql_util::bool_to_i64(agent.is_builtin),
+            agent.avatar_icon,
+            agent.avatar_color,
+            agent.created_at.to_rfc3339(),
+            agent.updated_at.to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+pub(super) fn write_agents_conn(conn: &mut Connection, agents: &[Agent]) -> AppResult<()> {
+    let tx = conn.transaction()?;
+    let keep = agents.iter().map(|agent| agent.id.to_string()).collect::<Vec<_>>();
+    if keep.is_empty() {
+        tx.execute("DELETE FROM agents", [])?;
+    } else {
+        let placeholders = keep.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        tx.execute(
+            &format!("DELETE FROM agents WHERE id NOT IN ({placeholders})"),
+            rusqlite::params_from_iter(keep.iter()),
+        )?;
+    }
+    for agent in agents {
+        upsert_agent_tx(&tx, agent)?;
+    }
+    tx.commit()?;
+    Ok(())
 }

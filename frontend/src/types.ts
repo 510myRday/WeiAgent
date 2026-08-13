@@ -448,6 +448,8 @@ export type StreamEvent =
 
 export type NavKey = 'chat' | 'monitor' | 'agents' | 'tools' | 'skills' | 'settings';
 
+export type SettingsSection = 'runtime' | 'agent' | 'providers' | 'proxies';
+
 export type MobileView = 'list' | 'main';
 
 export type LlmLogEntry = {
@@ -520,3 +522,7 @@ export type LlmLogListPage = {
   kind_summary?: LlmLogKindSummary;
 };
 
+export {
+  MAX_WEB_SEARCH_KEYS_PER_SOURCE,
+} from './toolTypes';
+export type * from './toolTypes';

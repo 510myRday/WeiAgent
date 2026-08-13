@@ -7,7 +7,7 @@
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use super::sql_util::{now_rfc3339, parse_datetime, parse_uuid};
+use super::sql_util::{column_exists, now_rfc3339, parse_datetime, parse_uuid};
 use uuid::Uuid;
 
 use crate::{
@@ -141,12 +141,7 @@ pub(super) fn migrate_conversations(conn: &mut Connection) -> AppResult<()> {
     )?;
     if !responses_items_applied {
         let tx = conn.transaction()?;
-        let has_column = tx
-            .prepare("PRAGMA table_info(conversation_messages)")?
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<Result<Vec<_>, _>>()?
-            .iter()
-            .any(|name| name == "openai_response_items_json");
+        let has_column = column_exists(&tx, "conversation_messages", "openai_response_items_json")?;
         if !has_column {
             tx.execute(
                 "ALTER TABLE conversation_messages

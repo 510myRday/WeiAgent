@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { KeyRound, LoaderCircle, Plus } from 'lucide-react';
 
-import type { WebSearchSourceConfig } from '../../../api';
+import type { WebSearchSourceConfig } from '../../../toolTypes';
 import { useI18n } from '../../../i18n';
 import { Button, Dialog } from '../../../components/ui';
 import { providerLabel } from './utils';

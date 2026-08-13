@@ -9,8 +9,7 @@ import type {
   WebSearchProviderKind,
   WebSearchSourceConfig,
   WebSearchToolConfig,
-} from '../../../api';
-import type { IpProxy, IpProxyProtocol } from '../../../types';
+} from '../../../toolTypes';
 import { PRESERVE_KEYS_MARKER } from './types';
 
 export function defaultWebSearch(): WebSearchToolConfig {
@@ -179,6 +178,7 @@ export function hydrateKeyStatuses(sources: WebSearchSourceConfig[]): Record<str
         byIndex[keyIndex] = {
           key_index: keyIndex,
           key_hint: source.api_keys[keyIndex] ?? '',
+          key_fingerprint: source.api_key_fingerprints?.[keyIndex],
           status: status.status,
           detail: status.detail,
           latency_ms: 0,
@@ -272,21 +272,4 @@ export function summarizeKeyStatuses(
   };
 }
 
-export function displayProxyUrl(value: string) {
-  try {
-    const url = new URL(value);
-    if (url.password) url.password = '****';
-    return url.toString().replace(/\/$/, '');
-  } catch {
-    return value;
-  }
-}
-
-export function formatProxyLocation(proxy: IpProxy) {
-  const location = [proxy.country, proxy.region, proxy.city].filter(Boolean).join(' · ');
-  return location || proxy.ip_address || '--';
-}
-
-export function proxyProtocolLabel(protocol: IpProxyProtocol) {
-  return protocol === 'socks5' ? 'SOCKS5' : protocol.toUpperCase();
-}
+export { displayProxyUrl, formatProxyLocation, proxyProtocolLabel } from '../../../utils/proxy';

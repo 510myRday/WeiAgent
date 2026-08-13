@@ -9,22 +9,7 @@ use crate::tools::web_search::types::{ProviderError, sanitize_error_message};
 /// Upper bound applied to extract/scrape response bodies before parsing.
 pub const MAX_EXTRACT_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
-/// Truncates to at most `max` characters, appending `…` when trimmed.
-pub fn truncate(value: &str, max: usize) -> String {
-    truncate_with(value, max, "…")
-}
-
-/// Truncates to at most `max` characters, appending `ellipsis` when trimmed.
-/// Firecrawl historically uses an ASCII `...` suffix; keep that behavior.
-pub fn truncate_with(value: &str, max: usize, ellipsis: &str) -> String {
-    let mut chars = value.chars();
-    let head: String = chars.by_ref().take(max).collect();
-    if chars.next().is_some() {
-        format!("{head}{ellipsis}")
-    } else {
-        head
-    }
-}
+pub use crate::textutil::{truncate_chars as truncate, truncate_with};
 
 /// Returns the first non-empty trimmed string value found under `keys`.
 pub fn string_field<'a>(

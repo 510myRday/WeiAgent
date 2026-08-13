@@ -257,17 +257,14 @@
 }
 
 .list-stack,
-.agent-list,
-.settings-section-list {
+.agent-list {
   gap: 3px;
   padding: 8px;
   overscroll-behavior: contain;
 }
 
 .list-item,
-.list-row,
-.agent-item,
-.settings-section-item {
+.agent-item {
   min-height: var(--list-row-height);
   padding: 9px 10px;
   border-radius: var(--radius-sm);
@@ -276,17 +273,13 @@
 
 .list-item:hover,
 .list-item:focus-visible,
-.list-row:hover,
-.agent-item:hover,
-.settings-section-item:hover {
+.agent-item:hover {
   border-color: var(--border-subtle);
   background: var(--surface-hover);
 }
 
 .list-item.is-active,
-.list-row.active,
-.agent-item.active,
-.settings-section-item.active {
+.agent-item.active {
   border-color: var(--color-primary-border);
   background: var(--surface-active);
 }
@@ -429,7 +422,6 @@
 
 .avatar-badge,
 .row-avatar,
-.brand-mark,
 .chat-avatar {
   border-width: 1px;
   border-radius: 12px;
@@ -452,8 +444,7 @@
   background: var(--surface-hover);
 }
 
-.avatar-popover-panel,
-.avatar-picker {
+.avatar-popover-panel {
   top: 52px;
   width: 190px;
   border-color: var(--border-strong);
@@ -469,8 +460,7 @@
   box-shadow: var(--shadow-xs);
 }
 
-.search-input,
-.search-box {
+.search-input {
   min-height: 40px;
   margin: 10px 12px 7px;
   border-color: var(--border-subtle);
@@ -478,15 +468,13 @@
   background: var(--surface-subtle);
 }
 
-.search-input:focus-within,
-.search-box:focus-within {
+.search-input:focus-within {
   border-color: var(--color-primary-border);
   background: var(--surface-pane);
   box-shadow: 0 0 0 3px var(--focus-ring-soft);
 }
 
-.search-input input,
-.search-box input {
+.search-input input {
   min-height: 38px;
   box-shadow: none;
 }

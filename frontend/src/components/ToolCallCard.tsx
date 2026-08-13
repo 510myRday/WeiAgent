@@ -7,15 +7,23 @@ import {
   Terminal,
 } from 'lucide-react';
 
+import type { ToolProcessInfo } from '../toolTypes';
 import type { ToolArguments, ToolCallStatus, ToolResultData } from '../types';
 import { useI18n } from '../i18n';
-import { useClipboard, useToolProcess } from '../hooks';
+import { useClipboard } from '../hooks';
 import { Dialog, IconButton } from './ui';
 
 /**
  * Embedded body of a tool call, always rendered inside ToolDisclosure which
  * owns the header, approval buttons, and process stop actions.
  */
+export type ToolProcessSnapshot = {
+  process: ToolProcessInfo | null;
+  error: string;
+  loading: boolean;
+  notFound: boolean;
+};
+
 interface ToolCallCardProps {
   agentId: string;
   arguments: ToolArguments;
@@ -23,6 +31,7 @@ interface ToolCallCardProps {
   phase?: 'generating_arguments' | 'executing';
   status: ToolCallStatus;
   result?: ToolResultData;
+  processSnapshot?: ToolProcessSnapshot;
   onApprove?: (decision: 'approve' | 'reject' | 'always_approve') => Promise<void> | void;
 }
 
@@ -239,22 +248,22 @@ function TerminalOutputs({
 }
 
 export function ToolCallCard({
-  agentId,
+  agentId: _agentId,
   arguments: args,
   argumentsText,
   phase,
   status,
   result,
+  processSnapshot,
   onApprove,
 }: ToolCallCardProps) {
   const { t } = useI18n();
   const processId = result?.process_id;
-  const processSnapshot = useToolProcess(processId, agentId);
-  const process = processSnapshot.process;
+  const process = processSnapshot?.process ?? null;
 
-  const processError = processSnapshot.notFound
+  const processError = processSnapshot?.notFound
     ? t('toolCard.processUnavailable')
-    : processSnapshot.error || '';
+    : processSnapshot?.error || '';
 
   if (status === 'pending_approval' && onApprove) {
     return (
@@ -275,7 +284,7 @@ export function ToolCallCard({
     // Only treat as running after the process manager confirms it. After restart the
     // process_id remains in chat history but the in-memory process is gone.
     const missing = !process && Boolean(processError);
-    const loading = processSnapshot.loading || (!process && !processError);
+    const loading = Boolean(processSnapshot?.loading) || (!process && !processError);
     const effectiveStatus = process?.status ?? (missing ? 'not_found' : 'running');
     const running = process?.status === 'running';
     const failed = effectiveStatus === 'failed' || (process?.exit_code !== undefined && process.exit_code !== 0);

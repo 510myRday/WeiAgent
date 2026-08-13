@@ -2,7 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
-import type { McpAgentSettings } from '../../api';
+import type { McpAgentSettings } from '../../toolTypes';
 import { readAgentMcpConfig, updateAgentMcpConfig } from '../../api';
 import { FeedbackProvider } from '../../components/ui';
 import { I18nProvider } from '../../i18n';

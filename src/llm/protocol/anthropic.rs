@@ -10,7 +10,7 @@ use crate::{
         cache::{PromptCacheMode, build_context, effective_capabilities},
         http::StreamLineParser,
         protocol::common::{
-            ProtocolAdapter, SseData, add_query_parameter, default_models, merge_extra_body,
+            ProtocolAdapter, SseData, add_query_parameter, default_models, append_role_items, merge_extra_body,
             message_tool_calls, parse_json_object, parse_sse_data_line,
             unwrap_provider_response_item, validate_tool_calls, wrap_provider_response_item,
         },
@@ -225,7 +225,7 @@ fn build_anthropic_request(
         if blocks.is_empty() {
             continue;
         }
-        append_content_blocks(&mut anthropic_messages, role, blocks);
+        append_role_items(&mut anthropic_messages, role, "content", blocks);
     }
 
     let mut body = Map::new();
@@ -342,17 +342,6 @@ fn context_1m_enabled(provider: &ModelProvider, model_id: &str) -> bool {
 fn supports_adaptive_thinking(model_id: &str) -> bool {
     let normalized = model_id.to_ascii_lowercase();
     normalized.contains("4-6") || normalized.contains("4.6")
-}
-
-fn append_content_blocks(messages: &mut Vec<Value>, role: &str, blocks: Vec<Value>) {
-    if let Some(last) = messages.last_mut()
-        && last["role"] == role
-        && let Some(content) = last["content"].as_array_mut()
-    {
-        content.extend(blocks);
-        return;
-    }
-    messages.push(json!({"role": role, "content": blocks}));
 }
 
 fn parse_anthropic_output(value: &Value) -> AppResult<ChatCompletionOutput> {

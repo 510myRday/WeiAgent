@@ -47,14 +47,13 @@ impl EnvironmentRuntimeManager {
         } else {
             std::env::current_dir()?.join(data_dir)
         };
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(15 * 60))
-            .user_agent(format!("WeiAgent/{}", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|error| {
-                AppError::Process(format!("failed to build runtime client: {error}"))
-            })?;
+        let client = crate::http_client::build_reqwest_client(
+            crate::http_client::HttpClientConfig::new()
+                .connect_timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(15 * 60))
+                .user_agent(format!("WeiAgent/{}", env!("CARGO_PKG_VERSION"))),
+        )
+        .map_err(|error| AppError::Process(format!("failed to build runtime client: {error}")))?;
         Ok(Self {
             runtimes_root: data_dir.join("runtimes"),
             client,
