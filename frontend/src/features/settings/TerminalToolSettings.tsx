@@ -20,6 +20,7 @@ import {
 import type { Agent } from '../../types';
 import { useI18n } from '../../i18n';
 import { userErrorMessage } from '../../utils/userError';
+import { displayPath } from '../../utils/displayPath';
 import { updateToolProcessCache, usePageVisibility, useSerializedAutoSave } from '../../hooks';
 import { AutoSaveIndicator, Button, IconButton, InheritToggle, useFeedback } from '../../components/ui';
 import { PermissionModeControl, type PermissionMode } from './PermissionModeControl';
@@ -940,7 +941,7 @@ export function TerminalToolSettings({
               {terminal.allowed_cwd_roots.map((value, index) => (
                 <li key={`${value}-${index}`} className="allowed-root-item">
                   <Folder size={16} aria-hidden="true" className="allowed-root-icon" />
-                  <code title={value}>{value}</code>
+                  <code title={displayPath(value)}>{displayPath(value)}</code>
                   <IconButton
                     type="button"
                     variant="ghost"

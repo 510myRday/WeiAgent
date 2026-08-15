@@ -1236,7 +1236,7 @@ pub async fn execute_terminal(
                 conversation_id: request.conversation_id,
                 tool_call_id: request.tool_call_id.clone(),
                 command: request.command.clone(),
-                cwd: workspace.cwd.to_string_lossy().to_string(),
+                cwd: crate::fsutil::display_path(&workspace.cwd),
                 runtime: runtime.clone(),
                 tty,
                 detached: request.background.unwrap_or(false),
@@ -1386,8 +1386,7 @@ fn resolve_terminal_workspace(
         allow_outside_workspace,
         workspace::WorkspaceResolveOptions {
             expand_home: false,
-            blocked_message:
-                "Filesystem roots and the entire user home directory cannot be terminal workspace roots",
+            blocked_message: "Filesystem roots and the entire user home directory cannot be terminal workspace roots",
         },
     )
 }
@@ -2024,11 +2023,13 @@ mod tests {
         let expected_default = std::fs::canonicalize(default_workspace.path()).unwrap();
         let expected_configured = std::fs::canonicalize(configured_root.path()).unwrap();
 
-        let implicit = resolve_terminal_workspace(None, &config, default_workspace.path(), false).unwrap();
+        let implicit =
+            resolve_terminal_workspace(None, &config, default_workspace.path(), false).unwrap();
         assert_eq!(implicit.cwd, expected_default);
 
         let relative =
-            resolve_terminal_workspace(Some("."), &config, default_workspace.path(), false).unwrap();
+            resolve_terminal_workspace(Some("."), &config, default_workspace.path(), false)
+                .unwrap();
         assert_eq!(relative.cwd, expected_default);
 
         let explicit = resolve_terminal_workspace(

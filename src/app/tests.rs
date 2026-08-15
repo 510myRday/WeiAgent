@@ -145,9 +145,7 @@ async fn test_app() -> (Router, Uuid, Uuid, Uuid) {
         llm_registry: Arc::new(MockLlmRegistry {
             client: Arc::new(MockChatClient),
         }),
-        llm_logger: Arc::new(
-            LlmLogger::new(tempfile::tempdir().unwrap().path(), false).unwrap(),
-        ),
+        llm_logger: Arc::new(LlmLogger::new(tempfile::tempdir().unwrap().path(), false).unwrap()),
         terminal_manager: TerminalManager::new_for_tests(),
         approval_manager: Arc::new(ApprovalManager::new()),
         environment_runtime,
@@ -501,8 +499,8 @@ impl ChatClient for ScriptedChatClient {
         tools: Option<Vec<ToolDefinition>>,
     ) -> AppResult<ChatCompletionOutput> {
         if let Some(list) = &tools {
-            // Three terminal tools plus three web-search tools.
-            assert_eq!(list.len(), 6);
+            // Three terminal tools, three web-search tools, and two Skill tools.
+            assert_eq!(list.len(), 8);
         }
         self.complete_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -679,6 +677,68 @@ async fn existing_conversation_reads_latest_agent_tools_config_on_next_run() {
     .await
     .unwrap();
     assert!(second.tools_config.terminal.enabled);
+}
+
+#[tokio::test]
+async fn skill_bodies_stay_out_of_default_system_prompt() {
+    let (_, state, conversation_id, _, _) = scripted_test_app(Vec::new()).await;
+    let prepared = crate::app::chat::prepare_chat(
+        &state,
+        conversation_id,
+        "inspect the service",
+        &[],
+        crate::domain::ThinkingLevel::Off,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        prepared
+            .skill_snapshot
+            .iter()
+            .any(|skill| skill.name == "weiagentcli" && skill.is_builtin)
+    );
+    assert!(prepared.system_prompt.contains("<available_skills>"));
+    assert!(prepared.system_prompt.contains("weiagentcli"));
+    assert!(prepared.system_prompt.contains("WeiAgent Service Context"));
+    assert!(
+        !prepared
+            .system_prompt
+            .contains("# WeiAgent CLI Operating Guide")
+    );
+    assert!(!prepared.system_prompt.contains("weiagent agent list"));
+    assert!(
+        !prepared
+            .system_prompt
+            .contains("WeiAgent Service Operations (Preloaded Skill)")
+    );
+}
+
+#[tokio::test]
+async fn explicit_skill_command_loads_body_for_current_task_only() {
+    let (_, state, conversation_id, _, _) = scripted_test_app(Vec::new()).await;
+    let prepared = crate::app::chat::prepare_chat(
+        &state,
+        conversation_id,
+        "/weiagentcli list agents",
+        &[],
+        crate::domain::ThinkingLevel::Off,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        !prepared
+            .system_prompt
+            .contains("# WeiAgent CLI Operating Guide")
+    );
+    assert!(prepared.messages_for_llm.iter().any(|message| {
+        message.role == crate::domain::ChatRole::User
+            && message.content.contains("# WeiAgent CLI Operating Guide")
+            && message.content.contains("Current task:\nlist agents")
+    }));
 }
 
 fn delayed_echo_command() -> String {
@@ -1349,11 +1409,12 @@ impl ChatClient for StreamingToolClient {
         _options: crate::llm::client::RequestOptions,
         tools: Option<Vec<ToolDefinition>>,
     ) -> AppResult<ChatStream> {
-        // Three terminal tools plus three web-search tools.
-        assert_eq!(tools.as_ref().map(Vec::len), Some(6));
-        let events = self.streams.lock().unwrap().pop_front().ok_or_else(|| {
-            crate::error::AppError::Llm("stream script exhausted".to_string())
-        })?;
+        // Three terminal tools, three web-search tools, and two Skill tools.
+        assert_eq!(tools.as_ref().map(Vec::len), Some(8));
+        let events =
+            self.streams.lock().unwrap().pop_front().ok_or_else(|| {
+                crate::error::AppError::Llm("stream script exhausted".to_string())
+            })?;
         Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
     }
 

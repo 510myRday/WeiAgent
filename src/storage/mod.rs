@@ -19,7 +19,7 @@ mod workspaces;
 
 pub use db::Database;
 pub use llm_logs::LlmLogger;
-pub use skills::SkillGroupRecord;
+pub use skills::{BUILTIN_SKILL_GROUP_ID, BUILTIN_WEIAGENT_CLI_SKILL_NAME, SkillGroupRecord};
 pub use store::Store;
 
 pub(super) const BUILTIN_CEO_ICON: &str = "crown";

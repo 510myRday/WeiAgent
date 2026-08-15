@@ -68,7 +68,7 @@ impl McpAuthRuntime {
             last_updated_at: None,
             last_error: None,
             browser_opened: false,
-            session_dir: Some(self.session_dir(server_id).display().to_string()),
+            session_dir: Some(crate::fsutil::display_path(&self.session_dir(server_id))),
         }
     }
 
@@ -538,7 +538,10 @@ impl McpAuthRuntime {
         }
     }
 
-    pub(super) fn managed_env(&self, server: &McpServer) -> std::collections::BTreeMap<String, String> {
+    pub(super) fn managed_env(
+        &self,
+        server: &McpServer,
+    ) -> std::collections::BTreeMap<String, String> {
         let McpTransport::Stdio {
             env,
             inherit_env,

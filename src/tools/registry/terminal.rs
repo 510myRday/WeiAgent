@@ -4,16 +4,16 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
-    AgentTool, ToolExecutionContext, build_execute_terminal_description,
-    frozen_terminal_config, normalize_optional_cwd, run_with_approval, terminal_request,
-    tool_definition, unsupported_host_shell_syntax,
+    AgentTool, ToolExecutionContext, build_execute_terminal_description, frozen_terminal_config,
+    normalize_optional_cwd, run_with_approval, terminal_request, tool_definition,
+    unsupported_host_shell_syntax,
 };
 use crate::{
     domain::{AgentToolsConfig, ToolResult},
     llm::types::ToolDefinition,
     tools::terminal::{
-        MAX_SESSION_WAIT_MS, SandboxPermissions, TerminalSessionAction,
-        execute_terminal, process_read_to_result,
+        MAX_SESSION_WAIT_MS, SandboxPermissions, TerminalSessionAction, execute_terminal,
+        process_read_to_result,
     },
 };
 pub(super) struct ExecuteTerminalTool;
@@ -153,7 +153,16 @@ impl AgentTool for ExecuteTerminalTool {
             };
         }
         let result = execute_terminal(
-            &terminal_request(&command, &cwd, timeout_ms, background, tty, sandbox_permissions, false, &context),
+            &terminal_request(
+                &command,
+                &cwd,
+                timeout_ms,
+                background,
+                tty,
+                sandbox_permissions,
+                false,
+                &context,
+            ),
             &terminal_config,
             &context.store.terminal_workspace_dir,
             &context.terminal_manager,
@@ -164,9 +173,11 @@ impl AgentTool for ExecuteTerminalTool {
             return result;
         };
         let approval_id = approval_id.clone();
-        let approval_cwd = cwd
-            .clone()
-            .or_else(|| Some(context.store.terminal_workspace_dir.display().to_string()));
+        let approval_cwd = cwd.clone().or_else(|| {
+            Some(crate::fsutil::display_path(
+                &context.store.terminal_workspace_dir,
+            ))
+        });
         run_with_approval(
             &context,
             approval_id,
@@ -182,7 +193,16 @@ impl AgentTool for ExecuteTerminalTool {
             cwd.as_deref(),
             async |terminal_config| {
                 execute_terminal(
-                    &terminal_request(&command, &cwd, timeout_ms, background, tty, sandbox_permissions, true, &context),
+                    &terminal_request(
+                        &command,
+                        &cwd,
+                        timeout_ms,
+                        background,
+                        tty,
+                        sandbox_permissions,
+                        true,
+                        &context,
+                    ),
                     &terminal_config,
                     &context.store.terminal_workspace_dir,
                     &context.terminal_manager,

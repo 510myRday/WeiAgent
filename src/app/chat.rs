@@ -11,10 +11,13 @@ use crate::{
         ImageSource, ModelProvider, SkillManifest, ThinkingLevel,
     },
     error::{AppError, AppResult},
+    fsutil,
+    storage::BUILTIN_WEIAGENT_CLI_SKILL_NAME,
 };
 
 const MAX_USER_MESSAGE_BYTES: usize = 100 * 1024;
 const MAX_SYSTEM_PROMPT_BYTES: usize = 512 * 1024;
+const MAX_SKILL_DESCRIPTION_CHARS: usize = 512;
 const MAX_IMAGE_ATTACHMENTS: usize = 8;
 const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES: usize = 32 * 1024 * 1024;
@@ -95,7 +98,7 @@ pub async fn prepare_chat(
     for skill in &skill_settings.effective {
         let root = std::path::Path::new(&skill.root_dir);
         if let Ok(canonical) = std::fs::canonicalize(root) {
-            let value = canonical.to_string_lossy().to_string();
+            let value = fsutil::display_path(&canonical);
             if !tools_config
                 .terminal
                 .allowed_cwd_roots
@@ -111,18 +114,30 @@ pub async fn prepare_chat(
         .build_agent_system_prompt(&agent, &tools_config)
         .await?;
     if !skill_settings.effective.is_empty() {
-        system_prompt.push_str("\n\n## Available Skills\n\n");
-        system_prompt.push_str("Use skills_list and skill_view when a Skill is relevant.\n\n");
+        system_prompt.push_str("\n\n## Available Skills (catalog)\n\n");
+        system_prompt.push_str(
+            "The entries below are Skill metadata, not loaded Skill instructions. When a Skill is relevant, use skills_list or skill_view to load its instructions for the current task.\n\n<available_skills>\n",
+        );
         for skill in &skill_settings.effective {
+            let description = compact_skill_description(&skill.description);
             if let Some(group) = &skill.group {
-                system_prompt.push_str(&format!(
-                    "- {} [{}]: {}\n",
-                    skill.name, group, skill.description
-                ));
+                system_prompt.push_str(&format!("- {} [{}]: {}\n", skill.name, group, description));
             } else {
-                system_prompt.push_str(&format!("- {}: {}\n", skill.name, skill.description));
+                system_prompt.push_str(&format!("- {}: {}\n", skill.name, description));
             }
         }
+        system_prompt.push_str("</available_skills>\n");
+    }
+    if skill_settings
+        .effective
+        .iter()
+        .any(|skill| skill.name == BUILTIN_WEIAGENT_CLI_SKILL_NAME && skill.is_builtin)
+    {
+        system_prompt.push_str("\n\n## WeiAgent Service Context\n\n");
+        let service_context = format!(
+            "The current runtime is the `weiagent` intelligent agent service. When the user describes an operation without naming another target, interpret it as an operation on this running service. For detailed commands and workflows, load the `{BUILTIN_WEIAGENT_CLI_SKILL_NAME}` Skill with skill_view when it is relevant; its full body is task-specific guidance, not a permanent system instruction."
+        );
+        system_prompt.push_str(&service_context);
     }
     if system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
         return Err(AppError::BadRequest(format!(
@@ -246,6 +261,20 @@ fn parse_skill_command(content: &str) -> Option<(String, String)> {
     }
     let task = rest[boundary..].trim().to_string();
     Some((name, task))
+}
+
+fn compact_skill_description(description: &str) -> String {
+    let compact = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = compact.chars();
+    let truncated = chars
+        .by_ref()
+        .take(MAX_SKILL_DESCRIPTION_CHARS)
+        .collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated} [truncated]")
+    } else {
+        truncated
+    }
 }
 
 async fn normalize_history_for_llm(
@@ -377,6 +406,25 @@ mod skill_command_tests {
             parse_skill_command("/rust-reviewer check"),
             Some(("rust-reviewer".to_string(), "check".to_string()))
         );
+    }
+}
+
+#[cfg(test)]
+mod skill_prompt_tests {
+    use super::compact_skill_description;
+
+    #[test]
+    fn compacts_and_bounds_skill_descriptions() {
+        let description = "first line\nsecond line";
+        assert_eq!(
+            compact_skill_description(description),
+            "first line second line"
+        );
+
+        let long = "x".repeat(600);
+        let compact = compact_skill_description(&long);
+        assert!(compact.ends_with(" [truncated]"));
+        assert!(compact.len() < long.len());
     }
 }
 

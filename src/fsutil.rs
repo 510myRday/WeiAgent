@@ -13,6 +13,31 @@ pub fn home_dir() -> Option<PathBuf> {
         .filter(|path| !path.as_os_str().is_empty())
 }
 
+/// Formats a filesystem path for user-facing output.
+///
+/// Windows canonicalization may return an extended-length path such as
+/// `\\\\?\\C:\\path` or `\\\\?\\UNC\\server\\share`. Keep that prefix on
+/// paths used for filesystem operations, but omit it when displaying paths
+/// in API responses, logs, and prompts.
+pub fn display_path(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        let value = path.to_string_lossy().into_owned();
+        if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        if let Some(rest) = value.strip_prefix(r"\\?\") {
+            return rest.to_string();
+        }
+
+        return value;
+    }
+
+    #[cfg(not(windows))]
+    {
+        path.to_string_lossy().into_owned()
+    }
+}
 
 /// Write `content` to `path` via a synced same-directory temp file and atomic replace.
 pub async fn write_atomic(path: &Path, content: impl AsRef<[u8]>) -> AppResult<()> {
@@ -173,6 +198,19 @@ mod tests {
         assert!(path_is_within(&root, &root));
         let outside = PathBuf::from(if cfg!(windows) { r"C:\other" } else { "/other" });
         assert!(!path_is_within(&outside, &root));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_removes_windows_extended_prefix() {
+        assert_eq!(
+            display_path(Path::new(r"\\?\C:\work\project")),
+            r"C:\work\project"
+        );
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\share\project")),
+            r"\\server\share\project"
+        );
     }
 
     #[cfg(windows)]

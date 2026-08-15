@@ -379,6 +379,7 @@ export type UiMessageItem = UiMessage;
 export type StreamEvent =
   | { event: 'user'; data: ChatMessage; sequence?: number }
   | { event: 'assistant'; data: ChatMessage; sequence?: number }
+  | { event: 'usage'; data: ModelUsage; sequence?: number }
   | { event: 'delta'; data: string; sequence?: number }
   | { event: 'reasoning_delta'; data: string; sequence?: number }
   | { event: 'done'; data: string; sequence?: number }

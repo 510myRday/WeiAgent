@@ -788,48 +788,6 @@
   object-position: center;
 }
 
-.skills-source-settings {
-  display: grid;
-  gap: 8px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.skills-source-settings__heading {
-  display: grid;
-  gap: 3px;
-}
-
-.skills-source-settings__heading strong {
-  color: var(--color-text-soft);
-  font-size: var(--font-size-caption);
-}
-
-.skills-source-settings__heading span {
-  color: var(--color-muted);
-  font-size: 11px;
-}
-
-.skills-source-settings__url {
-  display: block;
-  min-width: 0;
-  padding: 9px 10px;
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xs);
-  background: var(--surface-main);
-  color: var(--color-text-soft);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.skills-source-settings__proxy-hint {
-  margin: -2px 0 0;
-  color: var(--color-muted);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-normal);
-}
-
 .skills-import-picker {
   display: grid;
   gap: 12px;

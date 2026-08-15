@@ -30,4 +30,3 @@ pub(super) fn is_x0_fallback_statsig_id(value: &str) -> bool {
 pub(super) fn usable_statsig_id(value: &str) -> bool {
     valid_statsig_id(value) || is_x0_fallback_statsig_id(value)
 }
-

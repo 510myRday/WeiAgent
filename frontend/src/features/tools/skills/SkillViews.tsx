@@ -86,9 +86,21 @@ export function AgentSkillsOverview({ settings, busy, onToggle }: { settings: Sk
   });
   if (!settings) return <div className="skills-loading-state">{t('chat.loading')}</div>;
   if (settings.defaults.length === 0) return <div className="agent-tool-empty">{t('skills.empty')}</div>;
+  const isBuiltinGroup = (group: SkillGroupState) => group.is_builtin || group.id === 'builtin';
+  const orderedGroups = [...settings.groups].sort((left, right) => {
+    const leftBuiltin = isBuiltinGroup(left);
+    const rightBuiltin = isBuiltinGroup(right);
+    if (leftBuiltin !== rightBuiltin) return leftBuiltin ? -1 : 1;
+    return left.sort_order - right.sort_order;
+  });
   const groups = [
+    ...orderedGroups
+      .filter(isBuiltinGroup)
+      .map((group) => ({ group, items: settings.defaults.filter((skill) => skill.group_id === group.id) })),
     { group: null as SkillGroupState | null, items: settings.defaults.filter((skill) => !skill.group_id) },
-    ...settings.groups.map((group) => ({ group, items: settings.defaults.filter((skill) => skill.group_id === group.id) })),
+    ...orderedGroups
+      .filter((group) => !isBuiltinGroup(group))
+      .map((group) => ({ group, items: settings.defaults.filter((skill) => skill.group_id === group.id) })),
   ];
   function toggleGroup(group: SkillGroupState | null) {
     const key = group?.id ?? 'ungrouped';
@@ -350,7 +362,7 @@ export function SkillToggle({ skill, agentMode, busy, onGlobalToggle, onAgentTog
   const inherited = agentMode && skill.agent_override == null;
   return (
     <label className={`toggle-switch${inherited ? ' is-disabled' : ''}`} title={skill.enabled ? t('skills.enabled') : t('skills.disabled')}>
-      <input aria-label={`${skill.name} ${skill.enabled ? t('skills.enabled') : t('skills.disabled')}`} type="checkbox" checked={skill.enabled} disabled={busy || inherited} onChange={(event) => void (agentMode ? onAgentToggle(skill, event.target.checked) : onGlobalToggle(skill.name, event.target.checked))} />
+      <input aria-label={`${skill.name} ${skill.enabled ? t('skills.enabled') : t('skills.disabled')}`} type="checkbox" checked={skill.enabled} disabled={busy || inherited || (!agentMode && Boolean(skill.is_builtin))} onChange={(event) => void (agentMode ? onAgentToggle(skill, event.target.checked) : onGlobalToggle(skill.name, event.target.checked))} />
       <span className="toggle-slider" />
     </label>
   );

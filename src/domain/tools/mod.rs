@@ -183,7 +183,6 @@ impl Default for EvidenceStorageConfig {
 mod web_search;
 pub use web_search::*;
 
-
 pub fn api_key_fingerprint(api_key: &str) -> String {
     let trimmed = api_key.trim();
     if trimmed.is_empty() {
@@ -207,12 +206,23 @@ pub fn mask_api_key(api_key: &str) -> String {
 pub fn mask_secret_tail(value: &str, mask_short: bool) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return if mask_short { "****".to_string() } else { String::new() };
+        return if mask_short {
+            "****".to_string()
+        } else {
+            String::new()
+        };
     }
     if mask_short && trimmed.chars().count() <= 4 {
         return "****".to_string();
     }
-    let suffix: String = trimmed.chars().rev().take(4).collect::<String>().chars().rev().collect();
+    let suffix: String = trimmed
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
     format!("****{suffix}")
 }
 
@@ -281,7 +291,10 @@ pub struct WebSearchSourceOverrides {
     pub roles: Option<Vec<WebSearchSourceRole>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_url: Option<String>,
-    #[serde(default, skip_serializing_if = "crate::domain::serde_defaults::is_false")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::domain::serde_defaults::is_false"
+    )]
     pub proxy_url_override: bool,
 }
 

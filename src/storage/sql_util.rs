@@ -87,7 +87,9 @@ pub(crate) fn column_exists(
     table: &str,
     column: &str,
 ) -> AppResult<bool> {
-    Ok(table_columns(conn, table)?.iter().any(|name| name == column))
+    Ok(table_columns(conn, table)?
+        .iter()
+        .any(|name| name == column))
 }
 
 pub(crate) fn enum_value<T: serde::Serialize>(value: &T) -> AppResult<String> {

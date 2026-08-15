@@ -120,4 +120,3 @@ pub struct ProcessInfo {
     pub tty: bool,
     pub output_cursor: u64,
 }
-

@@ -33,8 +33,7 @@ impl Default for WorkspaceResolveOptions {
     fn default() -> Self {
         Self {
             expand_home: false,
-            blocked_message:
-                "Filesystem roots and the entire user home directory cannot be workspace roots",
+            blocked_message: "Filesystem roots and the entire user home directory cannot be workspace roots",
         }
     }
 }

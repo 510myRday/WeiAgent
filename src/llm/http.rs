@@ -257,7 +257,6 @@ impl LlmHttp {
     }
 }
 
-
 async fn wait_before_retry(
     options: &RequestOptions,
     request_number: u32,

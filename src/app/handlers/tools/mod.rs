@@ -11,9 +11,9 @@ pub use config::{
 };
 pub use mcp::{
     clear_mcp_auth, create_mcp_server, delete_mcp_server, get_mcp_auth_state, list_mcp_servers,
-    read_agent_mcp_config, read_mcp_server_secrets, reauthorize_mcp_server, refresh_mcp_server,
-    test_mcp_server, update_agent_mcp_config, update_mcp_server, update_mcp_server_enabled,
-    update_mcp_tool_enabled, update_mcp_tools_enabled,
+    read_agent_mcp_config, read_mcp_server, read_mcp_server_secrets, reauthorize_mcp_server,
+    refresh_mcp_server, test_mcp_server, update_agent_mcp_config, update_mcp_server,
+    update_mcp_server_enabled, update_mcp_tool_enabled, update_mcp_tools_enabled,
 };
 pub use runtime::{
     install_environment_component, read_environment_runtime, refresh_environment_component,
@@ -23,6 +23,4 @@ pub use terminal::{
     list_tool_processes, pick_directory, resize_terminal_session, stop_tool_process,
     terminate_terminal_session, write_terminal_session,
 };
-pub use web_search_keys::{
-    check_web_search_keys, delete_web_search_key, import_web_search_keys,
-};
+pub use web_search_keys::{check_web_search_keys, delete_web_search_key, import_web_search_keys};

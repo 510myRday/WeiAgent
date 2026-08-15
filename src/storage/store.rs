@@ -14,7 +14,7 @@ use crate::{
     storage::{
         agents::{read_agents_conn, write_agents_conn},
         db,
-        files::{read_json},
+        files::read_json,
     },
 };
 

@@ -10,8 +10,8 @@ use crate::{
         cache::{PromptCacheMode, build_context, effective_capabilities},
         http::StreamLineParser,
         protocol::common::{
-            ProtocolAdapter, SseData, add_query_parameter, default_models, append_role_items, merge_extra_body,
-            message_tool_calls, parse_json_object, parse_sse_data_line,
+            ProtocolAdapter, SseData, add_query_parameter, append_role_items, default_models,
+            merge_extra_body, message_tool_calls, parse_json_object, parse_sse_data_line,
             unwrap_provider_response_item, validate_tool_calls, wrap_provider_response_item,
         },
         types::{

@@ -304,6 +304,7 @@ export type SkillManifest = {
   group_override?: boolean | null;
   agent_override?: boolean | null;
   agent_group_override?: boolean | null;
+  is_builtin?: boolean;
 };
 
 export type SkillGroupState = {
@@ -314,6 +315,7 @@ export type SkillGroupState = {
   enabled: boolean;
   global_override?: boolean | null;
   agent_override?: boolean | null;
+  is_builtin?: boolean;
 };
 
 export type SkillOverride = { name: string; enabled?: boolean | null };

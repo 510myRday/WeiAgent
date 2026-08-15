@@ -10,6 +10,7 @@ use tokio::fs;
 use crate::{
     domain::{SkillFile, SkillManifest},
     error::{AppError, AppResult},
+    fsutil,
     skills::path_policy::MAX_SKILL_FILE_BYTES,
 };
 
@@ -81,14 +82,15 @@ pub async fn parse_skill(root: PathBuf) -> AppResult<SkillManifest> {
             .cloned()
             .filter(|v| !v.trim().is_empty()),
         group_id: None,
+        is_builtin: false,
         tags: fields
             .get("tags")
             .map(|v| parse_list(v))
             .unwrap_or_default(),
         icon_url: None,
         source_url: None,
-        root_dir: root.display().to_string(),
-        skill_md: skill_md.display().to_string(),
+        root_dir: fsutil::display_path(&root),
+        skill_md: fsutil::display_path(&skill_md),
         scripts: discover_files(&root, "scripts").await?,
         references: discover_files(&root, "references").await?,
         examples: discover_files(&root, "examples").await?,

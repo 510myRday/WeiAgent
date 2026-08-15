@@ -500,6 +500,9 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                     activeAgent={activeAgent}
                     settings={settings}
                     isSending={isSending}
+                    isLastMessage={row.messageIndex === messages.length - 1}
+                    retryStatus={retryStatus}
+                    runPhase={runPhase}
                     supportsImages={supportsImages}
                     supportsImageMasks={supportsImageMasks}
                     onRestart={onRestart}

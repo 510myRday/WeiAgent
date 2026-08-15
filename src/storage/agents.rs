@@ -264,7 +264,6 @@ fn apply_agent_update(
     Ok(agent.clone())
 }
 
-
 pub(super) const AGENTS_SCHEMA_VERSION: i64 = 19;
 
 const AGENTS_SCHEMA_SQL: &str = "
@@ -393,7 +392,10 @@ fn upsert_agent_tx(tx: &Transaction<'_>, agent: &Agent) -> AppResult<()> {
 
 pub(super) fn write_agents_conn(conn: &mut Connection, agents: &[Agent]) -> AppResult<()> {
     let tx = conn.transaction()?;
-    let keep = agents.iter().map(|agent| agent.id.to_string()).collect::<Vec<_>>();
+    let keep = agents
+        .iter()
+        .map(|agent| agent.id.to_string())
+        .collect::<Vec<_>>();
     if keep.is_empty() {
         tx.execute("DELETE FROM agents", [])?;
     } else {

@@ -2,9 +2,9 @@
 use serde_json::Value;
 use std::collections::HashSet;
 
-use super::constants::{MAX_FRAME_BYTES, MAX_SNIPPET_CHARS};
 use super::super::grok_support::GrokError;
 use super::super::support::truncate;
+use super::constants::{MAX_FRAME_BYTES, MAX_SNIPPET_CHARS};
 use crate::tools::web_search::types::{SearchHitKind, WebSearchHit};
 
 #[derive(Debug, Default)]

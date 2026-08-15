@@ -398,17 +398,16 @@ async fn agent_web_search_source_overrides_round_trip_without_secrets() {
         .await
         .unwrap()
         .overrides;
-    overrides.web_search.source_overrides =
-        vec![crate::domain::tools::WebSearchSourceOverrides {
-            source_id: "jina".to_string(),
-            enabled: Some(false),
-            deep_enabled: Some(false),
-            extract_enabled: Some(true),
-            priority: Some(1),
-            roles: Some(jina_roles.clone()),
-            proxy_url: None,
-            proxy_url_override: true,
-        }];
+    overrides.web_search.source_overrides = vec![crate::domain::tools::WebSearchSourceOverrides {
+        source_id: "jina".to_string(),
+        enabled: Some(false),
+        deep_enabled: Some(false),
+        extract_enabled: Some(true),
+        priority: Some(1),
+        roles: Some(jina_roles.clone()),
+        proxy_url: None,
+        proxy_url_override: true,
+    }];
 
     let saved = store
         .update_agent_tools_overrides(agent.id, overrides)
@@ -1537,9 +1536,7 @@ async fn creates_workspace_and_composes_markdown_prompt() {
         "Every non-planning tool call must include the current conversation's planning_id"
     ));
     assert!(prompt.contains(&format!("- Date: {}", crate::tools::prompt::today_date())));
-    assert!(
-        prompt.contains("The current local system date is today's date and is authoritative.")
-    );
+    assert!(prompt.contains("The current local system date is today's date and is authoritative."));
     assert!(!prompt.contains("Trust: absolute"));
     assert!(prompt.contains("## Personality"));
     assert!(prompt.find("## Environment").unwrap() < prompt.find("## Agent").unwrap());

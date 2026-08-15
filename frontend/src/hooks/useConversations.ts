@@ -6,6 +6,7 @@ import type {
   Conversation,
   ConversationUsage,
   ImageAttachment,
+  ModelUsage,
   GenerationMode,
   ThinkingLevel,
   StreamEvent,
@@ -34,6 +35,7 @@ import {
   isAbortError,
   isAssistantMessage,
   isUserMessage,
+  mergeAssistantEvent,
   parseJsonObject,
   patchToolOnMessages,
   toUiMessage,
@@ -65,6 +67,25 @@ const EMPTY_USAGE: ConversationUsage = {
   total_tokens: 0,
   cost_usd: 0,
 };
+
+function modelUsageToConversationUsage(usage: ModelUsage): ConversationUsage {
+  const promptTokens = usage.total_prompt_tokens && usage.total_prompt_tokens > 0
+    ? usage.total_prompt_tokens
+    : usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+
+  return {
+    input_tokens: usage.input_tokens,
+    output_tokens: usage.output_tokens,
+    cache_write_tokens: usage.cache_write_tokens,
+    cache_read_tokens: usage.cache_read_tokens,
+    total_prompt_tokens: usage.total_prompt_tokens,
+    uncached_input_tokens: usage.uncached_input_tokens,
+    cache_hit_ratio: usage.cache_hit_ratio,
+    total_tokens: promptTokens + usage.output_tokens,
+    cost_usd: usage.cost_usd,
+    image_count: usage.image_count,
+  };
+}
 
 type UseConversationsOptions = {
   activeAgentId: string;
@@ -594,46 +615,18 @@ export function useConversations({
         applyReasoningDelta(evt.data as string);
         return;
       }
+      if (evt.event === 'usage') {
+        setConversationUsage(modelUsageToConversationUsage(evt.data));
+        return;
+      }
       if (evt.event === 'assistant') {
         // A successful model response ends the current retry budget. The next
         // model turn will receive its own waiting_for_model phase and start at
         // zero again.
         setRetryStatus(null);
         const msg = toUiMessage(evt.data as Parameters<typeof toUiMessage>[0]);
-        setMessages((current) => {
-          const last = current[current.length - 1];
-          if (msg.status === 'failed') {
-            if (last && isAssistantMessage(last)) {
-              return [
-                ...current.slice(0, -1),
-                {
-                  ...last,
-                  id: msg.id || last.id,
-                  content: msg.content || last.content,
-                  reasoning_content: msg.reasoning_content || last.reasoning_content,
-                  usage: msg.usage ?? last.usage,
-                  status: 'failed' as const,
-                },
-              ];
-            }
-            return [...current, { ...msg, status: 'failed' as const }];
-          }
-          if (last && isAssistantMessage(last)) {
-            return [
-              ...current.slice(0, -1),
-              {
-                ...last,
-                id: msg.id || last.id,
-                content: msg.content || last.content,
-                reasoning_content: msg.reasoning_content || last.reasoning_content,
-                attachments: msg.attachments?.length ? msg.attachments : last.attachments,
-                usage: msg.usage ?? last.usage,
-                status: msg.status ?? (last.status === 'streaming' ? 'done' : last.status),
-              },
-            ];
-          }
-          return [...current, { ...msg, status: msg.status ?? 'done' }];
-        });
+        if (msg.usage) setConversationUsage(modelUsageToConversationUsage(msg.usage));
+        setMessages((current) => mergeAssistantEvent(current, msg));
         return;
       }
       if (evt.event === 'tool_call_started') {

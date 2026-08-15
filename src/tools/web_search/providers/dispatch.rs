@@ -35,9 +35,7 @@ pub async fn dispatch_search(
         WebSearchProviderKind::Tavily => {
             tavily::search(control_client, base_url, api_key, request).await
         }
-        WebSearchProviderKind::Exa => {
-            exa::search(control_client, base_url, api_key, request).await
-        }
+        WebSearchProviderKind::Exa => exa::search(control_client, base_url, api_key, request).await,
         WebSearchProviderKind::Jina => {
             jina::search(control_client, base_url, api_key, request).await
         }
@@ -109,9 +107,11 @@ pub async fn dispatch_probe(
 ) -> Result<(), String> {
     match provider {
         WebSearchProviderKind::Grok => match grok_client {
-            Some(Ok(client)) => grok::probe(client, control_client, base_url, api_key, grok.options())
-                .await
-                .map_err(|error| error.message().to_string()),
+            Some(Ok(client)) => {
+                grok::probe(client, control_client, base_url, api_key, grok.options())
+                    .await
+                    .map_err(|error| error.message().to_string())
+            }
             Some(Err(error)) => Err(error.clone()),
             None => Err("Grok emulated client missing".to_string()),
         },

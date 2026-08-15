@@ -327,7 +327,10 @@ pub(super) async fn build_http_client(
     crate::http_client::build_reqwest_client(config).map_err(AppError::Llm)
 }
 
-pub(super) async fn read_limited_body(response: reqwest::Response, limit: usize) -> AppResult<String> {
+pub(super) async fn read_limited_body(
+    response: reqwest::Response,
+    limit: usize,
+) -> AppResult<String> {
     if let Some(length) = response.content_length() {
         if length > limit as u64 {
             return Err(AppError::Llm(format!("MCP response exceeds {limit} bytes")));
@@ -402,7 +405,10 @@ pub(super) fn resolve_sse_message_endpoint(
     resolve_sse_endpoint_url(base_url, data)
 }
 
-pub(super) fn resolve_sse_endpoint_url(base_url: &reqwest::Url, endpoint: &str) -> AppResult<reqwest::Url> {
+pub(super) fn resolve_sse_endpoint_url(
+    base_url: &reqwest::Url,
+    endpoint: &str,
+) -> AppResult<reqwest::Url> {
     base_url
         .join(endpoint.trim())
         .or_else(|_| reqwest::Url::parse(endpoint.trim()))

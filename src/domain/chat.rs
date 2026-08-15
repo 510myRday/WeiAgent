@@ -7,7 +7,10 @@ pub struct ImageAttachment {
     pub id: String,
     pub name: String,
     pub media_type: String,
-    #[serde(default, skip_serializing_if = "crate::domain::serde_defaults::is_false")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::domain::serde_defaults::is_false"
+    )]
     pub is_mask: bool,
     #[serde(flatten)]
     pub source: ImageSource,

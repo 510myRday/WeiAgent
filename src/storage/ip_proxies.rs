@@ -724,4 +724,3 @@ fn row_to_ip_proxy(row: IpProxyRow) -> AppResult<IpProxy> {
         updated_at: parse_datetime(&row.updated_at, "updated_at")?,
     })
 }
-

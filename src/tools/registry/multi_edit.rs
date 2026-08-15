@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{
-    AgentTool, ToolExecutionContext, configured_working_directories_guidance, frozen_terminal_config, normalize_optional_cwd,
+    AgentTool, ToolExecutionContext, frozen_terminal_config, normalize_optional_cwd,
     run_with_approval, tool_definition,
 };
 use crate::{
@@ -21,11 +21,8 @@ pub(super) struct MultiEditFileTool;
 
 #[async_trait]
 impl AgentTool for MultiEditFileTool {
-    fn definition(&self, config: &AgentToolsConfig) -> ToolDefinition {
-        let description = format!(
-            "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated before anything is written; on failure files are left unchanged. Result warnings (for example possibly unbalanced delimiters) do not block the write; inspect them before continuing. For an edit, read the current file first when it is not already in context, keep each old_string short but unique, and put all replacements for one path in one edit operation. To fully rewrite an existing file, use a single create operation with overwrite=true instead of many edits. `operations` must be a JSON array, and each object inside it must include its own `type` field: `edit`, `create`, `delete`, or `move`; `type` is not a top-level field. Order edits so a later old_string never targets text produced by an earlier new_string; such edits are rejected. In TS/JS template strings write ${{...}} exactly; do not escape the dollar sign as \\${{...}}. In-workspace edits may require approval under request_approval. When cwd or a target path is outside the configured workspace roots, the server requests approval automatically before writing; sandbox_permissions=require_escalated with a short justification may also be supplied to make the expanded access request explicit. Do not bypass multi_edit_file via shell when an outside-root edit is needed.{}",
-            configured_working_directories_guidance(config)
-        );
+    fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
+        let description = "Edit, create, delete, or move text files in one atomic call. Prefer this over shell redirection or execute_terminal file rewrites for source, config, and documentation changes. Every operation is validated before anything is written; on failure files are left unchanged. Result warnings (for example possibly unbalanced delimiters) do not block the write; inspect them before continuing. For an edit, read the current file first when it is not already in context, keep each old_string short but unique, and put all replacements for one path in one edit operation. To fully rewrite an existing file, use a single create operation with overwrite=true instead of many edits. `operations` must be a JSON array, and each object inside it must include its own `type` field: `edit`, `create`, `delete`, or `move`; `type` is not a top-level field. Order edits so a later old_string never targets text produced by an earlier new_string; such edits are rejected. In TS/JS template strings write ${{...}} exactly; do not escape the dollar sign as \\${{...}}. In-workspace edits may require approval under request_approval. When cwd or a target path is outside the configured workspace roots, the server requests approval automatically before writing; sandbox_permissions=require_escalated with a short justification may also be supplied to make the expanded access request explicit. Do not bypass multi_edit_file via shell when an outside-root edit is needed.";
         tool_definition(
             MULTI_EDIT_TOOL_NAME,
             &description,
@@ -178,9 +175,11 @@ impl AgentTool for MultiEditFileTool {
         };
         let approval_id = approval_id.clone();
         let command = command.clone();
-        let approval_cwd = cwd
-            .clone()
-            .or_else(|| Some(context.store.terminal_workspace_dir.display().to_string()));
+        let approval_cwd = cwd.clone().or_else(|| {
+            Some(crate::fsutil::display_path(
+                &context.store.terminal_workspace_dir,
+            ))
+        });
         let justification = justification
             .filter(|value| !value.trim().is_empty())
             .or_else(|| Some("Apply multi_edit_file changes".to_string()));

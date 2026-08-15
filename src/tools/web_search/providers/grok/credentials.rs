@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use wreq::header::{HeaderMap, HeaderName, HeaderValue};
 
-use super::constants::{DEFAULT_USER_AGENT, usable_statsig_id};
 use super::super::grok_support::GrokError;
+use super::constants::{DEFAULT_USER_AGENT, usable_statsig_id};
 
 #[derive(Debug, Clone)]
 pub(super) struct GrokCredential {
@@ -29,15 +29,20 @@ pub(super) fn parse_credential(raw: &str) -> Result<GrokCredential, GrokError> {
         let obj = value.as_object().ok_or_else(|| {
             GrokError::InvalidCredential("Grok credential JSON must be an object".to_string())
         })?;
-        let sso = super::super::support::string_field(obj, &["sso", "token", "auth_token", "api_key"])
-            .map(normalize_sso_token)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                GrokError::InvalidCredential("Grok credential JSON missing sso/token".to_string())
-            })?;
+        let sso =
+            super::super::support::string_field(obj, &["sso", "token", "auth_token", "api_key"])
+                .map(normalize_sso_token)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    GrokError::InvalidCredential(
+                        "Grok credential JSON missing sso/token".to_string(),
+                    )
+                })?;
         let mut extra = BTreeMap::new();
-        if let Some(cookies) = super::super::support::string_field(obj, &["cookies", "cookie", "cf_cookies", "cloudflare"])
-        {
+        if let Some(cookies) = super::super::support::string_field(
+            obj,
+            &["cookies", "cookie", "cf_cookies", "cloudflare"],
+        ) {
             merge_cookie_header(&mut extra, cookies);
         }
         if let Some(cf) = super::super::support::string_field(obj, &["cf_clearance"]) {
@@ -53,14 +58,18 @@ pub(super) fn parse_credential(raw: &str) -> Result<GrokCredential, GrokError> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
-        let user_agent = super::super::support::string_field(obj, &["user_agent", "ua", "User-Agent"])
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned);
-        let statsig_signer = super::super::support::string_field(obj, &["statsig_signer", "signer_url", "statsig_url"])
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned);
+        let user_agent =
+            super::super::support::string_field(obj, &["user_agent", "ua", "User-Agent"])
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned);
+        let statsig_signer = super::super::support::string_field(
+            obj,
+            &["statsig_signer", "signer_url", "statsig_url"],
+        )
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
         let (sso, peeled) = peel_cookie_pairs(&sso);
         for (k, v) in peeled {
             extra.entry(k).or_insert(v);
@@ -246,7 +255,10 @@ pub(super) fn build_request_headers(
     Ok(headers)
 }
 
-pub(super) fn apply_chromium_client_hints(headers: &mut HeaderMap, user_agent: &str) -> Result<(), GrokError> {
+pub(super) fn apply_chromium_client_hints(
+    headers: &mut HeaderMap,
+    user_agent: &str,
+) -> Result<(), GrokError> {
     let lower = user_agent.to_ascii_lowercase();
     let version = capture_version(user_agent, &["Chrome/", "Chromium/", "Edg/"])
         .unwrap_or_else(|| "146".to_string());
@@ -291,7 +303,11 @@ pub(super) fn capture_version(user_agent: &str, markers: &[&str]) -> Option<Stri
     None
 }
 
-pub(super) fn set_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), GrokError> {
+pub(super) fn set_header(
+    headers: &mut HeaderMap,
+    name: &str,
+    value: &str,
+) -> Result<(), GrokError> {
     let header_name = HeaderName::from_bytes(name.as_bytes())
         .map_err(|error| GrokError::Other(format!("invalid header name {name}: {error}")))?;
     let header_value = HeaderValue::from_str(value)

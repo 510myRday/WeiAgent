@@ -60,11 +60,21 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
         )
         .route(
             "/api/model-providers/{provider_id}",
-            put(providers::update_model_provider).delete(providers::delete_model_provider),
+            get(providers::read_model_provider)
+                .put(providers::update_model_provider)
+                .delete(providers::delete_model_provider),
         )
         .route(
             "/api/model-providers/{provider_id}/models",
             get(providers::list_provider_models),
+        )
+        .route(
+            "/api/model-providers/{provider_id}/test",
+            post(providers::test_provider),
+        )
+        .route(
+            "/api/model-providers/{provider_id}/models/{model_id}/test",
+            post(providers::test_model),
         )
         .route(
             "/api/ip-proxies",
@@ -76,7 +86,9 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
         )
         .route(
             "/api/ip-proxies/{proxy_id}",
-            put(ip_proxies::update_ip_proxy).delete(ip_proxies::delete_ip_proxy),
+            get(ip_proxies::read_ip_proxy)
+                .put(ip_proxies::update_ip_proxy)
+                .delete(ip_proxies::delete_ip_proxy),
         )
         .route(
             "/api/ip-proxies/{proxy_id}/test",
@@ -88,7 +100,9 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
         )
         .route(
             "/api/agents/{agent_id}",
-            put(agents::update_agent).delete(agents::delete_agent),
+            get(agents::read_agent)
+                .put(agents::update_agent)
+                .delete(agents::delete_agent),
         )
         .route(
             "/api/agents/{agent_id}/workspace",
@@ -153,9 +167,13 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             get(tools::read_agent_tools_config).put(tools::update_agent_tools_config),
         )
         .route("/api/skills", get(skills::list_skills))
+        .route("/api/skills/reload", post(skills::reload_skills))
         .route("/api/skills/changes", get(skills::skill_changes))
         .route("/api/skills/groups", post(skills::create_skill_group))
-        .route("/api/skills/groups/order", put(skills::reorder_skill_groups))
+        .route(
+            "/api/skills/groups/order",
+            put(skills::reorder_skill_groups),
+        )
         .route("/api/skills/import", post(skills::import_skill))
         .route("/api/skills/import-tasks", get(skills::list_import_tasks))
         .route("/api/skills/cleanup-orphans", post(skills::cleanup_orphans))
@@ -175,7 +193,6 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             "/api/skills/{skill_name}",
             get(skills::read_skill)
                 .put(skills::update_skill_icon)
-                .post(skills::update_skill)
                 .delete(skills::delete_skill),
         )
         .route(
@@ -204,7 +221,9 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
         )
         .route(
             "/api/tools/mcp/{server_id}",
-            put(tools::update_mcp_server).delete(tools::delete_mcp_server),
+            get(tools::read_mcp_server)
+                .put(tools::update_mcp_server)
+                .delete(tools::delete_mcp_server),
         )
         .route(
             "/api/tools/mcp/{server_id}/enabled",

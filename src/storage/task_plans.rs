@@ -231,11 +231,13 @@ impl super::Store {
                     "SELECT created_at, conversation_message_id, public_id FROM task_plans
                      WHERE conversation_id = ?1 AND planning_id = ?2",
                     params![conversation_id.to_string(), planning_id.to_string()],
-                    |row| Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, String>(2)?,
-                    )),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
                 )?;
                 let created_at = DateTime::parse_from_rfc3339(&created_at)
                     .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?

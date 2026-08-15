@@ -660,13 +660,6 @@ export function updateSkillIcon(name: string, iconUrl: string | null): Promise<S
   });
 }
 
-export function updateSkill(name: string, sourceUrl: string, proxyId?: string): Promise<SkillImportTask> {
-  return request<SkillImportTask>(`/api/skills/${encodeURIComponent(name)}`, {
-    method: 'POST',
-    body: JSON.stringify({ source_url: sourceUrl, proxy_id: proxyId }),
-  });
-}
-
 export function deleteSkill(name: string): Promise<SkillSettings> {
   return request<SkillSettings>(`/api/skills/${encodeURIComponent(name)}`, {
     method: 'DELETE',
@@ -907,6 +900,7 @@ function dispatchStreamEvent(
   if (
     event === 'user'
     || event === 'assistant'
+    || event === 'usage'
     || event === 'phase'
     || event === 'retry'
     || event === 'tool_call_started'

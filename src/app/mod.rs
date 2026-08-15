@@ -1,5 +1,4 @@
 mod agent_executor;
-mod tool_result;
 mod chat;
 pub(crate) mod context_compress;
 pub mod handlers;
@@ -9,6 +8,7 @@ mod run_manager;
 mod security;
 mod state;
 mod static_assets;
+mod tool_result;
 
 pub use router::{build_router, build_router_dev};
 pub use run_manager::RunManager;

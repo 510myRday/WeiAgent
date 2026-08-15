@@ -20,7 +20,9 @@ mod statsig;
 
 use classify::{classify_upstream_error, is_anti_bot_message};
 use constants::{CONNECTIVITY_PROBE_PROMPT, DEFAULT_MODE};
-use credentials::{GrokCredential, build_request_headers, drop_foreign_clearance_cookie, parse_credential};
+use credentials::{
+    GrokCredential, build_request_headers, drop_foreign_clearance_cookie, parse_credential,
+};
 use parse::{
     ParsedChat, consume_upstream, extract_json_object, parse_structured_answer,
     parse_structured_hits, strip_markdown_fence,
@@ -464,10 +466,16 @@ fn parse_structured_extract(
 
 #[cfg(test)]
 mod tests {
+    use super::constants::{
+        X0_FALLBACK_STATSIG_ID, is_x0_fallback_statsig_id, usable_statsig_id, valid_statsig_id,
+    };
+    use super::credentials::{
+        build_sso_cookie, is_allowed_extra_cookie, is_cloudflare_cookie_name, normalize_sso_token,
+    };
+    use super::statsig::{
+        extract_statsig_meta_content, looks_like_cloudflare_challenge, parse_statsig_signature_body,
+    };
     use super::*;
-    use super::constants::{X0_FALLBACK_STATSIG_ID, is_x0_fallback_statsig_id, usable_statsig_id, valid_statsig_id};
-    use super::credentials::{build_sso_cookie, is_allowed_extra_cookie, is_cloudflare_cookie_name, normalize_sso_token};
-    use super::statsig::{extract_statsig_meta_content, looks_like_cloudflare_challenge, parse_statsig_signature_body};
     use crate::tools::web_search::types::WebSearchHit;
     use base64::Engine as _;
     use std::collections::BTreeMap;

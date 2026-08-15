@@ -79,6 +79,27 @@ test('stream schema accepts incremental tool call events', () => {
   });
 });
 
+test('stream schema accepts per-response usage events', () => {
+  expect(parseJsonStreamEvent('usage', JSON.stringify({
+    input_tokens: 120,
+    output_tokens: 30,
+    cache_write_tokens: 0,
+    cache_read_tokens: 20,
+    total_prompt_tokens: 140,
+    total_tokens: 150,
+    cost_usd: 0.001,
+    provider_id: 'provider-1',
+    model_id: 'model-1',
+  }))).toMatchObject({
+    event: 'usage',
+    data: {
+      input_tokens: 120,
+      output_tokens: 30,
+      total_prompt_tokens: 140,
+    },
+  });
+});
+
 test('stream schema accepts valid phase events', () => {
   expect(parseJsonStreamEvent('phase', JSON.stringify({
     phase: 'waiting_for_model',

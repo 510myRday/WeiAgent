@@ -18,7 +18,10 @@ use crate::{
         keys::ApiKeyCycle,
         types::{ChatCompletionOutput, ToolCall, ToolDefinition, normalize_tool_call_arguments},
     },
-    storage::{LlmLogger, llm_logs::{LlmLogIdentity, LlmLogMetrics}},
+    storage::{
+        LlmLogger,
+        llm_logs::{LlmLogIdentity, LlmLogMetrics},
+    },
 };
 
 pub(crate) trait ProtocolAdapter: Clone + Send + Sync + 'static {
@@ -88,7 +91,6 @@ impl<A: ProtocolAdapter> ProtocolClient<A> {
         self
     }
 }
-
 
 fn request_log_identity(
     agent: &Agent,
@@ -207,7 +209,12 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                 spawn_log(
                     &self.http.logger(),
                     log_request(
-                        request_log_identity(agent, provider, conversation_id.clone(), options.is_compaction),
+                        request_log_identity(
+                            agent,
+                            provider,
+                            conversation_id.clone(),
+                            options.is_compaction,
+                        ),
                         &request_json,
                         None,
                         None,
@@ -225,7 +232,12 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             spawn_log(
                 &self.http.logger(),
                 log_request(
-                    request_log_identity(agent, provider, conversation_id.clone(), options.is_compaction),
+                    request_log_identity(
+                        agent,
+                        provider,
+                        conversation_id.clone(),
+                        options.is_compaction,
+                    ),
                     &request_json,
                     Some(&body),
                     Some(status.as_u16()),
@@ -249,7 +261,12 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                 spawn_log(
                     &self.http.logger(),
                     log_request(
-                        request_log_identity(agent, provider, conversation_id.clone(), options.is_compaction),
+                        request_log_identity(
+                            agent,
+                            provider,
+                            conversation_id.clone(),
+                            options.is_compaction,
+                        ),
                         &request_json,
                         Some(&body),
                         Some(status.as_u16()),
@@ -265,7 +282,12 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                 spawn_log(
                     &self.http.logger(),
                     log_request(
-                        request_log_identity(agent, provider, conversation_id.clone(), options.is_compaction),
+                        request_log_identity(
+                            agent,
+                            provider,
+                            conversation_id.clone(),
+                            options.is_compaction,
+                        ),
                         &request_json,
                         Some(&body),
                         Some(status.as_u16()),
@@ -280,7 +302,12 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
                 spawn_log(
                     &self.http.logger(),
                     log_request(
-                        request_log_identity(agent, provider, conversation_id.clone(), options.is_compaction),
+                        request_log_identity(
+                            agent,
+                            provider,
+                            conversation_id.clone(),
+                            options.is_compaction,
+                        ),
                         &request_json,
                         Some(&body),
                         Some(status.as_u16()),

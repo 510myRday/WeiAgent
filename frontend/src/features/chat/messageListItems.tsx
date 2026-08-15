@@ -54,6 +54,12 @@ type MessageImageDisplaySize = {
   height: number;
 };
 
+type RetryStatus = {
+  attempt: number;
+  maxAttempts: number;
+  reason: string;
+};
+
 type MessageActions = {
   onRestart: (messageId: string, content: string, attachments?: ImageAttachment[]) => void;
   onEditImage: (attachment: ImageAttachment) => void;
@@ -70,6 +76,9 @@ export const MessageListItem = memo(function MessageListItem({
   activeAgent,
   settings,
   isSending,
+  isLastMessage,
+  retryStatus,
+  runPhase,
   supportsImages,
   supportsImageMasks,
   onRestart,
@@ -82,6 +91,9 @@ export const MessageListItem = memo(function MessageListItem({
   activeAgent?: Agent;
   settings: AppSettings;
   isSending: boolean;
+  isLastMessage: boolean;
+  retryStatus: RetryStatus | null;
+  runPhase: AgentRunPhase;
   supportsImages: boolean;
   supportsImageMasks: boolean;
   onRestart: MessageActions['onRestart'];
@@ -100,6 +112,8 @@ export const MessageListItem = memo(function MessageListItem({
       settings={settings}
       failedLabel={t('chat.failed')}
       actionsDisabled={isSending}
+      retryStatus={isLastMessage && item.role === 'assistant' ? retryStatus : null}
+      runPhase={runPhase}
       supportsImages={supportsImages}
       supportsImageMasks={supportsImageMasks}
       onRestart={onRestart}
@@ -116,10 +130,14 @@ export function shouldShowAgentWaitingBubble(
   retryStatus: { attempt: number; maxAttempts: number; reason: string } | null,
 ): boolean {
   if (!isSending) return false;
-  if (retryStatus) return true;
+  const last = messages[messages.length - 1];
+  if (retryStatus) {
+    // Retry details belong to the active assistant bubble. Context compaction
+    // is the exception: it owns a separate waiting state for the whole request.
+    return runPhase === 'compacting_context' || !last || last.role !== 'assistant';
+  }
   if (runPhase === 'waiting_for_approval') return false;
 
-  const last = messages[messages.length - 1];
   if (!last) return true;
   if (last.role === 'assistant') {
     const tools = (last.blocks ?? [])
@@ -141,7 +159,7 @@ export function WaitingBubble({
 }: {
   agent?: Agent;
   settings: AppSettings;
-  retryStatus: { attempt: number; maxAttempts: number; reason: string } | null;
+  retryStatus: RetryStatus | null;
   runPhase: AgentRunPhase;
 }) {
   const { t } = useI18n();
@@ -167,22 +185,7 @@ export function WaitingBubble({
         </div>
         <div className="message-bubble">
           {isRetrying && retryStatus ? (
-            <div className="message-retry-status" role="status" aria-label={label}>
-              <span className="message-retry-spinner" aria-hidden="true">
-                <LoaderCircle size={14} />
-              </span>
-              <div className="message-retry-copy">
-                <div className="message-retry-heading">
-                  <span className="message-retry-title">{label}</span>
-                  <span className="message-retry-progress">
-                    {retryStatus.attempt}/{retryStatus.maxAttempts}
-                  </span>
-                </div>
-                <span className="message-retry-reason" title={retryStatus.reason}>
-                  {retryStatus.reason}
-                </span>
-              </div>
-            </div>
+            <RetryStatusIndicator retryStatus={retryStatus} />
           ) : (
             <TypingIndicator label={label} />
           )}
@@ -201,6 +204,8 @@ const MessageRow = memo(function MessageRow({
   settings,
   failedLabel,
   actionsDisabled,
+  retryStatus,
+  runPhase,
   supportsImages,
   supportsImageMasks,
   onRestart,
@@ -215,6 +220,8 @@ const MessageRow = memo(function MessageRow({
   settings: AppSettings;
   failedLabel: string;
   actionsDisabled: boolean;
+  retryStatus: RetryStatus | null;
+  runPhase: AgentRunPhase;
   supportsImages: boolean;
   supportsImageMasks: boolean;
   onRestart: MessageActions['onRestart'];
@@ -439,6 +446,8 @@ const MessageRow = memo(function MessageRow({
                 <MessageContent
                   message={message}
                   agentId={agent?.id ?? ''}
+                  retryStatus={retryStatus}
+                  runPhase={runPhase}
                   onEditImage={onEditImage}
                   onApproveToolCall={onApproveToolCall}
                 />
@@ -498,11 +507,15 @@ export function MessageAvatar({
 function MessageContent({
   message,
   agentId,
+  retryStatus,
+  runPhase,
   onEditImage,
   onApproveToolCall,
 }: {
   message: UiMessage;
   agentId: string;
+  retryStatus: RetryStatus | null;
+  runPhase: AgentRunPhase;
   onEditImage: MessageActions['onEditImage'];
   onApproveToolCall: MessageActions['onApproveToolCall'];
 }) {
@@ -515,11 +528,18 @@ function MessageContent({
     .filter((block): block is Extract<NonNullable<UiMessage['blocks']>[number], { type: 'tool' }> => block.type === 'tool')
     .map((block) => block.tool);
   const hasStructuredBody = tools.length > 0;
+  const showRetryStatus = Boolean(retryStatus) && runPhase !== 'compacting_context';
   const emptyStreaming = (
     message.status === 'streaming'
     && !message.content
     && !message.reasoning_content
     && tools.length === 0
+    && !showRetryStatus
+  );
+  const waitingAfterTool = (
+    message.status === 'streaming'
+    && blocks[blocks.length - 1]?.type === 'tool'
+    && !showRetryStatus
   );
   if (emptyStreaming) {
     return <TypingIndicator label={t('chat.sending')} />;
@@ -646,32 +666,35 @@ function MessageContent({
         />
       ) : null}
       {hasStructuredBody ? (
-        blocks.map((block, index) => {
-          if (block.type === 'text') {
-            if (!block.content) return null;
-            const isStreamingTail = message.status === 'streaming' && index === blocks.length - 1;
+        <>
+          {blocks.map((block, index) => {
+            if (block.type === 'text') {
+              if (!block.content) return null;
+              const isStreamingTail = message.status === 'streaming' && index === blocks.length - 1;
+              return (
+                <div
+                  key={`text-${index}`}
+                  className={`message-markdown${isStreamingTail ? ' streaming-content' : ''}`}
+                >
+                  {isStreamingTail ? (
+                    <StreamingMarkdown content={block.content} />
+                  ) : (
+                    <MarkdownContent content={block.content} />
+                  )}
+                </div>
+              );
+            }
             return (
-              <div
-                key={`text-${index}`}
-                className={`message-markdown${isStreamingTail ? ' streaming-content' : ''}`}
-              >
-                {isStreamingTail ? (
-                  <StreamingMarkdown content={block.content} />
-                ) : (
-                  <MarkdownContent content={block.content} />
-                )}
-              </div>
+              <ToolDisclosure
+                key={block.tool.call_id}
+                agentId={agentId}
+                tool={block.tool}
+                onApprove={(decision) => handleApprove(block.tool, decision)}
+              />
             );
-          }
-          return (
-            <ToolDisclosure
-              key={block.tool.call_id}
-              agentId={agentId}
-              tool={block.tool}
-              onApprove={(decision) => handleApprove(block.tool, decision)}
-            />
-          );
-        })
+          })}
+          {waitingAfterTool ? <TypingIndicator label={t('chat.sending')} /> : null}
+        </>
       ) : message.content ? (
         <div className={`message-markdown${message.status === 'streaming' ? ' streaming-content' : ''}`}>
           {message.status === 'streaming' ? (
@@ -681,6 +704,7 @@ function MessageContent({
           )}
         </div>
       ) : null}
+      {showRetryStatus && retryStatus ? <RetryStatusIndicator retryStatus={retryStatus} /> : null}
       <Dialog
         open={Boolean(previewAttachment)}
         title={previewAttachment?.name || t('chat.imagePreview')}
@@ -709,6 +733,30 @@ function TypingIndicator({ label }: { label: string }) {
       <span />
       <span />
       <span />
+    </div>
+  );
+}
+
+function RetryStatusIndicator({ retryStatus }: { retryStatus: RetryStatus }) {
+  const { t } = useI18n();
+  const retryKind = classifyRetryReason(retryStatus.reason);
+  const label = t(`chat.retryingByReason.${retryKind}`);
+  return (
+    <div className="message-retry-status" role="status" aria-label={label}>
+      <span className="message-retry-spinner" aria-hidden="true">
+        <LoaderCircle size={14} />
+      </span>
+      <div className="message-retry-copy">
+        <div className="message-retry-heading">
+          <span className="message-retry-title">{label}</span>
+          <span className="message-retry-progress">
+            {retryStatus.attempt}/{retryStatus.maxAttempts}
+          </span>
+        </div>
+        <span className="message-retry-reason" title={retryStatus.reason}>
+          {retryStatus.reason}
+        </span>
+      </div>
     </div>
   );
 }

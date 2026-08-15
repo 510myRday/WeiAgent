@@ -5,15 +5,14 @@ use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::sql_util::{
-    bool_to_i64, i64_to_bool, i64_to_u16, i64_to_u32, i64_to_u64, now_rfc3339,
-    parse_datetime, parse_optional_datetime, u64_to_i64, usize_to_i64,
+    bool_to_i64, i64_to_bool, i64_to_u16, i64_to_u32, i64_to_u64, now_rfc3339, parse_datetime,
+    parse_optional_datetime, u64_to_i64, usize_to_i64,
 };
 use uuid::Uuid;
 
 use crate::domain::tools::{
-    MAX_TASK_PLAN_PROGRESS_INTERVAL,
-    TaskPlanningToolOverrides, TerminalToolOverrides, WebContentExtractionConfig,
-    WebSearchKeyOperation,
+    MAX_TASK_PLAN_PROGRESS_INTERVAL, TaskPlanningToolOverrides, TerminalToolOverrides,
+    WebContentExtractionConfig, WebSearchKeyOperation,
 };
 use crate::{
     domain::{
@@ -29,7 +28,6 @@ use crate::{
 
 // Migration versions share one application-wide namespace with conversations
 // and provider migrations, so task planning must use the next free version.
-
 
 impl Store {
     pub(super) async fn initialize_tool_settings(&self) -> AppResult<()> {
@@ -391,8 +389,6 @@ fn normalize_key_status_slots(config: &mut AgentToolsConfig) -> bool {
     }
     changed
 }
-
-
 
 fn compact_default_exists(conn: &Connection) -> AppResult<bool> {
     Ok(conn

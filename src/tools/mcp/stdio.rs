@@ -8,7 +8,6 @@ use std::{
 };
 
 use serde_json::{Value, json};
-use uuid::Uuid;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::Command,
@@ -16,11 +15,12 @@ use tokio::{
     task::JoinHandle,
     time::{Duration, timeout},
 };
+use uuid::Uuid;
 
 use super::auth::McpAuthRuntime;
 use super::env::expand_mcp_value;
 use super::protocol::{
-    MAX_STDIO_FRAME_BYTES, STDIO_MAX_RESPONSE_WAIT_ITERATIONS, McpHandshake, McpRpcResponse,
+    MAX_STDIO_FRAME_BYTES, McpHandshake, McpRpcResponse, STDIO_MAX_RESPONSE_WAIT_ITERATIONS,
     format_mcp_stderr, mcp_initialize_request, mcp_timeout_error, mcp_timeout_ms,
     parse_mcp_handshake, should_try_stdio_protocol_fallback,
 };
@@ -614,7 +614,7 @@ pub(super) fn resolve_windows_script(program: &str, path: Option<&OsStr>) -> Opt
 #[cfg(windows)]
 pub(super) fn stdio_launch_debug(program: &str, path: Option<&OsStr>) -> String {
     let resolved = resolve_windows_script(program, path)
-        .map(|value| value.display().to_string())
+        .map(|value| crate::fsutil::display_path(&value))
         .unwrap_or_else(|| "<not resolved>".to_string());
     format!(
         "resolved_script={resolved:?}; comspec={:?}",

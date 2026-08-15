@@ -567,6 +567,7 @@ fn agent_event_to_sse(event: AgentRunEvent) -> Event {
     match event {
         AgentRunEvent::User(message) => json_event("user", &message),
         AgentRunEvent::Assistant(message) => json_event("assistant", &message),
+        AgentRunEvent::Usage(usage) => json_event("usage", &usage),
         AgentRunEvent::Delta(delta) => json_event("delta", &serde_json::json!({ "text": delta })),
         AgentRunEvent::ReasoningDelta(delta) => {
             json_event("reasoning_delta", &serde_json::json!({ "text": delta }))

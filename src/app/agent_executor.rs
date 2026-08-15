@@ -47,6 +47,7 @@ pub enum AgentRunPhase {
 pub enum AgentRunEvent {
     User(ChatMessage),
     Assistant(ChatMessage),
+    Usage(ModelUsage),
     Delta(String),
     ReasoningDelta(String),
     Phase {
@@ -313,6 +314,7 @@ pub async fn run_agent(
 
         let tool_calls = output.output.tool_calls;
         let history_tool_calls = sanitize_tool_calls_for_history(&tool_calls);
+        let usage = model_usage(runtime.prepared, &output.output.usage);
         let assistant_message = ChatMessage {
             id: output.message_id,
             agent_id: runtime.prepared.agent.id,
@@ -332,12 +334,13 @@ pub async fn run_agent(
             }),
             tool_call_id: None,
             attachments: Vec::new(),
-            usage: Some(model_usage(runtime.prepared, &output.output.usage)),
+            usage: Some(usage.clone()),
         };
         state
             .store
             .upsert_conversation_message(user_message.conversation_id, assistant_message.clone())
             .await?;
+        emit(&events, AgentRunEvent::Usage(usage)).await?;
 
         if tool_calls.is_empty() {
             emit(&events, AgentRunEvent::Assistant(assistant_message.clone())).await?;
@@ -396,6 +399,9 @@ pub async fn run_agent(
                 return Err(error);
             }
         };
+    if let Some(usage) = summary.usage.clone() {
+        emit(&events, AgentRunEvent::Usage(usage)).await?;
+    }
     emit(&events, AgentRunEvent::Assistant(summary.clone())).await?;
     emit(&events, AgentRunEvent::Done).await?;
     Ok(())
@@ -1550,8 +1556,8 @@ async fn emit(events: &Option<mpsc::Sender<AgentRunEvent>>, event: AgentRunEvent
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::tool_result::trim_chars;
+    use super::*;
     use serde_json::json;
 
     #[test]

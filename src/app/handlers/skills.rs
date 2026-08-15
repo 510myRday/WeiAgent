@@ -37,13 +37,6 @@ pub struct SkillIconRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SkillUpdateRequest {
-    pub source_url: String,
-    #[serde(default)]
-    pub proxy_id: Option<Uuid>,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct SkillImportRequest {
     #[serde(default)]
     pub source: Option<String>,
@@ -58,6 +51,11 @@ pub struct SkillImportRequest {
 }
 
 pub async fn list_skills(State(state): State<AppState>) -> AppResult<Json<SkillSettings>> {
+    Ok(Json(state.skill_manager.settings(None).await?))
+}
+
+pub async fn reload_skills(State(state): State<AppState>) -> AppResult<Json<SkillSettings>> {
+    state.skill_manager.refresh().await?;
     Ok(Json(state.skill_manager.settings(None).await?))
 }
 
@@ -115,8 +113,8 @@ pub async fn import_skill(
         let task_id = task.id;
         async move {
             manager
-            .run_import_task(task_id, source, proxy_url, group_id)
-            .await;
+                .run_import_task(task_id, source, proxy_url, group_id)
+                .await;
         }
     });
     Ok(Json(task))
@@ -186,64 +184,6 @@ pub async fn update_skill_icon(
     Ok(Json(state.skill_manager.settings(None).await?))
 }
 
-pub async fn update_skill(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-    Json(request): Json<SkillUpdateRequest>,
-) -> AppResult<Json<SkillImportTask>> {
-    let name = name.trim().to_ascii_lowercase();
-    let settings = state.skill_manager.settings(None).await?;
-    let skill = settings
-        .defaults
-        .into_iter()
-        .find(|skill| skill.name == name)
-        .ok_or(AppError::NotFound)?;
-    let source = request.source_url.trim().to_string();
-    if source.is_empty() || !source.contains("://") {
-        return Err(AppError::BadRequest(
-            "Skill source URL is required".to_string(),
-        ));
-    }
-    let Some(stored_source) = skill.source_url else {
-        return Err(AppError::BadRequest(
-            "This Skill was imported from a local path".to_string(),
-        ));
-    };
-    if stored_source != source {
-        return Err(AppError::BadRequest(
-            "Skill source URL does not match the saved source".to_string(),
-        ));
-    }
-    let proxy_url = if let Some(proxy_id) = request.proxy_id {
-        let proxy = state
-            .store
-            .list_ip_proxies()
-            .await?
-            .into_iter()
-            .find(|proxy| proxy.id == proxy_id)
-            .ok_or_else(|| {
-                AppError::BadRequest("selected Skill download proxy was not found".to_string())
-            })?;
-        if !proxy.enabled {
-            return Err(AppError::BadRequest(
-                "selected Skill download proxy is disabled".to_string(),
-            ));
-        }
-        Some(proxy.url)
-    } else {
-        None
-    };
-    let task = state
-        .skill_manager
-        .create_import_task(&source, "network", None)
-        .await?;
-    let manager = state.skill_manager.clone();
-    tokio::spawn(async move {
-        manager.run_import_task(task.id, source, proxy_url, None).await;
-    });
-    Ok(Json(task))
-}
-
 pub async fn delete_skill(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -278,7 +218,10 @@ pub async fn rename_skill_group(
     Path(group_id): Path<String>,
     Json(request): Json<RenameSkillGroupRequest>,
 ) -> AppResult<Json<SkillSettings>> {
-    state.skill_manager.rename_group(&group_id, &request.name).await?;
+    state
+        .skill_manager
+        .rename_group(&group_id, &request.name)
+        .await?;
     Ok(Json(state.skill_manager.settings(None).await?))
 }
 

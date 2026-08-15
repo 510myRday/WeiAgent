@@ -54,14 +54,7 @@ fn resolve_path_for_prompt(path: &Path) -> String {
                 .unwrap_or_else(|_| path.to_path_buf())
         }
     });
-    let value = absolute.display().to_string();
-    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{rest}")
-    } else if let Some(rest) = value.strip_prefix(r"\\?\") {
-        rest.to_string()
-    } else {
-        value
-    }
+    crate::fsutil::display_path(&absolute)
 }
 
 #[cfg(test)]

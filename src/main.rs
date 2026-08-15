@@ -1,4 +1,5 @@
 mod app;
+mod cli;
 mod config;
 mod domain;
 mod error;
@@ -8,15 +9,19 @@ mod image_util;
 mod llm;
 mod skills;
 mod storage;
-mod textutil;
 #[cfg(test)]
 mod test_support;
+mod textutil;
 mod tools;
 
 use std::{io::ErrorKind, process::Stdio, sync::Arc};
 
 use app::{ApiSecurity, AppState, build_router, build_router_dev};
-use config::{AppConfig, log_level_filter};
+use clap::Parser;
+use config::{
+    AppConfig, acquire_service_instance, log_level_filter, remove_runtime_api_token,
+    write_runtime_api_token,
+};
 use error::{AppError, AppResult};
 use llm::registry::DefaultLlmRegistry;
 use storage::{LlmLogger, Store};
@@ -27,8 +32,19 @@ use tokio::{
 
 #[tokio::main]
 async fn main() -> AppResult<()> {
-    let is_dev = std::env::args().any(|arg| arg == "dev");
+    let cli = cli::Cli::parse();
+    if !cli.is_server_command() {
+        return cli.run().await;
+    }
+
+    let is_dev = cli.is_dev();
+    cli.apply_server_environment()?;
     let config = AppConfig::load(is_dev).await?;
+
+    let mut settings = config.settings.clone();
+    cli.apply_settings(&mut settings)?;
+    config::validate_settings(&settings)?;
+    let config = AppConfig { settings, ..config };
 
     let log_filter = format!(
         "{},html5ever=error",
@@ -37,7 +53,29 @@ async fn main() -> AppResult<()> {
     tracing_subscriber::fmt().with_env_filter(log_filter).init();
 
     let addr = config.socket_addr()?;
+    let _instance_guard = acquire_service_instance(
+        &config.data_dir,
+        addr,
+        if is_dev { "development" } else { "production" },
+    )
+    .await?;
+    let listener = TcpListener::bind(addr).await.map_err(|error| {
+        if error.kind() == ErrorKind::AddrInUse {
+            AppError::AddressInUse(addr)
+        } else {
+            AppError::Storage(error)
+        }
+    })?;
     let api_security = Arc::new(ApiSecurity::new(addr, is_dev));
+    write_runtime_api_token(&config.data_dir, api_security.token()).await?;
+    // Commands launched through the built-in terminal should target this exact
+    // service instance instead of guessing between development and production
+    // data directories.
+    unsafe {
+        std::env::set_var("WEIAGENT_API_TOKEN", api_security.token());
+        std::env::set_var("WEIAGENT_DATA_DIR", &config.data_dir);
+        std::env::set_var("WEIAGENT_SERVER_URL", format!("http://{addr}"));
+    }
     let store = Arc::new(Store::new(&config.data_dir).await?);
     let database = store.database();
     let tool_defaults = store.read_tool_defaults().await?;
@@ -93,13 +131,6 @@ async fn main() -> AppResult<()> {
     } else {
         build_router(state)
     };
-    let listener = TcpListener::bind(addr).await.map_err(|error| {
-        if error.kind() == ErrorKind::AddrInUse {
-            AppError::AddressInUse(addr)
-        } else {
-            AppError::Storage(error)
-        }
-    })?;
     let _vite_child = if is_dev {
         Some(start_vite_dev_server(api_security.token()).await?)
     } else {
@@ -121,6 +152,7 @@ async fn main() -> AppResult<()> {
         "LLM logger stopped"
     );
     database.shutdown().await?;
+    remove_runtime_api_token(&config.data_dir).await?;
 
     Ok(())
 }

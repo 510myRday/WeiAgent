@@ -566,7 +566,6 @@ mod tests {
     }
 }
 
-
 const API_KEY_SEPARATOR: char = '\n';
 
 pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
@@ -738,4 +737,3 @@ fn row_to_provider(row: ProviderRow) -> AppResult<ModelProvider> {
         updated_at,
     })
 }
-

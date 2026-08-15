@@ -7,4 +7,6 @@ pub mod jina;
 pub mod support;
 pub mod tavily;
 
-pub use dispatch::{GrokDispatch, classify_key_status, dispatch_extract, dispatch_probe, dispatch_search};
+pub use dispatch::{
+    GrokDispatch, classify_key_status, dispatch_extract, dispatch_probe, dispatch_search,
+};

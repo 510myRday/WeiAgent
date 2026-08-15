@@ -31,6 +31,8 @@ pub struct SkillManifest {
     #[serde(default)]
     pub group_id: Option<String>,
     #[serde(default)]
+    pub is_builtin: bool,
+    #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
     pub icon_url: Option<String>,
@@ -66,6 +68,8 @@ pub struct SkillGroupState {
     pub enabled: bool,
     pub global_override: Option<bool>,
     pub agent_override: Option<bool>,
+    #[serde(default)]
+    pub is_builtin: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

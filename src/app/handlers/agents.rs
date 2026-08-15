@@ -17,6 +17,14 @@ pub async fn list_agents(State(state): State<AppState>) -> AppResult<Json<Vec<Ag
     Ok(Json(state.store.list_agents().await?))
 }
 
+pub async fn read_agent(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+) -> AppResult<Json<AgentResponse>> {
+    let agent = state.store.get_agent(agent_id).await?;
+    Ok(Json(AgentResponse::from_agent(&agent)))
+}
+
 pub async fn create_agent(
     State(state): State<AppState>,
     Json(request): Json<CreateAgentRequest>,

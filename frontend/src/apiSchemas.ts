@@ -18,6 +18,7 @@ import type {
   AgentRun,
   ChatMessage,
   ConversationMessagePage,
+  ModelUsage,
   StreamEvent,
 } from './types';
 
@@ -206,7 +207,7 @@ export function parseChatMessage(value: unknown): ChatMessage {
 }
 
 export function parseJsonStreamEvent(
-  event: 'user' | 'assistant' | 'phase' | 'retry' | 'tool_call_started' | 'tool_call_args_delta' | 'tool_call' | 'tool_result' | 'approval_required',
+  event: 'user' | 'assistant' | 'usage' | 'phase' | 'retry' | 'tool_call_started' | 'tool_call_args_delta' | 'tool_call' | 'tool_result' | 'approval_required',
   data: string,
   sequence?: number,
 ): StreamEvent {
@@ -215,6 +216,8 @@ export function parseJsonStreamEvent(
     case 'user':
     case 'assistant':
       return { event, data: parseChatMessage(parsed), sequence };
+    case 'usage':
+      return { event, data: parse(modelUsageSchema, parsed) as ModelUsage, sequence };
     case 'phase': {
       const { call_id, ...phaseData } = parse(phaseEventDataSchema, parsed);
       return {

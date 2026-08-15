@@ -2,16 +2,14 @@ use axum::{Json, extract::State};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use crate::{
-    app::AppState,
-    domain::{
-        WebSearchKeyStatusRecord, WebSearchProviderKind, WebSearchSourceConfig,
-    },
-    error::{AppError, AppResult},
-};
 use crate::domain::tools::{WebSearchKeyOperation, WebSearchKeyStatusUpdate, mask_api_key};
 use crate::tools::web_search::providers::{GrokDispatch, dispatch_probe, grok_support};
 use crate::tools::web_search::types::{ProviderSearchRequest, SearchMode};
+use crate::{
+    app::AppState,
+    domain::{WebSearchKeyStatusRecord, WebSearchProviderKind, WebSearchSourceConfig},
+    error::{AppError, AppResult},
+};
 
 #[derive(Debug, Deserialize)]
 pub struct CheckWebSearchKeysRequest {
@@ -287,11 +285,9 @@ pub async fn check_web_search_keys(
     } else {
         None
     };
-    let control_client = crate::tools::web_search::client_cache::control_client(
-        control_timeout,
-        control_proxy,
-    )
-    .map_err(crate::error::AppError::BadRequest)?;
+    let control_client =
+        crate::tools::web_search::client_cache::control_client(control_timeout, control_proxy)
+            .map_err(crate::error::AppError::BadRequest)?;
     let grok_client = if provider == WebSearchProviderKind::Grok {
         Some(grok_support::build_emulated_client(timeout, proxy_url))
     } else {
@@ -350,10 +346,8 @@ pub async fn check_web_search_keys(
                 let (status, detail) = match search_result {
                     Ok(_) => ("normal".to_string(), "request succeeded".to_string()),
                     Err(detail) => {
-                        let status = crate::tools::web_search::classify_key_status(
-                            provider,
-                            &detail,
-                        );
+                        let status =
+                            crate::tools::web_search::classify_key_status(provider, &detail);
                         (status, detail)
                     }
                 };
@@ -460,10 +454,7 @@ mod tests {
             .into_iter()
             .find(|source| source.id == "grok")
             .expect("default Grok source");
-        source.api_keys = vec![
-            "key-a-same".to_string(),
-            "key-b-same".to_string(),
-        ];
+        source.api_keys = vec!["key-a-same".to_string(), "key-b-same".to_string()];
 
         let request = DeleteWebSearchKeyRequest {
             source_id: "grok".to_string(),

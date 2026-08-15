@@ -241,7 +241,6 @@ pub(super) fn add_planning_id_parameter(definition: &mut ToolDefinition) {
     }
 }
 
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn terminal_request(
     command: &str,
@@ -300,30 +299,20 @@ pub(super) fn unsupported_host_shell_syntax(command: &str) -> Option<String> {
     None
 }
 
-pub(super) fn configured_working_directories_guidance(config: &AgentToolsConfig) -> String {
-    if config.terminal.allowed_cwd_roots.is_empty() {
-        return String::new();
-    }
-    let directories = serde_json::to_string(&config.terminal.allowed_cwd_roots)
-        .unwrap_or_else(|_| "[]".to_string());
-    format!(
-        " The user configured these additional working directories: {directories}. Treat them as known candidate locations when relevant to the request. They do not replace the WeiAgent default workspace and are not an exhaustive list of paths this tool may access; approved or full-access operations can use other locations. Set cwd explicitly to make one of these directories the base for commands or relative paths; absolute paths may refer to them directly. Omitting cwd always uses the WeiAgent default workspace."
-    )
-}
-
-pub(super) fn build_execute_terminal_description(config: &AgentToolsConfig) -> String {
+pub(super) fn build_execute_terminal_description(_config: &AgentToolsConfig) -> String {
     let shell = crate::tools::shell::selected_host_shell();
     let host_guidance = shell.tool_guidance();
     let examples = shell.command_examples();
-    let working_directories = configured_working_directories_guidance(config);
 
     format!(
-        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. WeiAgent includes a private ripgrep binary in released builds and adds it to the command PATH; if `rg` is unavailable, use the selected shell's built-in file search or grep fallback. Prefer multi_edit_file for source/config edits (including outside-root paths via sandbox_permissions=require_escalated + justification) instead of rewriting files through shell. Selected shell: {}. {host_guidance} {examples} The server enforces its current execution policy; request elevated access with sandbox_permissions=require_escalated and a justification when needed. Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again.{working_directories}",
+        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. WeiAgent includes a private ripgrep binary in released builds and adds it to the command PATH; if `rg` is unavailable, use the selected shell's built-in file search or grep fallback. Prefer multi_edit_file for source/config edits (including outside-root paths via sandbox_permissions=require_escalated + justification) instead of rewriting files through shell. Selected shell: {}. {host_guidance} {examples} The server enforces its current execution policy; request elevated access with sandbox_permissions=require_escalated and a justification when needed. Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again. Omit cwd to use the WeiAgent default workspace; relative paths resolve from it. The server checks requested cwd and target paths against its configured permission roots and requests approval when required.",
         shell.display_name()
     )
 }
 
-pub(super) fn frozen_terminal_config(context: &ToolExecutionContext) -> crate::domain::TerminalToolConfig {
+pub(super) fn frozen_terminal_config(
+    context: &ToolExecutionContext,
+) -> crate::domain::TerminalToolConfig {
     context.tools_config.terminal.clone()
 }
 
@@ -447,10 +436,8 @@ impl Drop for ApprovalRegistrationGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ToolRegistry, normalize_optional_cwd, unsupported_host_shell_syntax,
-    };
     use super::terminal::MAX_TERMINAL_COMMAND_BYTES;
+    use super::{ToolRegistry, normalize_optional_cwd, unsupported_host_shell_syntax};
     use crate::domain::{AgentToolsConfig, TaskPlanItem, TaskPlanItemStatus, ToolResult};
     use crate::tools::terminal::MAX_SESSION_WAIT_MS;
     use serde_json::json;
@@ -557,31 +544,38 @@ mod tests {
     }
 
     #[test]
-    fn terminal_tool_schemas_include_configured_working_directories_as_guidance() {
+    fn terminal_tool_schemas_do_not_expose_configured_working_directories() {
         let mut config = AgentToolsConfig::default();
         config.terminal.enabled = true;
         config.terminal.allowed_cwd_roots = vec![
             "D:/Projects/alpha".to_string(),
             "D:/Clients/beta".to_string(),
         ];
-        let encoded_directories =
-            serde_json::to_string(&config.terminal.allowed_cwd_roots).unwrap();
-        let definitions = ToolRegistry::with_builtin_tools()
+        let registry = ToolRegistry::with_builtin_tools();
+        let default_definitions = registry
+            .definitions(&AgentToolsConfig::default())
+            .unwrap();
+        let configured_definitions = registry
             .definitions(&config)
             .unwrap();
 
         for tool_name in ["execute_terminal", "multi_edit_file"] {
-            let description = &definitions
+            let default_description = &default_definitions
                 .iter()
                 .find(|definition| definition.function.name == tool_name)
                 .unwrap()
                 .function
                 .description;
-            assert!(description.contains(&encoded_directories));
-            assert!(description.contains("known candidate locations"));
-            assert!(description.contains("do not replace the WeiAgent default workspace"));
-            assert!(description.contains("not an exhaustive list"));
-            assert!(description.contains("Omitting cwd always uses"));
+            let configured_description = &configured_definitions
+                .iter()
+                .find(|definition| definition.function.name == tool_name)
+                .unwrap()
+                .function
+                .description;
+            assert_eq!(default_description, configured_description);
+            assert!(!configured_description.contains("D:/Projects/alpha"));
+            assert!(!configured_description.contains("D:/Clients/beta"));
+            assert!(!configured_description.contains("known candidate locations"));
         }
     }
 
@@ -966,10 +960,7 @@ mod tests {
         };
         assert!(reason.contains(plan.public_id()));
         assert_eq!(code.as_deref(), Some("PlanningRequired"));
-        assert_eq!(
-            details.unwrap()["active_planning_id"],
-            plan.public_id()
-        );
+        assert_eq!(details.unwrap()["active_planning_id"], plan.public_id());
 
         let other_conversation = Uuid::new_v4();
         let result = registry
@@ -983,10 +974,7 @@ mod tests {
             panic!("expected cross-conversation planning id to be blocked");
         };
         assert_eq!(code.as_deref(), Some("PlanningIdInvalid"));
-        assert_eq!(
-            details.unwrap()["provided_planning_id"],
-            plan.public_id()
-        );
+        assert_eq!(details.unwrap()["provided_planning_id"], plan.public_id());
 
         let mut disabled_context = context(conversation_id);
         disabled_context.tools_config.task_planning.enabled = false;

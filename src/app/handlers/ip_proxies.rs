@@ -15,7 +15,7 @@ use crate::{
         IpProxyQuality, IpProxyQualityProbe, IpProxyQualityStatus, IpProxyQualityTestUpdate,
         IpProxyStatus, IpProxyTestUpdate, UpdateIpProxyRequest,
     },
-    error::AppResult,
+    error::{AppError, AppResult},
 };
 
 const PROXY_GEO_TEST_URL: &str = "http://ip-api.com/json/?lang=zh-CN";
@@ -30,6 +30,20 @@ const QUALITY_GROK_URL: &str = "https://api.x.ai/v1/models";
 
 pub async fn list_ip_proxies(State(state): State<AppState>) -> AppResult<Json<Vec<IpProxy>>> {
     Ok(Json(state.store.list_ip_proxies().await?))
+}
+
+pub async fn read_ip_proxy(
+    State(state): State<AppState>,
+    Path(proxy_id): Path<Uuid>,
+) -> AppResult<Json<IpProxy>> {
+    state
+        .store
+        .list_ip_proxies()
+        .await?
+        .into_iter()
+        .find(|proxy| proxy.id == proxy_id)
+        .map(Json)
+        .ok_or(AppError::NotFound)
 }
 
 pub async fn create_ip_proxy(
@@ -82,7 +96,6 @@ pub async fn test_ip_proxy(
         .await?;
     Ok(Json(updated.remove(0)))
 }
-
 
 fn build_proxy_probe_client(proxy_url: &str) -> Result<reqwest::Client, String> {
     crate::http_client::build_reqwest_client(

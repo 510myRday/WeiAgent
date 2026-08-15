@@ -41,6 +41,20 @@ pub async fn list_mcp_servers(State(state): State<AppState>) -> AppResult<Json<V
     Ok(Json(servers))
 }
 
+pub async fn read_mcp_server(
+    State(state): State<AppState>,
+    Path(server_id): Path<Uuid>,
+) -> AppResult<Json<McpServer>> {
+    state
+        .mcp_manager
+        .list_servers()
+        .await?
+        .into_iter()
+        .find(|server| server.id == server_id)
+        .map(|server| Json(server.redacted()))
+        .ok_or(AppError::NotFound)
+}
+
 pub async fn read_mcp_server_secrets(
     State(state): State<AppState>,
     Path(server_id): Path<Uuid>,

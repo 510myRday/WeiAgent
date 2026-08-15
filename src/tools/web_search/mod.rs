@@ -17,9 +17,9 @@ use crate::domain::{
 use self::key_pool::key_attempt_order;
 use self::providers::{GrokDispatch, dispatch_search, support::truncate};
 use self::types::{
-    AggregatedSearchResult, ProviderSearchOutput, ProviderSearchRequest,
-    SearchHitKind, SearchMode, SearchSourceDescriptor, SourceRunSummary, WebSearchOutput,
-    merge_status_update, sanitize_error_message,
+    AggregatedSearchResult, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind, SearchMode,
+    SearchSourceDescriptor, SourceRunSummary, WebSearchOutput, merge_status_update,
+    sanitize_error_message,
 };
 
 pub mod client_cache;

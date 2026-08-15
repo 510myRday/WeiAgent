@@ -21,6 +21,7 @@ use crate::{
         SkillGroupState, SkillImportTask, SkillManifest, SkillOverrides, SkillSettings, ToolResult,
     },
     error::{AppError, AppResult},
+    fsutil,
     llm::types::{FunctionDefinition, ToolDefinition},
     storage::Store,
     tools::registry::{AgentTool, ToolExecutionContext},
@@ -31,21 +32,45 @@ use super::{
     path_policy::{MAX_SKILL_FILE_BYTES, relative_file},
 };
 
+use crate::storage::{BUILTIN_SKILL_GROUP_ID, BUILTIN_WEIAGENT_CLI_SKILL_NAME};
+
+const BUILTIN_WEIAGENT_CLI_SKILL: &str = include_str!("builtin/weiagentcli/SKILL.md");
+const BUILTIN_WEIAGENT_CLI_FILES: &[(&str, &str)] = &[
+    (
+        "references/agents.md",
+        include_str!("builtin/weiagentcli/references/agents.md"),
+    ),
+    (
+        "references/providers-models.md",
+        include_str!("builtin/weiagentcli/references/providers-models.md"),
+    ),
+    (
+        "references/skills.md",
+        include_str!("builtin/weiagentcli/references/skills.md"),
+    ),
+    (
+        "references/mcp.md",
+        include_str!("builtin/weiagentcli/references/mcp.md"),
+    ),
+    (
+        "references/proxies.md",
+        include_str!("builtin/weiagentcli/references/proxies.md"),
+    ),
+    (
+        "references/cli-reference.md",
+        include_str!("builtin/weiagentcli/references/cli-reference.md"),
+    ),
+];
+const LEGACY_BUILTIN_SKILL_NAME: &str = "client";
+
 #[cfg(windows)]
 fn display_path(path: &Path) -> String {
-    let value = path.to_string_lossy().replace('/', "\\");
-    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
-        return format!(r"\\{rest}");
-    }
-    if let Some(rest) = value.strip_prefix(r"\\?\") {
-        return rest.to_string();
-    }
-    value
+    fsutil::display_path(path)
 }
 
 #[cfg(not(windows))]
 fn display_path(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    fsutil::display_path(path)
 }
 
 pub const SKILLS_LIST_TOOL_NAME: &str = "skills_list";
@@ -177,8 +202,17 @@ impl SkillManager {
         let root = store.data_dir.join("skills");
         fs::create_dir_all(&root).await?;
         let root = fs::canonicalize(root).await?;
+        store.ensure_builtin_skill_group().await?;
+        Self::migrate_legacy_builtin_skill(&root).await?;
+        Self::materialize_builtin_skill(&root).await?;
+        store
+            .update_skill_source(BUILTIN_WEIAGENT_CLI_SKILL_NAME, None)
+            .await?;
+        store
+            .update_skill_global_override(BUILTIN_WEIAGENT_CLI_SKILL_NAME, None)
+            .await?;
         let manager = Self {
-            store,
+            store: store.clone(),
             root,
             catalog: RwLock::new(Catalog::default()),
             import_tasks: RwLock::new(HashMap::new()),
@@ -187,8 +221,53 @@ impl SkillManager {
             change_version: AtomicU64::new(0),
         };
         manager.refresh().await?;
+        store
+            .set_skill_group(
+                BUILTIN_WEIAGENT_CLI_SKILL_NAME,
+                Some(BUILTIN_SKILL_GROUP_ID),
+            )
+            .await?;
         *manager.file_snapshot.write().await = manager.capture_file_snapshot().await?;
         Ok(manager)
+    }
+
+    async fn materialize_builtin_skill(root: &Path) -> AppResult<()> {
+        let builtin_root = root.join(BUILTIN_WEIAGENT_CLI_SKILL_NAME);
+        if fs::try_exists(&builtin_root).await? {
+            fs::remove_dir_all(&builtin_root).await?;
+        }
+        fs::create_dir_all(&builtin_root).await?;
+        crate::fsutil::write_atomic(&builtin_root.join("SKILL.md"), BUILTIN_WEIAGENT_CLI_SKILL)
+            .await?;
+        for (relative_path, content) in BUILTIN_WEIAGENT_CLI_FILES {
+            let path = builtin_root.join(relative_path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+            crate::fsutil::write_atomic(&path, content).await?;
+        }
+        Ok(())
+    }
+
+    async fn migrate_legacy_builtin_skill(root: &Path) -> AppResult<()> {
+        let legacy_root = root.join(LEGACY_BUILTIN_SKILL_NAME);
+        let builtin_root = root.join(BUILTIN_WEIAGENT_CLI_SKILL_NAME);
+        if fs::try_exists(&builtin_root).await? || !fs::try_exists(&legacy_root).await? {
+            return Ok(());
+        }
+        let legacy_file = legacy_root.join("SKILL.md");
+        let Ok(content) = fs::read_to_string(&legacy_file).await else {
+            return Ok(());
+        };
+        if !content.contains("name: client") || !content.contains("group: built-in") {
+            return Ok(());
+        }
+        fs::rename(&legacy_root, &builtin_root).await?;
+        let migrated = content.replacen("name: client", "name: weiagentcli", 1);
+        if migrated != content {
+            fs::write(builtin_root.join("SKILL.md"), migrated).await?;
+        }
+        Ok(())
     }
 
     pub fn start_monitor(self: Arc<Self>) {
@@ -365,7 +444,12 @@ impl SkillManager {
         Ok(())
     }
 
-    pub async fn create_import_task(&self, source: &str, kind: &str, group_id: Option<String>) -> AppResult<SkillImportTask> {
+    pub async fn create_import_task(
+        &self,
+        source: &str,
+        kind: &str,
+        group_id: Option<String>,
+    ) -> AppResult<SkillImportTask> {
         let source = source.trim();
         if source.is_empty() {
             return Err(AppError::BadRequest(
@@ -427,7 +511,7 @@ impl SkillManager {
                 Some(task_id),
                 group_id.as_deref(),
             )
-                .await
+            .await
         } else {
             self.import_directory_with_progress(&source, Some(task_id), group_id.as_deref())
                 .await
@@ -520,7 +604,9 @@ impl SkillManager {
             ));
         }
         if !looks_like_url(source) {
-            return self.import_directory_with_progress(source, task_id, group_id).await;
+            return self
+                .import_directory_with_progress(source, task_id, group_id)
+                .await;
         }
 
         let parsed = normalize_remote_source(source)?;
@@ -617,7 +703,8 @@ impl SkillManager {
                 self.update_import_task(task_id, "running", "installing", 85, None, false)
                     .await;
             }
-            self.finish_import(temporary.clone(), Some(source), group_id).await
+            self.finish_import(temporary.clone(), Some(source), group_id)
+                .await
         }
         .await;
 
@@ -634,6 +721,12 @@ impl SkillManager {
         group_id: Option<&str>,
     ) -> AppResult<()> {
         let manifest = parse_skill(temporary.clone()).await?;
+        if manifest.name == BUILTIN_WEIAGENT_CLI_SKILL_NAME {
+            let _ = fs::remove_dir_all(&temporary).await;
+            return Err(AppError::BadRequest(
+                "the built-in weiagentcli Skill cannot be replaced by an import".to_string(),
+            ));
+        }
         let destination = self.root.join(&manifest.name);
         if temporary == destination {
             self.refresh().await?;
@@ -690,7 +783,9 @@ impl SkillManager {
             .map(|manifest| manifest.name.clone())
             .collect::<Vec<_>>();
         drop(catalog);
-        self.store.ensure_skill_group_assignments(&known_skill_names).await?;
+        self.store
+            .ensure_skill_group_assignments(&known_skill_names)
+            .await?;
         let assignments = self.store.read_skill_group_assignments().await?;
         let assignments_by_skill = assignments
             .iter()
@@ -713,6 +808,8 @@ impl SkillManager {
             Some(id) => self.store.read_skill_agent_overrides(id).await?,
             None => SkillOverrides::default(),
         };
+        global.groups = normalize_group_overrides(global.groups, &groups_by_name);
+        agent.groups = normalize_group_overrides(agent.groups, &groups_by_name);
         let catalog = self.catalog.read().await;
         let mut defaults = Vec::new();
         let mut effective = Vec::new();
@@ -725,10 +822,14 @@ impl SkillManager {
                         id: group.id.clone(),
                         name: group.name.clone(),
                         sort_order: group.sort_order,
-                        skill_count: assignments.iter().filter(|item| item.group_id.as_deref() == Some(group.id.as_str())).count(),
+                        skill_count: assignments
+                            .iter()
+                            .filter(|item| item.group_id.as_deref() == Some(group.id.as_str()))
+                            .count(),
                         enabled: true,
                         global_override: None,
                         agent_override: None,
+                        is_builtin: group.id == BUILTIN_SKILL_GROUP_ID,
                     },
                 )
             })
@@ -743,19 +844,26 @@ impl SkillManager {
                 .and_then(|item| item.group_id.as_deref())
                 .and_then(|id| groups_by_id.get(id).copied());
             let agent_item = agent_id.and_then(|_| find_skill(&agent, &manifest.name));
+            let global_group_item = assigned_group.and_then(|group| find_group(&global, group));
+            let agent_group_item =
+                agent_id.and_then(|_| assigned_group.and_then(|group| find_group(&agent, group)));
+            let is_builtin = manifest.name == BUILTIN_WEIAGENT_CLI_SKILL_NAME;
             let enabled = agent_item
-                .or(global_item)
+                .or(agent_group_item)
+                .or(if is_builtin { None } else { global_item })
+                .or(if is_builtin { None } else { global_group_item })
                 .unwrap_or(true);
             let mut item = manifest.clone();
             item.group = assigned_group.map(|group| group.name.clone());
             item.group_id = assigned_group.map(|group| group.id.clone());
+            item.is_builtin = is_builtin;
             item.icon_url = icons.get(&manifest.name).cloned();
             item.source_url = sources.get(&manifest.name).cloned();
             item.enabled = enabled;
-            item.global_override = global_item;
-            item.group_override = None;
+            item.global_override = if is_builtin { None } else { global_item };
+            item.group_override = if is_builtin { None } else { global_group_item };
             item.agent_override = agent_item;
-            item.agent_group_override = None;
+            item.agent_group_override = agent_group_item;
             defaults.push(item.clone());
             if enabled {
                 effective.push(item.clone());
@@ -779,8 +887,6 @@ impl SkillManager {
         for item in &defaults {
             diagnostics.extend(item.diagnostics.clone());
         }
-        global.groups = normalize_group_overrides(global.groups, &groups_by_name);
-        agent.groups = normalize_group_overrides(agent.groups, &groups_by_name);
         let overrides = if agent_id.is_some() { agent } else { global };
         let mut group_values = groups.into_values().collect::<Vec<_>>();
         group_values.sort_by_key(|group| group.sort_order);
@@ -794,10 +900,32 @@ impl SkillManager {
             .collect::<HashMap<_, _>>();
         let sort_skills = |items: &mut Vec<SkillManifest>| {
             items.sort_by(|a, b| {
-                let a_group = a.group_id.as_deref().and_then(|id| group_order.get(id)).copied().unwrap_or(i64::MAX);
-                let b_group = b.group_id.as_deref().and_then(|id| group_order.get(id)).copied().unwrap_or(i64::MAX);
-                a_group.cmp(&b_group)
-                    .then_with(|| assignment_order.get(a.name.as_str()).copied().unwrap_or(i64::MAX).cmp(&assignment_order.get(b.name.as_str()).copied().unwrap_or(i64::MAX)))
+                let a_group = a
+                    .group_id
+                    .as_deref()
+                    .and_then(|id| group_order.get(id))
+                    .copied()
+                    .unwrap_or(i64::MAX);
+                let b_group = b
+                    .group_id
+                    .as_deref()
+                    .and_then(|id| group_order.get(id))
+                    .copied()
+                    .unwrap_or(i64::MAX);
+                a_group
+                    .cmp(&b_group)
+                    .then_with(|| {
+                        assignment_order
+                            .get(a.name.as_str())
+                            .copied()
+                            .unwrap_or(i64::MAX)
+                            .cmp(
+                                &assignment_order
+                                    .get(b.name.as_str())
+                                    .copied()
+                                    .unwrap_or(i64::MAX),
+                            )
+                    })
                     .then_with(|| a.name.cmp(&b.name))
             });
         };
@@ -832,28 +960,26 @@ impl SkillManager {
         self.store.reorder_skill_groups(ids).await
     }
 
-    pub async fn assign_skill_group(&self, skill_name: &str, group_id: Option<&str>) -> AppResult<()> {
+    pub async fn assign_skill_group(
+        &self,
+        skill_name: &str,
+        group_id: Option<&str>,
+    ) -> AppResult<()> {
         self.store.set_skill_group(skill_name, group_id).await
     }
 
-    pub async fn reorder_group_skills(&self, group_id: Option<&str>, skill_names: &[String]) -> AppResult<()> {
-        self.store.reorder_skill_group_items(group_id, skill_names).await
+    pub async fn reorder_group_skills(
+        &self,
+        group_id: Option<&str>,
+        skill_names: &[String],
+    ) -> AppResult<()> {
+        self.store
+            .reorder_skill_group_items(group_id, skill_names)
+            .await
     }
 
     fn display_path(path: &Path) -> String {
-        let value = path.display().to_string();
-
-        #[cfg(windows)]
-        {
-            if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
-                return format!(r"\\{rest}");
-            }
-            if let Some(rest) = value.strip_prefix(r"\\?\") {
-                return rest.to_string();
-            }
-        }
-
-        value
+        fsutil::display_path(path)
     }
 
     pub async fn content_from_manifest(
@@ -881,6 +1007,11 @@ impl SkillManager {
 
     pub async fn delete_skill(&self, name: &str) -> AppResult<()> {
         let name = name.trim().to_ascii_lowercase();
+        if name == BUILTIN_WEIAGENT_CLI_SKILL_NAME {
+            return Err(AppError::BadRequest(
+                "the built-in weiagentcli Skill cannot be deleted".to_string(),
+            ));
+        }
         let settings = self.settings(None).await?;
         let manifest = settings
             .defaults
@@ -1624,6 +1755,21 @@ fn find_skill(overrides: &SkillOverrides, name: &str) -> Option<bool> {
         .find(|item| item.name == name)
         .and_then(|item| item.enabled)
 }
+
+fn find_group(
+    overrides: &SkillOverrides,
+    group: &crate::storage::SkillGroupRecord,
+) -> Option<bool> {
+    overrides
+        .groups
+        .iter()
+        .find(|item| {
+            item.group_id.as_deref() == Some(group.id.as_str())
+                || item.group.eq_ignore_ascii_case(&group.name)
+        })
+        .and_then(|item| item.enabled)
+}
+
 fn normalize_group_overrides(
     groups: Vec<crate::domain::SkillGroupOverride>,
     by_name: &HashMap<String, &crate::storage::SkillGroupRecord>,
@@ -1727,8 +1873,9 @@ mod tests {
         let manager = SkillManager::new(store.clone()).await.unwrap();
 
         let settings = manager.settings(None).await.unwrap();
-        assert!(settings.defaults.is_empty());
-        assert!(settings.effective.is_empty());
+        assert_eq!(settings.defaults.len(), 1);
+        assert_eq!(settings.effective.len(), 1);
+        assert_eq!(settings.defaults[0].name, BUILTIN_WEIAGENT_CLI_SKILL_NAME);
         assert_eq!(settings.conflicts.len(), 1);
         assert_eq!(settings.conflicts[0].name, "same-name");
         assert_eq!(settings.conflicts[0].count, 2);
@@ -1771,7 +1918,8 @@ mod tests {
         manager.delete_skill("removable-skill").await.unwrap();
 
         let settings = manager.settings(None).await.unwrap();
-        assert!(settings.defaults.is_empty());
+        assert_eq!(settings.defaults.len(), 1);
+        assert_eq!(settings.defaults[0].name, BUILTIN_WEIAGENT_CLI_SKILL_NAME);
         assert!(settings.orphan_skills.is_empty());
         assert!(!data.path().join("skills").join("removable").exists());
         assert!(
@@ -1789,6 +1937,126 @@ mod tests {
                 .await
                 .unwrap()
                 .contains_key("removable-skill")
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_overwrites_existing_builtin_weiagentcli_content() {
+        let data = tempfile::tempdir().unwrap();
+        let skill_root = data
+            .path()
+            .join("skills")
+            .join(BUILTIN_WEIAGENT_CLI_SKILL_NAME);
+        fs::create_dir_all(&skill_root).await.unwrap();
+        let existing = "---\nname: weiagentcli\ndescription: User customized weiagentcli skill.\n---\nKeep this content.\n";
+        fs::write(skill_root.join("SKILL.md"), existing)
+            .await
+            .unwrap();
+        fs::write(skill_root.join("stale.txt"), "stale bundled file")
+            .await
+            .unwrap();
+
+        let store = Arc::new(Store::new(data.path()).await.unwrap());
+        let manager = SkillManager::new(store).await.unwrap();
+
+        assert_eq!(
+            fs::read_to_string(skill_root.join("SKILL.md"))
+                .await
+                .unwrap(),
+            BUILTIN_WEIAGENT_CLI_SKILL
+        );
+        assert!(!skill_root.join("stale.txt").exists());
+        for (relative_path, content) in BUILTIN_WEIAGENT_CLI_FILES {
+            assert_eq!(
+                fs::read_to_string(skill_root.join(relative_path))
+                    .await
+                    .unwrap(),
+                *content,
+                "bundled builtin Skill file was not materialized: {relative_path}"
+            );
+        }
+        let settings = manager.settings(None).await.unwrap();
+        let builtin = settings
+            .groups
+            .iter()
+            .find(|group| group.is_builtin)
+            .unwrap();
+        assert_eq!(builtin.id, BUILTIN_SKILL_GROUP_ID);
+        assert!(settings.defaults.iter().any(|skill| skill.is_builtin));
+    }
+
+    #[tokio::test]
+    async fn migrates_legacy_builtin_client_skill_to_weiagentcli() {
+        let data = tempfile::tempdir().unwrap();
+        let legacy_root = data.path().join("skills").join(LEGACY_BUILTIN_SKILL_NAME);
+        fs::create_dir_all(&legacy_root).await.unwrap();
+        fs::write(
+            legacy_root.join("SKILL.md"),
+            "---\nname: client\ndescription: Operate and understand the WeiAgent project.\ngroup: built-in\n---\ncustomized\n",
+        )
+        .await
+        .unwrap();
+
+        let store = Arc::new(Store::new(data.path()).await.unwrap());
+        let manager = SkillManager::new(store).await.unwrap();
+
+        assert!(!legacy_root.exists());
+        let migrated_path = data
+            .path()
+            .join("skills")
+            .join(BUILTIN_WEIAGENT_CLI_SKILL_NAME)
+            .join("SKILL.md");
+        let migrated = fs::read_to_string(migrated_path).await.unwrap();
+        assert!(migrated.contains("name: weiagentcli"));
+        assert!(
+            manager
+                .settings(None)
+                .await
+                .unwrap()
+                .defaults
+                .iter()
+                .any(|skill| skill.name == BUILTIN_WEIAGENT_CLI_SKILL_NAME)
+        );
+    }
+
+    #[tokio::test]
+    async fn builtin_skill_group_is_protected() {
+        let data = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(data.path()).await.unwrap());
+        let manager = SkillManager::new(store.clone()).await.unwrap();
+
+        assert!(
+            manager
+                .rename_group(BUILTIN_SKILL_GROUP_ID, "Changed")
+                .await
+                .is_err()
+        );
+        assert!(manager.delete_group(BUILTIN_SKILL_GROUP_ID).await.is_err());
+        assert!(
+            manager
+                .assign_skill_group("other-skill", Some(BUILTIN_SKILL_GROUP_ID))
+                .await
+                .is_err()
+        );
+        assert!(
+            manager
+                .assign_skill_group(BUILTIN_WEIAGENT_CLI_SKILL_NAME, None)
+                .await
+                .is_err()
+        );
+
+        let settings = manager.settings(None).await.unwrap();
+        assert!(
+            settings
+                .groups
+                .iter()
+                .any(|group| group.id == BUILTIN_SKILL_GROUP_ID && group.is_builtin)
+        );
+        assert!(
+            settings
+                .defaults
+                .iter()
+                .any(|skill| skill.name == BUILTIN_WEIAGENT_CLI_SKILL_NAME && skill.is_builtin)
         );
     }
 
@@ -1860,6 +2128,23 @@ mod tests {
         .await;
         let agent_id = store.list_agents().await.unwrap()[0].id;
         let manager = SkillManager::new(store.clone()).await.unwrap();
+        manager.create_group("development").await.unwrap();
+        let development_group = store
+            .list_skill_groups()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|group| group.name == "development")
+            .unwrap();
+        manager
+            .assign_skill_group("first-skill", Some(&development_group.id))
+            .await
+            .unwrap();
+        manager
+            .assign_skill_group("second-skill", Some(&development_group.id))
+            .await
+            .unwrap();
+        manager.settings(Some(agent_id)).await.unwrap();
 
         store
             .update_skill_global_group_override("development", Some(false))
@@ -1910,7 +2195,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_skills_default_to_disabled_for_existing_agents() {
+    async fn agent_skill_defaults_are_builtin_inherited_and_user_disabled() {
         let data = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(data.path()).await.unwrap());
         write_skill(
@@ -1924,8 +2209,21 @@ mod tests {
         let manager = SkillManager::new(store.clone()).await.unwrap();
 
         let initial = manager.settings(Some(agent_id)).await.unwrap();
-        assert!(initial.defaults[0].agent_override.is_none());
-        assert!(initial.defaults[0].enabled);
+        let builtin = initial
+            .defaults
+            .iter()
+            .find(|item| item.name == BUILTIN_WEIAGENT_CLI_SKILL_NAME)
+            .unwrap();
+        assert!(builtin.is_builtin);
+        assert!(builtin.agent_override.is_none());
+        assert!(builtin.enabled);
+        let first = initial
+            .defaults
+            .iter()
+            .find(|item| item.name == "first-skill")
+            .unwrap();
+        assert_eq!(first.agent_override, Some(false));
+        assert!(!first.enabled);
 
         write_skill(
             &data.path().join("skills"),
@@ -1964,6 +2262,59 @@ mod tests {
                 .unwrap()
                 .agent_override
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn builtin_skill_agent_override_can_disable_but_global_override_is_protected() {
+        let data = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(data.path()).await.unwrap());
+        let agent_id = store.list_agents().await.unwrap()[0].id;
+        let manager = SkillManager::new(store.clone()).await.unwrap();
+
+        store
+            .update_skill_global_override(BUILTIN_WEIAGENT_CLI_SKILL_NAME, Some(false))
+            .await
+            .unwrap();
+        store
+            .update_skill_agent_overrides(
+                agent_id,
+                SkillOverrides {
+                    skills: vec![SkillOverride {
+                        name: BUILTIN_WEIAGENT_CLI_SKILL_NAME.to_string(),
+                        enabled: Some(false),
+                    }],
+                    groups: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let settings = manager.settings(Some(agent_id)).await.unwrap();
+        let builtin = settings
+            .defaults
+            .iter()
+            .find(|item| item.name == BUILTIN_WEIAGENT_CLI_SKILL_NAME)
+            .unwrap();
+        assert!(builtin.is_builtin);
+        assert_eq!(builtin.agent_override, Some(false));
+        assert!(builtin.global_override.is_none());
+        assert!(!builtin.enabled);
+        assert!(
+            settings
+                .overrides
+                .skills
+                .iter()
+                .any(|item| item.name == BUILTIN_WEIAGENT_CLI_SKILL_NAME && item.enabled == Some(false))
+        );
+        assert!(
+            !store
+                .read_skill_global_overrides()
+                .await
+                .unwrap()
+                .skills
+                .iter()
+                .any(|item| item.name == BUILTIN_WEIAGENT_CLI_SKILL_NAME)
         );
     }
 }

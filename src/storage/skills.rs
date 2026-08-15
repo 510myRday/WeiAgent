@@ -16,6 +16,10 @@ use super::{
 const SKILLS_SCHEMA_VERSION: i64 = 18;
 const SKILL_GROUPS_SCHEMA_VERSION: i64 = 20;
 
+pub const BUILTIN_SKILL_GROUP_ID: &str = "builtin";
+pub const BUILTIN_SKILL_GROUP_NAME: &str = "内置";
+pub const BUILTIN_WEIAGENT_CLI_SKILL_NAME: &str = "weiagentcli";
+
 #[derive(Debug, Clone)]
 pub struct SkillGroupRecord {
     pub id: String,
@@ -116,6 +120,39 @@ impl Store {
         }).await
     }
 
+    pub async fn ensure_builtin_skill_group(&self) -> AppResult<()> {
+        let _guard = self.skill_lock.lock().await;
+        self.database
+            .call(|conn| {
+                let tx = conn.transaction()?;
+                let now = now_rfc3339();
+                tx.execute(
+                    "INSERT OR IGNORE INTO skill_groups(id, name, sort_order, created_at, updated_at) VALUES (?1, ?2, 0, ?3, ?3)",
+                    params![BUILTIN_SKILL_GROUP_ID, BUILTIN_SKILL_GROUP_NAME, now],
+                )?;
+                tx.execute(
+                    "UPDATE skill_groups SET name = ?1, sort_order = 0, updated_at = ?2 WHERE id = ?3",
+                    params![BUILTIN_SKILL_GROUP_NAME, now_rfc3339(), BUILTIN_SKILL_GROUP_ID],
+                )?;
+                let mut statement = tx.prepare(
+                    "SELECT id FROM skill_groups WHERE id <> ?1 ORDER BY sort_order, name COLLATE NOCASE",
+                )?;
+                let ids = statement
+                    .query_map([BUILTIN_SKILL_GROUP_ID], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                drop(statement);
+                for (index, id) in ids.iter().enumerate() {
+                    tx.execute(
+                        "UPDATE skill_groups SET sort_order = ?1, updated_at = ?2 WHERE id = ?3",
+                        params![(index + 1) as i64, now_rfc3339(), id],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .await
+    }
+
     pub async fn create_skill_group(&self, name: &str) -> AppResult<SkillGroupRecord> {
         let _guard = self.skill_lock.lock().await;
         let name = name.trim().to_string();
@@ -136,6 +173,9 @@ impl Store {
         let id = id.trim().to_string();
         let name = name.trim().to_string();
         self.database.call(move |conn| {
+            if id == BUILTIN_SKILL_GROUP_ID {
+                return Err(AppError::BadRequest("the built-in Skill group cannot be renamed".to_string()));
+            }
             if name.is_empty() { return Err(AppError::BadRequest("group name is required".to_string())); }
             let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM skill_groups WHERE name = ?1 COLLATE NOCASE AND id <> ?2)", params![name, id], |row| row.get(0))?;
             if exists { return Err(AppError::Conflict("a group with this name already exists".to_string())); }
@@ -151,15 +191,24 @@ impl Store {
     pub async fn read_skill_group_name(&self, id: &str) -> AppResult<String> {
         let _guard = self.skill_lock.lock().await;
         let id = id.trim().to_string();
-        self.database.call(move |conn| {
-            Ok(conn.query_row("SELECT name FROM skill_groups WHERE id = ?1", [id], |row| row.get(0))?)
-        }).await
+        self.database
+            .call(move |conn| {
+                Ok(
+                    conn.query_row("SELECT name FROM skill_groups WHERE id = ?1", [id], |row| {
+                        row.get(0)
+                    })?,
+                )
+            })
+            .await
     }
 
     pub async fn delete_skill_group(&self, id: &str) -> AppResult<()> {
         let _guard = self.skill_lock.lock().await;
         let id = id.trim().to_string();
         self.database.call(move |conn| {
+            if id == BUILTIN_SKILL_GROUP_ID {
+                return Err(AppError::BadRequest("the built-in Skill group cannot be deleted".to_string()));
+            }
             let tx = conn.transaction()?;
             let group_name = tx.query_row(
                 "SELECT name FROM skill_groups WHERE id = ?1",
@@ -179,14 +228,24 @@ impl Store {
     pub async fn reorder_skill_groups(&self, ids: &[String]) -> AppResult<()> {
         let _guard = self.skill_lock.lock().await;
         let ids = ids.to_vec();
-        self.database.call(move |conn| {
-            let tx = conn.transaction()?;
-            for (index, id) in ids.iter().enumerate() {
-                tx.execute("UPDATE skill_groups SET sort_order = ?1, updated_at = ?2 WHERE id = ?3", params![index as i64, now_rfc3339(), id])?;
-            }
-            tx.commit()?;
-            Ok(())
-        }).await
+        self.database
+            .call(move |conn| {
+                if ids.first().map(String::as_str) != Some(BUILTIN_SKILL_GROUP_ID) {
+                    return Err(AppError::BadRequest(
+                        "the built-in Skill group must remain first".to_string(),
+                    ));
+                }
+                let tx = conn.transaction()?;
+                for (index, id) in ids.iter().enumerate() {
+                    tx.execute(
+                        "UPDATE skill_groups SET sort_order = ?1, updated_at = ?2 WHERE id = ?3",
+                        params![index as i64, now_rfc3339(), id],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .await
     }
 
     pub async fn read_skill_group_assignments(&self) -> AppResult<Vec<SkillGroupAssignment>> {
@@ -221,6 +280,26 @@ impl Store {
         let skill_name = skill_name.trim().to_ascii_lowercase();
         let group_id = group_id.map(str::to_string);
         self.database.call(move |conn| {
+            if skill_name == BUILTIN_WEIAGENT_CLI_SKILL_NAME
+                && group_id.as_deref() != Some(BUILTIN_SKILL_GROUP_ID)
+            {
+                return Err(AppError::BadRequest("the built-in weiagentcli Skill must remain in the built-in group".to_string()));
+            }
+            if group_id.as_deref() == Some(BUILTIN_SKILL_GROUP_ID)
+                && skill_name != BUILTIN_WEIAGENT_CLI_SKILL_NAME
+            {
+                return Err(AppError::BadRequest("only the built-in weiagentcli Skill can belong to the built-in group".to_string()));
+            }
+            if let Some(group_id) = group_id.as_deref() {
+                let exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM skill_groups WHERE id = ?1)",
+                    [group_id],
+                    |row| row.get(0),
+                )?;
+                if !exists {
+                    return Err(AppError::NotFound);
+                }
+            }
             let sort_order: i64 = match group_id.as_deref() {
                 Some(group_id) => conn.query_row("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM skill_group_assignments WHERE group_id = ?1", [group_id], |row| row.get(0))?,
                 None => 0,
@@ -230,11 +309,18 @@ impl Store {
         }).await
     }
 
-    pub async fn reorder_skill_group_items(&self, group_id: Option<&str>, skill_names: &[String]) -> AppResult<()> {
+    pub async fn reorder_skill_group_items(
+        &self,
+        group_id: Option<&str>,
+        skill_names: &[String],
+    ) -> AppResult<()> {
         let _guard = self.skill_lock.lock().await;
         let group_id = group_id.map(str::to_string);
         let skill_names = skill_names.to_vec();
         self.database.call(move |conn| {
+            if group_id.as_deref() == Some(BUILTIN_SKILL_GROUP_ID) {
+                return Err(AppError::BadRequest("the built-in Skill group order cannot be changed".to_string()));
+            }
             let tx = conn.transaction()?;
             for (index, name) in skill_names.iter().enumerate() {
                 tx.execute("INSERT INTO skill_group_assignments(skill_name, group_id, sort_order) VALUES (?1, ?2, ?3) ON CONFLICT(skill_name) DO UPDATE SET group_id = excluded.group_id, sort_order = excluded.sort_order", params![name.trim().to_ascii_lowercase(), group_id, index as i64])?;
@@ -333,7 +419,10 @@ impl Store {
                 )?;
                 tx.execute("DELETE FROM skill_icons WHERE skill_name = ?1", [&name])?;
                 tx.execute("DELETE FROM skill_sources WHERE skill_name = ?1", [&name])?;
-                tx.execute("DELETE FROM skill_group_assignments WHERE skill_name = ?1", [&name])?;
+                tx.execute(
+                    "DELETE FROM skill_group_assignments WHERE skill_name = ?1",
+                    [&name],
+                )?;
                 tx.commit()?;
                 Ok(())
             })
@@ -364,11 +453,6 @@ impl Store {
         self.database
             .call(move |conn| {
                 let agent_id_text = agent_id.to_string();
-                let initialized = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM skill_agent_baselines WHERE agent_id = ?1)",
-                    [&agent_id_text],
-                    |row| row.get::<_, bool>(0),
-                )?;
                 let tx = conn.transaction()?;
                 tx.execute(
                     "INSERT OR IGNORE INTO skill_agent_baselines(agent_id) VALUES (?1)",
@@ -378,12 +462,12 @@ impl Store {
                     let name = name.trim().to_ascii_lowercase();
                     let inserted = tx.execute(
                         "INSERT OR IGNORE INTO skill_agent_seen(agent_id, skill_name) VALUES (?1, ?2)",
-                        params![agent_id_text, name],
+                        params![&agent_id_text, &name],
                     )?;
-                    if initialized && inserted > 0 {
+                    if name != BUILTIN_WEIAGENT_CLI_SKILL_NAME && inserted > 0 {
                         tx.execute(
                             "INSERT OR IGNORE INTO skill_agent_overrides(agent_id, skill_name, enabled) VALUES (?1, ?2, 0)",
-                            params![agent_id_text, name],
+                            params![&agent_id_text, &name],
                         )?;
                     }
                 }
@@ -402,6 +486,13 @@ impl Store {
         let name = name.trim().to_ascii_lowercase();
         self.database
             .call(move |conn| {
+                if name == BUILTIN_WEIAGENT_CLI_SKILL_NAME {
+                    conn.execute(
+                        "DELETE FROM skill_global_overrides WHERE skill_name = ?1",
+                        [&name],
+                    )?;
+                    return Ok(());
+                }
                 if let Some(enabled) = enabled {
                     conn.execute(
                         "INSERT INTO skill_global_overrides(skill_name, enabled) VALUES (?1, ?2)
@@ -481,10 +572,7 @@ impl Store {
         }).await
     }
 
-    pub async fn cleanup_skill_orphans(
-        &self,
-        names: &[String],
-    ) -> AppResult<()> {
+    pub async fn cleanup_skill_orphans(&self, names: &[String]) -> AppResult<()> {
         let _guard = self.skill_lock.lock().await;
         let names = names.to_vec();
         self.database

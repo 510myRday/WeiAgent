@@ -8,6 +8,8 @@ build = "build.rs"
 winresource = "0.1.31"
 
 [dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
 async-stream = "0.3"
 async-trait = "0.1"
 axum = "0.8"
@@ -38,9 +40,11 @@ tower-http = { version = "0.6", features = ["fs", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+urlencoding = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 dashmap = "6"
 dom_smoothie = "0.18"
+fs2 = "0.4"
 zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]

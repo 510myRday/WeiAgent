@@ -450,7 +450,7 @@ pub async fn execute_multi_edit(
     let payload = serde_json::json!({
         "status": "completed",
         "tool": MULTI_EDIT_TOOL_NAME,
-        "cwd": workspace.cwd.display().to_string(),
+        "cwd": fsutil::display_path(&workspace.cwd),
         "summary": outcome.summary,
         "changes": outcome.changes,
         "warnings": outcome.warnings,
@@ -955,7 +955,7 @@ fn commit_operation(operation: &StagedFileOperation) -> Result<FileEditChange, S
         } => {
             write_text_file(path, new_content)?;
             Ok(FileEditChange::Update {
-                path: path.display().to_string(),
+                path: fsutil::display_path(path),
                 move_path: None,
                 replacements: *replacements,
             })
@@ -973,7 +973,7 @@ fn commit_operation(operation: &StagedFileOperation) -> Result<FileEditChange, S
             }
             write_text_file(path, content)?;
             Ok(FileEditChange::Add {
-                path: path.display().to_string(),
+                path: fsutil::display_path(path),
                 overwritten: Some(*overwritten),
             })
         }
@@ -981,7 +981,7 @@ fn commit_operation(operation: &StagedFileOperation) -> Result<FileEditChange, S
             std::fs::remove_file(path)
                 .map_err(|error| format!("failed to delete {}: {error}", path.display()))?;
             Ok(FileEditChange::Delete {
-                path: path.display().to_string(),
+                path: fsutil::display_path(path),
             })
         }
         StagedFileOperation::Move {
@@ -997,8 +997,8 @@ fn commit_operation(operation: &StagedFileOperation) -> Result<FileEditChange, S
                 format!("failed to remove move source {}: {error}", from.display())
             })?;
             Ok(FileEditChange::Update {
-                path: from.display().to_string(),
-                move_path: Some(to.display().to_string()),
+                path: fsutil::display_path(from),
+                move_path: Some(fsutil::display_path(to)),
                 replacements: 0,
             })
         }

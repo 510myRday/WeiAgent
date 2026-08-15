@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Download, FolderOpen, FolderInput, MoreHorizontal, Pencil, Plus, Settings, Sparkles, Trash2, FolderPlus, CheckSquare, X } from 'lucide-react';
 
 import type { SkillContent, SkillGroupState, SkillImportTask, SkillManifest, SkillOverrides, SkillSettings } from '../../toolTypes';
-import { assignSkillGroup, cleanupSkillOrphans, createSkillGroup, deleteSkill, deleteSkillGroup, importSkill, listIpProxies, listSkillImportTasks, listSkills, pickDirectory, readAgentSkillsConfig, readSkillChanges, readSkillContent, renameSkillGroup, reorderSkillGroupItems, reorderSkillGroups, updateAgentSkillsConfig, updateSkill, updateSkillEnabled, updateSkillIcon } from '../../api';
+import { assignSkillGroup, cleanupSkillOrphans, createSkillGroup, deleteSkill, deleteSkillGroup, importSkill, listIpProxies, listSkillImportTasks, listSkills, pickDirectory, readAgentSkillsConfig, readSkillChanges, readSkillContent, renameSkillGroup, reorderSkillGroupItems, reorderSkillGroups, updateAgentSkillsConfig, updateSkillEnabled, updateSkillIcon } from '../../api';
 import type { IpProxy } from '../../types';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
@@ -52,10 +52,6 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
   const [iconOpen, setIconOpen] = useState(false);
   const [iconDraft, setIconDraft] = useState('');
   const [iconSaving, setIconSaving] = useState(false);
-  const [skillUpdating, setSkillUpdating] = useState(false);
-  const [updateProxyId, setUpdateProxyId] = useState('');
-  const [updateProxiesLoading, setUpdateProxiesLoading] = useState(false);
-  const [updateProxyPickerOpen, setUpdateProxyPickerOpen] = useState(false);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [groupDialog, setGroupDialog] = useState<{ mode: 'create' | 'rename'; group?: SkillGroupState } | null>(null);
   const [moveSkillDialog, setMoveSkillDialog] = useState<{ name: string; groupId: string } | null>(null);
@@ -91,12 +87,21 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
   );
   const groupedSkills = useMemo(() => {
     const skills = visibleSettings?.defaults ?? [];
-    const groups = (visibleSettings?.groups ?? []).map((group) => ({
+    const groups = [...(visibleSettings?.groups ?? [])]
+      .sort((left, right) => {
+        if (left.is_builtin !== right.is_builtin) return left.is_builtin ? -1 : 1;
+        return left.sort_order - right.sort_order;
+      })
+      .map((group) => ({
       group,
       items: skills.filter((skill) => skill.group_id === group.id),
-    }));
+      }));
     const ungrouped = skills.filter((skill) => !skill.group_id);
-    return [{ group: null as SkillGroupState | null, items: ungrouped }, ...groups];
+    return [
+      ...groups.filter(({ group }) => group.is_builtin),
+      { group: null as SkillGroupState | null, items: ungrouped },
+      ...groups.filter(({ group }) => !group.is_builtin),
+    ];
   }, [visibleSettings]);
 
   function collapseKey(group: SkillGroupState | null) { return group?.id ?? 'ungrouped'; }
@@ -216,6 +221,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
   async function dropGroup(targetId: string) {
     if (!draggedGroupId || draggedGroupId === targetId || embedded || !settings) return;
     const ids = settings.groups.map((group) => group.id);
+    if (settings.groups.some((group) => group.id === draggedGroupId && group.is_builtin) || settings.groups.some((group) => group.id === targetId && group.is_builtin)) return;
     const from = ids.indexOf(draggedGroupId);
     const to = ids.indexOf(targetId);
     if (from < 0 || to < 0) return;
@@ -226,6 +232,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
 
   async function dropSkill(groupId: string | null, targetName: string) {
     if (!draggedSkillName || embedded || !visibleSettings) return;
+    if (groupId === 'builtin' || visibleSettings.defaults.some((skill) => skill.name === draggedSkillName && skill.is_builtin)) return;
     const items = visibleSettings.defaults.filter((skill) => skill.group_id === groupId).map((skill) => skill.name).filter((name) => name !== draggedSkillName);
     const targetIndex = items.indexOf(targetName);
     items.splice(Math.max(0, targetIndex), 0, draggedSkillName);
@@ -485,18 +492,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
   async function openIconDialog() {
     if (!activeSkill) return;
     setIconDraft(activeSkill.icon_url ?? '');
-    setUpdateProxyId('');
     setIconOpen(true);
-    if (activeSkill.source_url) {
-      setUpdateProxiesLoading(true);
-      try {
-        setImportProxies(await listIpProxies());
-      } catch {
-        setImportProxies([]);
-      } finally {
-        setUpdateProxiesLoading(false);
-      }
-    }
   }
 
   async function saveIcon() {
@@ -510,22 +506,6 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
       toast.error(error instanceof Error ? error.message : t('skills.iconSaveFailed'));
     } finally {
       setIconSaving(false);
-    }
-  }
-
-  async function updateRemoteSkill() {
-    if (!activeSkill?.source_url) return;
-    setSkillUpdating(true);
-    try {
-      const task = await updateSkill(activeSkill.name, activeSkill.source_url, updateProxyId || undefined);
-      setImportTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-      pendingImportTasks.current.add(task.id);
-      setIconOpen(false);
-      toast.success(t('skills.updateQueued'));
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('skills.updateFailed'));
-    } finally {
-      setSkillUpdating(false);
     }
   }
 
@@ -554,7 +534,6 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
   }
 
   const selectedImportProxy = importProxies.find((proxy) => proxy.id === importProxyId) ?? null;
-  const selectedUpdateProxy = importProxies.find((proxy) => proxy.id === updateProxyId) ?? null;
   const importValue = importMode === 'local' ? importLocalPath.trim() : importNetworkUrl.trim();
 
   return (
@@ -598,7 +577,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                   {moveMenuOpen ? (
                     <div className="skills-group-menu skills-move-menu" role="menu">
                       <button type="button" onClick={() => void moveSkills(null)}>{t('skills.ungrouped')}</button>
-                      {(settings?.groups ?? []).map((group) => <button key={group.id} type="button" onClick={() => void moveSkills(group.id)}><FolderOpen size={14} />{group.name}</button>)}
+                      {(settings?.groups ?? []).filter((group) => !group.is_builtin).map((group) => <button key={group.id} type="button" onClick={() => void moveSkills(group.id)}><FolderOpen size={14} />{group.name}</button>)}
                     </div>
                   ) : null}
                 </div>
@@ -610,10 +589,10 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
             {groupedSkills.map(({ group, items }) => {
               const key = collapseKey(group);
               const collapsed = collapsedGroups[key] ?? false;
-              const groupName = group?.name ?? t('skills.ungrouped');
+              const groupName = group?.is_builtin ? t('skills.builtinGroup') : (group?.name ?? t('skills.ungrouped'));
               return (
-              <div key={key} className="skills-group-list" onDragOver={(event) => { if (!embedded) event.preventDefault(); }} onDrop={() => { if (!embedded && draggedSkillName && !items.some((item) => item.name === draggedSkillName)) void moveSkills(group?.id ?? null, [draggedSkillName]); }}>
-                <div className="skills-group-heading" draggable={!embedded && Boolean(group)} onDragStart={() => setDraggedGroupId(group?.id ?? null)} onDragEnd={() => setDraggedGroupId(null)} onDragOver={(event) => { if (draggedGroupId && group) event.preventDefault(); }} onDrop={() => { if (group) void dropGroup(group.id); }}>
+              <div key={key} className="skills-group-list" onDragOver={(event) => { if (!embedded && !group?.is_builtin) event.preventDefault(); }} onDrop={() => { if (!embedded && !group?.is_builtin && draggedSkillName && !items.some((item) => item.name === draggedSkillName)) void moveSkills(group?.id ?? null, [draggedSkillName]); }}>
+                <div className="skills-group-heading" draggable={!embedded && Boolean(group) && !group?.is_builtin} onDragStart={() => { if (group && !group.is_builtin) setDraggedGroupId(group.id); }} onDragEnd={() => setDraggedGroupId(null)} onDragOver={(event) => { if (draggedGroupId && group && !group.is_builtin) event.preventDefault(); }} onDrop={() => { if (group && !group.is_builtin) void dropGroup(group.id); }}>
                   <button type="button" className="skills-group-toggle" onClick={() => toggleCollapsed(group)} aria-expanded={!collapsed} aria-label={`${collapsed ? t('skills.expandGroup') : t('skills.collapseGroup')}: ${groupName}`}>
                     {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
                     <FolderOpen size={15} />
@@ -621,17 +600,17 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                   </button>
                   <span className="skills-group-heading-actions">
                     <span className="skills-group-count">{items.length}</span>
-                    {!embedded && group ? <div className="skills-group-menu-wrap"><IconButton variant="ghost" type="button" label={t('skills.groupActions')} onClick={(event) => openGroupMenu(event, group.id)}><MoreHorizontal size={16} /></IconButton></div> : null}
+                  {!embedded && group && !group.is_builtin ? <div className="skills-group-menu-wrap"><IconButton variant="ghost" type="button" label={t('skills.groupActions')} onClick={(event) => openGroupMenu(event, group.id)}><MoreHorizontal size={16} /></IconButton></div> : null}
                   </span>
                 </div>
                 {!collapsed ? items.map((skill) => (
-                  <div key={skill.name} className={`skills-item-wrap${selectedSkills.includes(skill.name) ? ' is-selected' : ''}`} draggable={!embedded} onDragStart={() => setDraggedSkillName(skill.name)} onDragEnd={() => setDraggedSkillName(null)} onDragOver={(event) => { if (draggedSkillName && draggedSkillName !== skill.name) event.preventDefault(); }} onDrop={() => void dropSkill(group?.id ?? null, skill.name)}>
-                    {!embedded ? <button type="button" className="skills-select-button" aria-label={selectedSkills.includes(skill.name) ? t('skills.deselectSkill', { name: skill.name }) : t('skills.selectSkill', { name: skill.name })} onClick={() => toggleSkillSelection(skill.name)}>{selectedSkills.includes(skill.name) ? <CheckSquare size={15} /> : <span />}</button> : null}
+                  <div key={skill.name} className={`skills-item-wrap${selectedSkills.includes(skill.name) ? ' is-selected' : ''}`} draggable={!embedded && !skill.is_builtin} onDragStart={() => { if (!skill.is_builtin) setDraggedSkillName(skill.name); }} onDragEnd={() => setDraggedSkillName(null)} onDragOver={(event) => { if (!skill.is_builtin && draggedSkillName && draggedSkillName !== skill.name) event.preventDefault(); }} onDrop={() => void dropSkill(group?.id ?? null, skill.name)}>
+                    {!embedded ? <button type="button" className="skills-select-button" disabled={skill.is_builtin} aria-label={selectedSkills.includes(skill.name) ? t('skills.deselectSkill', { name: skill.name }) : t('skills.selectSkill', { name: skill.name })} onClick={() => toggleSkillSelection(skill.name)}>{selectedSkills.includes(skill.name) ? <CheckSquare size={15} /> : <span />}</button> : null}
                     <div className="skills-list-item-row">
                       <ListItem className="skills-list-item" type="button" active={active?.kind === 'skill' && active.name === skill.name} title={<span className="tool-list-title"><span>{skill.name}</span></span>} subtitle={<span className="skills-list-description" title={skill.description}>{skill.description}</span>} leading={<SkillIcon iconUrl={skill.icon_url} size={19} />} onClick={() => selectSkill(skill.name)} />
                       {!embedded ? (
                         <span className="skills-list-item-actions">
-                          <IconButton className="skills-move-action" variant="ghost" type="button" label={t('skills.moveSkill')} onClick={() => openMoveSkillDialog(skill)} disabled={busy}>
+                          <IconButton className="skills-move-action" variant="ghost" type="button" label={t('skills.moveSkill')} onClick={() => openMoveSkillDialog(skill)} disabled={busy || skill.is_builtin}>
                             <FolderInput size={16} />
                           </IconButton>
                           <span className={`skills-state-dot ${skill.enabled ? 'is-enabled' : 'is-disabled'}`} title={skill.enabled ? t('skills.enabled') : t('skills.disabled')} aria-label={skill.enabled ? t('skills.enabled') : t('skills.disabled')} />
@@ -709,7 +688,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
               <PaneHeader className="config-page-header" leading={<Button className="main-back-button" variant="ghost" type="button" onClick={onBackToList} icon={<ArrowLeft size={17} />}>{t('common.back')}</Button>} eyebrow={t('skills.title')} title={activeOrphan ? activeOrphan.name : (activeConflict?.name ?? activeSkill?.name ?? t('skills.title'))} description={activeOrphan ? t('skills.orphanHeaderDescription') : (activeConflict ? t('skills.nameConflictDescription', { name: activeConflict.name, count: activeConflict.count }) : (activeSkill?.description ?? t('skills.description')))} actions={(
                 <>
                   {activeSkill ? <IconButton variant="default" type="button" label={t('skills.iconSettings')} onClick={openIconDialog} disabled={busy || iconSaving}><Settings size={17} /></IconButton> : null}
-                  {activeSkill ? <IconButton variant="danger" type="button" label={t('skills.delete')} onClick={() => void removeActiveSkill()} disabled={busy}><Trash2 size={17} /></IconButton> : null}
+                  {activeSkill ? <IconButton variant="danger" type="button" label={t('skills.delete')} onClick={() => void removeActiveSkill()} disabled={busy || activeSkill.is_builtin}><Trash2 size={17} /></IconButton> : null}
                   {activeSkill ? <SkillToggle skill={activeSkill} agentMode={false} busy={busy} onGlobalToggle={toggleGlobal} onAgentToggle={toggleAgentSkill} /> : null}
                 </>
               )} />
@@ -723,8 +702,15 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
       />
       {groupMenu && groupMenuPosition ? createPortal(
         <div className="skills-group-menu skills-group-menu--portal" role="menu" style={{ top: groupMenuPosition.top, left: groupMenuPosition.left }}>
-          <button type="button" onClick={() => { const group = settings?.groups.find((item) => item.id === groupMenu); if (group) openRenameGroup(group); }}><Pencil size={14} />{t('skills.renameGroup')}</button>
-          <button type="button" className="is-danger" onClick={() => { const group = settings?.groups.find((item) => item.id === groupMenu); if (group) void removeGroup(group); }}><Trash2 size={14} />{t('skills.deleteGroup')}</button>
+          {(() => {
+            const group = settings?.groups.find((item) => item.id === groupMenu);
+            return (
+              <>
+                <button type="button" onClick={() => { if (group) openRenameGroup(group); }}><Pencil size={14} />{t('skills.renameGroup')}</button>
+                <button type="button" className="is-danger" onClick={() => { if (group) void removeGroup(group); }}><Trash2 size={14} />{t('skills.deleteGroup')}</button>
+              </>
+            );
+          })()}
         </div>,
         document.body,
       ) : null}
@@ -768,7 +754,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
           <FormField label={t('skills.addToGroup')} htmlFor="skill-move-group">
             <select id="skill-move-group" value={moveSkillDialog.groupId} onChange={(event) => setMoveSkillDialog((current) => current ? { ...current, groupId: event.target.value } : current)} disabled={busy}>
               <option value="">{t('skills.ungrouped')}</option>
-              {(settings?.groups ?? []).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+              {(settings?.groups ?? []).filter((group) => !group.is_builtin).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
             </select>
           </FormField>
         </Dialog>
@@ -829,49 +815,6 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                 onChange={(event) => setIconDraft(event.target.value)}
               />
             </FormField>
-            {activeSkill?.source_url ? (
-              <section className="skills-source-settings">
-                <div className="skills-source-settings__heading">
-                  <strong>{t('skills.sourceUrlLabel')}</strong>
-                  <span>{t('skills.sourceUrlHint')}</span>
-                </div>
-                <code className="skills-source-settings__url" title={activeSkill.source_url}>{activeSkill.source_url}</code>
-                <label className="form-field">
-                  <span>{t('skills.proxyLabel')}</span>
-                  <button
-                    type="button"
-                    className={`web-search-proxy-picker${selectedUpdateProxy ? '' : ' is-empty'}`}
-                    onClick={() => setUpdateProxyPickerOpen(true)}
-                    disabled={skillUpdating}
-                  >
-                    <span className="web-search-proxy-picker__copy">
-                      {selectedUpdateProxy ? (
-                        <>
-                          <strong>{selectedUpdateProxy.name}</strong>
-                          <code>{displayProxyUrl(selectedUpdateProxy.url)}</code>
-                        </>
-                      ) : (
-                        <span>{t('skills.selectProxy')}</span>
-                      )}
-                    </span>
-                    <ChevronDown size={17} aria-hidden="true" />
-                  </button>
-                  {selectedUpdateProxy && (!selectedUpdateProxy.enabled || selectedUpdateProxy.status !== 'available') ? (
-                    <span className="form-field-hint"><AlertCircle size={14} />{t('skills.proxyUnavailable')}</span>
-                  ) : null}
-                </label>
-                <p className="skills-source-settings__proxy-hint">{t('skills.updateProxyHint')}</p>
-                <Button
-                  variant="secondary"
-                  type="button"
-                  onClick={() => void updateRemoteSkill()}
-                  disabled={iconSaving || skillUpdating}
-                  icon={<Download size={15} />}
-                >
-                  {skillUpdating ? t('skills.updating') : t('skills.update')}
-                </Button>
-              </section>
-            ) : null}
           </div>
         </Dialog>
       ) : null}
@@ -995,24 +938,6 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
           onOpenIpProxies={onOpenIpProxies ? () => {
             setImportProxyPickerOpen(false);
             setImportOpen(false);
-            onOpenIpProxies();
-          } : undefined}
-        />
-      ) : null}
-      {updateProxyPickerOpen ? (
-        <ProxyPickerDialog
-          value={selectedUpdateProxy?.url ?? null}
-          ipProxies={importProxies}
-          isLoading={updateProxiesLoading}
-          onSelect={(url) => {
-            const selected = url ? importProxies.find((proxy) => proxy.url === url) : null;
-            setUpdateProxyId(selected?.id ?? '');
-            setUpdateProxyPickerOpen(false);
-          }}
-          onClose={() => setUpdateProxyPickerOpen(false)}
-          onOpenIpProxies={onOpenIpProxies ? () => {
-            setUpdateProxyPickerOpen(false);
-            setIconOpen(false);
             onOpenIpProxies();
           } : undefined}
         />

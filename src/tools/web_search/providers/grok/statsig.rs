@@ -4,10 +4,13 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use super::constants::{DEFAULT_USER_AGENT, STATSIG_CACHE_TTL, X0_FALLBACK_STATSIG_ID, usable_statsig_id, valid_statsig_id};
-use super::credentials::{GrokCredential, build_sso_cookie, is_allowed_extra_cookie};
 use super::super::grok_support::GrokError;
 use super::super::support::truncate;
+use super::constants::{
+    DEFAULT_USER_AGENT, STATSIG_CACHE_TTL, X0_FALLBACK_STATSIG_ID, usable_statsig_id,
+    valid_statsig_id,
+};
+use super::credentials::{GrokCredential, build_sso_cookie, is_allowed_extra_cookie};
 
 pub(super) struct StatsigCacheEntry {
     pub(super) value: String,
@@ -515,6 +518,8 @@ pub(super) async fn request_statsig_signature_with_proxy(
             .pool_max_idle_per_host(2)
             .proxy_url(Some(proxy_url)),
     )
-    .map_err(|error| GrokError::Other(format!("failed to build proxied statsig client: {error}")))?;
+    .map_err(|error| {
+        GrokError::Other(format!("failed to build proxied statsig client: {error}"))
+    })?;
     request_statsig_signature(&client, signer, method, path, meta_content).await
 }

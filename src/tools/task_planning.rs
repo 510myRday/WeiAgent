@@ -800,7 +800,11 @@ mod tests {
         let created: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         let planning_id = created["planning_id"].as_str().unwrap().to_string();
         assert_eq!(planning_id.len(), 6);
-        assert!(planning_id.bytes().all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase()));
+        assert!(
+            planning_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase())
+        );
 
         let updated = tool
             .execute(

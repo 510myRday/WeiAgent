@@ -200,6 +200,46 @@ export function assistantHasVisibleBody(message: UiMessage): boolean {
   return false;
 }
 
+/**
+ * An assistant event completes one model turn, not necessarily the whole run.
+ * Keep the bubble streaming until the run manager emits the terminal `done` event.
+ */
+export function mergeAssistantEvent(items: UiMessageItem[], msg: UiMessage): UiMessageItem[] {
+  const last = items[items.length - 1];
+  if (msg.status === 'failed') {
+    if (last && isAssistantMessage(last)) {
+      return [
+        ...items.slice(0, -1),
+        {
+          ...last,
+          id: msg.id || last.id,
+          content: msg.content || last.content,
+          reasoning_content: msg.reasoning_content || last.reasoning_content,
+          usage: msg.usage ?? last.usage,
+          status: 'failed' as const,
+        },
+      ];
+    }
+    return [...items, { ...msg, status: 'failed' as const }];
+  }
+
+  if (last && isAssistantMessage(last)) {
+    return [
+      ...items.slice(0, -1),
+      {
+        ...last,
+        id: msg.id || last.id,
+        content: msg.content || last.content,
+        reasoning_content: msg.reasoning_content || last.reasoning_content,
+        attachments: msg.attachments?.length ? msg.attachments : last.attachments,
+        usage: msg.usage ?? last.usage,
+        status: 'streaming' as const,
+      },
+    ];
+  }
+  return [...items, { ...msg, status: 'streaming' as const }];
+}
+
 export function interruptActiveRun(
   items: UiMessageItem[],
   reason: string,

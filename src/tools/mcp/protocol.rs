@@ -171,7 +171,10 @@ pub(super) fn format_mcp_stderr(lines: &[String]) -> Option<String> {
     if output.is_empty() {
         return None;
     }
-    Some(crate::textutil::truncate_chars(&output, MAX_MCP_STDERR_ERROR_CHARS))
+    Some(crate::textutil::truncate_chars(
+        &output,
+        MAX_MCP_STDERR_ERROR_CHARS,
+    ))
 }
 
 pub(super) fn parse_rpc_response(text: &str) -> AppResult<Value> {

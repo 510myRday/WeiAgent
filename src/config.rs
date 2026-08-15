@@ -1,9 +1,14 @@
 use std::{
+    fs::{File, OpenOptions},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
 
+use chrono::{DateTime, Utc};
+use fs2::{FileExt, lock_contended_error};
+use serde::{Deserialize, Serialize};
 use tokio::fs;
+use uuid::Uuid;
 
 use crate::{
     domain::AppSettings,
@@ -20,7 +25,97 @@ pub struct AppConfig {
 
 pub const TERMINAL_WORKSPACE_DIR_NAME: &str = "workspace";
 pub const ATTACHMENTS_DIR_NAME: &str = "attachments";
+pub const RUNTIME_DIR_NAME: &str = "runtime";
+pub const API_TOKEN_FILE_NAME: &str = "api-token";
+pub const INSTANCE_LOCK_FILE_NAME: &str = "service.lock";
+pub const INSTANCE_INFO_FILE_NAME: &str = "instance.json";
 const LEGACY_DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT: u8 = 90;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceInstanceInfo {
+    pub instance_id: Uuid,
+    pub pid: u32,
+    pub host: String,
+    pub port: u16,
+    pub mode: String,
+    pub data_dir: String,
+    pub started_at: DateTime<Utc>,
+}
+
+/// Holds an exclusive lock for one WeiAgent data directory for the lifetime of the service.
+/// fs2 maps to native advisory/mandatory file locking on Windows, macOS, and Linux.
+#[derive(Debug)]
+pub struct ServiceInstanceGuard {
+    _lock_file: File,
+    instance_info_path: PathBuf,
+    token_path: PathBuf,
+}
+
+impl Drop for ServiceInstanceGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.token_path);
+        let _ = std::fs::remove_file(&self.instance_info_path);
+    }
+}
+
+pub async fn acquire_service_instance(
+    data_dir: &Path,
+    addr: SocketAddr,
+    mode: &str,
+) -> AppResult<ServiceInstanceGuard> {
+    let runtime = runtime_dir(data_dir);
+    fs::create_dir_all(&runtime).await?;
+    let lock_path = runtime.join(INSTANCE_LOCK_FILE_NAME);
+    let instance_info_path = runtime.join(INSTANCE_INFO_FILE_NAME);
+    let token_path = api_token_path(data_dir);
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+
+    if let Err(error) = lock_file.try_lock_exclusive() {
+        if error.kind() == lock_contended_error().kind() {
+            let detail = std::fs::read_to_string(&instance_info_path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<ServiceInstanceInfo>(&content).ok())
+                .map(|info| {
+                    format!(
+                        " (pid {}, http://{}:{}, mode {}, data directory {})",
+                        info.pid, info.host, info.port, info.mode, info.data_dir
+                    )
+                })
+                .unwrap_or_default();
+            return Err(AppError::Conflict(format!(
+                "WeiAgent service is already running for this data directory{detail}"
+            )));
+        }
+        return Err(AppError::Storage(error));
+    }
+
+    let info = ServiceInstanceInfo {
+        instance_id: Uuid::new_v4(),
+        pid: std::process::id(),
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        mode: mode.to_string(),
+        data_dir: fsutil::display_path(
+            &std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf()),
+        ),
+        started_at: Utc::now(),
+    };
+    let content = serde_json::to_vec_pretty(&info)?;
+    if let Err(error) = crate::fsutil::write_atomic(&instance_info_path, content).await {
+        let _ = lock_file.unlock();
+        return Err(error);
+    }
+
+    Ok(ServiceInstanceGuard {
+        _lock_file: lock_file,
+        instance_info_path,
+        token_path,
+    })
+}
 
 impl AppConfig {
     pub async fn load(is_dev: bool) -> AppResult<Self> {
@@ -202,6 +297,32 @@ pub fn terminal_workspace_dir(data_dir: &Path) -> PathBuf {
 
 pub fn attachments_dir(data_dir: &Path) -> PathBuf {
     terminal_workspace_dir(data_dir).join(ATTACHMENTS_DIR_NAME)
+}
+
+pub fn runtime_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(RUNTIME_DIR_NAME)
+}
+
+pub fn api_token_path(data_dir: &Path) -> PathBuf {
+    runtime_dir(data_dir).join(API_TOKEN_FILE_NAME)
+}
+
+pub async fn write_runtime_api_token(data_dir: &Path, token: &str) -> AppResult<PathBuf> {
+    let directory = runtime_dir(data_dir);
+    fs::create_dir_all(&directory).await?;
+    let path = api_token_path(data_dir);
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, token).await?;
+    fs::rename(&temporary, &path).await?;
+    Ok(path)
+}
+
+pub async fn remove_runtime_api_token(data_dir: &Path) -> AppResult<()> {
+    match fs::remove_file(api_token_path(data_dir)).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub fn log_level_filter(value: &str) -> tracing_subscriber::filter::LevelFilter {
@@ -390,5 +511,35 @@ mod tests {
             terminal_workspace_dir(Path::new("data")),
             PathBuf::from("data").join(TERMINAL_WORKSPACE_DIR_NAME)
         );
+    }
+
+    #[tokio::test]
+    async fn service_instance_lock_rejects_duplicate_owner_and_cleans_runtime_info() {
+        let directory = tempfile::tempdir().unwrap();
+        let address = "127.0.0.1:18283".parse().unwrap();
+        let first = acquire_service_instance(directory.path(), address, "production")
+            .await
+            .unwrap();
+        let info_path = api_token_path(directory.path())
+            .parent()
+            .unwrap()
+            .join(INSTANCE_INFO_FILE_NAME);
+        let info: ServiceInstanceInfo =
+            serde_json::from_str(&std::fs::read_to_string(&info_path).unwrap()).unwrap();
+        assert_eq!(info.port, 18283);
+        assert_eq!(info.mode, "production");
+
+        let duplicate = acquire_service_instance(directory.path(), address, "production")
+            .await
+            .unwrap_err();
+        assert!(duplicate.to_string().contains("already running"));
+
+        drop(first);
+        assert!(!info_path.exists());
+        let second = acquire_service_instance(directory.path(), address, "development")
+            .await
+            .unwrap();
+        drop(second);
+        assert!(!info_path.exists());
     }
 }
