@@ -1052,7 +1052,7 @@ export function MonitorPanel({
         <Dialog
           open
           title={t('llmLogs.detailTitle')}
-          description={`${resolveAgentName(selectedLog, agentById, agentByName, t)} · ${selectedLog.provider_name} · ${selectedLog.model_id}`}
+          description={`${resolveAgentName(selectedLog, agentById, agentByName, t)} · ${selectedLog.provider_name} · ${selectedLog.model_id} · ${selectedLog.id}`}
           closeLabel={t('llmLogs.close')}
           onClose={() => setSelectedLog(null)}
           size="xl"

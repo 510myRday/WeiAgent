@@ -28,6 +28,7 @@ import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
 import { ChatAgentSelect } from './ChatAgentSelect';
 import { ConversationRow } from './ConversationRow';
 import { TaskPlanPanel } from './TaskPlanPanel';
+import { getTaskPlanSyncKey } from './taskPlanSync';
 import { MessageAvatar, MessageList, type MessageListHandle } from './MessageList';
 import { MessageTimeline, type MessageTimelineItem } from './MessageTimeline';
 import { materializeImageAttachment } from './imageAttachments';
@@ -284,6 +285,7 @@ export function ChatPanel({
     ? t('chat.imagePromptLabel')
     : t('chat.messageLabel');
   const visibleMessages = activeAgent ? messages : EMPTY_MESSAGES;
+  const taskPlanSyncKey = useMemo(() => getTaskPlanSyncKey(messages), [messages]);
   const activeConversation = activeAgent
     ? conversations.find((conversation) => conversation.id === activeConversationId)
     : undefined;
@@ -334,7 +336,7 @@ export function ChatPanel({
   useEffect(() => {
     if (!activeConversationId || messages.length === 0) return;
     void refreshTaskPlan(true);
-  }, [activeConversationId, messages.length, refreshTaskPlan]);
+  }, [activeConversationId, messages.length, refreshTaskPlan, taskPlanSyncKey]);
 
   const filteredConversations = useMemo(() => {
     const query = conversationFilter.trim().toLowerCase();

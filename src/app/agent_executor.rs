@@ -14,8 +14,8 @@ use uuid::Uuid;
 use crate::{
     app::{AppState, chat::PreparedChat},
     domain::{
-        ChatMessage, ChatMessageStatus, ChatRole, ModelUsage, TaskPlan, TaskPlanItemStatus,
-        TerminalPermissionMode, TokenUsage, ToolResult,
+        ChatMessage, ChatMessageStatus, ChatRole, McpServer, ModelUsage, TaskPlan,
+        TaskPlanItemStatus, TerminalPermissionMode, TokenUsage, ToolResult,
     },
     error::{AppError, AppResult},
     llm::{
@@ -102,6 +102,7 @@ struct AgentRuntime<'a> {
     options: RequestOptions,
     use_streaming_llm: bool,
     events: &'a Option<mpsc::Sender<AgentRunEvent>>,
+    frozen_tools: &'a FrozenRunTools,
 }
 
 #[derive(Default)]
@@ -134,6 +135,11 @@ struct CompactionState {
     checkpoint: Option<crate::domain::ContextCheckpoint>,
     fixed_tokens_with_tools: u64,
     fixed_tokens_without_tools: u64,
+}
+
+struct FrozenRunTools {
+    definitions: Option<Vec<ToolDefinition>>,
+    mcp_servers: Vec<McpServer>,
 }
 
 async fn ensure_messages_within_context(
@@ -241,7 +247,7 @@ pub async fn run_agent(
         &prepared,
         user_message.conversation_id,
         options.thinking_level,
-        frozen_tools.as_deref(),
+        frozen_tools.definitions.as_deref(),
     )
     .await?;
 
@@ -252,6 +258,7 @@ pub async fn run_agent(
         options,
         use_streaming_llm,
         events: &events,
+        frozen_tools: &frozen_tools,
     };
 
     let mut iteration = 0_usize;
@@ -272,7 +279,7 @@ pub async fn run_agent(
             .as_ref()
             .map(crate::app::context_compress::ActiveTaskPlanContext::from_task_plan);
         let has_active_task_plan = active_task_plan_context.is_some();
-        let tools = frozen_tools.clone();
+        let tools = runtime.frozen_tools.definitions.clone();
         ensure_messages_within_context(
             &runtime,
             &mut messages,
@@ -361,6 +368,7 @@ pub async fn run_agent(
             runtime.events,
             iteration,
             append_task_plan_progress,
+            &runtime.frozen_tools.mcp_servers,
         )
         .await
         {
@@ -393,11 +401,7 @@ pub async fn run_agent(
     Ok(())
 }
 
-
-async fn freeze_run_tools(
-    state: &AppState,
-    prepared: &PreparedChat,
-) -> Option<Vec<crate::llm::types::ToolDefinition>> {
+async fn freeze_run_tools(state: &AppState, prepared: &PreparedChat) -> FrozenRunTools {
     let mut frozen_tools = state
         .tool_registry
         .definitions(&prepared.tools_config)
@@ -406,11 +410,16 @@ async fn freeze_run_tools(
         frozen_tools.extend(state.skill_manager.tool_definitions());
     }
     frozen_tools.sort_by(|left, right| left.function.name.cmp(&right.function.name));
-    if let Some(mcp_tools) = state.mcp_manager.definitions(prepared.agent.id).await {
+    let mcp_servers = state.mcp_manager.snapshot(prepared.agent.id).await;
+    if let Some(mcp_tools) = crate::tools::mcp::McpManager::definitions_from_snapshot(&mcp_servers)
+    {
         frozen_tools.extend(mcp_tools);
         frozen_tools.sort_by(|left, right| left.function.name.cmp(&right.function.name));
     }
-    (!frozen_tools.is_empty()).then_some(frozen_tools)
+    FrozenRunTools {
+        definitions: (!frozen_tools.is_empty()).then_some(frozen_tools),
+        mcp_servers,
+    }
 }
 
 async fn init_compaction_state(
@@ -571,16 +580,17 @@ async fn execute_tool_calls(
     events: &Option<mpsc::Sender<AgentRunEvent>>,
     iteration: usize,
     append_task_plan_progress: bool,
+    mcp_servers: &[McpServer],
 ) -> AppResult<()> {
     let call_count = tool_calls.len();
     let mut parallel_mcp_batch = call_count > 1;
     if parallel_mcp_batch {
         for call in &tool_calls {
             if !crate::tools::mcp::is_mcp_tool(&call.function.name)
-                || !state
-                    .mcp_manager
-                    .supports_parallel_tool(prepared.agent.id, &call.function.name)
-                    .await
+                || !crate::tools::mcp::McpManager::supports_parallel_tool_from_snapshot(
+                    mcp_servers,
+                    &call.function.name,
+                )
             {
                 parallel_mcp_batch = false;
                 break;
@@ -597,6 +607,7 @@ async fn execute_tool_calls(
             events,
             iteration,
             append_task_plan_progress,
+            mcp_servers,
         )
         .await;
     }
@@ -672,6 +683,7 @@ async fn execute_tool_calls(
                         context,
                         events,
                         iteration,
+                        mcp_servers,
                     )
                     .await
                 }
@@ -716,6 +728,7 @@ async fn execute_parallel_mcp_calls(
     events: &Option<mpsc::Sender<AgentRunEvent>>,
     iteration: usize,
     append_task_plan_progress: bool,
+    mcp_servers: &[McpServer],
 ) -> AppResult<()> {
     let call_count = tool_calls.len();
     let skill_snapshot = prepared.skill_snapshot.clone();
@@ -811,6 +824,7 @@ async fn execute_parallel_mcp_calls(
                     context,
                     events,
                     iteration,
+                    mcp_servers,
                 )
                 .await;
                 (index, call, result)
@@ -1284,6 +1298,7 @@ async fn execute_tool_with_events(
     mut context: ToolExecutionContext,
     events: &Option<mpsc::Sender<AgentRunEvent>>,
     iteration: usize,
+    mcp_servers: &[McpServer],
 ) -> ToolResult {
     if crate::skills::is_skill_tool(name) {
         return state
@@ -1294,7 +1309,7 @@ async fn execute_tool_with_events(
     if crate::tools::mcp::is_mcp_tool(name) {
         let execution = state
             .mcp_manager
-            .execute_tool(context.agent_id, name, arguments);
+            .execute_tool_from_snapshot(mcp_servers, name, arguments);
         tokio::pin!(execution);
         if let Some(run_sender) = events.clone() {
             return tokio::select! {

@@ -181,6 +181,17 @@ impl McpManager {
         Ok(())
     }
 
+    /// Copy the prepared MCP state for one agent so a running agent loop can
+    /// keep using the same tool set while settings change in the background.
+    pub async fn snapshot(&self, agent_id: Uuid) -> Vec<McpServer> {
+        self.snapshots
+            .read()
+            .await
+            .get(&agent_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub async fn list_servers(&self) -> AppResult<Vec<McpServer>> {
         self.store.list_mcp_servers().await
     }
@@ -250,9 +261,7 @@ impl McpManager {
             .ok_or(AppError::NotFound)
     }
 
-    pub async fn definitions(&self, agent_id: Uuid) -> Option<Vec<ToolDefinition>> {
-        let snapshots = self.snapshots.read().await;
-        let servers = snapshots.get(&agent_id)?;
+    pub fn definitions_from_snapshot(servers: &[McpServer]) -> Option<Vec<ToolDefinition>> {
         let mut definitions = Vec::new();
         for server in servers.iter().filter(|server| server.enabled) {
             for tool in server.tools.iter().filter(|tool| tool.enabled) {
@@ -270,27 +279,26 @@ impl McpManager {
         (!definitions.is_empty()).then_some(definitions)
     }
 
-    pub async fn supports_parallel_tool(&self, agent_id: Uuid, name: &str) -> bool {
-        let snapshots = self.snapshots.read().await;
-        snapshots.get(&agent_id).is_some_and(|servers| {
-            servers.iter().any(|server| {
-                server.supports_parallel_tool_calls
-                    && server.enabled
-                    && server.tools.iter().any(|tool| {
-                        tool.enabled && tool.qualified_name == name && tool.tool_id != Uuid::nil()
-                    })
-            })
+    pub fn supports_parallel_tool_from_snapshot(servers: &[McpServer], name: &str) -> bool {
+        servers.iter().any(|server| {
+            server.supports_parallel_tool_calls
+                && server.enabled
+                && server.tools.iter().any(|tool| {
+                    tool.enabled && tool.qualified_name == name && tool.tool_id != Uuid::nil()
+                })
         })
     }
 
-    pub async fn execute_tool(&self, agent_id: Uuid, name: &str, arguments: Value) -> ToolResult {
-        let snapshots = self.snapshots.read().await;
-        let Some((server_id, tool_id)) = snapshots.get(&agent_id).and_then(|servers| {
-            servers.iter().find_map(|server| {
-                server.tools.iter().find_map(|tool| {
-                    (tool.qualified_name == name && tool.enabled)
-                        .then_some((server.id, tool.tool_id))
-                })
+    pub async fn execute_tool_from_snapshot(
+        &self,
+        servers: &[McpServer],
+        name: &str,
+        arguments: Value,
+    ) -> ToolResult {
+        let Some((server_id, tool_id)) = servers.iter().find_map(|server| {
+            server.tools.iter().find_map(|tool| {
+                (server.enabled && tool.enabled && tool.qualified_name == name)
+                    .then_some((server.id, tool.tool_id))
             })
         }) else {
             return ToolResult::Blocked {
@@ -299,9 +307,9 @@ impl McpManager {
                 details: None,
             };
         };
-        let Some(server) = snapshots
-            .get(&agent_id)
-            .and_then(|servers| servers.iter().find(|server| server.id == server_id))
+        let Some(server) = servers
+            .iter()
+            .find(|server| server.id == server_id)
             .cloned()
         else {
             return ToolResult::Error {

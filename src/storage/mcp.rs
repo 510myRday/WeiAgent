@@ -703,14 +703,17 @@ fn sync_mcp_agent_defaults_conn(
                 params![agent_id_text, server_id, tool.name],
             )?;
             if initialized && inserted > 0 {
+                // Keep newly discovered tools available inside the Agent-level
+                // MCP entry. The outer server switch remains disabled by the
+                // generated Agent override above.
                 tx.execute(
-                    "INSERT OR IGNORE INTO tool_mcp_agent_tools(agent_id, server_id, tool_name, enabled) VALUES (?1, ?2, ?3, 0)",
+                    "INSERT OR IGNORE INTO tool_mcp_agent_tools(agent_id, server_id, tool_name, enabled) VALUES (?1, ?2, ?3, 1)",
                     params![agent_id_text, server_id, tool.name],
                 )?;
                 generated.tools.push(McpToolOverride {
                     server_id: server.id,
                     tool_name: tool.name.clone(),
-                    enabled: Some(false),
+                    enabled: Some(true),
                 });
             }
         }
@@ -876,7 +879,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_mcp_servers_default_to_disabled_for_existing_agents() {
+    async fn new_mcp_servers_default_to_disabled_with_tools_enabled_for_existing_agents() {
         let directory = tempdir().unwrap();
         let store = Store::new(directory.path()).await.unwrap();
         let agent_id = store.list_agents().await.unwrap()[0].id;
@@ -966,6 +969,13 @@ mod tests {
             .find(|item| item.server_id == second.id)
             .unwrap();
         assert_eq!(second_override.enabled, Some(false));
+        let second_tool_override = updated
+            .overrides
+            .tools
+            .iter()
+            .find(|item| item.server_id == second.id && item.tool_name == "second_tool")
+            .unwrap();
+        assert_eq!(second_tool_override.enabled, Some(true));
         assert!(
             !updated
                 .effective
@@ -991,6 +1001,85 @@ mod tests {
                 .effective
                 .iter()
                 .find(|item| item.id == second.id)
+                .unwrap()
+                .enabled
+        );
+    }
+
+    #[tokio::test]
+    async fn newly_discovered_mcp_tools_default_to_enabled_for_existing_agents() {
+        let directory = tempdir().unwrap();
+        let store = Store::new(directory.path()).await.unwrap();
+        let agent_id = store.list_agents().await.unwrap()[0].id;
+        let server = store
+            .create_mcp_server(McpServerDraft {
+                id: None,
+                name: "Growing MCP".to_string(),
+                description: String::new(),
+                enabled: true,
+                supports_parallel_tool_calls: false,
+                provider: None,
+                provider_url: None,
+                logo_url: None,
+                tags: Vec::new(),
+                transport: McpTransport::Stdio {
+                    command: "fake-mcp".to_string(),
+                    args: Vec::new(),
+                    cwd: None,
+                    env: Default::default(),
+                    inherit_env: false,
+                    env_allowlist: Vec::new(),
+                    long_running: false,
+                    timeout_ms: 60_000,
+                },
+            })
+            .await
+            .unwrap();
+        let first_tool = McpTool {
+            tool_id: Uuid::new_v4(),
+            name: "first_tool".to_string(),
+            qualified_name: "mcp__growing__first_tool".to_string(),
+            title: None,
+            description: String::new(),
+            input_schema: serde_json::json!({"type":"object"}),
+            enabled: true,
+            updated_at: None,
+        };
+        store
+            .replace_mcp_tools(server.id, std::slice::from_ref(&first_tool))
+            .await
+            .unwrap();
+        let initial = store.read_mcp_agent_settings(agent_id).await.unwrap();
+        assert!(initial.overrides.tools.is_empty());
+
+        let second_tool = McpTool {
+            tool_id: Uuid::new_v4(),
+            name: "second_tool".to_string(),
+            qualified_name: "mcp__growing__second_tool".to_string(),
+            ..first_tool.clone()
+        };
+        store
+            .replace_mcp_tools(server.id, &[first_tool, second_tool])
+            .await
+            .unwrap();
+
+        let updated = store.read_mcp_agent_settings(agent_id).await.unwrap();
+        let second_override = updated
+            .overrides
+            .tools
+            .iter()
+            .find(|item| item.server_id == server.id && item.tool_name == "second_tool")
+            .unwrap();
+        assert_eq!(second_override.enabled, Some(true));
+        assert!(
+            updated
+                .effective
+                .iter()
+                .find(|item| item.id == server.id)
+                .unwrap()
+                .tools
+                .iter()
+                .find(|tool| tool.name == "second_tool")
                 .unwrap()
                 .enabled
         );

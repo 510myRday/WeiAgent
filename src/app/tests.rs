@@ -632,6 +632,55 @@ async fn scripted_test_app(
     )
 }
 
+#[tokio::test]
+async fn existing_conversation_reads_latest_agent_tools_config_on_next_run() {
+    let (_, state, conversation_id, _, _) = scripted_test_app(Vec::new()).await;
+    let agent_id = state
+        .store
+        .get_conversation(conversation_id)
+        .await
+        .unwrap()
+        .agent_id;
+
+    let mut config = state.store.read_agent_tools_config(agent_id).await.unwrap();
+    config.terminal.enabled = false;
+    state
+        .store
+        .update_agent_tools_config(agent_id, config)
+        .await
+        .unwrap();
+    let first = crate::app::chat::prepare_chat(
+        &state,
+        conversation_id,
+        "first turn",
+        &[],
+        crate::domain::ThinkingLevel::Off,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(!first.tools_config.terminal.enabled);
+
+    let mut config = state.store.read_agent_tools_config(agent_id).await.unwrap();
+    config.terminal.enabled = true;
+    state
+        .store
+        .update_agent_tools_config(agent_id, config)
+        .await
+        .unwrap();
+    let second = crate::app::chat::prepare_chat(
+        &state,
+        conversation_id,
+        "second turn",
+        &[],
+        crate::domain::ThinkingLevel::Off,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(second.tools_config.terminal.enabled);
+}
+
 fn delayed_echo_command() -> String {
     if cfg!(windows) {
         "ping -n 2 127.0.0.1 >NUL && echo background-finished".to_string()
