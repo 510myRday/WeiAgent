@@ -13,7 +13,8 @@ Treat `weiagent` as the operating interface for the current WeiAgent service. Ex
 - Treat `list` as discovery, `show` as detail inspection, and `test` as connectivity or health verification.
 - For writes, use `create`/`add`, `edit`, `delete`/`remove`, `enable`, `disable`, `reload`, `install`, or `run` as appropriate.
 - Resolve missing IDs with the relevant `list` command. Continue automatically when one target matches; ask only when multiple targets remain ambiguous.
-- For Agent behavior or permissions, start with `weiagent agent show AGENT_ID --full`, preserve unrelated settings, edit only the requested section, and verify with the matching `show` command.
+- For Agent behavior or permissions, start with `weiagent agent show AGENT_ID`, then read only the relevant section with `agent profile show`, `agent tools show`, `agent mcp show`, or `agent skill show`. Preserve unrelated settings, edit only the requested section, and verify with the matching section command.
+- Use `agent show AGENT_ID --full` only when a complete snapshot or post-change aggregate verification is required; it reads all Agent sections at once.
 - Client commands connect to or start the local service automatically. Use `--no-start` only when the caller explicitly requires an already-running service.
 - Commands launched by WeiAgent's built-in terminal inherit the service URL, data directory, and temporary API token. Run ordinary client commands directly; do not start a second service first.
 - The built-in Skill name is exactly `weiagentcli`.

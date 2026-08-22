@@ -7,10 +7,24 @@ Use this reference for Agent lifecycle, behavior, tool settings, MCP access, Ski
 ```bash
 weiagent --format json agent list
 weiagent --format json agent show AGENT_ID
+```
+
+The normal `show` response contains compact Agent metadata. Read only the section needed for the current task:
+
+```bash
+weiagent --format json agent profile show AGENT_ID
+weiagent --format json agent tools show AGENT_ID
+weiagent --format json agent mcp show AGENT_ID
+weiagent --format json agent skill show AGENT_ID
+```
+
+Use the aggregate form only for a complete snapshot or final cross-section verification:
+
+```bash
 weiagent --format json agent show AGENT_ID --full
 ```
 
-The normal `show` response contains Agent metadata. The `--full` response is the source of truth for configuration work and includes `agent`, `workspace`, `tools`, `mcp`, and `skills` sections.
+The aggregate response includes `agent`, `workspace`, `tools`, `mcp`, and `skills` sections and is intentionally larger than the section-specific reads.
 
 Resolve an ID from the list by exact name when possible. Do not guess UUIDs.
 
@@ -22,6 +36,8 @@ Small metadata changes can use flags:
 weiagent agent create --name "NAME" --description "DESCRIPTION" \
   --provider-id PROVIDER_ID --model MODEL_ID
 weiagent agent edit AGENT_ID --name "NEW_NAME" --model MODEL_ID
+# Add --full to agent edit when the complete post-edit document is needed.
+weiagent agent edit AGENT_ID --model MODEL_ID --full
 ```
 
 For a complete document, use `--file`:
@@ -49,7 +65,14 @@ For a complete document, use `--file`:
 
 ```bash
 weiagent agent create --file AGENT.json
+weiagent agent create --file AGENT.json --full
 weiagent agent edit AGENT_ID --file AGENT.json
+```
+
+Creation returns the new Agent ID and changed sections by default. Add `--full` when the complete post-creation document is needed. Delete an Agent with:
+
+```bash
+weiagent agent delete AGENT_ID
 ```
 
 Separate files are also supported: `--profile-file`, `--tools-file`, `--mcp-file`, and `--skills-file`. The complete document is merged by the CLI into the appropriate API requests.
@@ -160,7 +183,11 @@ weiagent agent skill edit AGENT_ID --file SKILLS_OVERRIDES.json
 weiagent agent run AGENT_ID "PROMPT"
 weiagent agent run AGENT_ID --stream "PROMPT"
 weiagent agent run AGENT_ID --conversation CONVERSATION_ID "PROMPT"
+weiagent agent run AGENT_ID --thinking-level off "PROMPT"
+weiagent agent run AGENT_ID --thinking-level low "PROMPT"
+weiagent agent run AGENT_ID --thinking-level medium "PROMPT"
 weiagent agent run AGENT_ID --thinking-level high "PROMPT"
+weiagent agent run AGENT_ID --thinking-level x-high "PROMPT"
 ```
 
 If the prompt argument is omitted, read it from standard input. `--stream` emits incremental output. With `--format json`, streamed output is one JSON object per line, such as `delta`, `completed`, or `error` events.
@@ -170,8 +197,11 @@ If the prompt argument is omitted, read it from standard input. `--stream` emits
 After a mutation, run the narrowest matching read command:
 
 ```bash
-weiagent --format json agent show AGENT_ID --full
+weiagent --format json agent show AGENT_ID
+weiagent --format json agent profile show AGENT_ID
 weiagent --format json agent mcp show AGENT_ID
 weiagent --format json agent skill show AGENT_ID
 weiagent --format json agent tools show AGENT_ID
 ```
+
+Use `agent show AGENT_ID --full` only when several sections changed or the complete aggregate state must be checked.

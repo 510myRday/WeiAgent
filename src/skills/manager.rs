@@ -79,6 +79,8 @@ pub const SKILL_VIEW_TOOL_NAME: &str = "skill_view";
 const MAX_REMOTE_SKILL_FILES: usize = 256;
 const MAX_REMOTE_SKILL_BYTES: usize = 32 * 1024 * 1024;
 const REMOTE_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(8);
+const DEFAULT_SKILL_VIEW_MAX_CHARS: usize = 12_000;
+const MAX_SKILL_VIEW_MAX_CHARS: usize = 12_000;
 const SKILL_RESOURCE_DIRECTORIES: [&str; 5] =
     ["references", "scripts", "examples", "templates", "assets"];
 
@@ -1113,8 +1115,8 @@ impl SkillManager {
 
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
         vec![
-            ToolDefinition { kind: "function".to_string(), function: FunctionDefinition { name: SKILLS_LIST_TOOL_NAME.to_string(), description: "List the enabled Skills available to the current Agent. Use this before loading a relevant Skill.".to_string(), parameters: serde_json::json!({"type":"object","properties":{"query":{"type":"string"},"group":{"type":"string"}},"additionalProperties":false}) } },
-            ToolDefinition { kind: "function".to_string(), function: FunctionDefinition { name: SKILL_VIEW_TOOL_NAME.to_string(), description: "Load the SKILL.md or a reference file for an enabled Skill. Paths are relative to the Skill directory.".to_string(), parameters: serde_json::json!({"type":"object","properties":{"name":{"type":"string"},"file_path":{"type":"string"}},"required":["name"],"additionalProperties":false}) } },
+            ToolDefinition { kind: "function".to_string(), function: FunctionDefinition { name: SKILLS_LIST_TOOL_NAME.to_string(), description: "List compact metadata for Skills enabled for the current Agent. Use this before loading a relevant Skill.".to_string(), parameters: serde_json::json!({"type":"object","properties":{"query":{"type":"string"},"group":{"type":"string"}},"additionalProperties":false}) } },
+            ToolDefinition { kind: "function".to_string(), function: FunctionDefinition { name: SKILL_VIEW_TOOL_NAME.to_string(), description: "Load a bounded window of SKILL.md or a reference file for an enabled Skill. Use offset to continue after a truncated result.".to_string(), parameters: serde_json::json!({"type":"object","properties":{"name":{"type":"string"},"file_path":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":1,"maximum":MAX_SKILL_VIEW_MAX_CHARS}},"required":["name"],"additionalProperties":false}) } },
         ]
     }
 
@@ -1156,16 +1158,16 @@ impl SkillManager {
                             .as_deref()
                             .is_none_or(|group| item.group.as_deref() == Some(group))
                     })
-                    .cloned()
+                    .map(compact_skill_catalog_item)
                     .collect::<Vec<_>>();
                 ToolResult::Completed {
-                    stdout: serde_json::to_string_pretty(&items).unwrap_or_default(),
+                    stdout: serde_json::to_string(&items).unwrap_or_default(),
                     stderr: String::new(),
                     exit_code: 0,
                     duration_ms: 0,
                     runtime: Some("skill".to_string()),
                     output_cursor: 0,
-                    structured_content: Some(serde_json::to_value(items).unwrap_or(Value::Null)),
+                    structured_content: None,
                     is_error: false,
                 }
             }
@@ -1174,6 +1176,8 @@ impl SkillManager {
                 struct Args {
                     name: String,
                     file_path: Option<String>,
+                    offset: Option<usize>,
+                    max_chars: Option<usize>,
                 }
                 let args = match serde_json::from_value::<Args>(arguments) {
                     Ok(value) => value,
@@ -1193,16 +1197,34 @@ impl SkillManager {
                     .content_from_manifest(manifest, args.file_path.as_deref())
                     .await
                 {
-                    Ok(content) => ToolResult::Completed {
-                        stdout: content.content.clone(),
-                        stderr: String::new(),
-                        exit_code: 0,
-                        duration_ms: 0,
-                        runtime: Some("skill".to_string()),
-                        output_cursor: 0,
-                        structured_content: serde_json::to_value(content).ok(),
-                        is_error: false,
-                    },
+                    Ok(content) => {
+                        let offset = args.offset.unwrap_or(0);
+                        let max_chars = args
+                            .max_chars
+                            .unwrap_or(DEFAULT_SKILL_VIEW_MAX_CHARS)
+                            .clamp(1, MAX_SKILL_VIEW_MAX_CHARS);
+                        let (window, truncated, total_chars) =
+                            bounded_skill_content(&content.content, offset, max_chars);
+                        let file_path = content.path;
+                        let stdout = if truncated {
+                            format!(
+                                "[skill_view name={name} file_path={file_path} offset={offset} returned_chars={} total_chars={total_chars} truncated=true]\n\n{window}",
+                                window.chars().count()
+                            )
+                        } else {
+                            window
+                        };
+                        ToolResult::Completed {
+                            stdout,
+                            stderr: String::new(),
+                            exit_code: 0,
+                            duration_ms: 0,
+                            runtime: Some("skill".to_string()),
+                            output_cursor: 0,
+                            structured_content: None,
+                            is_error: false,
+                        }
+                    }
                     Err(error) => ToolResult::Error {
                         message: error.to_string(),
                     },
@@ -1213,6 +1235,29 @@ impl SkillManager {
             },
         }
     }
+}
+
+fn compact_skill_catalog_item(item: &SkillManifest) -> Value {
+    serde_json::json!({
+        "name": item.name,
+        "description": item.description,
+        "version": item.version,
+        "group": item.group,
+        "tags": item.tags,
+        "builtin": item.is_builtin,
+        "references": item.references.iter().map(|file| file.path.clone()).collect::<Vec<_>>(),
+    })
+}
+
+fn bounded_skill_content(content: &str, offset: usize, max_chars: usize) -> (String, bool, usize) {
+    let total_chars = content.chars().count();
+    let window = content
+        .chars()
+        .skip(offset)
+        .take(max_chars)
+        .collect::<String>();
+    let truncated = offset > 0 || offset.saturating_add(window.chars().count()) < total_chars;
+    (window, truncated, total_chars)
 }
 
 async fn copy_skill_directory(source: &Path, destination: &Path) -> AppResult<()> {
@@ -1853,6 +1898,59 @@ mod tests {
         assert!(!files.iter().any(|file| file.contains("example.test")));
     }
 
+    #[test]
+    fn compact_skill_catalog_omits_runtime_and_file_metadata() {
+        let manifest = SkillManifest {
+            name: "demo".to_string(),
+            description: "Demo Skill".to_string(),
+            version: Some("1.0.0".to_string()),
+            group: Some("tools".to_string()),
+            group_id: Some("group-id".to_string()),
+            is_builtin: false,
+            tags: vec!["demo".to_string()],
+            icon_url: None,
+            source_url: None,
+            root_dir: "ROOT".to_string(),
+            skill_md: "ROOT/SKILL.md".to_string(),
+            scripts: Vec::new(),
+            references: vec![SkillFile {
+                path: "references/api.md".to_string(),
+                kind: "reference".to_string(),
+                size_bytes: 123,
+            }],
+            examples: Vec::new(),
+            content_hash: "HASH".to_string(),
+            modified_at: "DATE".to_string(),
+            created_at: "DATE".to_string(),
+            updated_at: "DATE".to_string(),
+            diagnostics: Vec::new(),
+            enabled: true,
+            global_override: None,
+            group_override: None,
+            agent_override: None,
+            agent_group_override: None,
+        };
+
+        let value = compact_skill_catalog_item(&manifest);
+        assert_eq!(value["name"], "demo");
+        assert_eq!(value["references"][0], "references/api.md");
+        assert!(value.get("root_dir").is_none());
+        assert!(value.get("content_hash").is_none());
+    }
+
+    #[test]
+    fn bounded_skill_content_reports_continuation_metadata() {
+        let (window, truncated, total_chars) = bounded_skill_content("0123456789", 3, 4);
+        assert_eq!(window, "3456");
+        assert!(truncated);
+        assert_eq!(total_chars, 10);
+
+        let (window, truncated, total_chars) = bounded_skill_content("short", 0, 20);
+        assert_eq!(window, "short");
+        assert!(!truncated);
+        assert_eq!(total_chars, 5);
+    }
+
     async fn write_skill(root: &std::path::Path, directory: &str, name: &str, group: &str) {
         let skill_root = root.join(directory);
         fs::create_dir_all(&skill_root).await.unwrap();
@@ -2300,13 +2398,9 @@ mod tests {
         assert_eq!(builtin.agent_override, Some(false));
         assert!(builtin.global_override.is_none());
         assert!(!builtin.enabled);
-        assert!(
-            settings
-                .overrides
-                .skills
-                .iter()
-                .any(|item| item.name == BUILTIN_WEIAGENT_CLI_SKILL_NAME && item.enabled == Some(false))
-        );
+        assert!(settings.overrides.skills.iter().any(|item| item.name
+            == BUILTIN_WEIAGENT_CLI_SKILL_NAME
+            && item.enabled == Some(false)));
         assert!(
             !store
                 .read_skill_global_overrides()

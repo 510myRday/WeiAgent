@@ -136,6 +136,8 @@ pub enum AgentCommand {
 #[derive(Debug, Clone, Args)]
 pub struct AgentCreateArgs {
     #[arg(long)]
+    pub full: bool,
+    #[arg(long)]
     pub name: Option<String>,
     #[arg(long)]
     pub description: Option<String>,
@@ -162,6 +164,8 @@ pub struct AgentCreateArgs {
 #[derive(Debug, Clone, Args)]
 pub struct AgentEditArgs {
     pub agent_id: Uuid,
+    #[arg(long)]
+    pub full: bool,
     #[arg(long)]
     pub name: Option<String>,
     #[arg(long)]
@@ -1122,6 +1126,7 @@ async fn run_agent(cli: &Cli, command: AgentCommand) -> AppResult<()> {
             print_value(cli, &value)
         }
         AgentCommand::Create(args) => {
+            let full = args.full;
             let mut document = if let Some(path) = args.file.as_deref() {
                 file_json(&path).await?
             } else {
@@ -1179,27 +1184,41 @@ async fn run_agent(cli: &Cli, command: AgentCommand) -> AppResult<()> {
                     .await;
                 return Err(error);
             }
-            if document.get("workspace").is_some()
-                || document.get("tools").is_some()
-                || document.get("mcp").is_some()
-                || document.get("skills").is_some()
-                || args.profile_file.is_some()
-                || args.tools_file.is_some()
-                || args.mcp_file.is_some()
-                || args.skills_file.is_some()
-            {
+            let mut changed = vec!["agent"];
+            if document.get("workspace").is_some() || args.profile_file.is_some() {
+                changed.push("profile");
+            }
+            if document.get("tools").is_some() || args.tools_file.is_some() {
+                changed.push("tools");
+            }
+            if document.get("mcp").is_some() || args.mcp_file.is_some() {
+                changed.push("mcp");
+            }
+            if document.get("skills").is_some() || args.skills_file.is_some() {
+                changed.push("skills");
+            }
+            if full {
                 print_value(cli, &read_agent_full(&client, agent_id).await?)
             } else {
-                print_value(cli, &created)
+                print_value(
+                    cli,
+                    &json!({
+                        "ok": true,
+                        "agent_id": agent_id,
+                        "changed": changed,
+                    }),
+                )
             }
         }
         AgentCommand::Edit(args) => {
             let id = args.agent_id;
+            let full = args.full;
             let document = if let Some(path) = args.file.as_deref() {
                 file_json(&path).await?
             } else {
                 json!({})
             };
+            let mut changed = Vec::new();
             let mut body = agent_document_section(&document);
             set_if_present(&mut body, "name", args.name.map(Value::String));
             set_if_present(
@@ -1225,6 +1244,7 @@ async fn run_agent(cli: &Cli, command: AgentCommand) -> AppResult<()> {
             );
             let has_basic = body.as_object().is_some_and(|object| !object.is_empty());
             if has_basic {
+                changed.push("agent");
                 client
                     .request::<Value>(
                         reqwest::Method::PUT,
@@ -1232,6 +1252,18 @@ async fn run_agent(cli: &Cli, command: AgentCommand) -> AppResult<()> {
                         Some(body),
                     )
                     .await?;
+            }
+            if document.get("workspace").is_some() || args.profile_file.is_some() {
+                changed.push("profile");
+            }
+            if document.get("tools").is_some() || args.tools_file.is_some() {
+                changed.push("tools");
+            }
+            if document.get("mcp").is_some() || args.mcp_file.is_some() {
+                changed.push("mcp");
+            }
+            if document.get("skills").is_some() || args.skills_file.is_some() {
+                changed.push("skills");
             }
             apply_agent_subconfigs(
                 &client,
@@ -1243,7 +1275,18 @@ async fn run_agent(cli: &Cli, command: AgentCommand) -> AppResult<()> {
                 args.skills_file.as_deref(),
             )
             .await?;
-            print_value(cli, &read_agent_full(&client, id).await?)
+            if full {
+                print_value(cli, &read_agent_full(&client, id).await?)
+            } else {
+                print_value(
+                    cli,
+                    &json!({
+                        "ok": true,
+                        "agent_id": id,
+                        "changed": changed,
+                    }),
+                )
+            }
         }
         AgentCommand::Delete { agent_id } => print_value(
             cli,
@@ -2259,6 +2302,40 @@ mod tests {
             cli.command,
             Some(Command::Agent {
                 command: AgentCommand::Show { full: true, .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn agent_create_full_output_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "weiagent",
+            "agent",
+            "create",
+            "--file",
+            "AGENT.json",
+            "--full",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                command: AgentCommand::Create(AgentCreateArgs { full: true, .. })
+            })
+        ));
+    }
+
+    #[test]
+    fn agent_edit_full_output_flag_parses() {
+        let agent_id = Uuid::nil().to_string();
+        let cli = Cli::try_parse_from([
+            "weiagent", "agent", "edit", &agent_id, "--model", "MODEL_ID", "--full",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                command: AgentCommand::Edit(AgentEditArgs { full: true, .. })
             })
         ));
     }
