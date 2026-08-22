@@ -10,9 +10,9 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::app::{
     AppState,
-    handlers::{
-        agents, assets, conversations, ip_proxies, llm_logs, providers, settings, skills, tools,
-    },
+        handlers::{
+            agents, assets, conversations, ip_proxies, llm_logs, providers, scheduling, settings, skills, tools,
+        },
     security::enforce_api_security,
     static_assets::serve_frontend,
 };
@@ -150,6 +150,43 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             "/api/conversations/{conversation_id}/runs",
             post(conversations::create_message_run),
         )
+        .route(
+            "/api/conversations/{conversation_id}/heartbeat",
+            get(scheduling::read_heartbeat)
+                .put(scheduling::set_heartbeat)
+                .delete(scheduling::delete_heartbeat),
+        )
+        .route("/api/heartbeats", get(scheduling::list_heartbeats))
+        .route(
+            "/api/conversations/{conversation_id}/heartbeat/pause",
+            post(scheduling::pause_heartbeat),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/heartbeat/resume",
+            post(scheduling::resume_heartbeat),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/heartbeat/run",
+            post(scheduling::run_heartbeat),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/heartbeat/executions",
+            get(scheduling::list_heartbeat_executions),
+        )
+        .route(
+            "/api/cron",
+            get(scheduling::list_cron_tasks).post(scheduling::create_cron_task),
+        )
+        .route(
+            "/api/cron/{task_id}",
+            get(scheduling::read_cron_task)
+                .patch(scheduling::update_cron_task)
+                .delete(scheduling::delete_cron_task),
+        )
+        .route("/api/cron/{task_id}/pause", post(scheduling::pause_cron_task))
+        .route("/api/cron/{task_id}/resume", post(scheduling::resume_cron_task))
+        .route("/api/cron/{task_id}/run", post(scheduling::run_cron_task))
+        .route("/api/cron/{task_id}/executions", get(scheduling::list_cron_executions))
         .route(
             "/api/conversations/{conversation_id}/run",
             get(conversations::active_conversation_run),

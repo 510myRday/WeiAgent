@@ -24,6 +24,7 @@ import type {
   ImageAttachment,
   UiMessageItem,
 } from '../../types';
+import type { McpServer } from '../../toolTypes';
 import { Button, EmptyState } from '../../components/ui';
 import { useI18n } from '../../i18n';
 import {
@@ -57,6 +58,7 @@ interface MessageListProps {
     agentId: string,
     decision: 'approve' | 'reject' | 'always_approve',
   ) => Promise<void>;
+  mcpServers: McpServer[];
   onActiveTimelineMessageChange: (messageIndex: number | null) => void;
   formatTimelineTime: (value: string) => string;
 }
@@ -108,6 +110,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   onRestart,
   onEditImage,
   onApproveToolCall,
+  mcpServers,
   onActiveTimelineMessageChange,
   formatTimelineTime,
 }, ref) {
@@ -508,6 +511,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                     onRestart={onRestart}
                     onEditImage={onEditImage}
                     onApproveToolCall={onApproveToolCall}
+                    mcpServers={mcpServers}
                     formatTimelineTime={formatTimelineTime}
                   />
                 )}

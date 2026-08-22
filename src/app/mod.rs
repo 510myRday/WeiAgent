@@ -5,6 +5,7 @@ pub mod handlers;
 mod image;
 mod router;
 mod run_manager;
+pub(crate) mod scheduler;
 mod security;
 mod state;
 mod static_assets;

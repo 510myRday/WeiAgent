@@ -14,6 +14,7 @@ const ToolsPanel = lazy(() => import('./features/tools/ToolsPanel').then((module
 const SkillsPanel = lazy(() => import('./features/tools/SkillsPanel').then((module) => ({ default: module.SkillsPanel })));
 const SettingsPanel = lazy(() => import('./features/settings/SettingsPanel').then((module) => ({ default: module.SettingsPanel })));
 const MonitorPanel = lazy(() => import('./features/monitor/MonitorPanel').then((module) => ({ default: module.MonitorPanel })));
+const SchedulingPanel = lazy(() => import('./features/scheduling/SchedulingPanel').then((module) => ({ default: module.SchedulingPanel })));
 
 
 export function App() {
@@ -22,6 +23,7 @@ export function App() {
   const [activeNav, setActiveNav] = useState<NavKey>('chat');
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('runtime');
   const [mobileView, setMobileView] = useState<MobileView>('list');
+  const [pendingConversationId, setPendingConversationId] = useState('');
   const [initialLoadError, setInitialLoadError] = useState('');
   const [isRefreshingInitialData, setIsRefreshingInitialData] = useState(false);
 
@@ -143,6 +145,13 @@ export function App() {
     setMobileView('list');
   }
 
+  function openConversation(agentId: string, conversationId: string) {
+    setActiveAgentId(agentId);
+    setPendingConversationId(conversationId);
+    setActiveNav('chat');
+    setMobileView('main');
+  }
+
   useEffect(() => {
     const openSettingsShortcut = (event: globalThis.KeyboardEvent) => {
       if (
@@ -197,6 +206,8 @@ export function App() {
             onBackToList={openListPane}
             onCreateAgent={openAgentCreation}
             settings={settingsForm}
+            openConversationId={pendingConversationId}
+            onConversationOpened={() => setPendingConversationId('')}
             latestConversationUpdatedAtByAgent={latestConversationUpdatedAtByAgent}
             onAgentActivity={touchAgentActivity}
           />
@@ -210,6 +221,15 @@ export function App() {
             onSettingsSave={saveSettingsWithLocale}
             onOpenMain={openMainPane}
             onBackToList={openListPane}
+          />
+        )}
+        {activeNav === 'scheduling' && (
+          <SchedulingPanel
+            agents={agents}
+            providers={providers}
+            onOpenMain={openMainPane}
+            onBackToList={openListPane}
+            onOpenConversation={openConversation}
           />
         )}
         {activeNav === 'agents' && (

@@ -276,6 +276,14 @@ pub async fn create_message_run(
     Path(conversation_id): Path<Uuid>,
     Json(request): Json<SendMessageRequest>,
 ) -> AppResult<Json<AgentRun>> {
+    Ok(Json(start_message_run(state, conversation_id, request).await?))
+}
+
+pub async fn start_message_run(
+    state: AppState,
+    conversation_id: Uuid,
+    request: SendMessageRequest,
+) -> AppResult<AgentRun> {
     // Image runs intentionally bypass prepare_chat and run_agent: image models
     // receive only the prompt and reference images, never chat history or tools.
     if request.generation_mode == GenerationMode::Image {
@@ -412,14 +420,14 @@ pub async fn create_message_run(
         manager.finish(run_id, outcome.0, outcome.1);
     });
 
-    Ok(Json(info))
+    Ok(info)
 }
 
 async fn create_image_run(
     state: AppState,
     conversation_id: Uuid,
     request: SendMessageRequest,
-) -> AppResult<Json<AgentRun>> {
+) -> AppResult<AgentRun> {
     let settings = state.store.read_settings().await?;
     let conversation = state.store.get_conversation(conversation_id).await?;
     let agent = state.store.get_agent(conversation.agent_id).await?;
@@ -479,7 +487,7 @@ async fn create_image_run(
         let _ = forwarding.await;
         manager.finish(run_id, outcome.0, outcome.1);
     });
-    Ok(Json(info))
+    Ok(info)
 }
 
 pub async fn active_conversation_run(

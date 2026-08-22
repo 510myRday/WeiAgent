@@ -1,4 +1,4 @@
-import { BookOpen, Bot, ChartColumn, Globe, Settings, Wrench } from 'lucide-react';
+import { BookOpen, Bot, CalendarClock, ChartColumn, Globe, Settings, Wrench } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 import type { AppSettings, AvatarIcon, NavKey } from '../../types';
@@ -70,6 +70,7 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
         <NavButton active={activeNav === 'tools'} onClick={() => onNavChange('tools')} icon={<Wrench size={21} />} label={t('nav.tools')} />
         <NavButton active={activeNav === 'skills'} onClick={() => onNavChange('skills')} icon={<BookOpen size={21} />} label={t('nav.skills')} />
         <NavButton active={activeNav === 'monitor'} onClick={() => onNavChange('monitor')} icon={<ChartColumn size={21} />} label={t('nav.monitor')} />
+        <NavButton active={activeNav === 'scheduling'} onClick={() => onNavChange('scheduling')} icon={<CalendarClock size={21} />} label={t('nav.scheduling')} />
         <NavButton active={activeNav === 'settings'} onClick={() => onNavChange('settings')} icon={<Settings size={21} />} label={t('nav.settings')} />
       </nav>
 

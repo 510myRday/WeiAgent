@@ -126,6 +126,7 @@ async fn main() -> AppResult<()> {
         skill_manager,
         run_manager: Arc::new(app::RunManager::new()),
     };
+    let _scheduler = app::scheduler::start(state.clone());
     let app = if is_dev {
         build_router_dev(state)
     } else {

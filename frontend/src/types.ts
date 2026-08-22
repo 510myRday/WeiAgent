@@ -193,6 +193,68 @@ export type ConversationUsage = TokenUsage & {
   image_count?: number;
 };
 
+export type ScheduledTask = {
+  id: string;
+  agent_id: string;
+  source_conversation_id: string | null;
+  schedule_expr: string;
+  timezone_offset: string;
+  prompt: string;
+  enabled: boolean;
+  next_run_at: string;
+  last_run_at: string | null;
+  last_status: string | null;
+  last_error: string | null;
+  active_execution_id: string | null;
+  latest_execution_conversation_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScheduledTaskExecution = {
+  id: string;
+  task_id: string;
+  conversation_id: string;
+  scheduled_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  status: string;
+  error: string | null;
+  trigger_type?: 'scheduled' | 'manual' | string;
+  agent_name?: string | null;
+  provider_name?: string | null;
+  model_id?: string | null;
+  output_preview?: string | null;
+};
+
+export type ConversationHeartbeat = {
+  conversation_id: string;
+  agent_id: string;
+  interval_seconds: number;
+  prompt: string;
+  enabled: boolean;
+  next_fire_at: string;
+  pending: boolean;
+  last_run_at: string | null;
+  last_status: string | null;
+  last_error: string | null;
+};
+
+export type ConversationHeartbeatExecution = {
+  id: string;
+  conversation_id: string;
+  scheduled_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  status: string;
+  error: string | null;
+  trigger_type?: 'scheduled' | 'manual' | string;
+  agent_name?: string | null;
+  provider_name?: string | null;
+  model_id?: string | null;
+  output_preview?: string | null;
+};
+
 export type ChatToolCall = {
   id: string;
   type: 'function';
@@ -447,7 +509,7 @@ export type StreamEvent =
       };
     };
 
-export type NavKey = 'chat' | 'monitor' | 'agents' | 'tools' | 'skills' | 'settings';
+export type NavKey = 'chat' | 'monitor' | 'agents' | 'tools' | 'skills' | 'scheduling' | 'settings';
 
 export type SettingsSection = 'runtime' | 'agent' | 'providers' | 'proxies';
 

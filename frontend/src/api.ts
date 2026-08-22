@@ -5,6 +5,8 @@ import type {
   AgentWorkspace,
   AppSettings,
   Conversation,
+  ConversationHeartbeat,
+  ConversationHeartbeatExecution,
   ConversationUsage,
   ConversationMessagePage,
   CreateAgentPayload,
@@ -14,6 +16,8 @@ import type {
   LlmLogListPage,
   ModelProvider,
   ModelProviderPayload,
+  ScheduledTask,
+  ScheduledTaskExecution,
   ImageAttachment,
   GenerationMode,
   IpProxy,
@@ -612,6 +616,69 @@ export function updateSkillEnabled(name: string, enabled: boolean): Promise<Skil
     method: 'PUT',
     body: JSON.stringify({ enabled }),
   });
+}
+
+export function listScheduledTasks(): Promise<ScheduledTask[]> {
+  return request<ScheduledTask[]>('/api/cron');
+}
+
+export function createScheduledTask(payload: {
+  agent_id: string;
+  source_conversation_id?: string | null;
+  schedule: string;
+  prompt: string;
+  timezone_offset?: string | null;
+}): Promise<ScheduledTask> {
+  return request<ScheduledTask>('/api/cron', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function updateScheduledTask(taskId: string, payload: {
+  agent_id?: string;
+  schedule?: string;
+  prompt?: string;
+  timezone_offset?: string;
+}): Promise<ScheduledTask> {
+  return request<ScheduledTask>(`/api/cron/${encodeURIComponent(taskId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+}
+
+export function setScheduledTaskEnabled(taskId: string, enabled: boolean): Promise<ScheduledTask> {
+  return request<ScheduledTask>(`/api/cron/${encodeURIComponent(taskId)}/${enabled ? 'resume' : 'pause'}`, { method: 'POST' });
+}
+
+export function runScheduledTask(taskId: string): Promise<ScheduledTask> {
+  return request<ScheduledTask>(`/api/cron/${encodeURIComponent(taskId)}/run`, { method: 'POST' });
+}
+
+export function deleteScheduledTask(taskId: string): Promise<void> {
+  return request<void>(`/api/cron/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
+}
+
+export function listScheduledTaskExecutions(taskId: string): Promise<ScheduledTaskExecution[]> {
+  return request<ScheduledTaskExecution[]>(`/api/cron/${encodeURIComponent(taskId)}/executions`);
+}
+
+export function listHeartbeats(): Promise<ConversationHeartbeat[]> {
+  return request<ConversationHeartbeat[]>('/api/heartbeats');
+}
+
+export function listHeartbeatExecutions(conversationId: string): Promise<ConversationHeartbeatExecution[]> {
+  return request<ConversationHeartbeatExecution[]>(`/api/conversations/${encodeURIComponent(conversationId)}/heartbeat/executions`);
+}
+
+export function setHeartbeat(conversationId: string, payload: { conversation_id?: string; interval_seconds: number; prompt: string }): Promise<ConversationHeartbeat> {
+  return request<ConversationHeartbeat>(`/api/conversations/${encodeURIComponent(conversationId)}/heartbeat`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export function setHeartbeatEnabled(conversationId: string, enabled: boolean): Promise<ConversationHeartbeat> {
+  return request<ConversationHeartbeat>(`/api/conversations/${encodeURIComponent(conversationId)}/heartbeat/${enabled ? 'resume' : 'pause'}`, { method: 'POST' });
+}
+
+export function runHeartbeat(conversationId: string): Promise<ConversationHeartbeat> {
+  return request<ConversationHeartbeat>(`/api/conversations/${encodeURIComponent(conversationId)}/heartbeat/run`, { method: 'POST' });
+}
+
+export function deleteHeartbeat(conversationId: string): Promise<void> {
+  return request<void>(`/api/conversations/${encodeURIComponent(conversationId)}/heartbeat`, { method: 'DELETE' });
 }
 
 export function createSkillGroup(name: string): Promise<SkillSettings> {

@@ -60,6 +60,10 @@ const BUILTIN_WEIAGENT_CLI_FILES: &[(&str, &str)] = &[
         "references/cli-reference.md",
         include_str!("builtin/weiagentcli/references/cli-reference.md"),
     ),
+    (
+        "references/scheduling.md",
+        include_str!("builtin/weiagentcli/references/scheduling.md"),
+    ),
 ];
 const LEGACY_BUILTIN_SKILL_NAME: &str = "client";
 

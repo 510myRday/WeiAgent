@@ -1,6 +1,6 @@
 ---
 name: weiagentcli
-description: Operate the current WeiAgent intelligent agent service through its built-in CLI and local service API. Use this Skill when the task asks to inspect, create, edit, run, enable, disable, test, reload, install, or remove WeiAgent Agents, Providers, Models, Skills, MCP servers, proxies, conversations, or runs.
+description: Operate the current WeiAgent intelligent agent service through its built-in CLI and local service API. Use this Skill when the task asks to inspect, create, edit, run, enable, disable, test, reload, install, or remove WeiAgent Agents, Providers, Models, Skills, MCP servers, proxies, conversations, runs, Heartbeats, or Cron schedules.
 ---
 
 # WeiAgent CLI Operating Guide
@@ -28,6 +28,7 @@ Load only the reference needed for the current task:
 - Skill discovery, content loading, installation, reload, or Skill groups: `references/skills.md`
 - MCP server creation, transport configuration, tools, auth, or refresh: `references/mcp.md`
 - Proxy creation, testing, enablement, or provider assignment: `references/proxies.md`
+- Heartbeat and Cron scheduling: `references/scheduling.md`
 - Startup, global options, JSON output, files, and troubleshooting: `references/cli-reference.md`
 
 Use `weiagent skill content weiagentcli --path references/FILE.md` when the reference must be loaded through the service itself.
@@ -41,6 +42,8 @@ Use `weiagent skill content weiagentcli --path references/FILE.md` when the refe
 5. Execute the mutation or run command.
 6. Re-read the affected resource and report the actual result, including any returned status or error.
 
+For Heartbeat and Cron creation, the scheduling reference has a stricter confirmation gate. The agent type and bound Agent are explicit user choices; the current Agent is never selected implicitly.
+
 ## Fast command index
 
 ```text
@@ -52,6 +55,12 @@ weiagent skill run SKILL_NAME | reload | remove | install SOURCE
 weiagent mcp list | show SERVER_ID | add --file FILE | edit SERVER_ID --file FILE
 weiagent mcp remove | enable | disable | test | reload [SERVER_ID]
 weiagent proxy list | show PROXY_ID | add | edit | remove | test
+weiagent cron list | show CRON_ID | create | edit | pause | resume | remove | run | executions
+weiagent heartbeat show --conversation CONVERSATION_ID | set | pause | resume | remove | run
 ```
 
 All resource IDs are UUIDs unless a command explicitly takes a name or group ID. See the domain references for complete syntax and request shapes.
+
+## Scheduling
+
+Scheduling uses the existing `execute_terminal` capability and the `weiagent` CLI. Do not look for or invent a dedicated scheduling function call. Load `references/scheduling.md` for the exact workflow and command shapes.

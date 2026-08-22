@@ -17,8 +17,8 @@ import type {
   UiMessageItem,
   UpdateAgentPayload,
 } from '../../types';
-import { approveToolCall, readTaskPlans } from '../../api';
-import type { TaskPlan } from '../../toolTypes';
+import { approveToolCall, readAgentMcpConfig, readTaskPlans } from '../../api';
+import type { McpServer, TaskPlan } from '../../toolTypes';
 import { useI18n } from '../../i18n';
 import { useConversations, usePageVisibility } from '../../hooks';
 import { AUTO_SAVE_DELAY_MS } from '../../hooks/useSerializedAutoSave';
@@ -52,6 +52,8 @@ interface ChatPanelProps {
   onBackToList: () => void;
   onCreateAgent: () => void;
   settings: AppSettings;
+  openConversationId?: string;
+  onConversationOpened?: () => void;
   latestConversationUpdatedAtByAgent: Record<string, string>;
   onAgentActivity: (agentId: string) => void;
 }
@@ -93,6 +95,8 @@ export function ChatPanel({
   onBackToList,
   onCreateAgent,
   settings,
+  openConversationId,
+  onConversationOpened,
   latestConversationUpdatedAtByAgent,
   onAgentActivity,
 }: ChatPanelProps) {
@@ -152,6 +156,7 @@ export function ChatPanel({
   const [taskPlans, setTaskPlans] = useState<TaskPlan[]>([]);
   const [isTaskPlanOpen, setIsTaskPlanOpen] = useState(false);
   const [isTaskPlanLoading, setIsTaskPlanLoading] = useState(false);
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const isPageVisible = usePageVisibility();
 
   const conversationSearchRef = useRef<HTMLInputElement>(null);
@@ -336,6 +341,24 @@ export function ChatPanel({
   }, [activeConversationId, refreshTaskPlan]);
 
   useEffect(() => {
+    let cancelled = false;
+    setMcpServers([]);
+    if (!activeAgentId) return undefined;
+
+    void readAgentMcpConfig(activeAgentId)
+      .then((settings) => {
+        if (!cancelled) setMcpServers(settings.effective);
+      })
+      .catch(() => {
+        if (!cancelled) setMcpServers([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAgentId]);
+
+  useEffect(() => {
     if (!activeConversationId || !isPageVisible || !isSending) return;
     const refresh = () => void refreshTaskPlan(true);
     const timer = window.setInterval(refresh, 1200);
@@ -509,6 +532,15 @@ export function ChatPanel({
     }, 3000);
     return () => window.clearInterval(timer);
   }, [activeAgentId, agents, isPageVisible, refreshRunningConversations, refreshUnreadState]);
+
+  useEffect(() => {
+    if (!openConversationId || !activeAgentId) return;
+    if (!conversations.some((conversation) => conversation.id === openConversationId)) return;
+    markConversationRead(activeAgentId, openConversationId);
+    selectConversation(openConversationId);
+    onConversationOpened?.();
+    onOpenMain();
+  }, [activeAgentId, conversations, markConversationRead, onConversationOpened, onOpenMain, openConversationId, selectConversation]);
 
   useEffect(() => {
     if (!activeConversationId) return;
@@ -1038,6 +1070,7 @@ export function ChatPanel({
           onRestart={handleRestartMessage}
           onEditImage={handleReferenceImage}
           onApproveToolCall={handleApproveToolCall}
+          mcpServers={mcpServers}
           onActiveTimelineMessageChange={setActiveTimelineMessageIndex}
           formatTimelineTime={formatTimelineTime}
         />

@@ -238,6 +238,22 @@ impl RunManager {
         .map_err(|_| AppError::Process("timed out waiting for run cancellation".to_string()))?
     }
 
+    pub async fn wait_for_terminal(&self, run_id: Uuid) -> AppResult<AgentRun> {
+        let record = self
+            .runs
+            .get(&run_id)
+            .map(|entry| entry.clone())
+            .ok_or(AppError::NotFound)?;
+        loop {
+            let notified = record.finished.notified();
+            let info = record.state.lock().unwrap().info.clone();
+            if info.status.is_terminal() {
+                return Ok(info);
+            }
+            notified.await;
+        }
+    }
+
     pub async fn cancel_conversation_and_wait(&self, conversation_id: Uuid) -> AppResult<()> {
         let Some(run_id) = self
             .active_by_conversation

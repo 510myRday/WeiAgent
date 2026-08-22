@@ -13,12 +13,15 @@ import {
 import { stopToolProcess } from '../../api';
 import { ToolCallCard } from '../../components/ToolCallCard';
 import { useI18n } from '../../i18n';
+import type { McpServer } from '../../toolTypes';
 import type { ToolCallState } from '../../types';
 import { updateToolProcessCache, useToolProcess } from '../../hooks';
+import { ToolIcon } from './ToolIcon';
 
 type ToolDisclosureProps = {
   agentId: string;
   tool: ToolCallState;
+  mcpServers: McpServer[];
   onApprove?: (decision: 'approve' | 'reject' | 'always_approve') => Promise<void> | void;
 };
 
@@ -97,6 +100,7 @@ function StatusIcon({ tool }: { tool: ToolCallState }) {
 export function ToolDisclosure({
   agentId,
   tool,
+  mcpServers,
   onApprove,
 }: ToolDisclosureProps) {
   const { t } = useI18n();
@@ -215,7 +219,10 @@ export function ToolDisclosure({
           <span className="message-tool__identity">
             <StatusIcon tool={displayTool} />
             <span className="message-tool__title">{label}</span>
-            <code className="message-tool__name">{tool.name}</code>
+            <code className="message-tool__name">
+              <ToolIcon toolName={tool.name} mcpServers={mcpServers} />
+              <span className="message-tool__name-label">{tool.name}</span>
+            </code>
             {isBackgroundTerminal(tool) ? (
               <span className="message-tool__background-badge">{t('toolCard.backgroundBadge')}</span>
             ) : null}

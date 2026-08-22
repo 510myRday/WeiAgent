@@ -11,7 +11,7 @@ use crate::error::AppResult;
 const QUERY_INDEXES_SCHEMA_VERSION: i64 = 12;
 const TASK_PLANNING_DEFAULT_SCHEMA_VERSION: i64 = 11;
 #[cfg(test)]
-pub(super) const LATEST_SCHEMA_VERSION: i64 = 20;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 24;
 
 pub(super) fn initialize(conn: &mut Connection) -> AppResult<()> {
     super::db::migrate_base_schema(conn)?;
@@ -31,6 +31,7 @@ pub(super) fn initialize(conn: &mut Connection) -> AppResult<()> {
     ensure_schema_marker(conn, 18, "skills_groups_v1_legacy")?;
     ensure_schema_marker(conn, 19, "skills_groups_v1_runtime")?;
     ensure_schema_marker(conn, 20, "skills_groups_v1_complete")?;
+    super::scheduling::migrate(conn)?;
     Ok(())
 }
 

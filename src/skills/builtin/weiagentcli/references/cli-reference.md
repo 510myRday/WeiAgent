@@ -75,6 +75,18 @@ Treat an explicit `error` event or nonzero process exit as failure.
 
 Use `--verbose` for client connection diagnostics. Use `--no-start` to distinguish a service startup problem from a command or API problem.
 
+## Scheduling command output
+
+Heartbeat and Cron commands are intended for machine-assisted operation. Use the global `--format json` option for every scheduling command that will be parsed or reported:
+
+```bash
+weiagent --format json cron list
+weiagent --format json cron show CRON_ID
+weiagent --format json heartbeat show --conversation CONVERSATION_ID
+```
+
+After creating, editing, pausing, resuming, running, or removing a schedule, re-run the narrowest `show` or `list` command and use the returned JSON as the source of truth.
+
 ## Important path rules
 
 - Skill content paths are relative to the Skill directory, such as `references/agents.md`.

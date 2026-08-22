@@ -942,6 +942,9 @@
 }
 
 .message-tool__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
   flex: 0 1 auto;
   overflow: hidden;
@@ -953,6 +956,13 @@
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 11px;
   font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-tool__name-label {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1072,6 +1082,8 @@
 }
 
 .message-tool__content {
+  display: grid;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -1120,15 +1132,80 @@
   color: var(--color-danger);
 }
 
+.message-tool__tool-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: var(--color-message-muted, var(--color-muted));
+}
+
+.message-tool__tool-icon .mcp-server-icon {
+  width: 14px;
+  height: 14px;
+}
+
 .message-tool.is-done .message-tool__title {
   color: var(--color-primary-deep, var(--color-primary));
 }
 
 .message-tool__content .tool-card--embedded {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-pane);
+  box-shadow: var(--shadow-xs);
+}
+
+.message-tool__content .tool-card--config,
+.message-tool__content .tool-card--execution {
+  border-color: var(--border-subtle);
+}
+
+.message-tool__content .tool-card__output-shell {
+  border-color: var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--surface-code);
+}
+
+.message-tool__content .tool-card__output-shell--command {
+  border-color: var(--border-subtle);
+  background: var(--surface-code);
+}
+
+.message-tool__content .tool-card__output-shell--stderr,
+.message-tool__content .tool-card__output-shell--empty-failed {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-soft);
+}
+
+.message-tool__content .tool-card__output-shell .tool-card__output {
+  max-height: 220px;
+  overflow: auto;
+  color: var(--color-text-soft);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-label);
+  line-height: var(--line-height-normal);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  scrollbar-width: thin;
+}
+
+.message-tool__content .tool-card__output-shell .tool-card__output--command {
+  max-height: 120px;
+  color: var(--color-text);
+}
+
+.message-tool__content .tool-card__output-footer {
+  border-top-color: var(--border-subtle);
+  background: var(--surface-subtle);
 }
 
 @keyframes reasoning-pulse {

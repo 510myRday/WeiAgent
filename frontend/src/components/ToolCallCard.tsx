@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Check,
   Copy,
@@ -33,6 +33,10 @@ interface ToolCallCardProps {
   result?: ToolResultData;
   processSnapshot?: ToolProcessSnapshot;
   onApprove?: (decision: 'approve' | 'reject' | 'always_approve') => Promise<void> | void;
+}
+
+function ToolCardSection({ className = '', children }: { className?: string; children: ReactNode }) {
+  return <div className={`tool-card tool-card--embedded ${className}`.trim()}>{children}</div>;
 }
 
 function hasText(value?: string | null): boolean {
@@ -267,7 +271,7 @@ export function ToolCallCard({
 
   if (status === 'pending_approval' && onApprove) {
     return (
-      <div className="tool-card tool-card--approval tool-card--embedded">
+      <ToolCardSection className="tool-card--approval tool-card--config">
         <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
         <dl className="tool-card__approval-context">
           <div><dt>{t('toolCard.cwd')}</dt><dd>{String(args.cwd || t('toolCard.defaultCwd'))}</dd></div>
@@ -276,7 +280,7 @@ export function ToolCallCard({
           <div><dt>{t('toolCard.background')}</dt><dd>{args.background ? t('toolCard.enabled') : t('toolCard.disabled')}</dd></div>
           {args.justification ? <div><dt>{t('toolCard.justification')}</dt><dd>{String(args.justification)}</dd></div> : null}
         </dl>
-      </div>
+      </ToolCardSection>
     );
   }
 
@@ -301,13 +305,16 @@ export function ToolCallCard({
         ? 'tool-card--done'
         : 'tool-card--error';
     return (
-      <div className={`tool-card ${cardTone} tool-card--embedded`}>
+      <>
+        <ToolCardSection className="tool-card--config">
+          <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
+        </ToolCardSection>
+        <ToolCardSection className={`${cardTone} tool-card--execution`}>
         {missing ? (
           <p className="tool-card__reason" title={processError || title}>
             {t('toolCard.processStatus.notFoundBadge')}
           </p>
         ) : null}
-        <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
         {process ? (
           running && !hasText(process.stdout) && !hasText(process.stderr) ? null : (
             <TerminalOutputs
@@ -320,49 +327,62 @@ export function ToolCallCard({
         ) : null}
         {process ? <p className="tool-card__reason">{t('toolCard.duration', { ms: process.duration_ms })}</p> : null}
         {processError ? <p className="tool-card__reason"><RefreshCw size={13} /> {processError}</p> : null}
-      </div>
+        </ToolCardSection>
+      </>
     );
   }
 
   if (status === 'running') {
     return (
-      <div className="tool-card tool-card--running tool-card--embedded">
+      <ToolCardSection className="tool-card--running tool-card--config">
         <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
-      </div>
+      </ToolCardSection>
     );
   }
 
   if (status === 'completed' && result) {
     const failed = result.is_error === true || (result.exit_code ?? 0) !== 0;
     return (
-      <div className={`tool-card ${failed ? 'tool-card--error' : 'tool-card--done'} tool-card--embedded`}>
-        <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
-        <TerminalOutputs
-          stdout={result.stdout}
-          stderr={result.stderr}
-          structuredContent={result.structured_content}
-          failed={failed}
-          t={t}
-        />
-      </div>
+      <>
+        <ToolCardSection className="tool-card--config">
+          <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
+        </ToolCardSection>
+        <ToolCardSection className={`${failed ? 'tool-card--error' : 'tool-card--done'} tool-card--execution`}>
+          <TerminalOutputs
+            stdout={result.stdout}
+            stderr={result.stderr}
+            structuredContent={result.structured_content}
+            failed={failed}
+            t={t}
+          />
+        </ToolCardSection>
+      </>
     );
   }
 
   if (status === 'blocked' || status === 'rejected' || status === 'interrupted') {
     return (
-      <div className="tool-card tool-card--blocked tool-card--embedded">
-        <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
-        {result?.reason ? <p className="tool-card__reason">{result.reason}</p> : null}
-      </div>
+      <>
+        <ToolCardSection className="tool-card--config">
+          <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
+        </ToolCardSection>
+        <ToolCardSection className="tool-card--blocked tool-card--execution">
+          {result?.reason ? <p className="tool-card__reason">{result.reason}</p> : null}
+        </ToolCardSection>
+      </>
     );
   }
 
   if (status === 'error') {
     return (
-      <div className="tool-card tool-card--error tool-card--embedded">
-        <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
-        {result?.message ? <p className="tool-card__reason">{result.message}</p> : null}
-      </div>
+      <>
+        <ToolCardSection className="tool-card--config">
+          <ToolPayload args={args} argumentsText={argumentsText} phase={phase} t={t} />
+        </ToolCardSection>
+        <ToolCardSection className="tool-card--error tool-card--execution">
+          {result?.message ? <p className="tool-card__reason">{result.message}</p> : null}
+        </ToolCardSection>
+      </>
     );
   }
 

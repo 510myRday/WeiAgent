@@ -13,5 +13,6 @@
 @import './components/feedback.css';
 @import './features/llm-logs.css';
 @import './features/monitor.css';
+@import './features/scheduling.css';
 @import './components/interactions.css';
 @import './responsive.css';

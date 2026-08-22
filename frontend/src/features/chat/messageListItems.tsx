@@ -29,6 +29,7 @@ import type {
   UiMessage,
   UiMessageItem,
 } from '../../types';
+import type { McpServer } from '../../toolTypes';
 import { AvatarBadge } from '../../components/AvatarPicker';
 import { agentDisplayName } from '../../components/AgentListItem';
 import { Dialog, useFeedback } from '../../components/ui';
@@ -84,6 +85,7 @@ export const MessageListItem = memo(function MessageListItem({
   onRestart,
   onEditImage,
   onApproveToolCall,
+  mcpServers,
   formatTimelineTime,
 }: {
   item: UiMessageItem;
@@ -99,6 +101,7 @@ export const MessageListItem = memo(function MessageListItem({
   onRestart: MessageActions['onRestart'];
   onEditImage: MessageActions['onEditImage'];
   onApproveToolCall: MessageActions['onApproveToolCall'];
+  mcpServers: McpServer[];
   formatTimelineTime: (value: string) => string;
 }) {
   const { t } = useI18n();
@@ -119,6 +122,7 @@ export const MessageListItem = memo(function MessageListItem({
       onRestart={onRestart}
       onEditImage={onEditImage}
       onApproveToolCall={onApproveToolCall}
+      mcpServers={mcpServers}
     />
   );
 });
@@ -211,6 +215,7 @@ const MessageRow = memo(function MessageRow({
   onRestart,
   onEditImage,
   onApproveToolCall,
+  mcpServers,
 }: {
   message: UiMessage;
   showTimeSeparator: boolean;
@@ -227,6 +232,7 @@ const MessageRow = memo(function MessageRow({
   onRestart: MessageActions['onRestart'];
   onEditImage: MessageActions['onEditImage'];
   onApproveToolCall: MessageActions['onApproveToolCall'];
+  mcpServers: McpServer[];
 }) {
   const { t } = useI18n();
   const isUser = message.role === 'user';
@@ -446,6 +452,7 @@ const MessageRow = memo(function MessageRow({
                 <MessageContent
                   message={message}
                   agentId={agent?.id ?? ''}
+                  mcpServers={mcpServers}
                   retryStatus={retryStatus}
                   runPhase={runPhase}
                   onEditImage={onEditImage}
@@ -507,6 +514,7 @@ export function MessageAvatar({
 function MessageContent({
   message,
   agentId,
+  mcpServers,
   retryStatus,
   runPhase,
   onEditImage,
@@ -514,6 +522,7 @@ function MessageContent({
 }: {
   message: UiMessage;
   agentId: string;
+  mcpServers: McpServer[];
   retryStatus: RetryStatus | null;
   runPhase: AgentRunPhase;
   onEditImage: MessageActions['onEditImage'];
@@ -689,6 +698,7 @@ function MessageContent({
                 key={block.tool.call_id}
                 agentId={agentId}
                 tool={block.tool}
+                mcpServers={mcpServers}
                 onApprove={(decision) => handleApprove(block.tool, decision)}
               />
             );

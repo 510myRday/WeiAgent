@@ -135,7 +135,8 @@ pub async fn prepare_chat(
     {
         system_prompt.push_str("\n\n## WeiAgent Service Context\n\n");
         let service_context = format!(
-            "The current runtime is the `weiagent` intelligent agent service. When the user describes an operation without naming another target, interpret it as an operation on this running service. For detailed commands and workflows, load the `{BUILTIN_WEIAGENT_CLI_SKILL_NAME}` Skill with skill_view when it is relevant; its full body is task-specific guidance, not a permanent system instruction."
+            "The current runtime is the `weiagent` intelligent agent service. When the user describes an operation without naming another target, interpret it as an operation on this running service. Current agent ID: {}. Current conversation ID: {}. For detailed commands and workflows, load the `{BUILTIN_WEIAGENT_CLI_SKILL_NAME}` Skill with skill_view when it is relevant; its full body is task-specific guidance, not a permanent system instruction.",
+            agent.id, conversation_id
         );
         system_prompt.push_str(&service_context);
     }
