@@ -22,6 +22,7 @@ import { AgentToolsOverview } from '../settings/TerminalToolSettings';
 import { SkillsPanel } from '../tools/SkillsPanel';
 import { userErrorMessage } from '../../utils/userError';
 import { compareNames, sortByName } from '../../utils/sort';
+import { sortAgentsByRecentConversation } from '../../utils/agentSorting';
 
 interface AgentsPanelProps {
   agents: Agent[];
@@ -40,6 +41,7 @@ interface AgentsPanelProps {
   onOpenMain: () => void;
   onBackToList: () => void;
   onOpenIpProxies?: () => void;
+  latestConversationUpdatedAtByAgent?: Record<string, string>;
 }
 
 const defaultAgentForm: CreateAgentPayload = {
@@ -92,6 +94,7 @@ export function AgentsPanel({
   onOpenMain,
   onBackToList,
   onOpenIpProxies,
+  latestConversationUpdatedAtByAgent,
 }: AgentsPanelProps) {
   const { t } = useI18n();
   const { confirm, toast } = useFeedback();
@@ -138,6 +141,7 @@ export function AgentsPanel({
   );
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  const sortedAgents = sortAgentsByRecentConversation(agents, latestConversationUpdatedAtByAgent ?? {});
   const activeAgentRef = useRef<Agent | undefined>(activeAgent);
   activeAgentRef.current = activeAgent;
   const selectedAgentProvider = providers.find((provider) => provider.id === agentForm.model_provider_id);
@@ -477,7 +481,7 @@ export function AgentsPanel({
                 </Button>
               </div>
             ) : null}
-            {agents.map((agent) => (
+            {sortedAgents.map((agent) => (
               <AgentListItem
                 key={agent.id}
                 agent={agent}

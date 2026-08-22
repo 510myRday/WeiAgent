@@ -35,6 +35,7 @@ import { materializeImageAttachment } from './imageAttachments';
 import { userErrorMessage } from '../../utils/userError';
 import { compareNames, sortByName } from '../../utils/sort';
 import { createChatDateFormatters, formatChatDateTime, formatChatTimelineTime } from './chatDateFormat';
+import { sortAgentsByRecentConversation } from '../../utils/agentSorting';
 
 interface ChatPanelProps {
   agents: Agent[];
@@ -51,6 +52,8 @@ interface ChatPanelProps {
   onBackToList: () => void;
   onCreateAgent: () => void;
   settings: AppSettings;
+  latestConversationUpdatedAtByAgent: Record<string, string>;
+  onAgentActivity: (agentId: string) => void;
 }
 
 type ModelOption = {
@@ -90,6 +93,8 @@ export function ChatPanel({
   onBackToList,
   onCreateAgent,
   settings,
+  latestConversationUpdatedAtByAgent,
+  onAgentActivity,
 }: ChatPanelProps) {
   const { t, locale } = useI18n();
   const { confirm, toast } = useFeedback();
@@ -168,6 +173,10 @@ export function ChatPanel({
   imageOptionsDraftRef.current = imageOptionsDraft;
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  const sortedAgents = useMemo(
+    () => sortAgentsByRecentConversation(agents, latestConversationUpdatedAtByAgent),
+    [agents, latestConversationUpdatedAtByAgent],
+  );
   const conversationAgentIdKey = useMemo(() => {
     const agentIds = new Set<string>();
     if (activeAgentId) agentIds.add(activeAgentId);
@@ -709,6 +718,7 @@ export function ChatPanel({
 
   const handleNewConversation = useCallback(() => {
     if (!activeAgent) return;
+    onAgentActivity(activeAgent.id);
     const isCurrentConversationEmpty = Boolean(
       activeConversation && activeConversation.message_count === 0,
     );
@@ -722,7 +732,7 @@ export function ChatPanel({
       .catch((cause) => {
         toast.error(conversationActionError(cause));
       });
-  }, [activeAgent, activeConversation, conversationActionError, createNewConversation, detachActiveRun, isSending, onOpenMain, toast]);
+  }, [activeAgent, activeConversation, conversationActionError, createNewConversation, detachActiveRun, isSending, onAgentActivity, onOpenMain, toast]);
 
   const handleDeleteConversation = useCallback(async (conversationId: string) => {
     if (!activeAgent) return;
@@ -790,12 +800,14 @@ export function ChatPanel({
       supportsThinking ? thinkingLevel : 'off',
       supportsImageGeneration ? 'image' : imageMode,
     );
+    onAgentActivity(activeAgent.id);
   }, [
     activeAgent,
     isModelSavePending,
     isSavingImageOptions,
     isSavingModel,
     isSending,
+    onAgentActivity,
     send,
     supportsImageGeneration,
     supportsThinking,
@@ -876,7 +888,7 @@ export function ChatPanel({
                   </Button>
                 </div>
               ) : null}
-              {agents.map((agent) => (
+              {sortedAgents.map((agent) => (
                 <AgentListItem
                   key={agent.id}
                   agent={agent}

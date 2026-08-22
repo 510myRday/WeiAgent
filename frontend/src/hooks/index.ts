@@ -4,6 +4,7 @@ export { useAgents } from './useAgents';
 export { useBeforeUnloadGuard } from './useBeforeUnloadGuard';
 export { useClipboard } from './useClipboard';
 export { useConversations } from './useConversations';
+export { useAgentActivity } from './useAgentActivity';
 export { usePageVisibility } from './usePageVisibility';
 export { updateToolProcessCache, useToolProcess } from './useToolProcess';
 export {

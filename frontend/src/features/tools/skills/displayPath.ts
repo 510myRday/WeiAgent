@@ -1,1 +1,1 @@
-export { displayPath } from '../../../utils/displayPath';
+export { displayPath, displaySkillFilePath } from '../../../utils/displayPath';

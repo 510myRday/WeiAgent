@@ -1,7 +1,7 @@
-import { lazy, Suspense, useCallback, useState, useEffect } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useState, useEffect } from 'react';
 import { RefreshCw } from 'lucide-react';
 import type { AppSettings, MobileView, NavKey, SettingsSection } from './types';
-import { useSettings, useProviders, useAgents } from './hooks';
+import { useSettings, useProviders, useAgents, useAgentActivity } from './hooks';
 import { Sidebar } from './components/layout';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { ChatPanel } from './features/chat/ChatPanel';
@@ -65,6 +65,8 @@ export function App() {
     editAgentProfile,
     removeAgent,
   } = useAgents();
+  const agentIds = useMemo(() => agents.map((agent) => agent.id), [agents]);
+  const { latestConversationUpdatedAtByAgent, touchAgentActivity } = useAgentActivity(agentIds);
 
   const refreshAll = useCallback(async () => {
     setIsRefreshingInitialData(true);
@@ -195,6 +197,8 @@ export function App() {
             onBackToList={openListPane}
             onCreateAgent={openAgentCreation}
             settings={settingsForm}
+            latestConversationUpdatedAtByAgent={latestConversationUpdatedAtByAgent}
+            onAgentActivity={touchAgentActivity}
           />
         )}
         <Suspense fallback={<PanelLoading label={t('sidebar.loading')} />}>
@@ -222,6 +226,7 @@ export function App() {
             onOpenIpProxies={openIpProxySettings}
             onOpenMain={openMainPane}
             onBackToList={openListPane}
+            latestConversationUpdatedAtByAgent={latestConversationUpdatedAtByAgent}
           />
         )}
         {activeNav === 'tools' && (

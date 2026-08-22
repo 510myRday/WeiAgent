@@ -970,7 +970,13 @@ export function useConversations({
       selectConversation(created.id);
       return created;
     },
-    [activeConversationId, conversations, isSending, newConversationTitle, selectConversation],
+    [
+      activeConversationId,
+      conversations,
+      isSending,
+      newConversationTitle,
+      selectConversation,
+    ],
   );
 
   const removeConversation = useCallback(

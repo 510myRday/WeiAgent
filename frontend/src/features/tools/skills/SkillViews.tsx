@@ -29,7 +29,7 @@ import { readSkillContent } from '../../../api';
 import { formatBytes, formatDateTime } from '../../../utils/format';
 import { useI18n } from '../../../i18n';
 import { Button, InheritToggle } from '../../../components/ui';
-import { displayPath } from './displayPath';
+import { displayPath, displaySkillFilePath } from './displayPath';
 
 export function SkillConflictDetail({ conflict }: { conflict: SkillConflict }) {
   const { t } = useI18n();
@@ -196,12 +196,12 @@ export function SkillEditor({ skill, content, selectedPath, onPathChange }: { sk
   const tree = useMemo(() => buildSkillFileTree(files), [files]);
 
   useEffect(() => {
-    onPathChange(content.path || 'SKILL.md');
+    onPathChange(displaySkillFilePath(content.path || 'SKILL.md', content.cwd));
     setPreview(content.content);
     setPreviewMediaType(content.media_type);
     setPreviewData(content.data_base64 ?? null);
     setPreviewNotice(null);
-  }, [content.path, content.content, content.media_type, content.data_base64, onPathChange]);
+  }, [content.path, content.cwd, content.content, content.media_type, content.data_base64, onPathChange]);
 
   async function selectFile(path: string) {
     onPathChange(path);
@@ -239,6 +239,8 @@ export function SkillEditor({ skill, content, selectedPath, onPathChange }: { sk
     }
   }
 
+  const displayedPath = displaySkillFilePath(selectedPath, content.cwd);
+
   return (
     <section className="skills-detail-stack">
       <div className="skills-file-manager">
@@ -252,9 +254,9 @@ export function SkillEditor({ skill, content, selectedPath, onPathChange }: { sk
             <SkillFileTree nodes={tree} selectedPath={selectedPath} onSelect={(path) => void selectFile(path)} />
           </div>
           <div className="skills-file-preview">
-            <div className="skills-file-preview__header"><strong>{selectedPath}</strong>{previewLoading ? <span>{t('chat.loading')}</span> : null}</div>
+            <div className="skills-file-preview__header"><strong title={displayedPath}>{displayedPath}</strong>{previewLoading ? <span>{t('chat.loading')}</span> : null}</div>
             {previewMediaType.startsWith('image/') && previewData ? (
-              <div className="skills-file-preview__media"><img src={`data:${previewMediaType};base64,${previewData}`} alt={selectedPath} /></div>
+              <div className="skills-file-preview__media"><img src={`data:${previewMediaType};base64,${previewData}`} alt={displayedPath} /></div>
             ) : previewNotice ? (
               <div className="skills-file-preview__placeholder">
                 <FileWarning size={22} aria-hidden="true" />

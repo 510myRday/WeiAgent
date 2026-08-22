@@ -11,7 +11,7 @@ import { Button, Dialog, FormField, IconButton, ListItem, PaneHeader, useFeedbac
 import { ProxyPickerDialog } from '../settings/web-search/ProxyPickerDialog';
 import { displayProxyUrl } from '../../utils/proxy';
 import { SkillIcon } from './SkillIcon';
-import { displayPath } from './skills/displayPath';
+import { displayPath, displaySkillFilePath } from './skills/displayPath';
 import { AgentSkillsOverview, SkillConflictDetail, SkillEditor, SkillOrphanDetail, SkillToggle } from './skills/SkillViews';
 
 type SkillsPanelProps = {
@@ -324,7 +324,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
     }
     void readSkillContent(skillName).then((next) => {
       setContent(next);
-      setSelectedContentPath(next.path || 'SKILL.md');
+      setSelectedContentPath(displaySkillFilePath(next.path || 'SKILL.md', next.cwd));
     }).catch(() => setContent(null));
   }, [activeSkill?.name]);
 
@@ -365,7 +365,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
           }
           if (disposed) return;
           setContent(nextContent);
-          setSelectedContentPath(nextContent.path || selectedContentPath || 'SKILL.md');
+          setSelectedContentPath(displaySkillFilePath(nextContent.path || selectedContentPath || 'SKILL.md', nextContent.cwd));
         } else if (activeSkill?.name && !currentManifest) {
           setActive(null);
           setContent(null);
