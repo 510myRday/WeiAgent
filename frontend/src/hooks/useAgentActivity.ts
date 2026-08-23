@@ -15,6 +15,7 @@ function latestConversationUpdatedAt(updatedAtValues: string[]): string | undefi
 export function useAgentActivity(agentIds: string[]) {
   const isPageVisible = usePageVisibility();
   const [latestConversationUpdatedAtByAgent, setLatestConversationUpdatedAtByAgent] = useState<Record<string, string>>({});
+  const [readyAgentIdsKey, setReadyAgentIdsKey] = useState('');
   const requestIdRef = useRef(0);
   const localActivityRef = useRef<Record<string, string>>({});
 
@@ -52,6 +53,7 @@ export function useAgentActivity(agentIds: string[]) {
       }
       return next;
     });
+    setReadyAgentIdsKey(uniqueAgentIds.join('\n'));
   }, [agentIds]);
 
   const touchAgentActivity = useCallback((agentId: string, updatedAt = new Date().toISOString()) => {
@@ -65,11 +67,17 @@ export function useAgentActivity(agentIds: string[]) {
   }, []);
 
   useEffect(() => {
-    if (!isPageVisible || agentIds.length === 0) return;
+    if (agentIds.length === 0) {
+      setReadyAgentIdsKey('');
+      return;
+    }
+    if (!isPageVisible) return;
+    setReadyAgentIdsKey('');
     void refreshAgentActivity();
     const timer = window.setInterval(() => void refreshAgentActivity(), REFRESH_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [agentIds, isPageVisible, refreshAgentActivity]);
 
-  return { latestConversationUpdatedAtByAgent, refreshAgentActivity, touchAgentActivity };
+  const isReady = readyAgentIdsKey === agentIds.join('\n');
+  return { latestConversationUpdatedAtByAgent, isReady, refreshAgentActivity, touchAgentActivity };
 }

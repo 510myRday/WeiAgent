@@ -1259,6 +1259,7 @@ pub async fn execute_terminal(
             stderr: String::new(),
             duration_ms: 0,
             runtime: Some(runtime),
+            cwd: Some(crate::fsutil::display_path(&workspace.cwd)),
             output_cursor: 0,
         };
     }
@@ -1284,6 +1285,7 @@ pub async fn execute_terminal(
                 stderr,
                 duration_ms: info.duration_ms,
                 runtime: Some(runtime),
+                cwd: info.cwd.clone(),
                 output_cursor: cursor,
             }
         }
@@ -1318,6 +1320,7 @@ pub fn process_read_to_result(
             exit_code: info.exit_code.unwrap_or(-1),
             duration_ms: info.duration_ms,
             runtime: Some(info.runtime),
+            cwd: info.cwd.clone(),
             output_cursor,
             structured_content: None,
             is_error: info.status == ProcessStatus::Failed,
@@ -1329,6 +1332,7 @@ pub fn process_read_to_result(
             stderr,
             duration_ms: info.duration_ms,
             runtime: Some(info.runtime),
+            cwd: info.cwd,
             output_cursor,
         },
         ProcessStatus::Stopped => ToolResult::Rejected {

@@ -1083,7 +1083,7 @@
 
 .message-tool__content {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -1156,27 +1156,31 @@
   width: 100%;
   min-width: 0;
   margin: 0;
-  padding: 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--surface-pane);
-  box-shadow: var(--shadow-xs);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .message-tool__content .tool-card--config,
 .message-tool__content .tool-card--execution {
-  border-color: var(--border-subtle);
+  border: 0;
 }
 
 .message-tool__content .tool-card__output-shell {
-  border-color: var(--border-subtle);
+  margin: 0;
+  border-color: var(--border-strong);
   border-radius: var(--radius-xs);
-  background: var(--surface-code);
+  background: var(--surface-pane);
+  box-shadow: var(--shadow-xs);
 }
 
 .message-tool__content .tool-card__output-shell--command {
-  border-color: var(--border-subtle);
-  background: var(--surface-code);
+  border-color: var(--border-strong);
+  border-left-width: 2px;
+  background: var(--surface-subtle);
+  box-shadow: var(--shadow-xs);
 }
 
 .message-tool__content .tool-card__output-shell--stderr,
@@ -1186,7 +1190,8 @@
 }
 
 .message-tool__content .tool-card__output-shell .tool-card__output {
-  max-height: 220px;
+  max-height: 210px;
+  padding: 7px 10px 10px;
   overflow: auto;
   color: var(--color-text-soft);
   font-family: var(--font-mono);
@@ -1199,11 +1204,30 @@
 }
 
 .message-tool__content .tool-card__output-shell .tool-card__output--command {
-  max-height: 120px;
+  max-height: 112px;
   color: var(--color-text);
 }
 
+.message-tool__content .tool-card__output-heading {
+  min-height: 27px;
+  padding: 6px 10px 2px;
+}
+
+.message-tool__content .tool-card__output-heading--command {
+  color: var(--color-text-soft);
+}
+
+.message-tool__content .tool-card__output-heading--stderr {
+  color: var(--color-danger);
+}
+
+.message-tool__content .tool-card__output-shell .tool-card__output--empty {
+  padding-top: 5px;
+  color: var(--color-placeholder);
+}
+
 .message-tool__content .tool-card__output-footer {
+  min-height: 28px;
   border-top-color: var(--border-subtle);
   background: var(--surface-subtle);
 }

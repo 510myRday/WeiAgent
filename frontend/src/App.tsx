@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useMemo, useState, useEffect } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import { RefreshCw } from 'lucide-react';
 import type { AppSettings, MobileView, NavKey, SettingsSection } from './types';
 import { useSettings, useProviders, useAgents, useAgentActivity } from './hooks';
@@ -8,6 +8,7 @@ import { ChatPanel } from './features/chat/ChatPanel';
 import { Button, useFeedback } from './components/ui';
 import { isLocale, useI18n } from './i18n';
 import { userErrorMessage } from './utils/userError';
+import { sortAgentsByRecentConversation } from './utils/agentSorting';
 
 const AgentsPanel = lazy(() => import('./features/agents/AgentsPanel').then((module) => ({ default: module.AgentsPanel })));
 const ToolsPanel = lazy(() => import('./features/tools/ToolsPanel').then((module) => ({ default: module.ToolsPanel })));
@@ -26,6 +27,8 @@ export function App() {
   const [pendingConversationId, setPendingConversationId] = useState('');
   const [initialLoadError, setInitialLoadError] = useState('');
   const [isRefreshingInitialData, setIsRefreshingInitialData] = useState(false);
+  const hasRestoredInitialChatSelectionRef = useRef(false);
+  const hasUserSelectedAgentRef = useRef(false);
 
   useEffect(() => {
     const desktopQuery = window.matchMedia('(min-width: 921px)');
@@ -68,7 +71,32 @@ export function App() {
     removeAgent,
   } = useAgents();
   const agentIds = useMemo(() => agents.map((agent) => agent.id), [agents]);
-  const { latestConversationUpdatedAtByAgent, touchAgentActivity } = useAgentActivity(agentIds);
+  const {
+    latestConversationUpdatedAtByAgent,
+    isReady: isAgentActivityReady,
+    touchAgentActivity,
+  } = useAgentActivity(agentIds);
+
+  const handleAgentChange = useCallback((id: string) => {
+    hasUserSelectedAgentRef.current = true;
+    setActiveAgentId(id);
+  }, [setActiveAgentId]);
+
+  useEffect(() => {
+    if (
+      hasRestoredInitialChatSelectionRef.current
+      || hasUserSelectedAgentRef.current
+      || !isAgentActivityReady
+      || agents.length === 0
+    ) return;
+
+    const preferredAgent = sortAgentsByRecentConversation(
+      agents,
+      latestConversationUpdatedAtByAgent,
+    )[0];
+    if (preferredAgent) setActiveAgentId(preferredAgent.id);
+    hasRestoredInitialChatSelectionRef.current = true;
+  }, [agents, isAgentActivityReady, latestConversationUpdatedAtByAgent, setActiveAgentId]);
 
   const refreshAll = useCallback(async () => {
     setIsRefreshingInitialData(true);
@@ -126,12 +154,14 @@ export function App() {
   }
 
   function openAgentCreation() {
+    hasUserSelectedAgentRef.current = true;
     setActiveAgentId('');
     setActiveNav('agents');
     setMobileView('main');
   }
 
   function openAgentSettings(id: string) {
+    hasUserSelectedAgentRef.current = true;
     setActiveAgentId(id);
     setActiveNav('agents');
     setMobileView('main');
@@ -146,6 +176,7 @@ export function App() {
   }
 
   function openConversation(agentId: string, conversationId: string) {
+    hasUserSelectedAgentRef.current = true;
     setActiveAgentId(agentId);
     setPendingConversationId(conversationId);
     setActiveNav('chat');
@@ -198,7 +229,7 @@ export function App() {
             agents={agents}
             providers={providers}
             activeAgentId={activeAgentId}
-            onAgentChange={setActiveAgentId}
+            onAgentChange={handleAgentChange}
             onAgentEdit={editAgent}
             onProviderEdit={editProvider}
             onOpenAgentSettings={openAgentSettings}
@@ -238,7 +269,7 @@ export function App() {
             providers={providers}
             activeAgentId={activeAgentId}
             isLoadingAgents={isLoadingAgents}
-            onAgentChange={setActiveAgentId}
+            onAgentChange={handleAgentChange}
             onAgentAdd={addAgent}
             onAgentProfileSave={editAgentProfile}
             onAgentRemove={removeAgent}

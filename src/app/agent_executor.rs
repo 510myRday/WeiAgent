@@ -1568,6 +1568,7 @@ mod tests {
             exit_code: 0,
             duration_ms: 1234,
             runtime: Some("builtin_web_search".into()),
+            cwd: Some("D:\\workspace".into()),
             output_cursor: 0,
             structured_content: None,
             is_error: false,
@@ -1577,8 +1578,25 @@ mod tests {
         assert_eq!(value["stdout"], "hello");
         assert_eq!(value["exit_code"], 0);
         assert_eq!(value["runtime"], "builtin_web_search");
+        assert_eq!(value["cwd"], "D:\\workspace");
         assert!(value.get("duration_ms").is_none());
         assert!(value.get("output_cursor").is_none());
+    }
+
+    #[test]
+    fn sanitize_running_preserves_working_directory() {
+        let result = ToolResult::Running {
+            process_id: "PROCESS".into(),
+            message: "running".into(),
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            runtime: Some("local_shell".into()),
+            cwd: Some("D:\\workspace".into()),
+            output_cursor: 0,
+        };
+        let value = sanitize_tool_result_for_llm(&result);
+        assert_eq!(value["cwd"], "D:\\workspace");
     }
 
     #[test]
@@ -1616,6 +1634,7 @@ mod tests {
             exit_code: 0,
             duration_ms: 50,
             runtime: Some("builtin_web_search".into()),
+            cwd: None,
             output_cursor: 0,
             structured_content: None,
             is_error: false,

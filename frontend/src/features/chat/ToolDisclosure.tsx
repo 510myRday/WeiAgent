@@ -298,6 +298,7 @@ export function ToolDisclosure({
         <div className="message-tool__content">
           <ToolCallCard
             agentId={agentId}
+            toolName={tool.name}
             arguments={tool.arguments}
             status={displayStatus}
             result={displayResult}

@@ -243,7 +243,7 @@ export function useConversations({
       const { agentId, conversations: next, activeRuns } = result.value;
       reconcileConversationList(agentId, next, new Set(activeRuns.map((run) => run.conversation_id)));
       if (agentId !== activeAgentIdRef.current) continue;
-      setConversations(next);
+      setConversations(sortConversationList(next));
       setRunningConversationIds(new Set(activeRuns.map((run) => run.conversation_id)));
     }
   }, [reconcileConversationList]);
@@ -288,9 +288,10 @@ export function useConversations({
         ? new Set(activeRunsResult.value.map((run) => run.conversation_id))
         : new Set<string>();
       reconcileConversationList(agentId, next, activeRunIds);
-      setConversations(next);
+      const sorted = sortConversationList(next);
+      setConversations(sorted);
       setActiveConversationId((current) =>
-        current && next.some((c) => c.id === current) ? current : next[0]?.id ?? '',
+        current && sorted.some((c) => c.id === current) ? current : sorted[0]?.id ?? '',
       );
     } else {
       const message = conversationsResult.reason instanceof Error

@@ -198,6 +198,7 @@ pub(crate) async fn execute_web_search_with_status_updates(
                 exit_code: 0,
                 duration_ms: started.elapsed().as_millis() as u64,
                 runtime: Some("builtin_web_search".to_string()),
+                cwd: None,
                 output_cursor: 0,
                 structured_content: None,
                 is_error: false,

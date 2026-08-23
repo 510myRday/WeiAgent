@@ -16,6 +16,7 @@ pub(super) fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
             stderr,
             exit_code,
             runtime,
+            cwd,
             structured_content,
             is_error,
             ..
@@ -34,6 +35,9 @@ pub(super) fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
             if let Some(runtime) = runtime {
                 map.insert("runtime".to_string(), Value::String(runtime.clone()));
             }
+            if let Some(cwd) = cwd {
+                map.insert("cwd".to_string(), Value::String(cwd.clone()));
+            }
             if let Some(content) = structured_content {
                 map.insert("structured_content".to_string(), content.clone());
             }
@@ -48,6 +52,7 @@ pub(super) fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
             stdout,
             stderr,
             runtime,
+            cwd,
             output_cursor,
             ..
         } => {
@@ -65,6 +70,9 @@ pub(super) fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
             }
             if let Some(runtime) = runtime {
                 map.insert("runtime".to_string(), Value::String(runtime.clone()));
+            }
+            if let Some(cwd) = cwd {
+                map.insert("cwd".to_string(), Value::String(cwd.clone()));
             }
             if *output_cursor > 0 {
                 map.insert("output_cursor".to_string(), Value::from(*output_cursor));

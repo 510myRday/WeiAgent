@@ -333,6 +333,7 @@ impl McpManager {
                 exit_code: if is_error { 1 } else { 0 },
                 duration_ms: started.elapsed().as_millis() as u64,
                 runtime: Some("mcp".to_string()),
+                cwd: None,
                 output_cursor: 0,
                 structured_content: Some(content),
                 is_error,

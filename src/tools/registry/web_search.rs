@@ -164,6 +164,7 @@ impl AgentTool for WebSearchSourcesTool {
                 exit_code: 0,
                 duration_ms: 0,
                 runtime: Some("builtin_web_search_sources".to_string()),
+                cwd: None,
                 output_cursor: 0,
                 structured_content: None,
                 is_error: false,

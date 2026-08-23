@@ -167,6 +167,7 @@ const toolResultEventDataSchema = looseObject({
     reason: optional(string()),
     code: optional(string()),
     runtime: optional(string()),
+    cwd: optional(string()),
     structured_content: optional(custom<unknown>(() => true, 'Structured MCP content is valid JSON')),
     is_error: optional(boolean()),
     status: toolCallStatusSchema,

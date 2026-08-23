@@ -525,6 +525,7 @@ fn plan_json_result(message: &str, plan: &TaskPlan, active: bool) -> ToolResult 
         exit_code: 0,
         duration_ms: 0,
         runtime: Some("builtin_task_planning".to_string()),
+        cwd: None,
         output_cursor: 0,
         structured_content: None,
         is_error: false,

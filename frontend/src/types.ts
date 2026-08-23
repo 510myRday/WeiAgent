@@ -411,6 +411,8 @@ export type ToolResultData = {
   code?: string;
   /** Execution backend used for the terminal command. */
   runtime?: string;
+  /** Resolved working directory used by the terminal command. */
+  cwd?: string;
   /** Structured protocol payload preserved from MCP-backed tools. */
   structured_content?: unknown;
   is_error?: boolean;

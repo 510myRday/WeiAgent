@@ -466,6 +466,7 @@ pub async fn execute_multi_edit(
         exit_code: 0,
         duration_ms: started.elapsed().as_millis() as u64,
         runtime: Some("builtin_multi_edit".to_string()),
+        cwd: None,
         output_cursor: 0,
         structured_content: None,
         is_error: false,

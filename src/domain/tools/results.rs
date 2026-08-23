@@ -47,6 +47,9 @@ pub enum ToolResult {
         /// Execution runtime actually used for this command.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         runtime: Option<String>,
+        /// The resolved working directory used by the terminal process.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
         #[serde(default)]
         output_cursor: u64,
         /// Structured payload preserved from protocol-backed tools such as MCP.
@@ -67,6 +70,9 @@ pub enum ToolResult {
         /// Execution runtime actually used for this command.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         runtime: Option<String>,
+        /// The resolved working directory used by the terminal process.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
         #[serde(default)]
         output_cursor: u64,
     },
