@@ -8,8 +8,8 @@ pub mod llm_logs;
 mod mcp;
 mod migrations;
 mod providers;
-mod skills;
 mod scheduling;
+mod skills;
 mod sql_util;
 mod store;
 mod task_plans;
@@ -20,9 +20,9 @@ mod workspaces;
 
 pub use db::Database;
 pub use llm_logs::LlmLogger;
+pub(crate) use scheduling::validate_heartbeat_interval;
 pub use skills::{BUILTIN_SKILL_GROUP_ID, BUILTIN_WEIAGENT_CLI_SKILL_NAME, SkillGroupRecord};
 pub use store::Store;
-pub(crate) use scheduling::validate_heartbeat_interval;
 
 pub(super) const BUILTIN_CEO_ICON: &str = "crown";
 pub(super) const BUILTIN_CEO_COLOR: &str = "#2563eb";

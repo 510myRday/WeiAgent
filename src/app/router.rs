@@ -10,9 +10,10 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::app::{
     AppState,
-        handlers::{
-            agents, assets, conversations, ip_proxies, llm_logs, providers, scheduling, settings, skills, tools,
-        },
+    handlers::{
+        agents, assets, conversations, ip_proxies, llm_logs, providers, scheduling, settings,
+        skills, tools,
+    },
     security::enforce_api_security,
     static_assets::serve_frontend,
 };
@@ -183,10 +184,19 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
                 .patch(scheduling::update_cron_task)
                 .delete(scheduling::delete_cron_task),
         )
-        .route("/api/cron/{task_id}/pause", post(scheduling::pause_cron_task))
-        .route("/api/cron/{task_id}/resume", post(scheduling::resume_cron_task))
+        .route(
+            "/api/cron/{task_id}/pause",
+            post(scheduling::pause_cron_task),
+        )
+        .route(
+            "/api/cron/{task_id}/resume",
+            post(scheduling::resume_cron_task),
+        )
         .route("/api/cron/{task_id}/run", post(scheduling::run_cron_task))
-        .route("/api/cron/{task_id}/executions", get(scheduling::list_cron_executions))
+        .route(
+            "/api/cron/{task_id}/executions",
+            get(scheduling::list_cron_executions),
+        )
         .route(
             "/api/conversations/{conversation_id}/run",
             get(conversations::active_conversation_run),

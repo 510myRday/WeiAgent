@@ -198,6 +198,14 @@ impl Store {
         self.database.call(|conn| read_servers_conn(conn)).await
     }
 
+    pub(super) async fn initialize_mcp_agent_defaults(&self, agent_id: Uuid) -> AppResult<()> {
+        let _guard = self.mcp_lock.lock().await;
+        let defaults = self.database.call(|conn| read_servers_conn(conn)).await?;
+        self.database
+            .call(move |conn| initialize_mcp_agent_defaults_conn(conn, agent_id, &defaults))
+            .await
+    }
+
     pub async fn create_mcp_server(&self, draft: McpServerDraft) -> AppResult<McpServer> {
         self.save_mcp_server(draft).await
     }
@@ -703,23 +711,57 @@ fn sync_mcp_agent_defaults_conn(
                 params![agent_id_text, server_id, tool.name],
             )?;
             if initialized && inserted > 0 {
-                // Keep newly discovered tools available inside the Agent-level
-                // MCP entry. The outer server switch remains disabled by the
-                // generated Agent override above.
                 tx.execute(
-                    "INSERT OR IGNORE INTO tool_mcp_agent_tools(agent_id, server_id, tool_name, enabled) VALUES (?1, ?2, ?3, 1)",
+                    "INSERT OR IGNORE INTO tool_mcp_agent_tools(agent_id, server_id, tool_name, enabled) VALUES (?1, ?2, ?3, 0)",
                     params![agent_id_text, server_id, tool.name],
                 )?;
                 generated.tools.push(McpToolOverride {
                     server_id: server.id,
                     tool_name: tool.name.clone(),
-                    enabled: Some(true),
+                    enabled: Some(false),
                 });
             }
         }
     }
     tx.commit()?;
     Ok(generated)
+}
+
+fn initialize_mcp_agent_defaults_conn(
+    conn: &mut Connection,
+    agent_id: Uuid,
+    defaults: &[McpServer],
+) -> AppResult<()> {
+    let agent_id_text = agent_id.to_string();
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT OR IGNORE INTO tool_mcp_agent_baselines(agent_id) VALUES (?1)",
+        [&agent_id_text],
+    )?;
+
+    for server in defaults {
+        let server_id = server.id.to_string();
+        tx.execute(
+            "INSERT OR IGNORE INTO tool_mcp_agent_seen_servers(agent_id, server_id) VALUES (?1, ?2)",
+            params![agent_id_text, server_id],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO tool_mcp_agent_servers(agent_id, server_id, enabled, customized) VALUES (?1, ?2, 0, 1)",
+            params![agent_id_text, server_id],
+        )?;
+        for tool in &server.tools {
+            tx.execute(
+                "INSERT OR IGNORE INTO tool_mcp_agent_seen_tools(agent_id, server_id, tool_name) VALUES (?1, ?2, ?3)",
+                params![agent_id_text, server_id, tool.name],
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO tool_mcp_agent_tools(agent_id, server_id, tool_name, enabled) VALUES (?1, ?2, ?3, 0)",
+                params![agent_id_text, server_id, tool.name],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 fn merge_mcp_auto_overrides(
@@ -778,6 +820,8 @@ fn apply_overrides(defaults: &[McpServer], overrides: &McpAgentOverrides) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::CreateAgentRequest;
+    use crate::test_support::provider_request;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -879,7 +923,96 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_mcp_servers_default_to_disabled_with_tools_enabled_for_existing_agents() {
+    async fn newly_created_agents_start_with_custom_mcp_disabled() {
+        let directory = tempdir().unwrap();
+        let store = Store::new(directory.path()).await.unwrap();
+        let provider = store
+            .create_model_provider(provider_request("Test provider", "test-model"))
+            .await
+            .unwrap();
+        let server = store
+            .create_mcp_server(McpServerDraft {
+                id: None,
+                name: "Custom MCP".to_string(),
+                description: String::new(),
+                enabled: true,
+                supports_parallel_tool_calls: false,
+                provider: None,
+                provider_url: None,
+                logo_url: None,
+                tags: Vec::new(),
+                transport: McpTransport::Stdio {
+                    command: "fake-mcp".to_string(),
+                    args: Vec::new(),
+                    cwd: None,
+                    env: Default::default(),
+                    inherit_env: false,
+                    env_allowlist: Vec::new(),
+                    long_running: false,
+                    timeout_ms: 60_000,
+                },
+            })
+            .await
+            .unwrap();
+        store
+            .replace_mcp_tools(
+                server.id,
+                &[McpTool {
+                    tool_id: Uuid::new_v4(),
+                    name: "custom_tool".to_string(),
+                    qualified_name: "mcp__custom__custom_tool".to_string(),
+                    title: None,
+                    description: String::new(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    enabled: true,
+                    updated_at: None,
+                }],
+            )
+            .await
+            .unwrap();
+
+        let agent = store
+            .create_agent(CreateAgentRequest {
+                name: "New agent".to_string(),
+                description: "Test agent".to_string(),
+                model_provider_id: provider.id,
+                model_id: "test-model".to_string(),
+                avatar_icon: None,
+                avatar_color: None,
+            })
+            .await
+            .unwrap();
+        let settings = store.read_mcp_agent_settings(agent.id).await.unwrap();
+
+        assert_eq!(
+            settings
+                .overrides
+                .servers
+                .iter()
+                .find(|item| item.server_id == server.id)
+                .and_then(|item| item.enabled),
+            Some(false)
+        );
+        assert_eq!(
+            settings
+                .overrides
+                .tools
+                .iter()
+                .find(|item| item.server_id == server.id && item.tool_name == "custom_tool")
+                .and_then(|item| item.enabled),
+            Some(false)
+        );
+        let effective = settings
+            .effective
+            .iter()
+            .find(|item| item.id == server.id)
+            .unwrap();
+        assert!(!effective.enabled);
+        assert!(!effective.tools[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn new_mcp_servers_default_to_disabled_with_tools_disabled_for_existing_agents() {
         let directory = tempdir().unwrap();
         let store = Store::new(directory.path()).await.unwrap();
         let agent_id = store.list_agents().await.unwrap()[0].id;
@@ -975,7 +1108,7 @@ mod tests {
             .iter()
             .find(|item| item.server_id == second.id && item.tool_name == "second_tool")
             .unwrap();
-        assert_eq!(second_tool_override.enabled, Some(true));
+        assert_eq!(second_tool_override.enabled, Some(false));
         assert!(
             !updated
                 .effective
@@ -1007,7 +1140,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn newly_discovered_mcp_tools_default_to_enabled_for_existing_agents() {
+    async fn newly_discovered_mcp_tools_default_to_disabled_for_existing_agents() {
         let directory = tempdir().unwrap();
         let store = Store::new(directory.path()).await.unwrap();
         let agent_id = store.list_agents().await.unwrap()[0].id;
@@ -1070,9 +1203,9 @@ mod tests {
             .iter()
             .find(|item| item.server_id == server.id && item.tool_name == "second_tool")
             .unwrap();
-        assert_eq!(second_override.enabled, Some(true));
+        assert_eq!(second_override.enabled, Some(false));
         assert!(
-            updated
+            !updated
                 .effective
                 .iter()
                 .find(|item| item.id == server.id)

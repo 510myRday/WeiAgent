@@ -10,14 +10,18 @@ pub fn relative_file(root: &Path, raw: &str) -> AppResult<PathBuf> {
         return relative_file(root, "SKILL.md");
     }
     let candidate = Path::new(raw);
-    if candidate.is_absolute() || raw.contains('\0') {
+    if raw.contains('\0') {
         return Err(AppError::BadRequest(
-            "skill file path must be relative".to_string(),
+            "skill file path contains an invalid character".to_string(),
         ));
     }
-    let joined = root.join(candidate);
     let canonical_root = std::fs::canonicalize(root)?;
-    let canonical = std::fs::canonicalize(&joined).map_err(|_| AppError::NotFound)?;
+    let candidate = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    };
+    let canonical = std::fs::canonicalize(&candidate).map_err(|_| AppError::NotFound)?;
     if !crate::fsutil::path_is_within(&canonical, &canonical_root) {
         return Err(AppError::BadRequest(
             "skill file path escapes the skill directory".to_string(),
@@ -64,5 +68,28 @@ mod tests {
             relative_file(root.path(), "").unwrap(),
             std::fs::canonicalize(root.path().join("SKILL.md")).unwrap()
         );
+    }
+
+    #[test]
+    fn accepts_absolute_path_inside_skill_root() {
+        let root = tempfile::tempdir().unwrap();
+        let skill_md = root.path().join("SKILL.md");
+        std::fs::write(&skill_md, "content").unwrap();
+
+        assert_eq!(
+            relative_file(root.path(), &skill_md.to_string_lossy()).unwrap(),
+            std::fs::canonicalize(skill_md).unwrap()
+        );
+    }
+
+    #[test]
+    fn rejects_absolute_path_outside_skill_root() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("secret.md");
+        std::fs::write(&outside_file, "secret").unwrap();
+
+        let error = relative_file(root.path(), &outside_file.to_string_lossy()).unwrap_err();
+        assert!(error.to_string().contains("escapes the skill directory"));
     }
 }

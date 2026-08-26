@@ -552,12 +552,8 @@ mod tests {
             "D:/Clients/beta".to_string(),
         ];
         let registry = ToolRegistry::with_builtin_tools();
-        let default_definitions = registry
-            .definitions(&AgentToolsConfig::default())
-            .unwrap();
-        let configured_definitions = registry
-            .definitions(&config)
-            .unwrap();
+        let default_definitions = registry.definitions(&AgentToolsConfig::default()).unwrap();
+        let configured_definitions = registry.definitions(&config).unwrap();
 
         for tool_name in ["execute_terminal", "multi_edit_file"] {
             let default_description = &default_definitions

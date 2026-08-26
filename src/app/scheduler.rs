@@ -8,8 +8,8 @@ use uuid::Uuid;
 use crate::{
     app::{AppState, handlers::conversations::start_message_run},
     domain::{
-        ConversationHeartbeat, ConversationHeartbeatExecution, CreateConversationRequest, GenerationMode,
-        ScheduledTask, ScheduledTaskExecution, SendMessageRequest, ThinkingLevel,
+        ConversationHeartbeat, ConversationHeartbeatExecution, CreateConversationRequest,
+        GenerationMode, ScheduledTask, ScheduledTaskExecution, SendMessageRequest, ThinkingLevel,
     },
     error::{AppError, AppResult},
 };
@@ -65,10 +65,15 @@ pub fn normalize_timezone_offset(value: Option<&str>) -> AppResult<String> {
     Ok(value)
 }
 
-pub fn next_run_at(expression: &str, timezone_offset: &str, after: DateTime<Utc>) -> AppResult<DateTime<Utc>> {
+pub fn next_run_at(
+    expression: &str,
+    timezone_offset: &str,
+    after: DateTime<Utc>,
+) -> AppResult<DateTime<Utc>> {
     let normalized = normalize_schedule(expression)?;
     let offset = parse_timezone_offset(timezone_offset)?;
-    let schedule = Schedule::from_str(&format!("0 {normalized}")).map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let schedule = Schedule::from_str(&format!("0 {normalized}"))
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
     let local_after = after.with_timezone(&offset);
     schedule
         .after(&local_after)
@@ -78,16 +83,28 @@ pub fn next_run_at(expression: &str, timezone_offset: &str, after: DateTime<Utc>
 }
 
 fn parse_timezone_offset(value: &str) -> AppResult<FixedOffset> {
-    if value.len() != 6 || !matches!(value.as_bytes().first(), Some(b'+') | Some(b'-')) || &value[3..4] != ":" {
-        return Err(AppError::BadRequest("timezone_offset must use ±HH:MM format".to_string()));
+    if value.len() != 6
+        || !matches!(value.as_bytes().first(), Some(b'+') | Some(b'-'))
+        || &value[3..4] != ":"
+    {
+        return Err(AppError::BadRequest(
+            "timezone_offset must use ±HH:MM format".to_string(),
+        ));
     }
-    let hours = value[1..3].parse::<i32>().map_err(|_| AppError::BadRequest("invalid timezone hour".to_string()))?;
-    let minutes = value[4..6].parse::<i32>().map_err(|_| AppError::BadRequest("invalid timezone minute".to_string()))?;
+    let hours = value[1..3]
+        .parse::<i32>()
+        .map_err(|_| AppError::BadRequest("invalid timezone hour".to_string()))?;
+    let minutes = value[4..6]
+        .parse::<i32>()
+        .map_err(|_| AppError::BadRequest("invalid timezone minute".to_string()))?;
     if hours > 23 || minutes > 59 {
-        return Err(AppError::BadRequest("timezone_offset is out of range".to_string()));
+        return Err(AppError::BadRequest(
+            "timezone_offset is out of range".to_string(),
+        ));
     }
     let seconds = (hours * 3600 + minutes * 60) * if &value[0..1] == "-" { -1 } else { 1 };
-    FixedOffset::east_opt(seconds).ok_or_else(|| AppError::BadRequest("timezone_offset is invalid".to_string()))
+    FixedOffset::east_opt(seconds)
+        .ok_or_else(|| AppError::BadRequest("timezone_offset is invalid".to_string()))
 }
 
 fn format_offset(seconds: i32) -> String {
@@ -111,34 +128,53 @@ async fn process_heartbeats(state: &AppState) -> AppResult<()> {
 
 async fn execute_heartbeat(state: &AppState, heartbeat: ConversationHeartbeat) -> AppResult<()> {
     let execution_id = Uuid::new_v4();
-    let scheduled_at = heartbeat.next_fire_at
-        - chrono::Duration::seconds(heartbeat.interval_seconds as i64);
+    let scheduled_at =
+        heartbeat.next_fire_at - chrono::Duration::seconds(heartbeat.interval_seconds as i64);
     let started_at = Utc::now();
-    let conversation = state.store.get_conversation(heartbeat.conversation_id).await?;
+    let conversation = state
+        .store
+        .get_conversation(heartbeat.conversation_id)
+        .await?;
     let agent = state.store.get_agent(conversation.agent_id).await?;
-    let provider = state.store.get_model_provider(agent.model_provider_id).await?;
-    state.store.insert_conversation_heartbeat_execution(ConversationHeartbeatExecution {
-        id: execution_id,
-        conversation_id: heartbeat.conversation_id,
-        scheduled_at,
-        started_at: Some(started_at),
-        finished_at: None,
-        status: "running".to_string(),
-        error: None,
-        trigger_type: "scheduled".to_string(),
-        agent_name: Some(agent.name),
-        provider_name: Some(provider.name),
-        model_id: Some(agent.model_id),
-        output_preview: None,
-    }).await?;
-    if state.run_manager.active_for_conversation(heartbeat.conversation_id).is_some() {
-        state.store.mark_heartbeat_pending(heartbeat.conversation_id).await?;
-        state.store.finish_conversation_heartbeat_execution(
-            execution_id,
-            heartbeat.conversation_id,
-            "pending",
-            None,
-        ).await?;
+    let provider = state
+        .store
+        .get_model_provider(agent.model_provider_id)
+        .await?;
+    state
+        .store
+        .insert_conversation_heartbeat_execution(ConversationHeartbeatExecution {
+            id: execution_id,
+            conversation_id: heartbeat.conversation_id,
+            scheduled_at,
+            started_at: Some(started_at),
+            finished_at: None,
+            status: "running".to_string(),
+            error: None,
+            trigger_type: "scheduled".to_string(),
+            agent_name: Some(agent.name),
+            provider_name: Some(provider.name),
+            model_id: Some(agent.model_id),
+            output_preview: None,
+        })
+        .await?;
+    if state
+        .run_manager
+        .active_for_conversation(heartbeat.conversation_id)
+        .is_some()
+    {
+        state
+            .store
+            .mark_heartbeat_pending(heartbeat.conversation_id)
+            .await?;
+        state
+            .store
+            .finish_conversation_heartbeat_execution(
+                execution_id,
+                heartbeat.conversation_id,
+                "pending",
+                None,
+            )
+            .await?;
         return Ok(());
     }
     let request = SendMessageRequest {
@@ -153,30 +189,42 @@ async fn execute_heartbeat(state: &AppState, heartbeat: ConversationHeartbeat) -
     match result {
         Ok(run) => {
             let terminal = state.run_manager.wait_for_terminal(run.id).await?;
-            state.store.finish_conversation_heartbeat_execution(
-                execution_id,
-                heartbeat.conversation_id,
-                &status_name(terminal.status),
-                terminal.error,
-            ).await?;
+            state
+                .store
+                .finish_conversation_heartbeat_execution(
+                    execution_id,
+                    heartbeat.conversation_id,
+                    &status_name(terminal.status),
+                    terminal.error,
+                )
+                .await?;
         }
         Err(AppError::Conflict(_)) => {
-            state.store.mark_heartbeat_pending(heartbeat.conversation_id).await?;
-            state.store.finish_conversation_heartbeat_execution(
-                execution_id,
-                heartbeat.conversation_id,
-                "pending",
-                None,
-            ).await?;
+            state
+                .store
+                .mark_heartbeat_pending(heartbeat.conversation_id)
+                .await?;
+            state
+                .store
+                .finish_conversation_heartbeat_execution(
+                    execution_id,
+                    heartbeat.conversation_id,
+                    "pending",
+                    None,
+                )
+                .await?;
         }
         Err(error) => {
             let message = error.to_string();
-            state.store.finish_conversation_heartbeat_execution(
-                execution_id,
-                heartbeat.conversation_id,
-                "failed",
-                Some(message),
-            ).await?;
+            state
+                .store
+                .finish_conversation_heartbeat_execution(
+                    execution_id,
+                    heartbeat.conversation_id,
+                    "failed",
+                    Some(message),
+                )
+                .await?;
         }
     }
     Ok(())
@@ -185,13 +233,19 @@ async fn execute_heartbeat(state: &AppState, heartbeat: ConversationHeartbeat) -
 async fn process_cron_tasks(state: &AppState) -> AppResult<()> {
     for _ in 0..MAX_TASKS_PER_TICK {
         let execution_id = Uuid::new_v4();
-        let Some(task) = state.store.claim_scheduled_task(Utc::now(), execution_id).await? else {
+        let Some(task) = state
+            .store
+            .claim_scheduled_task(Utc::now(), execution_id)
+            .await?
+        else {
             break;
         };
         let state = state.clone();
         let scheduled_at = task.next_run_at;
         tokio::spawn(async move {
-            if let Err(error) = execute_cron_task(&state, task, execution_id, "scheduled", scheduled_at).await {
+            if let Err(error) =
+                execute_cron_task(&state, task, execution_id, "scheduled", scheduled_at).await
+            {
                 tracing::warn!(%error, "cron execution failed");
             }
         });
@@ -210,7 +264,15 @@ pub async fn run_cron_task_now(state: AppState, task_id: Uuid) -> AppResult<Sche
     let background_state = state.clone();
     let background_task = task.clone();
     tokio::spawn(async move {
-        if let Err(error) = execute_cron_task(&background_state, background_task, execution_id, "manual", now).await {
+        if let Err(error) = execute_cron_task(
+            &background_state,
+            background_task,
+            execution_id,
+            "manual",
+            now,
+        )
+        .await
+        {
             tracing::warn!(%error, "manual cron execution failed");
         }
     });
@@ -230,25 +292,45 @@ async fn execute_cron_task(
     let agent = match state.store.get_agent(task.agent_id).await {
         Ok(agent) => agent,
         Err(error) => {
-            state.store.fail_claimed_scheduled_task(task.id, execution_id, next_run_at, error.to_string()).await?;
+            state
+                .store
+                .fail_claimed_scheduled_task(task.id, execution_id, next_run_at, error.to_string())
+                .await?;
             return Err(error);
         }
     };
-    let provider = match state.store.get_model_provider(agent.model_provider_id).await {
+    let provider = match state
+        .store
+        .get_model_provider(agent.model_provider_id)
+        .await
+    {
         Ok(provider) => provider,
         Err(error) => {
-            state.store.fail_claimed_scheduled_task(task.id, execution_id, next_run_at, error.to_string()).await?;
+            state
+                .store
+                .fail_claimed_scheduled_task(task.id, execution_id, next_run_at, error.to_string())
+                .await?;
             return Err(error);
         }
     };
-    let title = format!("[Cron] {}", task.prompt.chars().take(42).collect::<String>());
-    let conversation = match state.store.create_conversation(
-        task.agent_id,
-        CreateConversationRequest { title: Some(title) },
-    ).await {
+    let title = format!(
+        "[Cron] {}",
+        task.prompt.chars().take(42).collect::<String>()
+    );
+    let conversation = match state
+        .store
+        .create_conversation(
+            task.agent_id,
+            CreateConversationRequest { title: Some(title) },
+        )
+        .await
+    {
         Ok(conversation) => conversation,
         Err(error) => {
-            state.store.fail_claimed_scheduled_task(task.id, execution_id, next_run_at, error.to_string()).await?;
+            state
+                .store
+                .fail_claimed_scheduled_task(task.id, execution_id, next_run_at, error.to_string())
+                .await?;
             return Err(error);
         }
     };
@@ -268,7 +350,10 @@ async fn execute_cron_task(
         output_preview: None,
     };
     if let Err(error) = state.store.insert_scheduled_task_execution(execution).await {
-        state.store.fail_claimed_scheduled_task(task.id, execution_id, next_run_at, error.to_string()).await?;
+        state
+            .store
+            .fail_claimed_scheduled_task(task.id, execution_id, next_run_at, error.to_string())
+            .await?;
         return Err(error);
     }
     let request = SendMessageRequest {
@@ -282,19 +367,32 @@ async fn execute_cron_task(
     let run = match start_message_run(state.clone(), conversation.id, request).await {
         Ok(run) => run,
         Err(error) => {
-            state.store.finish_scheduled_task_execution(execution_id, task.id, conversation.id, next_run_at, "failed", Some(error.to_string())).await?;
+            state
+                .store
+                .finish_scheduled_task_execution(
+                    execution_id,
+                    task.id,
+                    conversation.id,
+                    next_run_at,
+                    "failed",
+                    Some(error.to_string()),
+                )
+                .await?;
             return Err(error);
         }
     };
     let terminal = state.run_manager.wait_for_terminal(run.id).await?;
-    state.store.finish_scheduled_task_execution(
-        execution_id,
-        task.id,
-        conversation.id,
-        next_run_at,
-        &status_name(terminal.status),
-        terminal.error,
-    ).await?;
+    state
+        .store
+        .finish_scheduled_task_execution(
+            execution_id,
+            task.id,
+            conversation.id,
+            next_run_at,
+            &status_name(terminal.status),
+            terminal.error,
+        )
+        .await?;
     Ok(())
 }
 
@@ -304,7 +402,8 @@ fn status_name(status: crate::domain::AgentRunStatus) -> String {
         crate::domain::AgentRunStatus::Completed => "completed",
         crate::domain::AgentRunStatus::Failed => "failed",
         crate::domain::AgentRunStatus::Cancelled => "cancelled",
-    }.to_string()
+    }
+    .to_string()
 }
 
 #[cfg(test)]
@@ -319,7 +418,9 @@ mod tests {
 
     #[test]
     fn computes_next_run_with_fixed_offset() {
-        let after = DateTime::parse_from_rfc3339("2026-08-22T00:00:00Z").unwrap().with_timezone(&Utc);
+        let after = DateTime::parse_from_rfc3339("2026-08-22T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let next = next_run_at("0 9 * * *", "+08:00", after).unwrap();
         assert_eq!(next.to_rfc3339(), "2026-08-22T01:00:00+00:00");
     }

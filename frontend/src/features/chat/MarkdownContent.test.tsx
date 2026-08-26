@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
 import { MarkdownContent } from './MarkdownContent';
@@ -11,6 +11,37 @@ function renderMarkdown(content: string) {
     </I18nProvider>,
   );
 }
+
+afterEach(() => {
+  document.head.querySelector('meta[name="weiagent-api-token"]')?.remove();
+  vi.restoreAllMocks();
+});
+
+test('loads a local Windows image emitted in Markdown', async () => {
+  const tokenMeta = document.createElement('meta');
+  tokenMeta.name = 'weiagent-api-token';
+  tokenMeta.content = 'test-token';
+  document.head.appendChild(tokenMeta);
+
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(new Blob(['png-data'], { type: 'image/png' }), { status: 200 }),
+  );
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test-image');
+
+  renderMarkdown(String.raw`![Dashi PPT 风格图](C:\\Users\\Administrator\\.WeiAgent\\skills\\dashi-ppt\\assets\\skill\\theme-style-grid.png)`);
+
+  const image = await screen.findByRole('img', { name: 'Dashi PPT 风格图' });
+  expect(image).toHaveAttribute('src', 'blob:test-image');
+
+  const [requestUrl, requestInit] = fetchMock.mock.calls[0];
+  const parsedUrl = new URL(String(requestUrl), window.location.origin);
+  expect(parsedUrl.pathname).toBe('/api/assets/local');
+  expect(parsedUrl.searchParams.get('path')).toBe(
+    'C:\\Users\\Administrator\\.WeiAgent\\skills\\dashi-ppt\\assets\\skill\\theme-style-grid.png',
+  );
+  expect(parsedUrl.searchParams.get('token')).toBe('test-token');
+  expect(requestInit).toMatchObject({ credentials: 'same-origin' });
+});
 
 describe('MarkdownContent tables', () => {
   test('renders GFM tables inside a horizontal scroll container', async () => {

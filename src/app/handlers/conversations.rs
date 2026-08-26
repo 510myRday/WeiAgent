@@ -276,7 +276,9 @@ pub async fn create_message_run(
     Path(conversation_id): Path<Uuid>,
     Json(request): Json<SendMessageRequest>,
 ) -> AppResult<Json<AgentRun>> {
-    Ok(Json(start_message_run(state, conversation_id, request).await?))
+    Ok(Json(
+        start_message_run(state, conversation_id, request).await?,
+    ))
 }
 
 pub async fn start_message_run(

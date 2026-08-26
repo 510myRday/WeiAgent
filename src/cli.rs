@@ -141,12 +141,27 @@ pub struct CronEditArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum HeartbeatCommand {
-    Show { #[arg(long)] conversation: Uuid },
+    Show {
+        #[arg(long)]
+        conversation: Uuid,
+    },
     Set(HeartbeatSetArgs),
-    Pause { #[arg(long)] conversation: Uuid },
-    Resume { #[arg(long)] conversation: Uuid },
-    Remove { #[arg(long)] conversation: Uuid },
-    Run { #[arg(long)] conversation: Uuid },
+    Pause {
+        #[arg(long)]
+        conversation: Uuid,
+    },
+    Resume {
+        #[arg(long)]
+        conversation: Uuid,
+    },
+    Remove {
+        #[arg(long)]
+        conversation: Uuid,
+    },
+    Run {
+        #[arg(long)]
+        conversation: Uuid,
+    },
 }
 
 #[derive(Debug, Clone, Args)]
@@ -2370,62 +2385,191 @@ fn parse_interval_seconds(value: &str) -> AppResult<u64> {
         Some('d') => (&value[..value.len() - 1], 24 * 60 * 60),
         _ => (value, 1),
     };
-    let number = number
-        .parse::<u64>()
-        .map_err(|_| AppError::BadRequest("interval must look like 30s, 10m, 2h, or 1d".to_string()))?;
-    number.checked_mul(multiplier).ok_or_else(|| AppError::BadRequest("interval is too large".to_string()))
+    let number = number.parse::<u64>().map_err(|_| {
+        AppError::BadRequest("interval must look like 30s, 10m, 2h, or 1d".to_string())
+    })?;
+    number
+        .checked_mul(multiplier)
+        .ok_or_else(|| AppError::BadRequest("interval is too large".to_string()))
 }
 
 async fn run_cron(cli: &Cli, command: CronCommand) -> AppResult<()> {
     let (client, _child) = ApiClient::connect(cli).await?;
     match command {
-        CronCommand::List => print_value(cli, &client.request::<Value>(reqwest::Method::GET, "/api/cron", None).await?),
-        CronCommand::Show { task_id } => print_value(cli, &client.request::<Value>(reqwest::Method::GET, &format!("/api/cron/{task_id}"), None).await?),
+        CronCommand::List => print_value(
+            cli,
+            &client
+                .request::<Value>(reqwest::Method::GET, "/api/cron", None)
+                .await?,
+        ),
+        CronCommand::Show { task_id } => print_value(
+            cli,
+            &client
+                .request::<Value>(reqwest::Method::GET, &format!("/api/cron/{task_id}"), None)
+                .await?,
+        ),
         CronCommand::Create(args) => {
             let prompt = read_prompt_input(args.prompt, args.prompt_file).await?;
-            print_value(cli, &client.request::<Value>(reqwest::Method::POST, "/api/cron", Some(json!({
-                "agent_id": args.agent,
-                "source_conversation_id": args.conversation,
-                "schedule": args.schedule,
-                "prompt": prompt,
-                "timezone_offset": args.timezone,
-            }))).await?)
+            print_value(
+                cli,
+                &client
+                    .request::<Value>(
+                        reqwest::Method::POST,
+                        "/api/cron",
+                        Some(json!({
+                            "agent_id": args.agent,
+                            "source_conversation_id": args.conversation,
+                            "schedule": args.schedule,
+                            "prompt": prompt,
+                            "timezone_offset": args.timezone,
+                        })),
+                    )
+                    .await?,
+            )
         }
         CronCommand::Edit(args) => {
             let prompt = match (args.prompt, args.prompt_file) {
                 (None, None) => None,
                 (prompt, file) => Some(read_prompt_input(prompt, file).await?),
             };
-            print_value(cli, &client.request::<Value>(reqwest::Method::PATCH, &format!("/api/cron/{}", args.task_id), Some(json!({
-                "schedule": args.schedule,
-                "prompt": prompt,
-                "timezone_offset": args.timezone,
-            }))).await?)
+            print_value(
+                cli,
+                &client
+                    .request::<Value>(
+                        reqwest::Method::PATCH,
+                        &format!("/api/cron/{}", args.task_id),
+                        Some(json!({
+                            "schedule": args.schedule,
+                            "prompt": prompt,
+                            "timezone_offset": args.timezone,
+                        })),
+                    )
+                    .await?,
+            )
         }
-        CronCommand::Pause { task_id } => print_value(cli, &client.request::<Value>(reqwest::Method::POST, &format!("/api/cron/{task_id}/pause"), None).await?),
-        CronCommand::Resume { task_id } => print_value(cli, &client.request::<Value>(reqwest::Method::POST, &format!("/api/cron/{task_id}/resume"), None).await?),
-        CronCommand::Run { task_id } => print_value(cli, &client.request::<Value>(reqwest::Method::POST, &format!("/api/cron/{task_id}/run"), None).await?),
-        CronCommand::Remove { task_id } => print_value(cli, &client.request_empty(reqwest::Method::DELETE, &format!("/api/cron/{task_id}"), None).await?),
-        CronCommand::Executions { task_id } => print_value(cli, &client.request::<Value>(reqwest::Method::GET, &format!("/api/cron/{task_id}/executions"), None).await?),
+        CronCommand::Pause { task_id } => print_value(
+            cli,
+            &client
+                .request::<Value>(
+                    reqwest::Method::POST,
+                    &format!("/api/cron/{task_id}/pause"),
+                    None,
+                )
+                .await?,
+        ),
+        CronCommand::Resume { task_id } => print_value(
+            cli,
+            &client
+                .request::<Value>(
+                    reqwest::Method::POST,
+                    &format!("/api/cron/{task_id}/resume"),
+                    None,
+                )
+                .await?,
+        ),
+        CronCommand::Run { task_id } => print_value(
+            cli,
+            &client
+                .request::<Value>(
+                    reqwest::Method::POST,
+                    &format!("/api/cron/{task_id}/run"),
+                    None,
+                )
+                .await?,
+        ),
+        CronCommand::Remove { task_id } => print_value(
+            cli,
+            &client
+                .request_empty(
+                    reqwest::Method::DELETE,
+                    &format!("/api/cron/{task_id}"),
+                    None,
+                )
+                .await?,
+        ),
+        CronCommand::Executions { task_id } => print_value(
+            cli,
+            &client
+                .request::<Value>(
+                    reqwest::Method::GET,
+                    &format!("/api/cron/{task_id}/executions"),
+                    None,
+                )
+                .await?,
+        ),
     }
 }
 
 async fn run_heartbeat(cli: &Cli, command: HeartbeatCommand) -> AppResult<()> {
     let (client, _child) = ApiClient::connect(cli).await?;
     match command {
-        HeartbeatCommand::Show { conversation } => print_value(cli, &client.request::<Value>(reqwest::Method::GET, &format!("/api/conversations/{conversation}/heartbeat"), None).await?),
+        HeartbeatCommand::Show { conversation } => print_value(
+            cli,
+            &client
+                .request::<Value>(
+                    reqwest::Method::GET,
+                    &format!("/api/conversations/{conversation}/heartbeat"),
+                    None,
+                )
+                .await?,
+        ),
         HeartbeatCommand::Set(args) => {
             let prompt = read_prompt_input(args.prompt, args.prompt_file).await?;
             let interval_seconds = parse_interval_seconds(&args.interval)?;
-            print_value(cli, &client.request::<Value>(reqwest::Method::PUT, &format!("/api/conversations/{}/heartbeat", args.conversation), Some(json!({
-                "interval_seconds": interval_seconds,
-                "prompt": prompt,
-            }))).await?)
+            print_value(
+                cli,
+                &client
+                    .request::<Value>(
+                        reqwest::Method::PUT,
+                        &format!("/api/conversations/{}/heartbeat", args.conversation),
+                        Some(json!({
+                            "interval_seconds": interval_seconds,
+                            "prompt": prompt,
+                        })),
+                    )
+                    .await?,
+            )
         }
-        HeartbeatCommand::Pause { conversation } => print_value(cli, &client.request::<Value>(reqwest::Method::POST, &format!("/api/conversations/{conversation}/heartbeat/pause"), None).await?),
-        HeartbeatCommand::Resume { conversation } => print_value(cli, &client.request::<Value>(reqwest::Method::POST, &format!("/api/conversations/{conversation}/heartbeat/resume"), None).await?),
-        HeartbeatCommand::Run { conversation } => print_value(cli, &client.request::<Value>(reqwest::Method::POST, &format!("/api/conversations/{conversation}/heartbeat/run"), None).await?),
-        HeartbeatCommand::Remove { conversation } => print_value(cli, &client.request_empty(reqwest::Method::DELETE, &format!("/api/conversations/{conversation}/heartbeat"), None).await?),
+        HeartbeatCommand::Pause { conversation } => print_value(
+            cli,
+            &client
+                .request::<Value>(
+                    reqwest::Method::POST,
+                    &format!("/api/conversations/{conversation}/heartbeat/pause"),
+                    None,
+                )
+                .await?,
+        ),
+        HeartbeatCommand::Resume { conversation } => print_value(
+            cli,
+            &client
+                .request::<Value>(
+                    reqwest::Method::POST,
+                    &format!("/api/conversations/{conversation}/heartbeat/resume"),
+                    None,
+                )
+                .await?,
+        ),
+        HeartbeatCommand::Run { conversation } => print_value(
+            cli,
+            &client
+                .request::<Value>(
+                    reqwest::Method::POST,
+                    &format!("/api/conversations/{conversation}/heartbeat/run"),
+                    None,
+                )
+                .await?,
+        ),
+        HeartbeatCommand::Remove { conversation } => print_value(
+            cli,
+            &client
+                .request_empty(
+                    reqwest::Method::DELETE,
+                    &format!("/api/conversations/{conversation}/heartbeat"),
+                    None,
+                )
+                .await?,
+        ),
     }
 }
 
@@ -2738,13 +2882,39 @@ mod tests {
     fn scheduling_commands_parse() {
         let agent_id = Uuid::nil().to_string();
         let cron = Cli::try_parse_from([
-            "weiagent", "cron", "create", "--agent", &agent_id, "--schedule", "0 9 * * *", "check",
-        ]).unwrap();
-        assert!(matches!(cron.command, Some(Command::Cron { command: CronCommand::Create(_) })));
+            "weiagent",
+            "cron",
+            "create",
+            "--agent",
+            &agent_id,
+            "--schedule",
+            "0 9 * * *",
+            "check",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cron.command,
+            Some(Command::Cron {
+                command: CronCommand::Create(_)
+            })
+        ));
         let conversation_id = Uuid::nil().to_string();
         let heartbeat = Cli::try_parse_from([
-            "weiagent", "heartbeat", "set", "--conversation", &conversation_id, "--interval", "10m", "check",
-        ]).unwrap();
-        assert!(matches!(heartbeat.command, Some(Command::Heartbeat { command: HeartbeatCommand::Set(_) })));
+            "weiagent",
+            "heartbeat",
+            "set",
+            "--conversation",
+            &conversation_id,
+            "--interval",
+            "10m",
+            "check",
+        ])
+        .unwrap();
+        assert!(matches!(
+            heartbeat.command,
+            Some(Command::Heartbeat {
+                command: HeartbeatCommand::Set(_)
+            })
+        ));
     }
 }

@@ -733,6 +733,12 @@ impl SkillManager {
                 "the built-in weiagentcli Skill cannot be replaced by an import".to_string(),
             ));
         }
+        if group_id == Some(BUILTIN_SKILL_GROUP_ID) {
+            let _ = fs::remove_dir_all(&temporary).await;
+            return Err(AppError::BadRequest(
+                "only the built-in weiagentcli Skill can belong to the built-in group".to_string(),
+            ));
+        }
         let destination = self.root.join(&manifest.name);
         if temporary == destination {
             self.refresh().await?;
@@ -1120,7 +1126,7 @@ impl SkillManager {
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
         vec![
             ToolDefinition { kind: "function".to_string(), function: FunctionDefinition { name: SKILLS_LIST_TOOL_NAME.to_string(), description: "List compact metadata for Skills enabled for the current Agent. Use this before loading a relevant Skill.".to_string(), parameters: serde_json::json!({"type":"object","properties":{"query":{"type":"string"},"group":{"type":"string"}},"additionalProperties":false}) } },
-            ToolDefinition { kind: "function".to_string(), function: FunctionDefinition { name: SKILL_VIEW_TOOL_NAME.to_string(), description: "Load a bounded window of SKILL.md or a reference file for an enabled Skill. Use offset to continue after a truncated result.".to_string(), parameters: serde_json::json!({"type":"object","properties":{"name":{"type":"string"},"file_path":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":1,"maximum":MAX_SKILL_VIEW_MAX_CHARS}},"required":["name"],"additionalProperties":false}) } },
+            ToolDefinition { kind: "function".to_string(), function: FunctionDefinition { name: SKILL_VIEW_TOOL_NAME.to_string(), description: "Load a bounded window of SKILL.md or a reference file for an enabled Skill. file_path may be relative to the Skill directory or an absolute path inside that same Skill directory. Use offset to continue after a truncated result.".to_string(), parameters: serde_json::json!({"type":"object","properties":{"name":{"type":"string"},"file_path":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":1,"maximum":MAX_SKILL_VIEW_MAX_CHARS}},"required":["name"],"additionalProperties":false}) } },
         ]
     }
 
@@ -2129,6 +2135,15 @@ mod tests {
         let store = Arc::new(Store::new(data.path()).await.unwrap());
         let manager = SkillManager::new(store.clone()).await.unwrap();
 
+        manager.create_group("custom").await.unwrap();
+        let custom_group = store
+            .list_skill_groups()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|group| group.name == "custom")
+            .unwrap();
+
         assert!(
             manager
                 .rename_group(BUILTIN_SKILL_GROUP_ID, "Changed")
@@ -2145,6 +2160,21 @@ mod tests {
         assert!(
             manager
                 .assign_skill_group(BUILTIN_WEIAGENT_CLI_SKILL_NAME, None)
+                .await
+                .is_err()
+        );
+        assert!(
+            manager
+                .reorder_group_skills(
+                    Some(&custom_group.id),
+                    &[BUILTIN_WEIAGENT_CLI_SKILL_NAME.to_string()],
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            manager
+                .reorder_group_skills(None, &[BUILTIN_WEIAGENT_CLI_SKILL_NAME.to_string()],)
                 .await
                 .is_err()
         );

@@ -3,7 +3,7 @@ import { ImageOff } from 'lucide-react';
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown';
 
 import { useI18n } from '../../i18n';
-import { apiAuthorizationHeaders } from '../../apiAuth';
+import { apiAuthorizationHeaders, apiAuthorizationToken } from '../../apiAuth';
 
 type MarkdownImageProps = ImgHTMLAttributes<HTMLImageElement>;
 
@@ -20,7 +20,8 @@ export function MarkdownImage({ alt = '', src = '', title }: MarkdownImageProps)
 
     const controller = new AbortController();
     let objectUrl: string | null = null;
-    void fetch(resolved.url, {
+    void fetch(withApiToken(resolved.url), {
+      credentials: 'same-origin',
       headers: apiAuthorizationHeaders(),
       signal: controller.signal,
     })
@@ -127,19 +128,36 @@ function isInlineImageSource(source: string): boolean {
 }
 
 function localPathFromSource(source: string): string {
-  const decoded = decodeSource(source);
-  if (!/^file:\/\//i.test(decoded)) return decoded;
+  const decoded = decodeSource(source).trim();
+  if (!/^file:\/\//i.test(decoded)) return normalizeWindowsPath(decoded);
 
   try {
     const url = new URL(decoded);
     const pathname = decodeSource(url.pathname);
     if (url.hostname) {
-      return `\\\\${url.hostname}${pathname.replace(/\//g, '\\')}`;
+      return normalizeWindowsPath(`\\\\${url.hostname}${pathname.replace(/\//g, '\\')}`);
     }
-    return /^\/[a-z]:\//i.test(pathname) ? pathname.slice(1) : pathname;
+    return normalizeWindowsPath(/^\/[a-z]:\//i.test(pathname) ? pathname.slice(1) : pathname);
   } catch {
-    return decoded.replace(/^file:\/\//i, '');
+    return normalizeWindowsPath(decoded.replace(/^file:\/\//i, ''));
   }
+}
+
+function normalizeWindowsPath(path: string): string {
+  if (/^[a-z]:[\\/]/i.test(path)) {
+    return path.replace(/\\{2,}/g, '\\').replace(/\/{2,}/g, '/');
+  }
+  if (/^\\\\/.test(path)) {
+    return `\\\\${path.slice(2).replace(/\\{2,}/g, '\\').replace(/\/{2,}/g, '/')}`;
+  }
+  return path;
+}
+
+function withApiToken(url: string): string {
+  const token = apiAuthorizationToken();
+  if (!token) return url;
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
 }
 
 function decodeSource(source: string): string {

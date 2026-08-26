@@ -323,7 +323,18 @@ impl Store {
             }
             let tx = conn.transaction()?;
             for (index, name) in skill_names.iter().enumerate() {
-                tx.execute("INSERT INTO skill_group_assignments(skill_name, group_id, sort_order) VALUES (?1, ?2, ?3) ON CONFLICT(skill_name) DO UPDATE SET group_id = excluded.group_id, sort_order = excluded.sort_order", params![name.trim().to_ascii_lowercase(), group_id, index as i64])?;
+                let normalized_name = name.trim().to_ascii_lowercase();
+                if normalized_name == BUILTIN_WEIAGENT_CLI_SKILL_NAME
+                    && group_id.as_deref() != Some(BUILTIN_SKILL_GROUP_ID)
+                {
+                    return Err(AppError::BadRequest("the built-in weiagentcli Skill must remain in the built-in group".to_string()));
+                }
+                if group_id.as_deref() == Some(BUILTIN_SKILL_GROUP_ID)
+                    && normalized_name != BUILTIN_WEIAGENT_CLI_SKILL_NAME
+                {
+                    return Err(AppError::BadRequest("only the built-in weiagentcli Skill can belong to the built-in group".to_string()));
+                }
+                tx.execute("INSERT INTO skill_group_assignments(skill_name, group_id, sort_order) VALUES (?1, ?2, ?3) ON CONFLICT(skill_name) DO UPDATE SET group_id = excluded.group_id, sort_order = excluded.sort_order", params![normalized_name, group_id, index as i64])?;
             }
             tx.commit()?;
             Ok(())

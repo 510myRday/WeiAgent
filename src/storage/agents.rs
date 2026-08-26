@@ -64,6 +64,7 @@ impl Store {
         agents.push(agent.clone());
         self.ensure_agent_workspace_unlocked(&agent).await?;
         self.write_agents_unlocked(&agents).await?;
+        self.initialize_mcp_agent_defaults(agent.id).await?;
         Ok(AgentResponse::from_agent(&agent))
     }
 

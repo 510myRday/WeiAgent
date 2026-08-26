@@ -17,6 +17,17 @@ describe('markdown image sources', () => {
     expect(url.searchParams.has('agent_id')).toBe(false);
   });
 
+  test('collapses repeated Windows separators emitted by AI text', () => {
+    const resolved = resolveMarkdownImageSource(
+      'C:\\\\Users\\\\Administrator\\\\.WeiAgent\\\\skills\\\\dashi-ppt\\\\assets\\\\skill\\\\theme-style-grid.png',
+    );
+
+    const url = new URL(resolved!.url, 'http://localhost');
+    expect(url.searchParams.get('path')).toBe(
+      'C:\\Users\\Administrator\\.WeiAgent\\skills\\dashi-ppt\\assets\\skill\\theme-style-grid.png',
+    );
+  });
+
   test('maps file URLs to local paths', () => {
     const resolved = resolveMarkdownImageSource('file:///D:/charts/result.png');
     const url = new URL(resolved!.url, 'http://localhost');

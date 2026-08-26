@@ -6,10 +6,10 @@ pub mod ip_proxies;
 pub mod mcp;
 pub mod providers;
 pub mod runtime;
+pub mod scheduling;
 pub mod serde_defaults;
 pub mod settings;
 pub mod skills;
-pub mod scheduling;
 pub mod task_planning;
 pub mod tools;
 
@@ -45,8 +45,8 @@ pub use runtime::{
     EnvironmentRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, RuntimeSource,
 };
 pub use scheduling::{
-    ConversationHeartbeat, ConversationHeartbeatExecution, CreateScheduledTaskRequest, HeartbeatRequest,
-    ScheduledTask, ScheduledTaskExecution, UpdateScheduledTaskRequest,
+    ConversationHeartbeat, ConversationHeartbeatExecution, CreateScheduledTaskRequest,
+    HeartbeatRequest, ScheduledTask, ScheduledTaskExecution, UpdateScheduledTaskRequest,
 };
 pub use settings::AppSettings;
 pub use skills::{

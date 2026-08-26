@@ -27,6 +27,10 @@ type ActiveSkill =
   | { kind: 'conflict'; name: string }
   | { kind: 'orphan'; name: string };
 
+function isBuiltinGroup(group: SkillGroupState | null | undefined) {
+  return Boolean(group?.is_builtin || group?.id === 'builtin');
+}
+
 export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embeddedAgentId, onOpenIpProxies }: SkillsPanelProps) {
   const { t } = useI18n();
   const { confirm, toast } = useFeedback();
@@ -89,7 +93,9 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
     const skills = visibleSettings?.defaults ?? [];
     const groups = [...(visibleSettings?.groups ?? [])]
       .sort((left, right) => {
-        if (left.is_builtin !== right.is_builtin) return left.is_builtin ? -1 : 1;
+        const leftBuiltin = isBuiltinGroup(left);
+        const rightBuiltin = isBuiltinGroup(right);
+        if (leftBuiltin !== rightBuiltin) return leftBuiltin ? -1 : 1;
         return left.sort_order - right.sort_order;
       })
       .map((group) => ({
@@ -98,9 +104,9 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
       }));
     const ungrouped = skills.filter((skill) => !skill.group_id);
     return [
-      ...groups.filter(({ group }) => group.is_builtin),
+      ...groups.filter(({ group }) => isBuiltinGroup(group)),
       { group: null as SkillGroupState | null, items: ungrouped },
-      ...groups.filter(({ group }) => !group.is_builtin),
+      ...groups.filter(({ group }) => !isBuiltinGroup(group)),
     ];
   }, [visibleSettings]);
 
@@ -182,15 +188,22 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
   }
 
   async function moveSkills(groupId: string | null, names = selectedSkills) {
-    if (!names.length) return;
+    if (
+      !names.length
+      || embedded
+      || groupId === 'builtin'
+      || visibleSettings?.groups.some((group) => group.id === groupId && isBuiltinGroup(group))
+    ) return;
+    const movableNames = names.filter((name) => !visibleSettings?.defaults.some((skill) => skill.name === name && skill.is_builtin));
+    if (!movableNames.length) return;
     setBusy(true);
     try {
       let next = visibleSettings;
-      for (const name of names) next = await assignSkillGroup(name, groupId);
+      for (const name of movableNames) next = await assignSkillGroup(name, groupId);
       if (embedded) setAgentSettings(next); else setSettings(next);
       setSelectedSkills([]);
       setMoveMenuOpen(false);
-      toast.success(t('skills.skillsMoved', { count: names.length }));
+      toast.success(t('skills.skillsMoved', { count: movableNames.length }));
     } catch (error) { toast.error(error instanceof Error ? error.message : t('skills.moveFailed')); }
     finally { setBusy(false); }
   }
@@ -201,6 +214,9 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
 
   async function saveMoveSkill() {
     if (!moveSkillDialog) return;
+    const skill = visibleSettings?.defaults.find((item) => item.name === moveSkillDialog.name);
+    const targetGroup = visibleSettings?.groups.find((group) => group.id === moveSkillDialog.groupId);
+    if (embedded || skill?.is_builtin || isBuiltinGroup(targetGroup)) return;
     setBusy(true);
     try {
       const next = await assignSkillGroup(moveSkillDialog.name, moveSkillDialog.groupId || null);
@@ -221,7 +237,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
   async function dropGroup(targetId: string) {
     if (!draggedGroupId || draggedGroupId === targetId || embedded || !settings) return;
     const ids = settings.groups.map((group) => group.id);
-    if (settings.groups.some((group) => group.id === draggedGroupId && group.is_builtin) || settings.groups.some((group) => group.id === targetId && group.is_builtin)) return;
+    if (settings.groups.some((group) => group.id === draggedGroupId && isBuiltinGroup(group)) || settings.groups.some((group) => group.id === targetId && isBuiltinGroup(group))) return;
     const from = ids.indexOf(draggedGroupId);
     const to = ids.indexOf(targetId);
     if (from < 0 || to < 0) return;
@@ -232,7 +248,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
 
   async function dropSkill(groupId: string | null, targetName: string) {
     if (!draggedSkillName || embedded || !visibleSettings) return;
-    if (groupId === 'builtin' || visibleSettings.defaults.some((skill) => skill.name === draggedSkillName && skill.is_builtin)) return;
+    if (groupId === 'builtin' || visibleSettings.groups.some((group) => group.id === groupId && isBuiltinGroup(group)) || visibleSettings.defaults.some((skill) => skill.name === draggedSkillName && skill.is_builtin)) return;
     const items = visibleSettings.defaults.filter((skill) => skill.group_id === groupId).map((skill) => skill.name).filter((name) => name !== draggedSkillName);
     const targetIndex = items.indexOf(targetName);
     items.splice(Math.max(0, targetIndex), 0, draggedSkillName);
@@ -577,7 +593,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                   {moveMenuOpen ? (
                     <div className="skills-group-menu skills-move-menu" role="menu">
                       <button type="button" onClick={() => void moveSkills(null)}>{t('skills.ungrouped')}</button>
-                      {(settings?.groups ?? []).filter((group) => !group.is_builtin).map((group) => <button key={group.id} type="button" onClick={() => void moveSkills(group.id)}><FolderOpen size={14} />{group.name}</button>)}
+                      {(settings?.groups ?? []).filter((group) => !isBuiltinGroup(group)).map((group) => <button key={group.id} type="button" onClick={() => void moveSkills(group.id)}><FolderOpen size={14} />{group.name}</button>)}
                     </div>
                   ) : null}
                 </div>
@@ -589,10 +605,11 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
             {groupedSkills.map(({ group, items }) => {
               const key = collapseKey(group);
               const collapsed = collapsedGroups[key] ?? false;
-              const groupName = group?.is_builtin ? t('skills.builtinGroup') : (group?.name ?? t('skills.ungrouped'));
+              const builtinGroup = isBuiltinGroup(group);
+              const groupName = builtinGroup ? t('skills.builtinGroup') : (group?.name ?? t('skills.ungrouped'));
               return (
-              <div key={key} className="skills-group-list" onDragOver={(event) => { if (!embedded && !group?.is_builtin) event.preventDefault(); }} onDrop={() => { if (!embedded && !group?.is_builtin && draggedSkillName && !items.some((item) => item.name === draggedSkillName)) void moveSkills(group?.id ?? null, [draggedSkillName]); }}>
-                <div className="skills-group-heading" draggable={!embedded && Boolean(group) && !group?.is_builtin} onDragStart={() => { if (group && !group.is_builtin) setDraggedGroupId(group.id); }} onDragEnd={() => setDraggedGroupId(null)} onDragOver={(event) => { if (draggedGroupId && group && !group.is_builtin) event.preventDefault(); }} onDrop={() => { if (group && !group.is_builtin) void dropGroup(group.id); }}>
+              <div key={key} className="skills-group-list" onDragOver={(event) => { if (!embedded && !builtinGroup) event.preventDefault(); }} onDrop={() => { if (!embedded && !builtinGroup && draggedSkillName && !items.some((item) => item.name === draggedSkillName)) void moveSkills(group?.id ?? null, [draggedSkillName]); }}>
+                <div className="skills-group-heading" draggable={!embedded && Boolean(group) && !builtinGroup} onDragStart={() => { if (group && !builtinGroup) setDraggedGroupId(group.id); }} onDragEnd={() => setDraggedGroupId(null)} onDragOver={(event) => { if (draggedGroupId && group && !builtinGroup) event.preventDefault(); }} onDrop={() => { if (group && !builtinGroup) void dropGroup(group.id); }}>
                   <button type="button" className="skills-group-toggle" onClick={() => toggleCollapsed(group)} aria-expanded={!collapsed} aria-label={`${collapsed ? t('skills.expandGroup') : t('skills.collapseGroup')}: ${groupName}`}>
                     {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
                     <FolderOpen size={15} />
@@ -600,7 +617,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                   </button>
                   <span className="skills-group-heading-actions">
                     <span className="skills-group-count">{items.length}</span>
-                  {!embedded && group && !group.is_builtin ? <div className="skills-group-menu-wrap"><IconButton variant="ghost" type="button" label={t('skills.groupActions')} onClick={(event) => openGroupMenu(event, group.id)}><MoreHorizontal size={16} /></IconButton></div> : null}
+                  {!embedded && group && !builtinGroup ? <div className="skills-group-menu-wrap"><IconButton variant="ghost" type="button" label={t('skills.groupActions')} onClick={(event) => openGroupMenu(event, group.id)}><MoreHorizontal size={16} /></IconButton></div> : null}
                   </span>
                 </div>
                 {!collapsed ? items.map((skill) => (
@@ -754,7 +771,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
           <FormField label={t('skills.addToGroup')} htmlFor="skill-move-group">
             <select id="skill-move-group" value={moveSkillDialog.groupId} onChange={(event) => setMoveSkillDialog((current) => current ? { ...current, groupId: event.target.value } : current)} disabled={busy}>
               <option value="">{t('skills.ungrouped')}</option>
-              {(settings?.groups ?? []).filter((group) => !group.is_builtin).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+              {(settings?.groups ?? []).filter((group) => !isBuiltinGroup(group)).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
             </select>
           </FormField>
         </Dialog>
@@ -918,7 +935,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
               <span>{t('skills.addToGroup')}</span>
               <select value={importGroupId} onChange={(event) => setImportGroupId(event.target.value)} disabled={importing}>
                 <option value="">{t('skills.ungrouped')}</option>
-                {(settings?.groups ?? []).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+                {(settings?.groups ?? []).filter((group) => !isBuiltinGroup(group)).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
               </select>
             </label>
           </div>

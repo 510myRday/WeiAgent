@@ -487,14 +487,31 @@ fn resize_pty_process(process: &PtyProcess, rows: u16, cols: u16) -> AppResult<(
 /// user's interactive shell profile.
 pub async fn managed_path(environment: &dyn TerminalEnvironment) -> Option<OsString> {
     let current = std::env::var_os("PATH");
-    managed_path_from(environment, current.as_deref()).await
+    let executable_dir = std::env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_path_buf));
+    managed_path_from_with_executable(environment, current.as_deref(), executable_dir.as_deref())
+        .await
 }
 
 pub async fn managed_path_from(
     environment: &dyn TerminalEnvironment,
     current: Option<&OsStr>,
 ) -> Option<OsString> {
+    managed_path_from_with_executable(environment, current, None).await
+}
+
+async fn managed_path_from_with_executable(
+    environment: &dyn TerminalEnvironment,
+    current: Option<&OsStr>,
+    executable_dir: Option<&Path>,
+) -> Option<OsString> {
     let mut paths = environment.managed_bin_paths().await;
+    if let Some(executable_dir) = executable_dir {
+        paths.push(executable_dir.to_path_buf());
+    }
+    #[cfg(windows)]
+    append_windows_system_paths(&mut paths);
     if let Some(current) = current {
         paths.extend(std::env::split_paths(current));
     }
@@ -505,6 +522,23 @@ pub async fn managed_path_from(
         }
     }
     std::env::join_paths(unique_paths).ok()
+}
+
+#[cfg(windows)]
+fn append_windows_system_paths(paths: &mut Vec<PathBuf>) {
+    let mut system_paths = Vec::new();
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        let system_root = PathBuf::from(system_root);
+        system_paths.push(system_root.join("System32"));
+        system_paths.push(system_root);
+    }
+    if let Some(comspec) = std::env::var_os("ComSpec")
+        && let Some(system32) = Path::new(&comspec).parent()
+    {
+        system_paths.push(system32.to_path_buf());
+    }
+
+    paths.extend(system_paths);
 }
 
 fn read_pty_output(
@@ -1861,8 +1895,52 @@ mod tests {
 
         assert_eq!(entries.first(), Some(&managed));
         assert_eq!(entries.get(1), Some(&existing));
-        assert_eq!(entries.get(2), Some(&system));
+        assert!(entries.contains(&system));
         assert_eq!(entries.iter().filter(|entry| *entry == &managed).count(), 1);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn managed_path_places_windows_system_directories_before_shadowing_tools() {
+        let environment = EmptyTerminalEnvironment;
+        let shadowing_tool = PathBuf::from(r"C:\rtools43\usr\bin");
+        let current =
+            std::env::join_paths([shadowing_tool.as_path(), Path::new(r"C:\Windows\System32")])
+                .expect("join test PATH");
+
+        let path = managed_path_from(&environment, Some(&current))
+            .await
+            .expect("join test PATH");
+        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+        let system32 =
+            PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot")).join("System32");
+
+        assert_eq!(entries.first(), Some(&system32));
+        assert!(
+            entries.iter().position(|entry| entry == &system32).unwrap()
+                < entries
+                    .iter()
+                    .position(|entry| entry == &shadowing_tool)
+                    .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_path_includes_weiagent_executable_directory() {
+        let executable_dir = PathBuf::from(r"D:\WeiAgent\target\debug");
+        let current =
+            std::env::join_paths([Path::new(r"C:\Windows\System32")]).expect("join test PATH");
+        let path = managed_path_from_with_executable(
+            &EmptyTerminalEnvironment,
+            Some(&current),
+            Some(&executable_dir),
+        )
+        .await
+        .expect("join executable PATH");
+        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+
+        assert_eq!(entries.first(), Some(&executable_dir));
+        assert!(entries.contains(&PathBuf::from(r"C:\Windows\System32")));
     }
 
     #[tokio::test]
@@ -1920,6 +1998,46 @@ mod tests {
             "expected cwd {} in output: {stdout:?}",
             root.path().display()
         );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn bare_cmd_uses_windows_command_prompt_when_path_contains_rtools_cmd() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = TerminalManager::new(Arc::new(EmptyTerminalEnvironment));
+        let config = TerminalToolConfig {
+            permission_mode: TerminalPermissionMode::FullAccess,
+            allowed_cwd_roots: vec![root.path().to_string_lossy().to_string()],
+            ..TerminalToolConfig::default()
+        };
+
+        let result = execute_terminal(
+            &ExecuteTerminalRequest {
+                command: "cmd /c echo terminal-cmd-ok".to_string(),
+                cwd: None,
+                timeout_ms: Some(5_000),
+                background: Some(false),
+                tty: Some(false),
+                sandbox_permissions: SandboxPermissions::UseDefault,
+                approved: false,
+                agent_id: Uuid::new_v4(),
+                conversation_id: Uuid::new_v4(),
+                tool_call_id: "bare-cmd-resolution".to_string(),
+            },
+            &config,
+            root.path(),
+            &manager,
+        )
+        .await;
+
+        let ToolResult::Completed {
+            stdout, exit_code, ..
+        } = result
+        else {
+            panic!("expected bare cmd command to complete: {result:?}");
+        };
+        assert_eq!(exit_code, 0);
+        assert!(stdout.to_ascii_lowercase().contains("terminal-cmd-ok"));
     }
 
     #[tokio::test]
