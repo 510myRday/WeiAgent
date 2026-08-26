@@ -24,7 +24,12 @@ import { useConversations, usePageVisibility } from '../../hooks';
 import { AUTO_SAVE_DELAY_MS } from '../../hooks/useSerializedAutoSave';
 import { AgentListItem, agentDisplayName } from '../../components/AgentListItem';
 import { Button, IconButton, PaneHeader, SearchInput, useFeedback } from '../../components/ui';
-import { ChatComposer, type ChatComposerHandle } from './ChatComposer';
+import {
+  ChatComposer,
+  QueuedMessages,
+  type ChatComposerHandle,
+  type QueuedChatMessage,
+} from './ChatComposer';
 import { ChatAgentSelect } from './ChatAgentSelect';
 import { ConversationRow } from './ConversationRow';
 import { TaskPlanPanel } from './TaskPlanPanel';
@@ -163,6 +168,7 @@ export function ChatPanel({
     send,
     pendingMessages,
     enqueueMessage,
+    movePendingMessage,
     removePendingMessage,
     steerActiveRun,
     steerPendingMessage,
@@ -902,6 +908,11 @@ export function ChatPanel({
     void steerActiveRun(content);
   }, [steerActiveRun]);
 
+  const handleEditQueuedMessage = useCallback((message: QueuedChatMessage) => {
+    composerRef.current?.restoreQueuedMessage(message);
+    removePendingMessage(message.id);
+  }, [removePendingMessage]);
+
   const handleUnsupportedImage = useCallback(() => {
     toast.warning(t('chat.imageUnsupportedModel'));
   }, [t, toast]);
@@ -1141,6 +1152,13 @@ export function ChatPanel({
         ) : null}
 
         <div className={`chat-composer-stack${activeConversationId && !supportsImageGeneration ? ' has-task-plan' : ''}`}>
+          <QueuedMessages
+            queuedMessages={pendingMessages}
+            onEditQueuedMessage={handleEditQueuedMessage}
+            onMoveQueuedMessage={movePendingMessage}
+            onRemoveQueuedMessage={removePendingMessage}
+            onSteerQueuedMessage={(id) => void steerPendingMessage(id)}
+          />
           {activeConversationId && !supportsImageGeneration ? (
             <TaskPlanPanel
               plans={taskPlans}
@@ -1175,9 +1193,6 @@ export function ChatPanel({
             onUnsupportedImage={handleUnsupportedImage}
             onSend={handleSendMessage}
             onSteer={handleSteerMessage}
-            queuedMessages={pendingMessages}
-            onRemoveQueuedMessage={removePendingMessage}
-            onSteerQueuedMessage={(id) => void steerPendingMessage(id)}
             onStop={cancelActiveSend}
           />
         </div>

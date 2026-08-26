@@ -13,12 +13,13 @@ function BuiltinClientSkillIcon({ size }: { size: number }) {
   );
 }
 
-export function SkillIcon({ skillName, iconUrl, size = 18 }: { skillName: string; iconUrl?: string | null; size?: number }) {
+export function SkillIcon({ skillName, iconUrl, iconProxyUrl, size = 18 }: { skillName: string; iconUrl?: string | null; iconProxyUrl?: string | null; size?: number }) {
   if (skillName === WEIAGENTCLI_SKILL_NAME) return <BuiltinClientSkillIcon size={size} />;
 
   return (
     <LocalAssetIcon
       source={iconUrl}
+      proxyUrl={iconProxyUrl}
       fallback={<BookOpen size={size} />}
       className="skill-icon"
       size={size}

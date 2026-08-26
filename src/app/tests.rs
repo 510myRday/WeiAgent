@@ -702,10 +702,26 @@ async fn skill_bodies_stay_out_of_default_system_prompt() {
     assert!(prepared.system_prompt.contains("<available_skills>"));
     assert!(prepared.system_prompt.contains("weiagentcli"));
     assert!(prepared.system_prompt.contains("WeiAgent Service Context"));
-    assert!(prepared.system_prompt.contains("service-first installation workflow"));
-    assert!(prepared.system_prompt.contains("weiagent skill install SOURCE"));
-    assert!(prepared.system_prompt.contains("weiagent mcp add --file FILE"));
-    assert!(prepared.system_prompt.contains("completion means the resource is installed"));
+    assert!(
+        prepared
+            .system_prompt
+            .contains("service-first installation workflow")
+    );
+    assert!(
+        prepared
+            .system_prompt
+            .contains("weiagent skill install SOURCE")
+    );
+    assert!(
+        prepared
+            .system_prompt
+            .contains("weiagent mcp add --file FILE")
+    );
+    assert!(
+        prepared
+            .system_prompt
+            .contains("completion means the resource is installed")
+    );
     assert!(
         !prepared
             .system_prompt

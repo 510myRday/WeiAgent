@@ -64,6 +64,68 @@ export function listTools(message: UiMessage): ToolCallState[] {
     .map((block) => block.tool);
 }
 
+function materializeAssistantBlocks(message: UiMessage): AssistantBlock[] {
+  const blocks = [...(message.blocks ?? [])];
+
+  // Older messages only have aggregate content fields. Rebuild their first
+  // visible blocks before appending new streamed segments.
+  if (message.reasoning_content && !blocks.some((block) => block.type === 'reasoning')) {
+    let latestTextIndex = -1;
+    for (let index = blocks.length - 1; index >= 0; index -= 1) {
+      if (blocks[index].type === 'text') {
+        latestTextIndex = index;
+        break;
+      }
+    }
+    if (latestTextIndex >= 0) {
+      blocks.splice(latestTextIndex, 0, { type: 'reasoning', content: message.reasoning_content });
+    } else {
+      blocks.push({ type: 'reasoning', content: message.reasoning_content });
+    }
+  }
+  if (message.content && !blocks.some((block) => block.type === 'text')) {
+    const firstToolIndex = blocks.findIndex((block) => block.type === 'tool');
+    if (firstToolIndex >= 0) {
+      blocks.splice(firstToolIndex, 0, { type: 'text', content: message.content });
+    } else {
+      blocks.push({ type: 'text', content: message.content });
+    }
+  }
+  return blocks;
+}
+
+function setReasoningContentOnAssistant(
+  message: UiMessage,
+  reasoningContent: string,
+): UiMessage & { role: 'assistant' } {
+  const blocks: AssistantBlock[] = materializeAssistantBlocks(message)
+    .filter((block) => block.type !== 'reasoning');
+  blocks.push({ type: 'reasoning', content: reasoningContent });
+  return {
+    ...message,
+    role: 'assistant',
+    reasoning_content: reasoningContent,
+    blocks,
+  };
+}
+
+function mergeReasoningContent(existing: string | undefined, incoming: string): string {
+  if (!existing) return incoming;
+  if (!incoming || existing === incoming || existing.endsWith(incoming)) return existing;
+  return `${existing}\n\n${incoming}`;
+}
+
+export function appendReasoningDeltaToAssistant(
+  message: UiMessage,
+  delta: string,
+): UiMessage & { role: 'assistant' } {
+  const next = setReasoningContentOnAssistant(
+    message,
+    (message.reasoning_content ?? '') + delta,
+  );
+  return { ...next, status: 'streaming' };
+}
+
 function updateAssistantTools(
   message: UiMessage,
   mapper: (tool: ToolCallState) => ToolCallState,
@@ -86,7 +148,7 @@ export function upsertToolOnAssistant(
   message: UiMessage,
   tool: ToolCallState,
 ): UiMessage & { role: 'assistant' } {
-  const blocks = [...(message.blocks ?? [])];
+  const blocks = materializeAssistantBlocks(message);
   const existingIndex = blocks.findIndex(
     (block) => block.type === 'tool' && block.tool.call_id === tool.call_id,
   );
@@ -105,13 +167,6 @@ export function upsertToolOnAssistant(
       };
     }
   } else {
-    // Promote plain content into an ordered text block before the first tool.
-    if (
-      message.content
-      && !blocks.some((block) => block.type === 'text' || block.type === 'tool')
-    ) {
-      blocks.push({ type: 'text', content: message.content });
-    }
     blocks.push({ type: 'tool', tool });
   }
   return { ...message, role: 'assistant', blocks };
@@ -176,11 +231,11 @@ export function patchToolOnMessages(
 
 export function appendTextDeltaToAssistant(message: UiMessage, delta: string): UiMessage & { role: 'assistant' } {
   const content = (message.content ?? '') + delta;
-  const blocks = [...(message.blocks ?? [])];
+  const blocks = materializeAssistantBlocks(message);
   const last = blocks[blocks.length - 1];
   if (last && last.type === 'text') {
     blocks[blocks.length - 1] = { type: 'text', content: last.content + delta };
-  } else if (blocks.some((block) => block.type === 'tool')) {
+  } else {
     blocks.push({ type: 'text', content: delta });
   }
   return {
@@ -224,20 +279,31 @@ export function mergeAssistantEvent(items: UiMessageItem[], msg: UiMessage): UiM
   }
 
   if (last && isAssistantMessage(last)) {
+    const blocks = materializeAssistantBlocks(last);
     return [
       ...items.slice(0, -1),
       {
         ...last,
         id: msg.id || last.id,
         content: msg.content || last.content,
-        reasoning_content: msg.reasoning_content || last.reasoning_content,
+        reasoning_content: msg.reasoning_content
+          ? mergeReasoningContent(last.reasoning_content, msg.reasoning_content)
+          : last.reasoning_content,
         attachments: msg.attachments?.length ? msg.attachments : last.attachments,
         usage: msg.usage ?? last.usage,
+        blocks: blocks.length ? blocks : undefined,
         status: 'streaming' as const,
       },
     ];
   }
-  return [...items, { ...msg, status: 'streaming' as const }];
+  const blocks: AssistantBlock[] = [];
+  if (msg.reasoning_content) blocks.push({ type: 'reasoning', content: msg.reasoning_content });
+  if (msg.content) blocks.push({ type: 'text', content: msg.content });
+  return [...items, {
+    ...msg,
+    blocks: blocks.length ? blocks : undefined,
+    status: 'streaming' as const,
+  }];
 }
 
 export function interruptActiveRun(
@@ -307,31 +373,17 @@ export function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
       if (lastAssistantIndex >= 0 && isAssistantMessage(items[lastAssistantIndex])) {
         let merged = items[lastAssistantIndex];
         if (msg.reasoning_content?.trim()) {
+          const reasoningContent = mergeReasoningContent(
+            merged.reasoning_content,
+            msg.reasoning_content,
+          );
           merged = {
-            ...merged,
-            role: 'assistant',
-            reasoning_content: [merged.reasoning_content, msg.reasoning_content]
-              .filter(Boolean)
-              .join("\n\n"),
+            ...setReasoningContentOnAssistant(merged, reasoningContent),
           };
         }
         if (msg.content.trim()) {
-          const blocks = [...(merged.blocks ?? [])];
-          if (
-            merged.content
-            && !blocks.some((block) => block.type === 'text' || block.type === 'tool')
-          ) {
-            blocks.push({ type: 'text', content: merged.content });
-          }
-          const lastBlock = blocks[blocks.length - 1];
-          if (lastBlock && lastBlock.type === 'text') {
-            blocks[blocks.length - 1] = {
-              type: 'text',
-              content: `${lastBlock.content}\n\n${msg.content}`,
-            };
-          } else {
-            blocks.push({ type: 'text', content: msg.content });
-          }
+          const blocks = materializeAssistantBlocks(merged);
+          blocks.push({ type: 'text', content: msg.content });
           merged = {
             ...merged,
             role: 'assistant',
@@ -354,6 +406,9 @@ export function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
       }
 
       const blocks: AssistantBlock[] = [];
+      if (msg.reasoning_content?.trim()) {
+        blocks.push({ type: 'reasoning', content: msg.reasoning_content });
+      }
       if (msg.content.trim()) {
         blocks.push({ type: 'text', content: msg.content });
       }

@@ -133,7 +133,7 @@ export function AgentSkillsOverview({ settings, busy, onToggle }: { settings: Sk
                   <div className="agent-tool-row__body">
                     <div className="agent-tool-row__title">
                       <strong>{skill.name}</strong>
-                      <span className="mini-status-badge skill-badge"><SkillIcon skillName={skill.name} iconUrl={skill.icon_url} size={12} />{t('skills.title')}</span>
+                      <span className="mini-status-badge skill-badge"><SkillIcon skillName={skill.name} iconUrl={skill.icon_url} iconProxyUrl={skill.icon_proxy_url} size={12} />{t('skills.title')}</span>
                     </div>
                     <SkillDescription description={skill.description || t('skills.noDescription')} />
                     <span className="agent-tool-row__source">{inherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}</span>
@@ -269,7 +269,6 @@ export function SkillEditor({ skill, content, selectedPath, onPathChange }: { sk
       </div>
       <div className="skills-detail-meta">
         <p className="skills-cwd" title={displayPath(content.cwd)}><FolderOpen size={14} /><span>{displayPath(content.cwd)}</span></p>
-        <p className="skills-cwd" title={skill.source_url ?? content.cwd}><FolderOpen size={14} /><span>{t('skills.source')}: {skill.source_url ?? content.cwd}</span></p>
         <span className="skills-updated-at">{t('skills.updatedAt')}: {formatDateTime(content.updated_at)}</span>
       </div>
     </section>
@@ -314,22 +313,23 @@ function SkillFileTree({ nodes, selectedPath, onSelect, depth = 0 }: { nodes: Sk
   return <div className="skills-file-tree__nodes">{nodes.map((node) => {
     const isDirectory = node.children.length > 0;
     const isOpen = expanded[node.path] ?? true;
+    const isCollapsed = node.file?.kind === 'collapsed';
     const FileIcon = node.file ? skillFileIcon(node.file.path, node.file.kind) : FolderOpen;
     return <div key={node.path} className="skills-file-tree__node">
       <button
         type="button"
-        className={`skills-file-row${node.file && selectedPath === node.file.path ? ' is-active' : ''}${isDirectory ? ' is-directory' : ''}`}
+        className={`skills-file-row${node.file && selectedPath === node.file.path ? ' is-active' : ''}${isDirectory ? ' is-directory' : ''}${isCollapsed ? ' is-placeholder' : ''}`}
         style={{ paddingLeft: `${10 + depth * 16}px` }}
         onClick={() => {
           if (isDirectory) setExpanded((current) => ({ ...current, [node.path]: !isOpen }));
-          if (node.file) onSelect(node.file.path);
+          if (node.file && !isCollapsed) onSelect(node.file.path);
         }}
         title={node.file?.path ?? node.path}
       >
         {isDirectory ? (isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : <span className="skills-file-row__spacer" />}
         <FileIcon size={15} />
         <span>{node.name}</span>
-        {node.file ? <small>{formatBytes(node.file.size_bytes)}</small> : <small className="skills-file-row__count">{countTreeFiles(node)}</small>}
+        {node.file && !isCollapsed ? <small>{formatBytes(node.file.size_bytes)}</small> : node.file ? null : <small className="skills-file-row__count">{countTreeFiles(node)}</small>}
       </button>
       {isDirectory && isOpen ? <SkillFileTree nodes={node.children} selectedPath={selectedPath} onSelect={onSelect} depth={depth + 1} /> : null}
     </div>;
@@ -344,6 +344,7 @@ function skillFileIcon(path: string, kind: string) {
   const normalizedPath = path.toLowerCase();
   const fileName = normalizedPath.split('/').pop() ?? normalizedPath;
 
+  if (kind === 'collapsed') return Files;
   if (kind === 'skill_md' || /\.md$/i.test(normalizedPath)) return BookOpen;
   if (/\.(png|jpe?g|gif|webp|bmp|svg|ico|avif|heic)$/i.test(normalizedPath)) return FileImage;
   if (/\.(json|json5|jsonl)$/i.test(normalizedPath)) return FileJson;

@@ -12,10 +12,13 @@ import {
 import {
   Brain,
   Check,
+  ChevronDown,
+  ChevronUp,
   Image as ImageIcon,
   ListPlus,
   LoaderCircle,
   Paperclip,
+  Pencil,
   Scan,
   Send,
   Square,
@@ -50,7 +53,19 @@ type ComposerImageOptions = Pick<ImageModelConfig, 'size' | 'quality' | 'n'>;
 export type QueuedChatMessage = {
   id: string;
   content: string;
+  attachments?: readonly ImageAttachment[];
+  generationMode?: GenerationMode;
 };
+
+export type QueuedMessageMoveDirection = 'up' | 'down';
+
+interface QueuedMessagesProps {
+  queuedMessages: readonly QueuedChatMessage[];
+  onEditQueuedMessage: (message: QueuedChatMessage) => void;
+  onMoveQueuedMessage: (id: string, direction: QueuedMessageMoveDirection) => void;
+  onRemoveQueuedMessage: (id: string) => void;
+  onSteerQueuedMessage: (id: string) => void;
+}
 
 interface ChatComposerProps {
   disabled: boolean;
@@ -81,14 +96,12 @@ interface ChatComposerProps {
     generationMode: GenerationMode,
   ) => void;
   onSteer: (content: string) => void;
-  queuedMessages: readonly QueuedChatMessage[];
-  onRemoveQueuedMessage: (id: string) => void;
-  onSteerQueuedMessage: (id: string) => void;
   onStop: () => void;
 }
 
 export type ChatComposerHandle = {
   addImageAttachment: (attachment: ImageAttachment) => void;
+  restoreQueuedMessage: (message: QueuedChatMessage) => void;
 };
 
 export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposer({
@@ -115,9 +128,6 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
   onUnsupportedImage,
   onSend,
   onSteer,
-  queuedMessages,
-  onRemoveQueuedMessage,
-  onSteerQueuedMessage,
   onStop,
 }: ChatComposerProps, ref) {
   const { t, locale } = useI18n();
@@ -158,7 +168,18 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
       ));
       inputRef.current?.focus();
     },
-  }), [canAttachImages, onUnsupportedImage, setAttachments]);
+    restoreQueuedMessage(message) {
+      const content = message.content;
+      setDraft(content);
+      setAttachments((message.attachments ?? []).slice(0, MAX_IMAGE_COUNT).map((attachment) => ({
+        ...attachment,
+        id: createAttachmentId(),
+      })));
+      if (message.generationMode) onGenerationModeChange(message.generationMode);
+      writeChatDraft(draftKey, content);
+      inputRef.current?.focus();
+    },
+  }), [canAttachImages, draftKey, onGenerationModeChange, onUnsupportedImage, setAttachments]);
 
   useEffect(() => {
     setDraft(readChatDraft(draftKey));
@@ -433,7 +454,7 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
                 })}
               />
             </div>
-            {isSending ? (
+            {isSending && canSend ? (
               <button
                 type="button"
                 className="composer-queue-button"
@@ -469,37 +490,92 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
           </div>
         </div>
       </div>
-      {queuedMessages.length > 0 ? (
-        <div className="composer-queue" aria-label={t('chat.queuedMessages')}>
-          {queuedMessages.map((message, index) => (
-            <div className="composer-queue-row" key={message.id}>
-              <span className="composer-queue-index">{index + 1}</span>
-              <span className="composer-queue-content" title={message.content}>{message.content}</span>
-              <button
-                type="button"
-                className="composer-queue-action"
-                onClick={() => onSteerQueuedMessage(message.id)}
-                aria-label={t('chat.steerQueuedMessage')}
-                title={t('chat.steerQueuedMessage')}
-              >
-                <Send size={14} />
-              </button>
-              <button
-                type="button"
-                className="composer-queue-action"
-                onClick={() => onRemoveQueuedMessage(message.id)}
-                aria-label={t('chat.removeQueuedMessage')}
-                title={t('chat.removeQueuedMessage')}
-              >
-                <X size={14} />
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
     </form>
   );
 }));
+
+export function QueuedMessages({
+  queuedMessages,
+  onEditQueuedMessage,
+  onMoveQueuedMessage,
+  onRemoveQueuedMessage,
+  onSteerQueuedMessage,
+}: QueuedMessagesProps) {
+  const { t } = useI18n();
+
+  return queuedMessages.length > 0 ? (
+    <div className="composer-queue" aria-label={t('chat.queuedMessages')}>
+      {queuedMessages.map((message, index) => (
+        <div className="composer-queue-row" key={message.id}>
+          <span className="composer-queue-index">{index + 1}</span>
+          <span
+            className="composer-queue-content"
+            title={message.content || t('chat.queuedMessageImageOnly')}
+          >
+            {message.content || t('chat.queuedMessageImageOnly')}
+          </span>
+          {message.attachments && message.attachments.length > 0 ? (
+            <span
+              className="composer-queue-attachment"
+              aria-label={t('chat.queuedMessageImages', { count: message.attachments.length })}
+              title={t('chat.queuedMessageImages', { count: message.attachments.length })}
+            >
+              <ImageIcon size={14} />
+              {message.attachments.length > 1 ? <span>{message.attachments.length}</span> : null}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="composer-queue-action"
+            onClick={() => onEditQueuedMessage(message)}
+            aria-label={t('chat.editQueuedMessage')}
+            title={t('chat.editQueuedMessage')}
+          >
+            <Pencil size={14} />
+          </button>
+          <button
+            type="button"
+            className="composer-queue-action"
+            onClick={() => onMoveQueuedMessage(message.id, 'up')}
+            disabled={index === 0}
+            aria-label={t('chat.moveQueuedMessageUp')}
+            title={t('chat.moveQueuedMessageUp')}
+          >
+            <ChevronUp size={14} />
+          </button>
+          <button
+            type="button"
+            className="composer-queue-action"
+            onClick={() => onMoveQueuedMessage(message.id, 'down')}
+            disabled={index === queuedMessages.length - 1}
+            aria-label={t('chat.moveQueuedMessageDown')}
+            title={t('chat.moveQueuedMessageDown')}
+          >
+            <ChevronDown size={14} />
+          </button>
+          <button
+            type="button"
+            className="composer-queue-action"
+            onClick={() => onSteerQueuedMessage(message.id)}
+            aria-label={t('chat.steerQueuedMessage')}
+            title={t('chat.steerQueuedMessage')}
+          >
+            <Send size={14} />
+          </button>
+          <button
+            type="button"
+            className="composer-queue-action"
+            onClick={() => onRemoveQueuedMessage(message.id)}
+            aria-label={t('chat.removeQueuedMessage')}
+            title={t('chat.removeQueuedMessage')}
+          >
+            <X size={14} />
+          </button>
+          </div>
+      ))}
+    </div>
+  ) : null;
+}
 
 function ContextUsageRing({
   used,

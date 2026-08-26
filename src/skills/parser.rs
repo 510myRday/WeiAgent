@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -13,6 +14,39 @@ use crate::{
     fsutil,
     skills::path_policy::MAX_SKILL_FILE_BYTES,
 };
+
+pub const COLLAPSED_FILE_KIND: &str = "collapsed";
+pub const COLLAPSED_FILE_NAME: &str = "...";
+
+const COLLAPSED_DIRECTORY_NAMES: &[&str] = &[
+    ".conda",
+    ".eggs",
+    ".git",
+    ".gradle",
+    ".mypy_cache",
+    ".nox",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "bower_components",
+    "conda-meta",
+    "dist-packages",
+    "env",
+    "node_modules",
+    "site-packages",
+    "target",
+    "venv",
+];
+
+pub fn is_collapsed_directory(name: &OsStr) -> bool {
+    let name = name.to_string_lossy();
+    COLLAPSED_DIRECTORY_NAMES
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
 
 pub async fn parse_skill(root: PathBuf) -> AppResult<SkillManifest> {
     let skill_md = root.join("SKILL.md");
@@ -89,6 +123,8 @@ pub async fn parse_skill(root: PathBuf) -> AppResult<SkillManifest> {
             .unwrap_or_default(),
         icon_url: None,
         source_url: None,
+        icon_proxy_url: None,
+        update_proxy_url: None,
         root_dir: fsutil::display_path(&root),
         skill_md: fsutil::display_path(&skill_md),
         scripts: discover_files(&root, "scripts").await?,
@@ -190,6 +226,9 @@ async fn discover_files(root: &Path, directory: &str) -> AppResult<Vec<SkillFile
                 continue;
             }
             if metadata.is_dir() {
+                if is_collapsed_directory(&entry.file_name()) {
+                    continue;
+                }
                 stack.push(path);
                 continue;
             }
@@ -224,6 +263,9 @@ pub async fn discover_all_files(root: &Path) -> AppResult<Vec<(PathBuf, std::fs:
                 continue;
             }
             if metadata.is_dir() {
+                if is_collapsed_directory(&entry.file_name()) {
+                    continue;
+                }
                 stack.push(path);
             } else if metadata.is_file() {
                 result.push((path, metadata));
@@ -231,6 +273,47 @@ pub async fn discover_all_files(root: &Path) -> AppResult<Vec<(PathBuf, std::fs:
         }
     }
     result.sort_by(|(left, _), (right, _)| left.cmp(right));
+    Ok(result)
+}
+
+pub async fn discover_display_files(root: &Path) -> AppResult<Vec<SkillFile>> {
+    let mut result = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let mut entries = fs::read_dir(&current).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).await?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if metadata.is_dir() {
+                if is_collapsed_directory(&entry.file_name()) {
+                    result.push(SkillFile {
+                        path: format!("{relative}/{COLLAPSED_FILE_NAME}"),
+                        kind: COLLAPSED_FILE_KIND.to_string(),
+                        size_bytes: 0,
+                    });
+                } else {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if metadata.is_file() {
+                result.push(SkillFile {
+                    path: relative,
+                    kind: "other".to_string(),
+                    size_bytes: metadata.len(),
+                });
+            }
+        }
+    }
+    result.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(result)
 }
 
@@ -285,5 +368,45 @@ mod tests {
         let manifest = parse_skill(directory.path().to_path_buf()).await.unwrap();
         assert_eq!(manifest.name, "unicode-skill");
         assert_eq!(manifest.description, "处理中文内容");
+    }
+
+    #[tokio::test]
+    async fn display_discovery_collapses_generated_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("SKILL.md"), "content")
+            .await
+            .unwrap();
+        fs::create_dir_all(directory.path().join("node_modules").join("package"))
+            .await
+            .unwrap();
+        fs::write(
+            directory
+                .path()
+                .join("node_modules")
+                .join("package")
+                .join("index.js"),
+            "module",
+        )
+        .await
+        .unwrap();
+        fs::create_dir_all(directory.path().join("docs"))
+            .await
+            .unwrap();
+        fs::write(directory.path().join("docs").join("guide.md"), "guide")
+            .await
+            .unwrap();
+
+        let files = discover_display_files(directory.path()).await.unwrap();
+        assert!(
+            files.iter().any(|file| {
+                file.path == "node_modules/..." && file.kind == COLLAPSED_FILE_KIND
+            })
+        );
+        assert!(
+            !files
+                .iter()
+                .any(|file| file.path.starts_with("node_modules/package/"))
+        );
+        assert!(files.iter().any(|file| file.path == "docs/guide.md"));
     }
 }

@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        SkillChangeEvent, SkillChangeFeed, SkillConflict, SkillContent, SkillDiagnostic, SkillFile,
+        SkillChangeEvent, SkillChangeFeed, SkillConflict, SkillContent, SkillDiagnostic,
         SkillGroupState, SkillImportTask, SkillManifest, SkillOverrides, SkillSettings, ToolResult,
     },
     error::{AppError, AppResult},
@@ -28,7 +28,7 @@ use crate::{
 };
 
 use super::{
-    parser::{discover_all_files, parse_skill},
+    parser::{COLLAPSED_FILE_KIND, discover_display_files, is_collapsed_directory, parse_skill},
     path_policy::{MAX_SKILL_FILE_BYTES, relative_file},
 };
 
@@ -346,7 +346,9 @@ impl SkillManager {
                         size: 0,
                         modified_ns,
                     });
-                    stack.push(path);
+                    if !is_collapsed_directory(&entry.file_name()) {
+                        stack.push(path);
+                    }
                 } else if metadata.is_file() {
                     entries.push(FileSnapshotEntry {
                         path: relative,
@@ -398,25 +400,27 @@ impl SkillManager {
 
     pub async fn refresh(&self) -> AppResult<()> {
         let mut candidates = Vec::new();
-        let mut stack = vec![self.root.clone()];
-        while let Some(current) = stack.pop() {
-            let mut entries = match fs::read_dir(&current).await {
-                Ok(entries) => entries,
+        let mut entries = match fs::read_dir(&self.root).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).await?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                continue;
+            }
+            let skill_md = path.join("SKILL.md");
+            let skill_md_metadata = match fs::symlink_metadata(&skill_md).await {
+                Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
             };
-            while let Some(entry) = entries.next_entry().await? {
-                let path = entry.path();
-                let metadata = fs::symlink_metadata(&path).await?;
-                if metadata.file_type().is_symlink() {
-                    continue;
-                }
-                if metadata.is_dir() {
-                    stack.push(path);
-                } else if metadata.is_file() && entry.file_name().eq_ignore_ascii_case("SKILL.md") {
-                    candidates.push(path.parent().unwrap_or(&self.root).to_path_buf());
-                }
+            if skill_md_metadata.file_type().is_symlink() || !skill_md_metadata.is_file() {
+                continue;
             }
+            candidates.push(path);
         }
         candidates.sort();
         candidates.dedup();
@@ -501,6 +505,42 @@ impl SkillManager {
         result
     }
 
+    pub async fn start_update_task(self: &Arc<Self>, name: &str) -> AppResult<SkillImportTask> {
+        let name = name.trim().to_ascii_lowercase();
+        if name == BUILTIN_WEIAGENT_CLI_SKILL_NAME {
+            return Err(AppError::BadRequest(
+                "the built-in weiagentcli Skill cannot be updated".to_string(),
+            ));
+        }
+        let settings = self.settings(None).await?;
+        let manifest = settings
+            .defaults
+            .into_iter()
+            .find(|item| item.name == name)
+            .ok_or(AppError::NotFound)?;
+        let source = manifest
+            .source_url
+            .clone()
+            .ok_or_else(|| AppError::BadRequest("Skill source is not recorded".to_string()))?;
+        let kind = if looks_like_url(&source) { "network" } else { "local" };
+        let task = self
+            .create_import_task(&source, kind, manifest.group_id.clone())
+            .await?;
+        let manager = self.clone();
+        let proxy_url = if kind == "network" {
+            manifest.update_proxy_url.clone()
+        } else {
+            None
+        };
+        let group_id = manifest.group_id.clone();
+        tokio::spawn(async move {
+            manager
+                .run_update_task(task.id, name, source, proxy_url, group_id)
+                .await;
+        });
+        Ok(task)
+    }
+
     pub async fn run_import_task(
         &self,
         task_id: Uuid,
@@ -522,6 +562,53 @@ impl SkillManager {
         } else {
             self.import_directory_with_progress(&source, Some(task_id), group_id.as_deref(), None)
                 .await
+        };
+        match result {
+            Ok(()) => {
+                self.update_import_task(task_id, "completed", "completed", 100, None, true)
+                    .await;
+            }
+            Err(error) => {
+                self.update_import_task(
+                    task_id,
+                    "failed",
+                    "failed",
+                    100,
+                    Some(error.to_string()),
+                    true,
+                )
+                .await;
+            }
+        }
+    }
+
+    pub async fn run_update_task(
+        &self,
+        task_id: Uuid,
+        name: String,
+        source: String,
+        proxy_url: Option<String>,
+        group_id: Option<String>,
+    ) {
+        self.update_import_task(task_id, "running", "preparing", 5, None, false)
+            .await;
+        let result = if looks_like_url(&source) {
+            self.import_source_with_progress(
+                &source,
+                proxy_url.as_deref(),
+                Some(task_id),
+                group_id.as_deref(),
+                Some(&name),
+            )
+            .await
+        } else {
+            self.import_directory_with_progress(
+                &source,
+                Some(task_id),
+                group_id.as_deref(),
+                Some(&name),
+            )
+            .await
         };
         match result {
             Ok(()) => {
@@ -788,6 +875,7 @@ impl SkillManager {
         let mut global = self.store.read_skill_global_overrides().await?;
         let icons = self.store.read_skill_icons().await?;
         let sources = self.store.read_skill_sources().await?;
+        let proxies = self.store.read_skill_proxies().await?;
         let group_records = self.store.list_skill_groups().await?;
         let catalog = self.catalog.read().await;
         let duplicate_names = duplicate_names(&catalog.manifests);
@@ -895,6 +983,12 @@ impl SkillManager {
                 .get(&manifest.name)
                 .cloned()
                 .or_else(|| (!is_builtin).then(|| manifest.root_dir.clone()));
+            item.icon_proxy_url = proxies
+                .get(&manifest.name)
+                .and_then(|item| item.0.clone());
+            item.update_proxy_url = proxies
+                .get(&manifest.name)
+                .and_then(|item| item.1.clone());
             item.enabled = enabled;
             item.global_override = if is_builtin { None } else { global_item };
             item.group_override = if is_builtin { None } else { global_group_item };
@@ -1041,43 +1135,6 @@ impl SkillManager {
         self.read_content(manifest, file_path).await
     }
 
-    pub async fn update_skill(&self, name: &str) -> AppResult<()> {
-        let name = name.trim().to_ascii_lowercase();
-        if name == BUILTIN_WEIAGENT_CLI_SKILL_NAME {
-            return Err(AppError::BadRequest(
-                "the built-in weiagentcli Skill cannot be updated".to_string(),
-            ));
-        }
-        let settings = self.settings(None).await?;
-        let manifest = settings
-            .defaults
-            .into_iter()
-            .find(|item| item.name == name)
-            .ok_or(AppError::NotFound)?;
-        let source = manifest
-            .source_url
-            .clone()
-            .ok_or_else(|| AppError::BadRequest("Skill source is not recorded".to_string()))?;
-        if looks_like_url(&source) {
-            self.import_source_with_progress(
-                &source,
-                None,
-                None,
-                manifest.group_id.as_deref(),
-                Some(&name),
-            )
-            .await
-        } else {
-            self.import_directory_with_progress(
-                &source,
-                None,
-                manifest.group_id.as_deref(),
-                Some(&name),
-            )
-            .await
-        }
-    }
-
     pub async fn delete_skill(&self, name: &str) -> AppResult<()> {
         let name = name.trim().to_ascii_lowercase();
         if name == BUILTIN_WEIAGENT_CLI_SKILL_NAME {
@@ -1122,19 +1179,13 @@ impl SkillManager {
                 )),
             )
         };
-        let files = discover_all_files(&root)
-            .await?
-            .into_iter()
-            .map(|(file, metadata)| SkillFile {
-                path: file
-                    .strip_prefix(&root)
-                    .unwrap_or(&file)
-                    .to_string_lossy()
-                    .replace('\\', "/"),
-                kind: Self::file_kind(&file, &root),
-                size_bytes: metadata.len(),
-            })
-            .collect::<Vec<_>>();
+        let mut files = discover_display_files(&root).await?;
+        for file in &mut files {
+            if file.kind != COLLAPSED_FILE_KIND {
+                let path = root.join(&file.path);
+                file.kind = Self::file_kind(&path, &root);
+            }
+        }
         Ok(SkillContent {
             name: manifest.name,
             path: path
@@ -1907,7 +1958,7 @@ fn normalize_group_overrides(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{SkillGroupOverride, SkillOverride};
+    use crate::domain::{SkillFile, SkillGroupOverride, SkillOverride};
 
     #[test]
     fn normalizes_supported_remote_skill_urls() {
@@ -1983,6 +2034,8 @@ mod tests {
             tags: vec!["demo".to_string()],
             icon_url: None,
             source_url: None,
+            icon_proxy_url: None,
+            update_proxy_url: None,
             root_dir: "ROOT".to_string(),
             skill_md: "ROOT/SKILL.md".to_string(),
             scripts: Vec::new(),
@@ -2062,6 +2115,64 @@ mod tests {
                 .diagnostics
                 .iter()
                 .any(|item| item.message.contains("duplicate"))
+        );
+    }
+
+    #[tokio::test]
+    async fn nested_skill_markdown_is_a_file_not_another_skill() {
+        let data = tempfile::tempdir().unwrap();
+        let skills_root = data.path().join("skills");
+        write_skill(&skills_root, "dashi-ppt", "dashi-ppt", "development").await;
+        let nested_root = skills_root
+            .join("dashi-ppt")
+            .join("project")
+            .join("node_modules")
+            .join("nested-skill");
+        fs::create_dir_all(&nested_root).await.unwrap();
+        fs::write(
+            nested_root.join("SKILL.md"),
+            "---\nname: nested-skill\ndescription: nested skill description\n---\nNested instructions.\n",
+        )
+        .await
+        .unwrap();
+
+        let store = Arc::new(Store::new(data.path()).await.unwrap());
+        let manager = SkillManager::new(store).await.unwrap();
+        let settings = manager.settings(None).await.unwrap();
+
+        assert!(
+            settings
+                .defaults
+                .iter()
+                .any(|skill| skill.name == "dashi-ppt")
+        );
+        assert!(
+            !settings
+                .defaults
+                .iter()
+                .any(|skill| skill.name == "nested-skill")
+        );
+        assert!(
+            !settings
+                .effective
+                .iter()
+                .any(|skill| skill.name == "nested-skill")
+        );
+
+        let dashi = settings
+            .defaults
+            .iter()
+            .find(|skill| skill.name == "dashi-ppt")
+            .unwrap();
+        let content = manager.content_from_manifest(dashi, None).await.unwrap();
+        assert!(content.files.iter().any(|file| {
+            file.path == "project/node_modules/..." && file.kind == COLLAPSED_FILE_KIND
+        }));
+        assert!(
+            !content
+                .files
+                .iter()
+                .any(|file| file.path.starts_with("project/node_modules/nested-skill/"))
         );
     }
 

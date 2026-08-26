@@ -536,7 +536,6 @@ function MessageContent({
   const tools = blocks
     .filter((block): block is Extract<NonNullable<UiMessage['blocks']>[number], { type: 'tool' }> => block.type === 'tool')
     .map((block) => block.tool);
-  const hasStructuredBody = tools.length > 0;
   const showRetryStatus = Boolean(retryStatus) && runPhase !== 'compacting_context';
   const emptyStreaming = (
     message.status === 'streaming'
@@ -668,9 +667,18 @@ function MessageContent({
           })}
         </div>
       ) : null}
-      {hasStructuredBody ? (
+      {blocks.length > 0 ? (
         <>
           {blocks.map((block, index) => {
+            if (block.type === 'reasoning') {
+              return (
+                <ReasoningDisclosure
+                  key={`reasoning-${index}`}
+                  content={block.content}
+                  isStreaming={message.status === 'streaming' && index === blocks.length - 1}
+                />
+              );
+            }
             if (block.type === 'text') {
               if (!block.content) return null;
               const isStreamingTail = message.status === 'streaming' && index === blocks.length - 1;
@@ -707,12 +715,6 @@ function MessageContent({
             <MarkdownContent content={message.content} />
           )}
         </div>
-      ) : null}
-      {message.reasoning_content ? (
-        <ReasoningDisclosure
-          content={message.reasoning_content}
-          isStreaming={message.status === 'streaming' && !message.content && tools.length === 0}
-        />
       ) : null}
       {showRetryStatus && retryStatus ? <RetryStatusIndicator retryStatus={retryStatus} /> : null}
       <Dialog

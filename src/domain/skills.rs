@@ -38,6 +38,10 @@ pub struct SkillManifest {
     pub icon_url: Option<String>,
     #[serde(default)]
     pub source_url: Option<String>,
+    #[serde(default)]
+    pub icon_proxy_url: Option<String>,
+    #[serde(default)]
+    pub update_proxy_url: Option<String>,
     pub root_dir: String,
     pub skill_md: String,
     #[serde(default)]

@@ -1,4 +1,4 @@
-use std::{io::Cursor, path::PathBuf};
+use std::{io::Cursor, path::PathBuf, time::Duration};
 
 use crate::{
     app::AppState,
@@ -19,6 +19,12 @@ const MAX_DECODED_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
 #[derive(Debug, Deserialize)]
 pub struct LocalAssetQuery {
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteAssetQuery {
+    url: String,
+    proxy_url: String,
 }
 
 pub async fn read_local_asset(
@@ -44,6 +50,87 @@ pub async fn read_local_asset(
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_LENGTH, bytes.len())
         .header(header::CONTENT_DISPOSITION, "inline")
+        .header("x-content-type-options", "nosniff")
+        .header("referrer-policy", "no-referrer")
+        .body(Body::from(bytes))
+        .map_err(|error| AppError::Process(error.to_string()))
+}
+
+pub async fn read_remote_asset(
+    State(state): State<AppState>,
+    Query(query): Query<RemoteAssetQuery>,
+) -> AppResult<Response> {
+    let proxy_url = query.proxy_url.trim();
+    if proxy_url.is_empty() {
+        return Err(AppError::BadRequest(
+            "remote Skill icon proxy is required".to_string(),
+        ));
+    }
+    let proxy = state
+        .store
+        .list_ip_proxies()
+        .await?
+        .into_iter()
+        .find(|proxy| proxy.url == proxy_url)
+        .ok_or_else(|| AppError::BadRequest("selected Skill proxy was not found".to_string()))?;
+    if !proxy.enabled || !matches!(proxy.status, crate::domain::IpProxyStatus::Available) {
+        return Err(AppError::BadRequest(
+            "selected Skill proxy is unavailable".to_string(),
+        ));
+    }
+    let url = crate::llm::image::validate_remote_image_url(&query.url, Duration::from_secs(10)).await?;
+    let client = crate::http_client::build_reqwest_client(
+        crate::http_client::HttpClientConfig::new()
+            .timeout(Duration::from_secs(20))
+            .connect_timeout(Duration::from_secs(10))
+            .user_agent("WeiAgent Skill icon")
+            .no_system_proxy()
+            .proxy_url(Some(proxy_url)),
+    )
+    .map_err(|error| AppError::Process(format!("failed to create Skill icon client: {error}")))?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| AppError::Process(format!("failed to fetch Skill icon: {error}")))?;
+    if !response.status().is_success() {
+        return Err(AppError::Process(format!(
+            "Skill icon source returned {}",
+            response.status()
+        )));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_INLINE_ASSET_BYTES)
+    {
+        return Err(AppError::BadRequest(
+            "remote Skill icon exceeds the inline display limit".to_string(),
+        ));
+    }
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| value.starts_with("image/"))
+        .ok_or_else(|| AppError::BadRequest("remote Skill icon is not an image".to_string()))?
+        .to_string();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| AppError::Process(format!("failed to read Skill icon: {error}")))?;
+    if bytes.len() as u64 > MAX_INLINE_ASSET_BYTES {
+        return Err(AppError::BadRequest(
+            "remote Skill icon exceeds the inline display limit".to_string(),
+        ));
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, bytes.len())
+        .header(header::CONTENT_DISPOSITION, "inline")
+        .header("cache-control", "no-store")
         .header("x-content-type-options", "nosniff")
         .header("referrer-policy", "no-referrer")
         .body(Body::from(bytes))

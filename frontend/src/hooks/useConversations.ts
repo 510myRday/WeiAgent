@@ -30,6 +30,7 @@ import {
 } from '../api';
 import {
   appendTextDeltaToAssistant,
+  appendReasoningDeltaToAssistant,
   assistantHasVisibleBody,
   genClientId,
   interruptActiveRun,
@@ -80,6 +81,8 @@ export type PendingChatMessage = {
   thinkingLevel: ThinkingLevel;
   generationMode: GenerationMode;
 };
+
+export type PendingMessageMoveDirection = 'up' | 'down';
 
 function modelUsageToConversationUsage(usage: ModelUsage): ConversationUsage {
   const promptTokens = usage.total_prompt_tokens && usage.total_prompt_tokens > 0
@@ -494,11 +497,7 @@ export function useConversations({
       if (last && isAssistantMessage(last)) {
         return [
           ...current.slice(0, -1),
-          {
-            ...last,
-            reasoning_content: (last.reasoning_content ?? '') + delta,
-            status: 'streaming' as const,
-          },
+          appendReasoningDeltaToAssistant(last, delta),
         ];
       }
       return [
@@ -1068,6 +1067,18 @@ export function useConversations({
     });
   }, []);
 
+  const movePendingMessage = useCallback((id: string, direction: PendingMessageMoveDirection) => {
+    setPendingMessages((current) => {
+      const index = current.findIndex((message) => message.id === id);
+      const targetIndex = direction === 'up' ? index - 1 : index + 1;
+      if (index < 0 || targetIndex < 0 || targetIndex >= current.length) return current;
+      const next = [...current];
+      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      pendingMessagesRef.current = next;
+      return next;
+    });
+  }, []);
+
   const steerActiveRun = useCallback(async (content: string) => {
     const runId = activeRunIdRef.current;
     if (!runId || !content.trim()) return;
@@ -1191,6 +1202,7 @@ export function useConversations({
     cancelActiveSend,
     pendingMessages,
     enqueueMessage,
+    movePendingMessage,
     removePendingMessage,
     steerActiveRun,
     steerPendingMessage,

@@ -32,8 +32,11 @@ pub struct SkillEnabledRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SkillIconRequest {
+pub struct SkillSettingsRequest {
     pub icon_url: Option<String>,
+    pub source_url: Option<String>,
+    pub icon_proxy_url: Option<String>,
+    pub update_proxy_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,9 +158,8 @@ pub async fn read_skill_content(
 pub async fn update_skill(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> AppResult<Json<SkillSettings>> {
-    state.skill_manager.update_skill(&name).await?;
-    Ok(Json(state.skill_manager.settings(None).await?))
+) -> AppResult<Json<SkillImportTask>> {
+    Ok(Json(state.skill_manager.start_update_task(&name).await?))
 }
 
 pub async fn update_skill_enabled(
@@ -175,12 +177,19 @@ pub async fn update_skill_enabled(
 pub async fn update_skill_icon(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Json(request): Json<SkillIconRequest>,
+    Json(request): Json<SkillSettingsRequest>,
 ) -> AppResult<Json<SkillSettings>> {
     let name = name.trim().to_ascii_lowercase();
     let settings = state.skill_manager.settings(None).await?;
-    if !settings.defaults.iter().any(|skill| skill.name == name) {
-        return Err(AppError::NotFound);
+    let skill = settings
+        .defaults
+        .iter()
+        .find(|skill| skill.name == name)
+        .ok_or(AppError::NotFound)?;
+    if skill.is_builtin {
+        return Err(AppError::BadRequest(
+            "built-in Skills cannot change icon or source settings".to_string(),
+        ));
     }
     let icon_url = request.icon_url.map(|value| value.trim().to_string());
     if icon_url.as_deref().is_some_and(|value| value.len() > 2048) {
@@ -188,8 +197,60 @@ pub async fn update_skill_icon(
             "Skill icon address is too long".to_string(),
         ));
     }
+    let source_url = request
+        .source_url
+        .map(|value| value.trim().to_string());
+    if source_url
+        .as_ref()
+        .is_some_and(|value| value.len() > 2048)
+    {
+        return Err(AppError::BadRequest(
+            "Skill source address is too long".to_string(),
+        ));
+    }
+    let icon_proxy_url = selected_skill_proxy(&state, request.icon_proxy_url, "icon").await?;
+    let update_proxy_url = selected_skill_proxy(&state, request.update_proxy_url, "update").await?;
     state.store.update_skill_icon(&name, icon_url).await?;
+    state
+        .store
+        .update_skill_source(&name, source_url)
+        .await?;
+    state
+        .store
+        .update_skill_proxies(&name, icon_proxy_url, update_proxy_url)
+        .await?;
     Ok(Json(state.skill_manager.settings(None).await?))
+}
+
+async fn selected_skill_proxy(
+    state: &AppState,
+    value: Option<String>,
+    purpose: &str,
+) -> AppResult<Option<String>> {
+    let value = value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.len() > 2048 {
+        return Err(AppError::BadRequest(format!(
+            "Skill {purpose} proxy address is too long"
+        )));
+    }
+    let proxy = state
+        .store
+        .list_ip_proxies()
+        .await?
+        .into_iter()
+        .find(|proxy| proxy.url == value)
+        .ok_or_else(|| AppError::BadRequest("selected Skill proxy was not found".to_string()))?;
+    if !proxy.enabled || !matches!(proxy.status, crate::domain::IpProxyStatus::Available) {
+        return Err(AppError::BadRequest(
+            "selected Skill proxy is unavailable".to_string(),
+        ));
+    }
+    Ok(Some(proxy.url))
 }
 
 pub async fn delete_skill(

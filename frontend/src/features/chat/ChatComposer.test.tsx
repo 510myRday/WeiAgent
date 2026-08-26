@@ -5,7 +5,7 @@ import { useState, type ComponentProps } from 'react';
 import { FeedbackProvider } from '../../components/ui';
 import { I18nProvider } from '../../i18n';
 import { CUSTOM_IMAGE_SIZE } from '../../components/ImageSizeControl';
-import { ChatComposer } from './ChatComposer';
+import { ChatComposer, QueuedMessages } from './ChatComposer';
 
 const usage = {
   input_tokens: 0,
@@ -58,9 +58,6 @@ function getComposerDefaults(): ComponentProps<typeof ChatComposer> {
     onUnsupportedImage: vi.fn(),
     onSend: vi.fn(),
     onSteer: vi.fn(),
-    queuedMessages: [],
-    onRemoveQueuedMessage: vi.fn(),
-    onSteerQueuedMessage: vi.fn(),
     onStop: vi.fn(),
   };
 }
@@ -241,9 +238,16 @@ test('queues Enter submissions while a run is active', () => {
   const input = screen.getByRole('textbox', { name: '消息' });
 
   fireEvent.change(input, { target: { value: '排队的下一条消息' } });
+  expect(screen.getByRole('button', { name: '排队发送' })).toBeInTheDocument();
   fireEvent.keyDown(input, { key: 'Enter' });
 
   expect(onSend).toHaveBeenCalledWith('排队的下一条消息', [], 'chat');
+});
+
+test('hides the queue button while the active run has no draft', () => {
+  renderComposer({ isSending: true });
+
+  expect(screen.queryByRole('button', { name: '排队发送' })).not.toBeInTheDocument();
 });
 
 test('steers the active run with Ctrl+Enter', () => {
@@ -257,19 +261,35 @@ test('steers the active run with Ctrl+Enter', () => {
   expect(onSteer).toHaveBeenCalledWith('请把当前方向调整为这个');
 });
 
-test('renders queued messages with guide and remove actions', () => {
+test('renders queued messages with edit, move, guide, and remove actions', () => {
   const onRemoveQueuedMessage = vi.fn();
   const onSteerQueuedMessage = vi.fn();
-  renderComposer({
-    isSending: true,
-    queuedMessages: [{ id: 'queued-1', content: '已经在队列中' }],
-    onRemoveQueuedMessage,
-    onSteerQueuedMessage,
-  });
+  const onEditQueuedMessage = vi.fn();
+  const onMoveQueuedMessage = vi.fn();
+  const queuedMessages = [
+    { id: 'queued-1', content: '已经在队列中' },
+    { id: 'queued-2', content: '第二条消息' },
+  ];
+  render(
+    <I18nProvider>
+      <QueuedMessages
+        queuedMessages={queuedMessages}
+        onEditQueuedMessage={onEditQueuedMessage}
+        onMoveQueuedMessage={onMoveQueuedMessage}
+        onRemoveQueuedMessage={onRemoveQueuedMessage}
+        onSteerQueuedMessage={onSteerQueuedMessage}
+      />
+    </I18nProvider>,
+  );
 
   expect(screen.getByText('已经在队列中')).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: '立即引导' }));
-  fireEvent.click(screen.getByRole('button', { name: '移除排队消息' }));
+  fireEvent.click(screen.getAllByRole('button', { name: '修改排队消息' })[0]);
+  expect(onEditQueuedMessage).toHaveBeenCalledWith(queuedMessages[0]);
+
+  fireEvent.click(screen.getAllByRole('button', { name: '下移排队消息' })[0]);
+  expect(onMoveQueuedMessage).toHaveBeenCalledWith('queued-1', 'down');
+  fireEvent.click(screen.getAllByRole('button', { name: '立即引导' })[0]);
+  fireEvent.click(screen.getAllByRole('button', { name: '移除排队消息' })[0]);
 
   expect(onSteerQueuedMessage).toHaveBeenCalledWith('queued-1');
   expect(onRemoveQueuedMessage).toHaveBeenCalledWith('queued-1');

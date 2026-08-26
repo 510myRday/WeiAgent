@@ -9,20 +9,24 @@ export function isLocalAssetSource(source: string): boolean {
     || /^\/(?!\/)/.test(source);
 }
 
-export function useLocalAssetUrl(source: string): { displaySource: string; failed: boolean; onError: () => void } {
+export function useLocalAssetUrl(source: string, proxyUrl?: string | null): { displaySource: string; failed: boolean; onError: () => void } {
   const normalized = source.trim();
+  const normalizedProxy = proxyUrl?.trim() ?? '';
   const [failedSource, setFailedSource] = useState('');
   const [displaySource, setDisplaySource] = useState('');
 
   useEffect(() => {
     setFailedSource('');
-    setDisplaySource(isLocalAssetSource(normalized) ? '' : normalized);
-    if (!normalized || !isLocalAssetSource(normalized)) return;
+    setDisplaySource(isLocalAssetSource(normalized) || normalizedProxy ? '' : normalized);
+    if (!normalized || (!isLocalAssetSource(normalized) && !normalizedProxy)) return;
 
     const controller = new AbortController();
     let objectUrl = '';
-    const query = new URLSearchParams({ path: normalized });
-    void fetch(`/api/assets/local?${query.toString()}`, {
+    const query = new URLSearchParams(isLocalAssetSource(normalized)
+      ? { path: normalized }
+      : { url: normalized, proxy_url: normalizedProxy });
+    const endpoint = isLocalAssetSource(normalized) ? '/api/assets/local' : '/api/assets/remote';
+    void fetch(`${endpoint}?${query.toString()}`, {
       headers: apiAuthorizationHeaders(),
       signal: controller.signal,
     })
@@ -44,7 +48,7 @@ export function useLocalAssetUrl(source: string): { displaySource: string; faile
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [normalized]);
+  }, [normalized, normalizedProxy]);
 
   return {
     displaySource,

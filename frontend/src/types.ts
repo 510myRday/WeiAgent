@@ -290,7 +290,7 @@ export type ConversationMessagePage = {
 
 export type UiMessage = ChatMessage & {
   clientId: string;
-  /** Ordered text/tool segments inside one assistant bubble (same agent run). */
+  /** Ordered visible segments inside one assistant bubble (same agent run). */
   blocks?: AssistantBlock[];
 };
 
@@ -434,6 +434,8 @@ export type ToolCallState = {
 };
 
 export type AssistantBlock =
+  /** Display-only reasoning; this UI block is never part of model context. */
+  | { type: 'reasoning'; content: string }
   | { type: 'text'; content: string }
   | { type: 'tool'; tool: ToolCallState };
 

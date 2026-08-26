@@ -611,8 +611,8 @@ export function readSkillContent(name: string, path?: string): Promise<SkillCont
   return request<SkillContent>(`/api/skills/${encodeURIComponent(name)}/content${query}`);
 }
 
-export function updateSkill(name: string): Promise<SkillSettings> {
-  return request<SkillSettings>(`/api/skills/${encodeURIComponent(name)}/update`, {
+export function updateSkill(name: string): Promise<SkillImportTask> {
+  return request<SkillImportTask>(`/api/skills/${encodeURIComponent(name)}/update`, {
     method: 'POST',
   });
 }
@@ -726,10 +726,21 @@ export function reorderSkillGroupItems(groupId: string, skillNames: string[]): P
   });
 }
 
-export function updateSkillIcon(name: string, iconUrl: string | null): Promise<SkillSettings> {
+export function updateSkillSettings(
+  name: string,
+  iconUrl: string | null,
+  sourceUrl: string | null,
+  iconProxyUrl: string | null,
+  updateProxyUrl: string | null,
+): Promise<SkillSettings> {
   return request<SkillSettings>(`/api/skills/${encodeURIComponent(name)}`, {
     method: 'PUT',
-    body: JSON.stringify({ icon_url: iconUrl }),
+    body: JSON.stringify({
+      icon_url: iconUrl,
+      source_url: sourceUrl,
+      icon_proxy_url: iconProxyUrl,
+      update_proxy_url: updateProxyUrl,
+    }),
   });
 }
 

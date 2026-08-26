@@ -7,13 +7,15 @@ export function LocalAssetIcon({
   fallback,
   className,
   size = 18,
+  proxyUrl,
 }: {
   source?: string | null;
   fallback: ReactNode;
   className: string;
   size?: number;
+  proxyUrl?: string | null;
 }) {
-  const { displaySource, failed, onError } = useLocalAssetUrl(source?.trim() || '');
+  const { displaySource, failed, onError } = useLocalAssetUrl(source?.trim() || '', proxyUrl);
 
   return (
     <span className={className} aria-hidden="true" style={{ width: size, height: size }}>

@@ -289,6 +289,8 @@ export type SkillManifest = {
   tags: string[];
   icon_url?: string | null;
   source_url?: string | null;
+  icon_proxy_url?: string | null;
+  update_proxy_url?: string | null;
   root_dir: string;
   skill_md: string;
   scripts: SkillFile[];

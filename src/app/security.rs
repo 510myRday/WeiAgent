@@ -88,7 +88,7 @@ impl ApiSecurity {
             .or_else(|| {
                 matches!(
                     request.uri().path(),
-                    "/api/assets/local" | "/api/assets/image"
+                    "/api/assets/local" | "/api/assets/image" | "/api/assets/remote"
                 )
                 .then(|| query_token(request.uri().query().unwrap_or_default()))
                 .flatten()

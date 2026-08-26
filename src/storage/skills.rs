@@ -15,6 +15,7 @@ use super::{
 
 const SKILLS_SCHEMA_VERSION: i64 = 18;
 const SKILL_GROUPS_SCHEMA_VERSION: i64 = 20;
+const SKILL_PROXY_SCHEMA_VERSION: i64 = 21;
 
 pub const BUILTIN_SKILL_GROUP_ID: &str = "builtin";
 pub const BUILTIN_SKILL_GROUP_NAME: &str = "内置";
@@ -75,6 +76,11 @@ impl Store {
                     skill_name TEXT PRIMARY KEY NOT NULL,
                     source_url TEXT NOT NULL
                  ) WITHOUT ROWID;
+                 CREATE TABLE IF NOT EXISTS skill_proxy_settings (
+                    skill_name TEXT PRIMARY KEY NOT NULL,
+                    icon_proxy_url TEXT,
+                    update_proxy_url TEXT
+                 ) WITHOUT ROWID;
                  CREATE TABLE IF NOT EXISTS skill_groups (
                     id TEXT PRIMARY KEY NOT NULL,
                     name TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -104,6 +110,10 @@ impl Store {
             conn.execute(
                 "INSERT OR IGNORE INTO app_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
                 params![SKILL_GROUPS_SCHEMA_VERSION, "skills_groups_v1", now_rfc3339()],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO app_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+                params![SKILL_PROXY_SCHEMA_VERSION, "skills_proxy_v1", now_rfc3339()],
             )?;
             Ok(())
         }).await
@@ -410,6 +420,52 @@ impl Store {
             .await
     }
 
+    pub async fn read_skill_proxies(
+        &self,
+    ) -> AppResult<HashMap<String, (Option<String>, Option<String>)>> {
+        let _guard = self.skill_lock.lock().await;
+        self.database
+            .call(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT skill_name, icon_proxy_url, update_proxy_url FROM skill_proxy_settings",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            (row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?),
+                        ))
+                    })?
+                    .collect::<Result<HashMap<String, (Option<String>, Option<String>)>, _>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    pub async fn update_skill_proxies(
+        &self,
+        name: &str,
+        icon_proxy_url: Option<String>,
+        update_proxy_url: Option<String>,
+    ) -> AppResult<()> {
+        let _guard = self.skill_lock.lock().await;
+        let name = name.trim().to_ascii_lowercase();
+        self.database
+            .call(move |conn| {
+                if icon_proxy_url.is_some() || update_proxy_url.is_some() {
+                    conn.execute(
+                        "INSERT INTO skill_proxy_settings(skill_name, icon_proxy_url, update_proxy_url) VALUES (?1, ?2, ?3)
+                         ON CONFLICT(skill_name) DO UPDATE SET icon_proxy_url = excluded.icon_proxy_url, update_proxy_url = excluded.update_proxy_url",
+                        params![name, icon_proxy_url, update_proxy_url],
+                    )?;
+                } else {
+                    conn.execute("DELETE FROM skill_proxy_settings WHERE skill_name = ?1", [&name])?;
+                }
+                Ok(())
+            })
+            .await
+    }
+
     pub async fn delete_skill_metadata(&self, name: &str) -> AppResult<()> {
         let _guard = self.skill_lock.lock().await;
         let name = name.trim().to_ascii_lowercase();
@@ -429,6 +485,7 @@ impl Store {
                     [&name],
                 )?;
                 tx.execute("DELETE FROM skill_icons WHERE skill_name = ?1", [&name])?;
+                tx.execute("DELETE FROM skill_proxy_settings WHERE skill_name = ?1", [&name])?;
                 tx.execute("DELETE FROM skill_sources WHERE skill_name = ?1", [&name])?;
                 tx.execute(
                     "DELETE FROM skill_group_assignments WHERE skill_name = ?1",
