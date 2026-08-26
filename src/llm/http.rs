@@ -8,7 +8,7 @@ use futures_util::StreamExt;
 use reqwest::{RequestBuilder, Response, header::RETRY_AFTER};
 
 use crate::{
-    domain::TokenUsage,
+    domain::{ModelProvider, TokenUsage},
     error::{AppError, AppResult},
     llm::{
         client::{ChatStream, RequestOptions},
@@ -33,6 +33,26 @@ const RETRY_BASE_DELAY_MS: u64 = 1_000;
 const RETRY_MAX_DELAY_MS: u64 = 30_000;
 const RETRY_JITTER_PERCENT: u64 = 25;
 const MAX_RETRY_AFTER_SECONDS: u64 = 30;
+pub(crate) const APP_USER_AGENT: &str = "WeiAgent";
+pub(crate) const OPENROUTER_APP_REFERER: &str = "http://localhost";
+pub(crate) const OPENROUTER_APP_TITLE: &str = "WeiAgent";
+
+pub(crate) fn add_openrouter_attribution(
+    request: RequestBuilder,
+    provider: &ModelProvider,
+) -> RequestBuilder {
+    let is_openrouter = reqwest::Url::parse(&provider.base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host == "openrouter.ai" || host.ends_with(".openrouter.ai"));
+    if is_openrouter {
+        request
+            .header("HTTP-Referer", OPENROUTER_APP_REFERER)
+            .header("X-OpenRouter-Title", OPENROUTER_APP_TITLE)
+    } else {
+        request
+    }
+}
 
 /// LLM traffic can be routed through a per-provider proxy. Clients are cached
 /// by their normalized proxy URL so connection pools survive across requests.
@@ -52,7 +72,10 @@ pub struct LlmHttp {
 impl LlmHttp {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::http_client::build_reqwest_client(
+                crate::http_client::HttpClientConfig::new().user_agent(APP_USER_AGENT),
+            )
+            .expect("failed to build the WeiAgent LLM HTTP client"),
             logger: None,
         }
     }
@@ -79,7 +102,9 @@ impl LlmHttp {
             return Ok(client.clone());
         }
         let client = crate::http_client::build_reqwest_client(
-            crate::http_client::HttpClientConfig::new().proxy_url(Some(&proxy)),
+            crate::http_client::HttpClientConfig::new()
+                .user_agent(APP_USER_AGENT)
+                .proxy_url(Some(&proxy)),
         )
         .map_err(|error| AppError::Llm(format!("failed to build LLM HTTP client: {error}")))?;
         if let Ok(mut guard) = proxy_client_cache().lock() {
@@ -97,6 +122,7 @@ impl LlmHttp {
     pub fn client_for_image_fetch(&self, proxy_url: Option<&str>) -> AppResult<reqwest::Client> {
         crate::http_client::build_reqwest_client(
             crate::http_client::HttpClientConfig::new()
+                .user_agent(APP_USER_AGENT)
                 .no_redirects()
                 .proxy_url(proxy_url),
         )
@@ -810,9 +836,116 @@ pub fn stream_response(
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use uuid::Uuid;
 
     use super::*;
+
+    #[tokio::test]
+    async fn llm_clients_identify_the_app() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let read = socket.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            assert!(request.contains("user-agent: weiagent"), "{request}");
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+        });
+
+        LlmHttp::new()
+            .client_for(None)
+            .unwrap()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let read = socket.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            assert!(request.contains("user-agent: weiagent"), "{request}");
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+        });
+
+        LlmHttp::new()
+            .client_for(Some(&format!("http://{proxy_address}")))
+            .unwrap()
+            .get("http://example.test")
+            .send()
+            .await
+            .unwrap();
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn openrouter_attribution_headers_are_provider_specific() {
+        let provider = |base_url: &str| ModelProvider {
+            id: Uuid::new_v4(),
+            provider_type: crate::domain::ProviderType::OpenAiCompatible,
+            name: "Provider".to_string(),
+            base_url: base_url.to_string(),
+            image_generation_url: None,
+            image_edit_url: None,
+            api_keys: vec!["key".to_string()],
+            key_strategy: Default::default(),
+            models: vec!["model".to_string()],
+            model_configs: Vec::new(),
+            extra_body: serde_json::Value::Null,
+            prompt_cache: Default::default(),
+            cache_capabilities: None,
+            proxy_url: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let openrouter = add_openrouter_attribution(
+            reqwest::Client::new().get("https://openrouter.ai/api/v1/models"),
+            &provider("https://openrouter.ai/api/v1"),
+        )
+        .build()
+        .unwrap();
+        assert_eq!(
+            openrouter
+                .headers()
+                .get("HTTP-Referer")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            OPENROUTER_APP_REFERER
+        );
+        assert_eq!(
+            openrouter
+                .headers()
+                .get("X-OpenRouter-Title")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            OPENROUTER_APP_TITLE
+        );
+
+        let other = add_openrouter_attribution(
+            reqwest::Client::new().get("https://api.openai.com/v1/models"),
+            &provider("https://api.openai.com/v1"),
+        )
+        .build()
+        .unwrap();
+        assert!(other.headers().get("HTTP-Referer").is_none());
+        assert!(other.headers().get("X-OpenRouter-Title").is_none());
+    }
 
     #[test]
     fn stream_logs_redact_encrypted_reasoning() {

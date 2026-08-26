@@ -19,8 +19,8 @@ use crate::{
     llm::{
         client::RequestOptions,
         http::{
-            DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, log_request, read_response_body_limited,
-            read_response_body_limited_to,
+            DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, add_openrouter_attribution, log_request,
+            read_response_body_limited, read_response_body_limited_to,
         },
         keys::ApiKeyCycle,
     },
@@ -365,7 +365,10 @@ impl ImageClient for OpenAiImagesClient {
             let response = match self
                 .http
                 .retry_send(&options, &mut keys, |key| {
-                    client.post(&url).bearer_auth(key).json(&body)
+                    add_openrouter_attribution(
+                        client.post(&url).bearer_auth(key).json(&body),
+                        &provider,
+                    )
                 })
                 .await
             {
@@ -494,7 +497,10 @@ impl ImageClient for OpenAiImagesClient {
                         "partial_images",
                     ],
                 );
-                client.post(&url).bearer_auth(key).multipart(form)
+                add_openrouter_attribution(
+                    client.post(&url).bearer_auth(key).multipart(form),
+                    &provider,
+                )
             })
             .await
         {
@@ -540,7 +546,9 @@ impl ImageClient for OpenAiImagesClient {
         let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
         let response = self
             .http
-            .retry_send(&options, &mut keys, |key| client.get(&url).bearer_auth(key))
+            .retry_send(&options, &mut keys, |key| {
+                add_openrouter_attribution(client.get(&url).bearer_auth(key), provider)
+            })
             .await?;
         let status = response.status();
         let body = read_response_body_limited(response, options.timeout).await?;

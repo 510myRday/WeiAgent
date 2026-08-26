@@ -12,8 +12,8 @@ use crate::{
         client::{ChatClient, ChatStream, RequestOptions},
         http::{
             DEFAULT_MODEL_LIST_TIMEOUT, LlmHttp, StreamLineParser, StreamLogContext,
-            is_retryable_status, is_rotatable_status, log_request, parse_retry_after,
-            read_response_body_limited, retry_delay, spawn_log, stream_response,
+            add_openrouter_attribution, is_retryable_status, is_rotatable_status, log_request,
+            parse_retry_after, read_response_body_limited, retry_delay, spawn_log, stream_response,
         },
         keys::ApiKeyCycle,
         types::{ChatCompletionOutput, ToolCall, ToolDefinition, normalize_tool_call_arguments},
@@ -199,8 +199,11 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
         let (status, body) = match self
             .http
             .retry_send_read_body(&options, &mut api_keys, |api_key| {
-                self.adapter
-                    .authenticated_post(&client, &url, api_key, &request, provider)
+                add_openrouter_attribution(
+                    self.adapter
+                        .authenticated_post(&client, &url, api_key, &request, provider),
+                    provider,
+                )
             })
             .await
         {
@@ -383,7 +386,10 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             let mut api_keys = api_keys;
             for request_number in 1..=max_requests {
                 let response = match http.send_once(&stream_options, &mut api_keys, |api_key| {
-                    adapter.authenticated_post(&client, &url, api_key, &request, &provider)
+                    add_openrouter_attribution(
+                        adapter.authenticated_post(&client, &url, api_key, &request, &provider),
+                        &provider,
+                    )
                 }).await {
                     Ok(response) => response,
                     Err(error) => {
@@ -468,9 +474,11 @@ impl<A: ProtocolAdapter> ChatClient for ProtocolClient<A> {
             pages += 1;
             let response = tokio::time::timeout(
                 DEFAULT_MODEL_LIST_TIMEOUT,
-                self.adapter
-                    .authenticated_get(&client, &url, &api_key)
-                    .send(),
+                add_openrouter_attribution(
+                    self.adapter.authenticated_get(&client, &url, &api_key),
+                    provider,
+                )
+                .send(),
             )
             .await
             .map_err(|_| AppError::Llm("model list request timed out after 30s".to_string()))?

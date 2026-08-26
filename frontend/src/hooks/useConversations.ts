@@ -11,6 +11,7 @@ import type {
   ThinkingLevel,
   StreamEvent,
   ToolCallState,
+  UiMessage,
   UiMessageItem,
 } from '../types';
 import {
@@ -1035,6 +1036,28 @@ export function useConversations({
 
   sendRef.current = send;
 
+  const appendOptimisticSteerMessage = useCallback((content: string, attachments: ImageAttachment[] = []) => {
+    const clientId = genClientId();
+    const stream = activeStreamRef.current;
+    const message: UiMessage = {
+      id: '',
+      agent_id: stream.agentId || activeAgentIdRef.current,
+      conversation_id: stream.conversationId || activeConversationIdRef.current,
+      role: 'user',
+      content,
+      attachments,
+      status: 'done',
+      created_at: new Date().toISOString(),
+      clientId,
+    };
+    setMessages((current) => [...current, message]);
+    return clientId;
+  }, []);
+
+  const removeOptimisticMessage = useCallback((clientId: string) => {
+    setMessages((current) => current.filter((message) => message.clientId !== clientId));
+  }, []);
+
   const enqueueMessage = useCallback((
     content: string,
     agentId: string,
@@ -1082,24 +1105,39 @@ export function useConversations({
   const steerActiveRun = useCallback(async (content: string) => {
     const runId = activeRunIdRef.current;
     if (!runId || !content.trim()) return;
+    const trimmedContent = content.trim();
+    const optimisticClientId = appendOptimisticSteerMessage(trimmedContent);
     try {
-      await steerMessageRun(runId, content.trim());
+      await steerMessageRun(runId, trimmedContent);
     } catch (cause) {
+      removeOptimisticMessage(optimisticClientId);
       onErrorRef.current?.(cause instanceof Error ? cause.message : 'Failed to guide the active run');
     }
-  }, []);
+  }, [appendOptimisticSteerMessage, removeOptimisticMessage]);
 
   const steerPendingMessage = useCallback(async (id: string) => {
     const message = pendingMessagesRef.current.find((item) => item.id === id);
     const runId = activeRunIdRef.current;
     if (!message || !runId) return;
+    const pendingIndex = pendingMessagesRef.current.findIndex((item) => item.id === id);
+    const remaining = pendingMessagesRef.current.filter((item) => item.id !== id);
+    pendingMessagesRef.current = remaining;
+    setPendingMessages(remaining);
+    const optimisticClientId = appendOptimisticSteerMessage(message.content, message.attachments);
     try {
-      await steerMessageRun(runId, message.content);
-      removePendingMessage(id);
+      await steerMessageRun(runId, message.content.trim());
     } catch (cause) {
+      removeOptimisticMessage(optimisticClientId);
+      setPendingMessages((current) => {
+        if (current.some((item) => item.id === message.id)) return current;
+        const next = [...current];
+        next.splice(Math.min(Math.max(pendingIndex, 0), next.length), 0, message);
+        pendingMessagesRef.current = next;
+        return next;
+      });
       onErrorRef.current?.(cause instanceof Error ? cause.message : 'Failed to guide the active run');
     }
-  }, [removePendingMessage]);
+  }, [appendOptimisticSteerMessage, removeOptimisticMessage]);
 
   const createNewConversation = useCallback(
     async (agentId: string) => {
