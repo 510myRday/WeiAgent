@@ -152,6 +152,14 @@ pub async fn read_skill_content(
     ))
 }
 
+pub async fn update_skill(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> AppResult<Json<SkillSettings>> {
+    state.skill_manager.update_skill(&name).await?;
+    Ok(Json(state.skill_manager.settings(None).await?))
+}
+
 pub async fn update_skill_enabled(
     State(state): State<AppState>,
     Path(name): Path<String>,

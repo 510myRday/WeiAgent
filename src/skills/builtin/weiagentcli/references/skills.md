@@ -28,6 +28,8 @@ weiagent skill install SOURCE --proxy-id PROXY_ID
 weiagent skill reload
 ```
 
+Installation is service-first: use `weiagent skill install SOURCE` to place the Skill into the current WeiAgent service, then verify it with `skill list` or `skill show`. A downloaded source directory or archive is an input to installation; the workflow is complete after the Skill appears in the service catalog.
+
 `SOURCE` can be a local Skill directory, archive, or supported URL. A valid Skill directory contains a regular `SKILL.md` with `name` and `description` frontmatter. Network imports can use a configured proxy.
 
 Installation is asynchronous. The CLI waits for the import task and prints the final result. If the result reports an error, inspect the source layout and retry with the narrowest supported source path.

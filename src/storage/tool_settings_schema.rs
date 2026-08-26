@@ -1,10 +1,10 @@
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use super::sql_util::{column_exists, now_rfc3339};
 use crate::domain::tools::DEFAULT_TASK_PLAN_PROGRESS_INTERVAL;
 use crate::error::AppResult;
 
-const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 12;
+const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 13;
 
 const TOOL_SETTINGS_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS tool_settings (
@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS tool_web_search_sources (
     source_id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(source_id)) > 0),
     scope_id TEXT NOT NULL DEFAULT 'default' CHECK (scope_id = 'default'),
     position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
-    provider TEXT NOT NULL CHECK (provider IN ('tavily', 'exa', 'jina', 'grok', 'firecrawl')),
+    provider TEXT NOT NULL CHECK (provider IN ('tavily', 'exa', 'jina', 'grok', 'firecrawl', 'keenable')),
     display_name TEXT NOT NULL,
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
     deep_enabled INTEGER NOT NULL CHECK (deep_enabled IN (0, 1)),
@@ -189,6 +189,7 @@ pub(super) fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
         |row| row.get::<_, bool>(0),
     )?;
     conn.execute_batch(TOOL_SETTINGS_SCHEMA_SQL)?;
+    migrate_keenable_provider_constraint(conn)?;
     if !column_exists(conn, "tool_settings", "task_planning_enabled")? {
         conn.execute(
             "ALTER TABLE tool_settings ADD COLUMN task_planning_enabled INTEGER",
@@ -345,7 +346,7 @@ pub(super) fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
          VALUES (?1, ?2, ?3)",
         params![
             TOOL_SETTINGS_SCHEMA_VERSION,
-            "tool_settings_web_search_agent_sources_v12",
+            "tool_settings_web_search_agent_sources_v13",
             now_rfc3339(),
         ],
     )?;
@@ -456,6 +457,47 @@ pub(super) fn migrate_task_plans_schema(conn: &Connection) -> AppResult<()> {
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_plans_public_id ON task_plans(public_id)",
         [],
+    )?;
+    Ok(())
+}
+
+fn migrate_keenable_provider_constraint(conn: &Connection) -> AppResult<()> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tool_web_search_sources'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if sql
+        .as_deref()
+        .is_some_and(|value| value.contains("'keenable'"))
+    {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         CREATE TABLE tool_web_search_sources_backup AS SELECT * FROM tool_web_search_sources;
+         DROP TABLE tool_web_search_sources;
+         CREATE TABLE tool_web_search_sources (
+             source_id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(source_id)) > 0),
+             scope_id TEXT NOT NULL DEFAULT 'default' CHECK (scope_id = 'default'),
+             position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+             provider TEXT NOT NULL CHECK (provider IN ('tavily', 'exa', 'jina', 'grok', 'firecrawl', 'keenable')),
+             display_name TEXT NOT NULL,
+             enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+             deep_enabled INTEGER NOT NULL CHECK (deep_enabled IN (0, 1)),
+             extract_enabled INTEGER NOT NULL DEFAULT 1 CHECK (extract_enabled IN (0, 1)),
+             priority INTEGER NOT NULL CHECK (priority >= 0),
+             independence_group TEXT NOT NULL,
+             roles_json TEXT NOT NULL CHECK (json_valid(roles_json) AND json_type(roles_json) = 'array'),
+             blocked_api_key_hashes_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(blocked_api_key_hashes_json) AND json_type(blocked_api_key_hashes_json) = 'array'),
+             proxy_url TEXT,
+             FOREIGN KEY (scope_id) REFERENCES tool_settings(scope_id) ON DELETE CASCADE
+         ) WITHOUT ROWID;
+         INSERT INTO tool_web_search_sources SELECT * FROM tool_web_search_sources_backup;
+         DROP TABLE tool_web_search_sources_backup;
+         PRAGMA foreign_keys = ON;",
     )?;
     Ok(())
 }

@@ -668,12 +668,6 @@ function MessageContent({
           })}
         </div>
       ) : null}
-      {message.reasoning_content ? (
-        <ReasoningDisclosure
-          content={message.reasoning_content}
-          isStreaming={message.status === 'streaming' && !message.content && tools.length === 0}
-        />
-      ) : null}
       {hasStructuredBody ? (
         <>
           {blocks.map((block, index) => {
@@ -713,6 +707,12 @@ function MessageContent({
             <MarkdownContent content={message.content} />
           )}
         </div>
+      ) : null}
+      {message.reasoning_content ? (
+        <ReasoningDisclosure
+          content={message.reasoning_content}
+          isStreaming={message.status === 'streaming' && !message.content && tools.length === 0}
+        />
       ) : null}
       {showRetryStatus && retryStatus ? <RetryStatusIndicator retryStatus={retryStatus} /> : null}
       <Dialog

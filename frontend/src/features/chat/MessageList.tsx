@@ -235,7 +235,6 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     if (
       !followOutputRef.current
       || isAwayFromBottomRef.current
-      || !isMessagesNearBottom()
     ) return;
 
     const now = Date.now();
@@ -259,13 +258,12 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
       if (
         !followOutputRef.current
         || isAwayFromBottomRef.current
-        || !isMessagesNearBottom()
       ) return;
       hasStreamScrolledRef.current = true;
       lastStreamScrollAtRef.current = Date.now();
       scrollToBottom(true);
     }, STREAM_SCROLL_THROTTLE_MS - elapsed);
-  }, [isMessagesNearBottom, scrollToBottom]);
+  }, [scrollToBottom]);
 
   useImperativeHandle(ref, () => ({
     scrollToMessage(messageIndex, behavior = 'smooth') {

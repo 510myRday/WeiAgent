@@ -3,11 +3,13 @@ import type { Conversation } from '../types';
 export const TOOL_START_STORAGE_PREFIX = 'weiagent:tool-start:';
 export const UNREAD_CONVERSATIONS_STORAGE_KEY = 'weiagent:chat-unread-conversations:v1';
 export const CONVERSATION_SNAPSHOTS_STORAGE_KEY = 'weiagent:chat-conversation-snapshots:v1';
+export const CONVERSATION_RUN_SNAPSHOTS_STORAGE_KEY = 'weiagent:chat-conversation-runs:v1';
 /** Entries persist the tool start timestamp; interrupted runs never clear them. */
 const TOOL_START_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type UnreadConversationMap = Record<string, string[]>;
 export type ConversationSnapshotMap = Record<string, number>;
+export type ConversationRunSnapshotMap = Record<string, string>;
 
 export function readJsonStorage<T>(key: string, fallback: T): T {
   try {

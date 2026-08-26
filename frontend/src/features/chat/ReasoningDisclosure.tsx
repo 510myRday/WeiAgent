@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { BrainCircuit, ChevronDown } from 'lucide-react';
 
 import { useI18n } from '../../i18n';
@@ -15,10 +15,16 @@ export function ReasoningDisclosure({
 }: ReasoningDisclosureProps) {
   const { t } = useI18n();
   const [isOpen, setIsOpen] = useState(isStreaming);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setIsOpen(isStreaming);
   }, [isStreaming]);
+
+  useLayoutEffect(() => {
+    if (!isStreaming || !isOpen || !contentRef.current) return;
+    contentRef.current.scrollTop = contentRef.current.scrollHeight;
+  }, [content, isOpen, isStreaming]);
 
   return (
     <section
@@ -38,7 +44,7 @@ export function ReasoningDisclosure({
         <ChevronDown className="message-reasoning__chevron" size={15} aria-hidden="true" />
       </button>
       <div className="message-reasoning__region" hidden={!isOpen}>
-        <div className="message-reasoning__content message-markdown">
+        <div ref={contentRef} className="message-reasoning__content message-markdown">
           <MarkdownContent content={content} />
         </div>
       </div>

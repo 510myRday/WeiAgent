@@ -58,7 +58,7 @@ async fn initializes_settings_and_database() {
             .filter(|source| source.enabled)
             .map(|source| source.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["jina", "firecrawl"]
+        vec!["keenable", "jina", "firecrawl"]
     );
     let conn = db::open_data_dir(temp_dir.path()).unwrap();
     let default_rows: i64 = conn
@@ -443,7 +443,7 @@ async fn agent_web_search_source_overrides_round_trip_without_secrets() {
         .unwrap();
     assert!(source.enabled);
     assert!(source.deep_enabled);
-    assert_eq!(source.priority, 30);
+    assert_eq!(source.priority, 40);
     assert_ne!(
         source.roles,
         vec![crate::domain::WebSearchSourceRole::OfficialDocs]

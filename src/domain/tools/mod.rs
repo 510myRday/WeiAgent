@@ -567,20 +567,23 @@ mod tests {
             config.web_search.max_results,
             DEFAULT_WEB_SEARCH_MAX_RESULTS
         );
-        assert_eq!(config.web_search.sources.len(), 5);
-        assert_eq!(config.web_search.sources[0].id, "tavily");
-        assert_eq!(config.web_search.sources[1].id, "exa");
-        assert_eq!(config.web_search.sources[2].id, "jina");
-        assert_eq!(config.web_search.sources[3].id, "grok");
-        assert_eq!(config.web_search.sources[4].id, "firecrawl");
-        assert!(!config.web_search.sources[0].enabled);
+        assert_eq!(config.web_search.sources.len(), 6);
+        assert_eq!(config.web_search.sources[0].id, "keenable");
+        assert_eq!(config.web_search.sources[1].id, "tavily");
+        assert_eq!(config.web_search.sources[2].id, "exa");
+        assert_eq!(config.web_search.sources[3].id, "jina");
+        assert_eq!(config.web_search.sources[4].id, "grok");
+        assert_eq!(config.web_search.sources[5].id, "firecrawl");
+        assert!(config.web_search.sources[0].enabled);
         assert!(!config.web_search.sources[1].enabled);
-        assert!(config.web_search.sources[2].enabled);
-        assert!(!config.web_search.sources[3].enabled);
-        assert!(config.web_search.sources[4].enabled);
+        assert!(!config.web_search.sources[2].enabled);
+        assert!(config.web_search.sources[3].enabled);
+        assert!(!config.web_search.sources[4].enabled);
+        assert!(config.web_search.sources[5].enabled);
         assert!(!config.web_search.sources[0].has_available_key());
-        assert!(config.web_search.sources[2].can_search());
-        assert!(config.web_search.sources[4].can_search());
+        assert!(config.web_search.sources[0].can_search());
+        assert!(config.web_search.sources[3].can_search());
+        assert!(config.web_search.sources[5].can_search());
     }
 
     #[test]
@@ -795,9 +798,9 @@ mod tests {
         }))
         .unwrap();
         assert!(config.web_search.enabled);
-        assert_eq!(config.web_search.sources.len(), 5);
-        assert_eq!(config.web_search.sources[3].id, "grok");
-        assert_eq!(config.web_search.sources[4].id, "firecrawl");
+        assert_eq!(config.web_search.sources.len(), 6);
+        assert_eq!(config.web_search.sources[4].id, "grok");
+        assert_eq!(config.web_search.sources[5].id, "firecrawl");
     }
 
     #[test]

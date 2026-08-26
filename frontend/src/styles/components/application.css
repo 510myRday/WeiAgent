@@ -364,8 +364,9 @@
 }
 
 .conversation-row {
-  grid-template-columns: minmax(0, 1fr) 30px 30px;
-  gap: 3px;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  grid-template-rows: 1fr 1fr;
+  gap: 0 3px;
   padding-right: 5px;
   border-radius: var(--radius-sm);
 }
@@ -383,6 +384,8 @@
 
 .conversation-row-main {
   grid-template-columns: minmax(0, 1fr);
+  grid-column: 1;
+  grid-row: 1 / span 2;
   padding: 9px 8px 9px 11px;
 }
 

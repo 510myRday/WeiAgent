@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, FormEvent } from 'react';
+import { useState, useEffect, useRef, useMemo, FormEvent } from 'react';
 import {
   ArrowLeft,
   KeyRound,
@@ -18,9 +18,10 @@ import type {
   ProviderType,
   SettingsSection,
 } from '../../types';
-import { fetchModels, fetchModelsForProvider, listIpProxies } from '../../api';
+import type { AgentToolsConfig } from '../../toolTypes';
+import { fetchModels, fetchModelsForProvider, listIpProxies, readToolDefaults, updateToolDefaults } from '../../api';
 import { useBeforeUnloadGuard } from '../../hooks';
-import { nextAutoSaveRetryDelay } from '../../hooks/useSerializedAutoSave';
+import { nextAutoSaveRetryDelay, useSerializedAutoSave } from '../../hooks/useSerializedAutoSave';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
 import { AutoSaveIndicator, Button, FormField, ListItem, PaneHeader, useFeedback } from '../../components/ui';
@@ -60,6 +61,7 @@ import type {
   RuntimeAutoSaveStatus,
 } from './settings-panel/settingsPanelUtils';
 import { AgentSection, RuntimeSection } from './settings-panel/RuntimeSettingsSections';
+import { serializeDefaultsForAutosave } from './web-search/utils';
 import { ProviderEditorForm } from './settings-panel/ProviderEditorForm';
 import { ProviderTemplateDialog } from './settings-panel/ProviderTemplateDialog';
 
@@ -77,6 +79,14 @@ interface SettingsPanelProps {
   onOpenMain: () => void;
   onBackToList: () => void;
 }
+
+type PendingToolDefaultsSave = {
+  contextKey: string;
+  serialized: string;
+  payload: AgentToolsConfig;
+};
+
+const TOOL_DEFAULTS_CONTEXT_KEY = 'global-tool-defaults';
 
 
 export function SettingsPanel({
@@ -118,6 +128,11 @@ export function SettingsPanel({
   const [ipProxies, setIpProxies] = useState<IpProxy[]>([]);
   const [isLoadingIpProxies, setIsLoadingIpProxies] = useState(false);
   const [providerProxyPickerOpen, setProviderProxyPickerOpen] = useState(false);
+  const [toolDefaults, setToolDefaults] = useState<AgentToolsConfig | null>(null);
+  const [toolDefaultsLoading, setToolDefaultsLoading] = useState(false);
+  const [toolDefaultsLoadError, setToolDefaultsLoadError] = useState('');
+  const [toolDefaultsRequestKey, setToolDefaultsRequestKey] = useState(0);
+  const [toolDefaultsReady, setToolDefaultsReady] = useState(false);
 
   const latestSerializedRef = useRef('');
   const persistedSerializedRef = useRef('');
@@ -141,6 +156,38 @@ export function SettingsPanel({
   const flushRuntimeSaveQueueRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const flushProviderSaveQueueRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
+  const toolDefaultsSaveItem = useMemo<PendingToolDefaultsSave | null>(() => {
+    if (!toolDefaultsReady || !toolDefaults) return null;
+    const { serialized, payload } = serializeDefaultsForAutosave(toolDefaults, {});
+    return {
+      contextKey: TOOL_DEFAULTS_CONTEXT_KEY,
+      serialized,
+      payload,
+    };
+  }, [toolDefaults, toolDefaultsReady]);
+
+  const {
+    status: toolDefaultsAutoSaveStatus,
+    retryNow: retryToolDefaultsSaveNow,
+    markPersisted: markToolDefaultsPersisted,
+  } = useSerializedAutoSave<PendingToolDefaultsSave>({
+    contextKey: TOOL_DEFAULTS_CONTEXT_KEY,
+    enabled: activeSection === 'agent' && toolDefaultsReady,
+    item: toolDefaultsSaveItem,
+    persist: async (item) => {
+      const updated = await updateToolDefaults(item.payload);
+      setToolDefaults(updated);
+    },
+    onError: (cause, attempt) => {
+      if (attempt === 1) {
+        toast.error(userErrorMessage(cause, {
+          summary: t('settings.toolLoopSaveFailed'),
+          recovery: t('error.retryConnection'),
+        }));
+      }
+    },
+  });
+
   onSettingsSaveRef.current = onSettingsSave;
   onProviderEditRef.current = onProviderEdit;
   activeProviderIdRef.current = activeProviderId;
@@ -150,6 +197,9 @@ export function SettingsPanel({
     || autoSaveStatus === 'pending'
     || autoSaveStatus === 'saving'
     || autoSaveStatus === 'error'
+    || toolDefaultsAutoSaveStatus === 'pending'
+    || toolDefaultsAutoSaveStatus === 'saving'
+    || toolDefaultsAutoSaveStatus === 'error'
     || providerDirty
     || providerAutoSaveStatus === 'pending'
     || providerAutoSaveStatus === 'saving'
@@ -188,6 +238,36 @@ export function SettingsPanel({
   useEffect(() => {
     setActiveSection(initialSection);
   }, [initialSection]);
+
+  useEffect(() => {
+    if (activeSection !== 'agent' || toolDefaults) return;
+    let cancelled = false;
+    setToolDefaultsLoading(true);
+    setToolDefaultsLoadError('');
+    readToolDefaults()
+      .then((next) => {
+        if (cancelled) return;
+        markToolDefaultsPersisted(
+          TOOL_DEFAULTS_CONTEXT_KEY,
+          serializeDefaultsForAutosave(next, {}).serialized,
+        );
+        setToolDefaults(next);
+        setToolDefaultsReady(true);
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setToolDefaultsLoadError(userErrorMessage(cause, {
+            summary: t('settings.toolLoopLoadFailed'),
+          }));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setToolDefaultsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSection, markToolDefaultsPersisted, t, toolDefaults, toolDefaultsRequestKey]);
 
   // Refresh the proxy list whenever the provider page is shown so proxies
   // created on the IP proxy page are immediately selectable.
@@ -545,6 +625,18 @@ export function SettingsPanel({
     setRuntimeDirty(true);
   }
 
+  function patchToolLoopIterations(value: number) {
+    setToolDefaults((current) => current ? {
+      ...current,
+      max_llm_iterations: Math.min(999, Math.max(1, Math.floor(value) || 1)),
+    } : current);
+  }
+
+  function retryAgentSettingsSaveNow() {
+    retryRuntimeSaveNow();
+    retryToolDefaultsSaveNow();
+  }
+
   function changeProviderForm(updater: (current: ProviderForm) => ProviderForm) {
     setProviderForm(updater);
     if (activeProviderIdRef.current) {
@@ -800,13 +892,28 @@ export function SettingsPanel({
               ? <AutoSaveIndicator status={providerAutoSaveStatus} t={t} onRetry={retryProviderSaveNow} />
               : activeSection === 'proxies'
                 ? undefined
-                : <AutoSaveIndicator status={autoSaveStatus} t={t} onRetry={retryRuntimeSaveNow} />}
+                : <AutoSaveIndicator
+                  status={activeSection === 'agent' && toolDefaultsAutoSaveStatus !== 'idle'
+                    ? toolDefaultsAutoSaveStatus
+                    : autoSaveStatus}
+                  t={t}
+                  onRetry={activeSection === 'agent' ? retryAgentSettingsSaveNow : retryRuntimeSaveNow}
+                />}
           />
 
           {activeSection === 'runtime' ? (
             <RuntimeSection settingsForm={settingsForm} onPatch={patchRuntimeSettings} />
           ) : activeSection === 'agent' ? (
-            <AgentSection settingsForm={settingsForm} providers={providers} onPatch={patchRuntimeSettings} />
+            <AgentSection
+              settingsForm={settingsForm}
+              providers={providers}
+              onPatch={patchRuntimeSettings}
+              maxLlmIterations={toolDefaults?.max_llm_iterations ?? 99}
+              maxLlmIterationsLoading={toolDefaultsLoading || !toolDefaultsReady}
+              maxLlmIterationsError={toolDefaultsLoadError}
+              onMaxLlmIterationsChange={patchToolLoopIterations}
+              onRetryMaxLlmIterations={() => setToolDefaultsRequestKey((current) => current + 1)}
+            />
           ) : activeSection === 'proxies' ? (
             <IpProxySettings onCountChange={setProxyCount} />
           ) : (

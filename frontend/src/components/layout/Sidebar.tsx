@@ -9,12 +9,13 @@ import { userErrorMessage } from '../../utils/userError';
 
 interface SidebarProps {
   activeNav: NavKey;
+  chatUnreadCount?: number;
   settings: AppSettings;
   onNavChange: (nav: NavKey) => void;
   onSettingsSave: (settings: AppSettings) => Promise<AppSettings>;
 }
 
-export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: SidebarProps) {
+export function Sidebar({ activeNav, chatUnreadCount = 0, settings, onNavChange, onSettingsSave }: SidebarProps) {
   const { t, locale, setLocale } = useI18n();
   const { toast } = useFeedback();
 
@@ -65,7 +66,13 @@ export function Sidebar({ activeNav, settings, onNavChange, onSettingsSave }: Si
       </div>
 
       <nav className="sidebar-nav">
-        <NavButton active={activeNav === 'chat'} onClick={() => onNavChange('chat')} icon={<ChatBubbleMoreIcon />} label={t('nav.chat')} />
+        <NavButton
+          active={activeNav === 'chat'}
+          onClick={() => onNavChange('chat')}
+          icon={<ChatBubbleMoreIcon />}
+          label={t('nav.chat')}
+          showUnread={chatUnreadCount > 0}
+        />
         <NavButton active={activeNav === 'agents'} onClick={() => onNavChange('agents')} icon={<Bot size={21} />} label={t('nav.agents')} />
         <NavButton active={activeNav === 'tools'} onClick={() => onNavChange('tools')} icon={<Wrench size={21} />} label={t('nav.tools')} />
         <NavButton active={activeNav === 'skills'} onClick={() => onNavChange('skills')} icon={<BookOpen size={21} />} label={t('nav.skills')} />
@@ -114,16 +121,19 @@ function NavButton({
   onClick,
   icon,
   label,
+  showUnread = false,
 }: {
   active: boolean;
   className?: string;
   onClick: () => void;
   icon: ReactNode;
   label: string;
+  showUnread?: boolean;
 }) {
   return (
     <IconButton className={className} variant="rail" active={active} type="button" onClick={onClick} label={label} aria-current={active ? 'page' : undefined}>
       {icon}
+      {showUnread ? <span className="nav-unread-dot" aria-label={label} title={label} /> : null}
       <span className="rail-nav-label">{label}</span>
     </IconButton>
   );

@@ -265,28 +265,9 @@ fn build_gemini_request(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    if let Some(level) = thinking_level.filter(|level| *level != ThinkingLevel::Off) {
-        let thinking_config = if model_id.to_ascii_lowercase().contains("2.5") {
-            json!({
-                "thinkingBudget": match level {
-                    ThinkingLevel::Low => 1024,
-                    ThinkingLevel::Medium => 4096,
-                    ThinkingLevel::High => 8192,
-                    ThinkingLevel::XHigh => 16384,
-                    ThinkingLevel::Off => unreachable!(),
-                }
-            })
-        } else {
-            json!({
-                "thinkingLevel": match level {
-                    ThinkingLevel::Low => "MINIMAL",
-                    ThinkingLevel::Medium => "LOW",
-                    ThinkingLevel::High => "MEDIUM",
-                    ThinkingLevel::XHigh => "HIGH",
-                    ThinkingLevel::Off => unreachable!(),
-                }
-            })
-        };
+    if let Some(level) = thinking_level.filter(|level| *level != ThinkingLevel::Off)
+        && let Some(thinking_config) = gemini_thinking_config(model_id, level)
+    {
         generation_config.insert("thinkingConfig".to_string(), thinking_config);
     }
     if !generation_config.is_empty() {
@@ -304,7 +285,7 @@ fn build_gemini_request(
                     .map(|tool| json!({
                         "name": tool.function.name,
                         "description": tool.function.description,
-                        "parameters": sanitize_gemini_schema(&tool.function.parameters),
+                        "parameters": sanitize_gemini_parameters(&tool.function.parameters),
                     }))
                     .collect::<Vec<_>>()
             }]),
@@ -317,76 +298,258 @@ fn build_gemini_request(
     )
 }
 
-/// Gemini's native functionDeclarations schema is an OpenAPI 3.0 subset whose
-/// protobuf parser rejects unknown fields outright, so full JSON Schema tool
-/// definitions must be downgraded before sending: `oneOf` becomes the
-/// supported `anyOf`, `const` becomes a single-value `enum`,
-/// `type: [T, "null"]` becomes `type: T` plus `nullable`, tuple-form `items`
-/// keeps its first entry, and every keyword outside the documented allowlist
-/// (`additionalProperties`, `allOf`, `$ref`, exclusive bounds, ...) is
-/// dropped. Constraints are loosened, never tightened, so any call that was
-/// valid under the original schema still validates after the downgrade.
+fn gemini_thinking_config(model_id: &str, level: ThinkingLevel) -> Option<Value> {
+    let lower = model_id.to_ascii_lowercase();
+    if lower.contains("2.5") {
+        return Some(json!({
+            "thinkingBudget": match level {
+                ThinkingLevel::Low => 1024,
+                ThinkingLevel::Medium => 4096,
+                ThinkingLevel::High => 8192,
+                ThinkingLevel::XHigh => 16384,
+                ThinkingLevel::Off => unreachable!(),
+            }
+        }));
+    }
+
+    let major = lower
+        .strip_prefix("gemini-")
+        .and_then(|version| {
+            let digits: String = version.chars().take_while(char::is_ascii_digit).collect();
+            (!digits.is_empty()).then_some(digits)
+        })
+        .and_then(|version| version.parse::<u32>().ok());
+    (major >= Some(3)).then(|| {
+        json!({
+            "thinkingLevel": match level {
+                ThinkingLevel::Low => "MINIMAL",
+                ThinkingLevel::Medium => "LOW",
+                ThinkingLevel::High => "MEDIUM",
+                ThinkingLevel::XHigh => "HIGH",
+                ThinkingLevel::Off => unreachable!(),
+            }
+        })
+    })
+}
+
+/// Gemini's native functionDeclarations schema is an OpenAPI 3.0 subset.
+/// Tool definitions originate from JSON Schema, so unsupported keywords are
+/// removed while union branches are made self-contained Gemini object schemas.
 fn sanitize_gemini_schema(schema: &Value) -> Value {
+    sanitize_gemini_schema_with_inherited_properties(schema)
+}
+
+fn sanitize_gemini_parameters(schema: &Value) -> Value {
+    let sanitized = sanitize_gemini_schema(schema);
+    let Value::Object(mut object) = sanitized else {
+        return json!({"type": "object", "properties": {}});
+    };
+    if !object.contains_key("type") && !object.contains_key("anyOf") {
+        object.insert("type".to_string(), json!("object"));
+    }
+    Value::Object(object)
+}
+
+fn sanitize_gemini_schema_with_inherited_properties(schema: &Value) -> Value {
     let Value::Object(map) = schema else {
         return schema.clone();
     };
+
+    let (mut schema_type, nullable_from_type) = normalized_gemini_type(map.get("type"));
+    if schema_type.is_none() {
+        schema_type = if map.get("properties").is_some_and(Value::is_object)
+            || map.get("required").is_some()
+            || map.get("propertyOrdering").is_some()
+        {
+            Some("OBJECT")
+        } else if map.get("items").is_some() {
+            Some("ARRAY")
+        } else if map.get("enum").is_some() || map.get("const").and_then(Value::as_str).is_some() {
+            Some("STRING")
+        } else {
+            None
+        };
+    }
+
     let mut out = Map::new();
-    for (key, value) in map {
-        match key.as_str() {
-            "oneOf" | "anyOf" => {
-                if let Value::Array(branches) = value {
-                    out.insert(
-                        "anyOf".to_string(),
-                        Value::Array(branches.iter().map(sanitize_gemini_schema).collect()),
-                    );
-                }
-            }
-            "const" => {
-                // An explicit sibling `enum` wins over the derived one.
-                out.entry("enum".to_string())
-                    .or_insert_with(|| Value::Array(vec![value.clone()]));
-            }
-            "properties" => {
-                if let Value::Object(properties) = value {
-                    let sanitized: Map<String, Value> = properties
-                        .iter()
-                        .map(|(name, property)| (name.clone(), sanitize_gemini_schema(property)))
-                        .collect();
-                    out.insert("properties".to_string(), Value::Object(sanitized));
-                }
-            }
-            "items" => {
-                let item = if let Value::Array(entries) = value {
-                    entries.first().cloned().unwrap_or(Value::Null)
-                } else {
-                    value.clone()
-                };
-                if !item.is_null() {
-                    out.insert("items".to_string(), sanitize_gemini_schema(&item));
-                }
-            }
-            "type" => match value {
-                Value::Array(types) => {
-                    if let Some(main) = types.iter().find(|entry| entry.as_str() != Some("null")) {
-                        out.insert("type".to_string(), main.clone());
-                    }
-                    if types.iter().any(|entry| entry.as_str() == Some("null")) {
-                        out.insert("nullable".to_string(), Value::Bool(true));
-                    }
-                }
-                other => {
-                    out.insert("type".to_string(), other.clone());
-                }
-            },
-            "format" | "title" | "description" | "nullable" | "enum" | "maxItems" | "minItems"
-            | "required" | "minProperties" | "maxProperties" | "minLength" | "maxLength"
-            | "pattern" | "example" | "propertyOrdering" | "default" | "minimum" | "maximum" => {
-                out.insert(key.clone(), value.clone());
-            }
-            _ => {}
+    if let Some(schema_type) = schema_type {
+        out.insert(
+            "type".to_string(),
+            Value::String(schema_type.to_ascii_lowercase()),
+        );
+    }
+    if nullable_from_type
+        || map
+            .get("nullable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        out.insert("nullable".to_string(), Value::Bool(true));
+    }
+
+    if let Some(Value::Object(properties)) = map.get("properties") {
+        let sanitized = properties
+            .iter()
+            .map(|(name, property)| (name.clone(), sanitize_gemini_schema(property)))
+            .collect();
+        out.insert("properties".to_string(), Value::Object(sanitized));
+    }
+    if let Some(Value::Array(required)) = map.get("required")
+        && schema_type == Some("OBJECT")
+    {
+        let properties = out.get("properties").and_then(Value::as_object);
+        let required: Vec<Value> = required
+            .iter()
+            .filter(|name| {
+                name.as_str().is_some_and(|name| {
+                    properties.is_none_or(|properties| properties.contains_key(name))
+                })
+            })
+            .cloned()
+            .collect();
+        if !required.is_empty() {
+            out.insert("required".to_string(), Value::Array(required));
         }
     }
+
+    if let Some(branches) = map
+        .get("oneOf")
+        .or_else(|| map.get("anyOf"))
+        .and_then(Value::as_array)
+    {
+        let parent_properties = map.get("properties").and_then(Value::as_object);
+        let branches = branches
+            .iter()
+            .map(|branch| {
+                let branch = prepare_gemini_union_branch(branch, parent_properties);
+                sanitize_gemini_schema_with_inherited_properties(&branch)
+            })
+            .collect();
+        out.insert("anyOf".to_string(), Value::Array(branches));
+    }
+
+    if let Some(Value::Array(entries)) = map.get("items") {
+        if let Some(item) = entries.first() {
+            out.insert("items".to_string(), sanitize_gemini_schema(item));
+        }
+    } else if let Some(item) = map.get("items") {
+        out.insert("items".to_string(), sanitize_gemini_schema(item));
+    }
+
+    for key in ["description", "title", "format", "default", "example"] {
+        if let Some(value) = map.get(key) {
+            out.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(Value::Array(enum_values)) = map.get("enum")
+        && schema_type == Some("STRING")
+        && enum_values.iter().all(Value::is_string)
+    {
+        out.insert("enum".to_string(), Value::Array(enum_values.clone()));
+    } else if let Some(Value::String(const_value)) = map.get("const")
+        && schema_type == Some("STRING")
+        && !out.contains_key("enum")
+    {
+        out.insert("enum".to_string(), json!([const_value]));
+    }
+
+    if schema_type == Some("ARRAY") {
+        copy_schema_keyword(&mut out, map, "minItems");
+        copy_schema_keyword(&mut out, map, "maxItems");
+    }
+    if schema_type == Some("OBJECT") {
+        copy_schema_keyword(&mut out, map, "minProperties");
+        copy_schema_keyword(&mut out, map, "maxProperties");
+        copy_schema_keyword(&mut out, map, "propertyOrdering");
+    }
+    if schema_type == Some("STRING") {
+        copy_schema_keyword(&mut out, map, "minLength");
+        copy_schema_keyword(&mut out, map, "maxLength");
+        copy_schema_keyword(&mut out, map, "pattern");
+    }
+    if matches!(schema_type, Some("INTEGER" | "NUMBER")) {
+        copy_schema_keyword(&mut out, map, "minimum");
+        copy_schema_keyword(&mut out, map, "maximum");
+    }
     Value::Object(out)
+}
+
+fn normalized_gemini_type(value: Option<&Value>) -> (Option<&'static str>, bool) {
+    let Some(value) = value else {
+        return (None, false);
+    };
+    let types: Vec<&str> = match value {
+        Value::String(value) => vec![value.as_str()],
+        Value::Array(values) => values.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    let nullable = types.iter().any(|value| value.eq_ignore_ascii_case("null"));
+    let main = types
+        .iter()
+        .find(|value| !value.eq_ignore_ascii_case("null"))
+        .and_then(|value| match value.to_ascii_uppercase().as_str() {
+            "STRING" => Some("STRING"),
+            "NUMBER" => Some("NUMBER"),
+            "INTEGER" => Some("INTEGER"),
+            "BOOLEAN" => Some("BOOLEAN"),
+            "ARRAY" => Some("ARRAY"),
+            "OBJECT" => Some("OBJECT"),
+            "NULL" => Some("NULL"),
+            _ => None,
+        });
+    (main, nullable)
+}
+
+fn prepare_gemini_union_branch(
+    branch: &Value,
+    inherited_properties: Option<&Map<String, Value>>,
+) -> Value {
+    let Some(branch) = branch.as_object() else {
+        return branch.clone();
+    };
+    let mut prepared = branch.clone();
+    let branch_is_object = branch
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("object"));
+    let needs_object_shape =
+        branch_is_object || branch.get("properties").is_some() || branch.get("required").is_some();
+    if needs_object_shape {
+        prepared
+            .entry("type".to_string())
+            .or_insert_with(|| json!("object"));
+    }
+    if needs_object_shape && let Some(inherited) = inherited_properties {
+        let mut properties = inherited.clone();
+        if let Some(Value::Object(branch_properties)) = branch.get("properties") {
+            for (name, property) in branch_properties {
+                let merged = properties
+                    .get(name)
+                    .map(|parent| merge_schema_defaults(parent, property))
+                    .unwrap_or_else(|| property.clone());
+                properties.insert(name.clone(), merged);
+            }
+        }
+        prepared.insert("properties".to_string(), Value::Object(properties));
+    }
+    Value::Object(prepared)
+}
+
+fn merge_schema_defaults(base: &Value, override_value: &Value) -> Value {
+    let (Some(base), Some(override_value)) = (base.as_object(), override_value.as_object()) else {
+        return override_value.clone();
+    };
+    let mut merged = base.clone();
+    for (key, value) in override_value {
+        merged.insert(key.clone(), value.clone());
+    }
+    Value::Object(merged)
+}
+
+fn copy_schema_keyword(out: &mut Map<String, Value>, map: &Map<String, Value>, key: &str) {
+    if let Some(value) = map.get(key) {
+        out.insert(key.to_string(), value.clone());
+    }
 }
 
 fn normalize_gemini_tool_result(content: &str) -> Value {
@@ -621,6 +784,7 @@ mod tests {
 
     use super::*;
     use crate::domain::ChatMessageStatus;
+    use crate::tools::registry::AgentTool;
 
     fn fixture() -> Vec<ChatMessage> {
         let now = Utc::now();
@@ -937,9 +1101,40 @@ mod tests {
             .as_array()
             .expect("oneOf branches downgraded to anyOf");
         assert_eq!(branches.len(), 2);
-        assert_eq!(branches[1]["properties"]["b"]["enum"], json!([2]));
+        assert!(branches[1]["properties"]["b"]["enum"].is_null());
         assert_eq!(sanitized["properties"]["tuple"]["items"]["type"], "string");
         assert_eq!(sanitized["required"], json!(["mode"]));
+    }
+
+    #[test]
+    fn task_planning_union_branches_are_gemini_objects() {
+        let definition = crate::tools::task_planning::TaskPlanningTool
+            .definition(&crate::domain::AgentToolsConfig::default());
+        let sanitized = sanitize_gemini_parameters(&definition.function.parameters);
+        let branches = sanitized["anyOf"]
+            .as_array()
+            .expect("task planning oneOf downgraded to anyOf");
+
+        assert_eq!(branches[0]["type"], "object");
+        assert_eq!(branches[0]["properties"]["explanation"]["type"], "string");
+        assert_eq!(branches[0]["properties"]["plan"]["type"], "array");
+        assert_eq!(
+            branches[0]["required"],
+            json!(["action", "explanation", "plan"])
+        );
+        assert_eq!(branches[1]["type"], "object");
+        assert_eq!(branches[1]["properties"]["planning_id"]["type"], "string");
+        assert_eq!(
+            branches[1]["required"],
+            json!(["action", "planning_id", "item", "status"])
+        );
+    }
+
+    #[test]
+    fn thinking_config_is_only_sent_to_supported_model_families() {
+        assert!(gemini_thinking_config("gemini-2.5-flash", ThinkingLevel::High).is_some());
+        assert!(gemini_thinking_config("gemini-3-pro", ThinkingLevel::High).is_some());
+        assert!(gemini_thinking_config("gemini-2.0-flash", ThinkingLevel::High).is_none());
     }
 
     #[test]

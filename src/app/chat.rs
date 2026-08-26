@@ -135,7 +135,7 @@ pub async fn prepare_chat(
     {
         system_prompt.push_str("\n\n## WeiAgent Service Context\n\n");
         let service_context = format!(
-            "The current runtime is the `weiagent` intelligent agent service. When the user describes an operation without naming another target, interpret it as an operation on this running service. Current agent ID: {}. Current conversation ID: {}. For detailed commands and workflows, load the `{BUILTIN_WEIAGENT_CLI_SKILL_NAME}` Skill with skill_view when it is relevant; its full body is task-specific guidance, not a permanent system instruction.",
+            "The current runtime is the `weiagent` intelligent agent service. When the user describes an operation without naming another target, interpret it as an operation on this running service. Current agent ID: {}. Current conversation ID: {}. For detailed commands and workflows, load the `{BUILTIN_WEIAGENT_CLI_SKILL_NAME}` Skill with skill_view when it is relevant; its full body is task-specific guidance, not a permanent system instruction. Use a service-first installation workflow: when the user asks to install or download a Skill, run `weiagent skill install SOURCE`, then verify the Skill in this running service. When the user asks to install or add an MCP server, configure it in this running service with `weiagent mcp add --file FILE` or the matching CLI command, then run the relevant test or reload and verify the server. Treat downloaded Skill sources, MCP repositories, and configuration files as preparation; completion means the resource is installed and configured in the current WeiAgent service.",
             agent.id, conversation_id
         );
         system_prompt.push_str(&service_context);

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, test, vi } from 'vitest';
-import type { ComponentProps } from 'react';
+import { useState, type ComponentProps } from 'react';
 
 import { FeedbackProvider } from '../../components/ui';
 import { I18nProvider } from '../../i18n';
@@ -21,37 +21,48 @@ beforeEach(() => {
 });
 
 function renderComposer(overrides: Partial<ComponentProps<typeof ChatComposer>> = {}) {
+  const defaults = getComposerDefaults();
   return render(
     <I18nProvider>
       <FeedbackProvider>
         <ChatComposer
-          disabled={false}
-          placeholder="输入消息"
-          inputLabel="消息"
-          isSending={false}
-          isSavingModel={false}
-          isModelSavePending={false}
-          draftKey="chat-composer-test"
-          supportsImages
-          supportsImageGeneration={false}
-          generationMode="chat"
-          imageOptions={{}}
-          isSavingImageOptions={false}
-          supportsThinking
-          thinkingLevel="medium"
-          usage={usage}
-          contextSize={128000}
-          onGenerationModeChange={vi.fn()}
-          onImageOptionsChange={vi.fn()}
-          onThinkingLevelChange={vi.fn()}
-          onUnsupportedImage={vi.fn()}
-          onSend={vi.fn()}
-          onStop={vi.fn()}
+          {...defaults}
           {...overrides}
         />
       </FeedbackProvider>
     </I18nProvider>,
   );
+}
+
+function getComposerDefaults(): ComponentProps<typeof ChatComposer> {
+  return {
+    disabled: false,
+    placeholder: '输入消息',
+    inputLabel: '消息',
+    isSending: false,
+    isSavingModel: false,
+    isModelSavePending: false,
+    draftKey: 'chat-composer-test',
+    supportsImages: true,
+    supportsImageGeneration: false,
+    generationMode: 'chat',
+    imageOptions: {},
+    isSavingImageOptions: false,
+    supportsThinking: true,
+    thinkingLevel: 'medium',
+    usage,
+    contextSize: 128000,
+    onGenerationModeChange: vi.fn(),
+    onImageOptionsChange: vi.fn(),
+    onThinkingLevelChange: vi.fn(),
+    onUnsupportedImage: vi.fn(),
+    onSend: vi.fn(),
+    onSteer: vi.fn(),
+    queuedMessages: [],
+    onRemoveQueuedMessage: vi.fn(),
+    onSteerQueuedMessage: vi.fn(),
+    onStop: vi.fn(),
+  };
 }
 
 test('locks image mode on and hides streaming configuration for an image provider', () => {
@@ -187,4 +198,79 @@ test('adds an image dropped onto the composer', async () => {
     expect(screen.getByRole('img', { name: 'dropped.png' })).toBeVisible();
   });
   expect(composerBox).not.toHaveClass('is-dragging-files');
+});
+
+test('stopping a send keeps the draft from being submitted during the state change', () => {
+  const onSend = vi.fn();
+  const onStop = vi.fn();
+  function ControlledComposer() {
+    const [isSending, setIsSending] = useState(true);
+    return (
+      <ChatComposer
+        {...getComposerDefaults()}
+        isSending={isSending}
+        onSend={onSend}
+        onStop={() => {
+          onStop();
+          setIsSending(false);
+        }}
+      />
+    );
+  }
+
+  render(
+    <I18nProvider>
+      <FeedbackProvider>
+        <ControlledComposer />
+      </FeedbackProvider>
+    </I18nProvider>,
+  );
+  const input = screen.getByRole('textbox', { name: '消息' });
+  fireEvent.change(input, { target: { value: '这段内容应该保留' } });
+
+  fireEvent.click(screen.getByRole('button', { name: '停止' }));
+
+  expect(onStop).toHaveBeenCalledOnce();
+  expect(onSend).not.toHaveBeenCalled();
+  expect(input).toHaveValue('这段内容应该保留');
+});
+
+test('queues Enter submissions while a run is active', () => {
+  const onSend = vi.fn();
+  renderComposer({ isSending: true, onSend });
+  const input = screen.getByRole('textbox', { name: '消息' });
+
+  fireEvent.change(input, { target: { value: '排队的下一条消息' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+
+  expect(onSend).toHaveBeenCalledWith('排队的下一条消息', [], 'chat');
+});
+
+test('steers the active run with Ctrl+Enter', () => {
+  const onSteer = vi.fn();
+  renderComposer({ isSending: true, onSteer });
+  const input = screen.getByRole('textbox', { name: '消息' });
+
+  fireEvent.change(input, { target: { value: '请把当前方向调整为这个' } });
+  fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
+
+  expect(onSteer).toHaveBeenCalledWith('请把当前方向调整为这个');
+});
+
+test('renders queued messages with guide and remove actions', () => {
+  const onRemoveQueuedMessage = vi.fn();
+  const onSteerQueuedMessage = vi.fn();
+  renderComposer({
+    isSending: true,
+    queuedMessages: [{ id: 'queued-1', content: '已经在队列中' }],
+    onRemoveQueuedMessage,
+    onSteerQueuedMessage,
+  });
+
+  expect(screen.getByText('已经在队列中')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '立即引导' }));
+  fireEvent.click(screen.getByRole('button', { name: '移除排队消息' }));
+
+  expect(onSteerQueuedMessage).toHaveBeenCalledWith('queued-1');
+  expect(onRemoveQueuedMessage).toHaveBeenCalledWith('queued-1');
 });

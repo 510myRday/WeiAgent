@@ -29,6 +29,7 @@ import { readSkillContent } from '../../../api';
 import { formatBytes, formatDateTime } from '../../../utils/format';
 import { useI18n } from '../../../i18n';
 import { Button, InheritToggle } from '../../../components/ui';
+import { SkillIcon } from '../SkillIcon';
 import { displayPath, displaySkillFilePath } from './displayPath';
 
 export function SkillConflictDetail({ conflict }: { conflict: SkillConflict }) {
@@ -132,7 +133,7 @@ export function AgentSkillsOverview({ settings, busy, onToggle }: { settings: Sk
                   <div className="agent-tool-row__body">
                     <div className="agent-tool-row__title">
                       <strong>{skill.name}</strong>
-                      <span className="mini-status-badge skill-badge"><BookOpen size={12} aria-hidden="true" />{t('skills.title')}</span>
+                      <span className="mini-status-badge skill-badge"><SkillIcon skillName={skill.name} iconUrl={skill.icon_url} size={12} />{t('skills.title')}</span>
                     </div>
                     <SkillDescription description={skill.description || t('skills.noDescription')} />
                     <span className="agent-tool-row__source">{inherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}</span>
@@ -268,6 +269,7 @@ export function SkillEditor({ skill, content, selectedPath, onPathChange }: { sk
       </div>
       <div className="skills-detail-meta">
         <p className="skills-cwd" title={displayPath(content.cwd)}><FolderOpen size={14} /><span>{displayPath(content.cwd)}</span></p>
+        <p className="skills-cwd" title={skill.source_url ?? content.cwd}><FolderOpen size={14} /><span>{t('skills.source')}: {skill.source_url ?? content.cwd}</span></p>
         <span className="skills-updated-at">{t('skills.updatedAt')}: {formatDateTime(content.updated_at)}</span>
       </div>
     </section>

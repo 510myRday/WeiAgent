@@ -1,8 +1,9 @@
-import { memo } from 'react';
+import { memo, useEffect, useState } from 'react';
 
 import type { AppSettings, ModelProvider } from '../../../types';
 import { useI18n } from '../../../i18n';
-import { FormField } from '../../../components/ui';
+import { RefreshCw } from 'lucide-react';
+import { Button, FormField } from '../../../components/ui';
 import { compareNames, sortByName } from '../../../utils/sort';
 import { clampCompressThreshold } from './settingsPanelUtils';
 
@@ -62,10 +63,30 @@ interface AgentSectionProps {
   settingsForm: AppSettings;
   providers: ModelProvider[];
   onPatch: (patch: Partial<AppSettings>) => void;
+  maxLlmIterations: number;
+  maxLlmIterationsLoading: boolean;
+  maxLlmIterationsError: string;
+  onMaxLlmIterationsChange: (value: number) => void;
+  onRetryMaxLlmIterations: () => void;
 }
 
-export const AgentSection = memo(function AgentSection({ settingsForm, providers, onPatch }: AgentSectionProps) {
+export const AgentSection = memo(function AgentSection({
+  settingsForm,
+  providers,
+  onPatch,
+  maxLlmIterations,
+  maxLlmIterationsLoading,
+  maxLlmIterationsError,
+  onMaxLlmIterationsChange,
+  onRetryMaxLlmIterations,
+}: AgentSectionProps) {
   const { t } = useI18n();
+  const [maxLlmIterationsInput, setMaxLlmIterationsInput] = useState(String(maxLlmIterations));
+
+  useEffect(() => {
+    setMaxLlmIterationsInput(String(maxLlmIterations));
+  }, [maxLlmIterations]);
+
   return (
     <div className="form-card entity-form narrow-form model-agent-settings-card">
       <div className="settings-field-pair">
@@ -127,6 +148,48 @@ export const AgentSection = memo(function AgentSection({ settingsForm, providers
           />
           <span className="unit">{t('settings.contextCompressThresholdUnit')}</span>
         </label>
+      </div>
+      <div className="setting-row settings-loop-policy">
+        <div className="setting-info">
+          <label htmlFor="settings-tool-loop-iterations">
+            {t('settings.toolLoopIterations')}
+            <span className="required-marker" aria-hidden="true">*</span>
+          </label>
+          <p className="setting-desc">{t('settings.toolLoopIterationsHint')}</p>
+          {maxLlmIterationsError ? (
+            <div className="settings-inline-error" role="alert">
+              <span>{maxLlmIterationsError}</span>
+              <Button
+                variant="secondary"
+                type="button"
+                onClick={onRetryMaxLlmIterations}
+                icon={<RefreshCw size={14} />}
+              >
+                {t('common.retry')}
+              </Button>
+            </div>
+          ) : null}
+        </div>
+        <div className="timeout-input">
+          <input
+            id="settings-tool-loop-iterations"
+            type="number"
+            min={1}
+            max={999}
+            step={1}
+            value={maxLlmIterationsInput}
+            disabled={maxLlmIterationsLoading || Boolean(maxLlmIterationsError)}
+            onChange={(event) => {
+              const nextValue = event.target.value;
+              setMaxLlmIterationsInput(nextValue);
+              if (nextValue.trim()) onMaxLlmIterationsChange(Number(nextValue));
+            }}
+            onBlur={() => {
+              if (!maxLlmIterationsInput.trim()) setMaxLlmIterationsInput(String(maxLlmIterations));
+            }}
+            required
+          />
+        </div>
       </div>
       <div className="settings-field-pair conversation-title-settings-grid">
         <label className="settings-field-pair__label settings-field-pair__label--left" htmlFor="settings-conversation-title-provider">

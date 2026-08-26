@@ -1152,6 +1152,7 @@ fn source_provider_from_str(value: &str) -> AppResult<WebSearchProviderKind> {
         "jina" => Ok(WebSearchProviderKind::Jina),
         "grok" => Ok(WebSearchProviderKind::Grok),
         "firecrawl" => Ok(WebSearchProviderKind::Firecrawl),
+        "keenable" => Ok(WebSearchProviderKind::Keenable),
         _ => Err(AppError::Database(format!(
             "unknown web search provider '{value}'"
         ))),

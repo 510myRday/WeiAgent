@@ -59,7 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation
 ";
 
 pub(super) fn is_generated_conversation_title(title: &str) -> bool {
-    matches!(title.trim(), "" | "New Conversation")
+    matches!(title.trim(), "" | "New Conversation" | "新会话")
 }
 
 fn title_from_content(content: &str) -> Option<String> {
@@ -913,4 +913,16 @@ pub(super) fn write_checkpoint_conn(
     )?;
     tx.commit()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_generated_conversation_title;
+
+    #[test]
+    fn localized_generated_titles_are_placeholders() {
+        assert!(is_generated_conversation_title("New Conversation"));
+        assert!(is_generated_conversation_title("新会话"));
+        assert!(!is_generated_conversation_title("用户输入的标题"));
+    }
 }

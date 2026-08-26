@@ -7,6 +7,10 @@ description: Operate the current WeiAgent intelligent agent service through its 
 
 Treat `weiagent` as the operating interface for the current WeiAgent service. Execute the matching CLI command instead of only explaining a command. Use JSON output for discovery, parsing, and chained operations; summarize the resulting state after the command completes.
 
+## Service-first installation
+
+Installation requests target the current running WeiAgent service. When the user asks to install or download a Skill, use `weiagent skill install SOURCE`, wait for the import result, and verify the installed Skill with `skill list` or `skill show`. When the user asks to install or add an MCP server, use `weiagent mcp add --file FILE` or the matching CLI workflow, then test or reload the server and verify its status and tools. Downloading a Skill source, MCP repository, or configuration file is preparation; the completed workflow leaves the resource installed and configured in this WeiAgent service.
+
 ## Operating rules
 
 - If the user does not name another target, operate on the current `weiagent` service.

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Download, FolderOpen, FolderInput, MoreHorizontal, Pencil, Plus, Settings, Sparkles, Trash2, FolderPlus, CheckSquare, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Download, FolderOpen, FolderInput, MoreHorizontal, Pencil, Plus, RefreshCw, Settings, Sparkles, Trash2, FolderPlus, CheckSquare, X } from 'lucide-react';
 
 import type { SkillContent, SkillGroupState, SkillImportTask, SkillManifest, SkillOverrides, SkillSettings } from '../../toolTypes';
-import { assignSkillGroup, cleanupSkillOrphans, createSkillGroup, deleteSkill, deleteSkillGroup, importSkill, listIpProxies, listSkillImportTasks, listSkills, pickDirectory, readAgentSkillsConfig, readSkillChanges, readSkillContent, renameSkillGroup, reorderSkillGroupItems, reorderSkillGroups, updateAgentSkillsConfig, updateSkillEnabled, updateSkillIcon } from '../../api';
+import { assignSkillGroup, cleanupSkillOrphans, createSkillGroup, deleteSkill, deleteSkillGroup, importSkill, listIpProxies, listSkillImportTasks, listSkills, pickDirectory, readAgentSkillsConfig, readSkillChanges, readSkillContent, renameSkillGroup, reorderSkillGroupItems, reorderSkillGroups, updateAgentSkillsConfig, updateSkill, updateSkillEnabled, updateSkillIcon } from '../../api';
 import type { IpProxy } from '../../types';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
@@ -511,6 +511,23 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
     setIconOpen(true);
   }
 
+  async function updateActiveSkill() {
+    if (!activeSkill) return;
+    setBusy(true);
+    try {
+      const nextSettings = await updateSkill(activeSkill.name);
+      setSettings(nextSettings);
+      const nextContent = await readSkillContent(activeSkill.name, selectedContentPath);
+      setContent(nextContent);
+      setSelectedContentPath(displaySkillFilePath(nextContent.path || selectedContentPath || 'SKILL.md', nextContent.cwd));
+      toast.success(t('skills.updated'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('skills.updateFailed'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveIcon() {
     if (!activeSkill) return;
     setIconSaving(true);
@@ -624,7 +641,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                   <div key={skill.name} className={`skills-item-wrap${selectedSkills.includes(skill.name) ? ' is-selected' : ''}`} draggable={!embedded && !skill.is_builtin} onDragStart={() => { if (!skill.is_builtin) setDraggedSkillName(skill.name); }} onDragEnd={() => setDraggedSkillName(null)} onDragOver={(event) => { if (!skill.is_builtin && draggedSkillName && draggedSkillName !== skill.name) event.preventDefault(); }} onDrop={() => void dropSkill(group?.id ?? null, skill.name)}>
                     {!embedded ? <button type="button" className="skills-select-button" disabled={skill.is_builtin} aria-label={selectedSkills.includes(skill.name) ? t('skills.deselectSkill', { name: skill.name }) : t('skills.selectSkill', { name: skill.name })} onClick={() => toggleSkillSelection(skill.name)}>{selectedSkills.includes(skill.name) ? <CheckSquare size={15} /> : <span />}</button> : null}
                     <div className="skills-list-item-row">
-                      <ListItem className="skills-list-item" type="button" active={active?.kind === 'skill' && active.name === skill.name} title={<span className="tool-list-title"><span>{skill.name}</span></span>} subtitle={<span className="skills-list-description" title={skill.description}>{skill.description}</span>} leading={<SkillIcon iconUrl={skill.icon_url} size={19} />} onClick={() => selectSkill(skill.name)} />
+                      <ListItem className="skills-list-item" type="button" active={active?.kind === 'skill' && active.name === skill.name} title={<span className="tool-list-title"><span>{skill.name}</span></span>} subtitle={<span className="skills-list-description" title={skill.description}>{skill.description}</span>} leading={<SkillIcon skillName={skill.name} iconUrl={skill.icon_url} size={19} />} onClick={() => selectSkill(skill.name)} />
                       {!embedded ? (
                         <span className="skills-list-item-actions">
                           <IconButton className="skills-move-action" variant="ghost" type="button" label={t('skills.moveSkill')} onClick={() => openMoveSkillDialog(skill)} disabled={busy || skill.is_builtin}>
@@ -705,6 +722,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
               <PaneHeader className="config-page-header" leading={<Button className="main-back-button" variant="ghost" type="button" onClick={onBackToList} icon={<ArrowLeft size={17} />}>{t('common.back')}</Button>} eyebrow={t('skills.title')} title={activeOrphan ? activeOrphan.name : (activeConflict?.name ?? activeSkill?.name ?? t('skills.title'))} description={activeOrphan ? t('skills.orphanHeaderDescription') : (activeConflict ? t('skills.nameConflictDescription', { name: activeConflict.name, count: activeConflict.count }) : (activeSkill?.description ?? t('skills.description')))} actions={(
                 <>
                   {activeSkill ? <IconButton variant="default" type="button" label={t('skills.iconSettings')} onClick={openIconDialog} disabled={busy || iconSaving}><Settings size={17} /></IconButton> : null}
+                  {activeSkill ? <IconButton variant="default" type="button" label={t('skills.update')} onClick={() => void updateActiveSkill()} disabled={busy || activeSkill.is_builtin}><RefreshCw size={17} /></IconButton> : null}
                   {activeSkill ? <IconButton variant="danger" type="button" label={t('skills.delete')} onClick={() => void removeActiveSkill()} disabled={busy || activeSkill.is_builtin}><Trash2 size={17} /></IconButton> : null}
                   {activeSkill ? <SkillToggle skill={activeSkill} agentMode={false} busy={busy} onGlobalToggle={toggleGlobal} onAgentToggle={toggleAgentSkill} /> : null}
                 </>

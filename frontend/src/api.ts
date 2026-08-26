@@ -611,6 +611,12 @@ export function readSkillContent(name: string, path?: string): Promise<SkillCont
   return request<SkillContent>(`/api/skills/${encodeURIComponent(name)}/content${query}`);
 }
 
+export function updateSkill(name: string): Promise<SkillSettings> {
+  return request<SkillSettings>(`/api/skills/${encodeURIComponent(name)}/update`, {
+    method: 'POST',
+  });
+}
+
 export function updateSkillEnabled(name: string, enabled: boolean): Promise<SkillSettings> {
   return request<SkillSettings>(`/api/skills/${encodeURIComponent(name)}/enabled`, {
     method: 'PUT',
@@ -834,6 +840,13 @@ export function createMessageRun(
     }),
     signal,
   }, agentRunRuntimeSchema);
+}
+
+export function steerMessageRun(runId: string, content: string): Promise<void> {
+  return request(`/api/runs/${runId}/steer`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  });
 }
 
 export function readConversationUsage(conversationId: string): Promise<ConversationUsage> {

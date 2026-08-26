@@ -817,10 +817,11 @@ fn ordered_extract_sources(
 fn provider_route_rank(provider: &WebSearchProviderKind, hint: RouteHint) -> u8 {
     match hint {
         RouteHint::DynamicOrBlocked => match provider {
-            WebSearchProviderKind::Firecrawl => 0,
-            WebSearchProviderKind::Jina => 1,
-            WebSearchProviderKind::Exa => 2,
-            WebSearchProviderKind::Tavily => 3,
+            WebSearchProviderKind::Keenable => 0,
+            WebSearchProviderKind::Firecrawl => 1,
+            WebSearchProviderKind::Jina => 2,
+            WebSearchProviderKind::Exa => 3,
+            WebSearchProviderKind::Tavily => 4,
             WebSearchProviderKind::Grok => 9,
         },
         RouteHint::Pdf => match provider {
@@ -828,13 +829,15 @@ fn provider_route_rank(provider: &WebSearchProviderKind, hint: RouteHint) -> u8 
             WebSearchProviderKind::Jina => 1,
             WebSearchProviderKind::Firecrawl => 2,
             WebSearchProviderKind::Tavily => 3,
+            WebSearchProviderKind::Keenable => 4,
             WebSearchProviderKind::Grok => 9,
         },
         RouteHint::General => match provider {
-            WebSearchProviderKind::Jina => 0,
-            WebSearchProviderKind::Firecrawl => 1,
-            WebSearchProviderKind::Exa => 2,
-            WebSearchProviderKind::Tavily => 3,
+            WebSearchProviderKind::Keenable => 0,
+            WebSearchProviderKind::Jina => 1,
+            WebSearchProviderKind::Firecrawl => 2,
+            WebSearchProviderKind::Exa => 3,
+            WebSearchProviderKind::Tavily => 4,
             WebSearchProviderKind::Grok => 9,
         },
     }

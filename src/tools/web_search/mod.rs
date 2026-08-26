@@ -1135,7 +1135,7 @@ mod tests {
                 .iter()
                 .map(|source| source.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["jina", "firecrawl"]
+            vec!["keenable", "jina", "firecrawl"]
         );
         assert!(selected[0].api_keys.is_empty());
         assert!(selected[1].api_keys.is_empty());
@@ -1164,8 +1164,8 @@ mod tests {
     #[test]
     fn aggregation_does_not_count_model_provided_urls_as_independent_evidence() {
         let config = WebSearchToolConfig::default();
-        let firecrawl = config.sources[4].clone();
-        let grok = config.sources[3].clone();
+        let firecrawl = config.sources[5].clone();
+        let grok = config.sources[4].clone();
         let outputs = vec![
             (
                 firecrawl,
@@ -1227,8 +1227,8 @@ mod tests {
             &SearchMode::Balanced,
         )
         .unwrap();
-        assert_eq!(selected[0].id, "tavily");
-        assert_eq!(selected[1].id, "grok");
+        assert_eq!(selected[0].id, "keenable");
+        assert_eq!(selected[1].id, "tavily");
     }
 
     #[test]

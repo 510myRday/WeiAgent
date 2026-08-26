@@ -19,6 +19,7 @@ import {
   createConversation,
   generateConversationTitle,
   createMessageRun,
+  steerMessageRun,
   cancelMessageRun,
   deleteConversation,
   readConversationMessages,
@@ -44,6 +45,7 @@ import {
 } from './conversationMessages';
 import {
   CONVERSATION_SNAPSHOTS_STORAGE_KEY,
+  CONVERSATION_RUN_SNAPSHOTS_STORAGE_KEY,
   UNREAD_CONVERSATIONS_STORAGE_KEY,
   clearToolStartTime,
   isEmptyConversation,
@@ -56,6 +58,7 @@ import {
   writeJsonStorage,
   writeToolStartTime,
   type ConversationSnapshotMap,
+  type ConversationRunSnapshotMap,
   type UnreadConversationMap,
 } from './conversationStorage';
 
@@ -66,6 +69,16 @@ const EMPTY_USAGE: ConversationUsage = {
   cache_read_tokens: 0,
   total_tokens: 0,
   cost_usd: 0,
+};
+
+export type PendingChatMessage = {
+  id: string;
+  content: string;
+  attachments: ImageAttachment[];
+  agentId: string;
+  isStreamMode: boolean;
+  thinkingLevel: ThinkingLevel;
+  generationMode: GenerationMode;
 };
 
 function modelUsageToConversationUsage(usage: ModelUsage): ConversationUsage {
@@ -118,6 +131,7 @@ export function useConversations({
   const [isSending, setIsSending] = useState(false);
   const [runPhase, setRunPhase] = useState<AgentRunPhase>('idle');
   const [retryStatus, setRetryStatus] = useState<{ attempt: number; maxAttempts: number; reason: string } | null>(null);
+  const [pendingMessages, setPendingMessages] = useState<PendingChatMessage[]>([]);
   const [conversationUsage, setConversationUsage] = useState<ConversationUsage>(EMPTY_USAGE);
   const [runningConversationIds, setRunningConversationIds] = useState<Set<string>>(() => new Set());
   const [unreadConversationIdsByAgent, setUnreadConversationIdsByAgent] = useState<UnreadConversationMap>(
@@ -144,6 +158,9 @@ export function useConversations({
   const conversationSnapshotsRef = useRef<ConversationSnapshotMap>(
     readJsonStorage(CONVERSATION_SNAPSHOTS_STORAGE_KEY, {}),
   );
+  const conversationRunSnapshotsRef = useRef<ConversationRunSnapshotMap>(
+    readJsonStorage(CONVERSATION_RUN_SNAPSHOTS_STORAGE_KEY, {}),
+  );
   onErrorRef.current = onError;
   activeAgentIdRef.current = activeAgentId;
   activeConversationIdRef.current = activeConversationId;
@@ -152,6 +169,19 @@ export function useConversations({
   // while messages update every stream flush.
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+  const pendingMessagesRef = useRef(pendingMessages);
+  pendingMessagesRef.current = pendingMessages;
+  const sendRef = useRef<((
+    content: string,
+    agentId: string,
+    isStreamMode: boolean,
+    attachments: ImageAttachment[],
+    thinkingLevel: ThinkingLevel,
+    generationMode?: GenerationMode,
+    restartFromMessageId?: string,
+  ) => Promise<void>)>();
 
   const updateUnreadConversationIds = useCallback(
     (mapper: (current: UnreadConversationMap) => UnreadConversationMap) => {
@@ -179,23 +209,26 @@ export function useConversations({
   const reconcileConversationList = useCallback((
     agentId: string,
     nextConversations: Conversation[],
-    activeRunIds: Set<string>,
+    activeRunIds: Map<string, string>,
   ) => {
     const nextUnread = { ...unreadConversationIdsRef.current };
     let unreadChanged = false;
     const visibleConversationId = activeAgentIdRef.current === agentId
       ? activeConversationIdRef.current
       : '';
-
     for (const conversation of nextConversations) {
       const previousMessageCount = conversationSnapshotsRef.current[conversation.id];
       const messageCountChanged = previousMessageCount !== undefined
         && conversation.message_count > previousMessageCount;
       const isVisible = conversation.id === visibleConversationId;
-      const isRunning = activeRunIds.has(conversation.id);
+      const currentRunId = activeRunIds.get(conversation.id);
+      const previousRunId = conversationRunSnapshotsRef.current[conversation.id];
+      const runFinished = previousRunId !== undefined && previousRunId !== currentRunId;
+      const isRunning = currentRunId !== undefined;
       const currentIds = nextUnread[agentId] ?? [];
 
-      if (messageCountChanged && !isVisible && !isRunning && !currentIds.includes(conversation.id)) {
+      const shouldMarkUnread = (messageCountChanged && !isRunning) || runFinished;
+      if (shouldMarkUnread && !isVisible && !currentIds.includes(conversation.id)) {
         nextUnread[agentId] = [...currentIds, conversation.id];
         unreadChanged = true;
       }
@@ -209,6 +242,11 @@ export function useConversations({
       if (!isRunning || isVisible || previousMessageCount === undefined) {
         conversationSnapshotsRef.current[conversation.id] = conversation.message_count;
       }
+      if (currentRunId) {
+        conversationRunSnapshotsRef.current[conversation.id] = currentRunId;
+      } else {
+        delete conversationRunSnapshotsRef.current[conversation.id];
+      }
     }
 
     const listedConversationIds = new Set(nextConversations.map((conversation) => conversation.id));
@@ -218,6 +256,11 @@ export function useConversations({
       nextUnread[agentId] = retainedUnreadIds;
       unreadChanged = true;
     }
+    for (const conversationId of Object.keys(conversationRunSnapshotsRef.current)) {
+      if (!listedConversationIds.has(conversationId)) {
+        delete conversationRunSnapshotsRef.current[conversationId];
+      }
+    }
 
     if (unreadChanged) {
       const normalized = normalizeUnreadConversationMap(nextUnread);
@@ -226,6 +269,7 @@ export function useConversations({
       setUnreadConversationIdsByAgent((current) => unreadMapsEqual(current, normalized) ? current : normalized);
     }
     writeJsonStorage(CONVERSATION_SNAPSHOTS_STORAGE_KEY, conversationSnapshotsRef.current);
+    writeJsonStorage(CONVERSATION_RUN_SNAPSHOTS_STORAGE_KEY, conversationRunSnapshotsRef.current);
   }, []);
 
   const refreshUnreadState = useCallback(async (agentIds: string[]) => {
@@ -241,7 +285,11 @@ export function useConversations({
     for (const result of results) {
       if (result.status !== 'fulfilled') continue;
       const { agentId, conversations: next, activeRuns } = result.value;
-      reconcileConversationList(agentId, next, new Set(activeRuns.map((run) => run.conversation_id)));
+      reconcileConversationList(
+        agentId,
+        next,
+        new Map(activeRuns.map((run) => [run.conversation_id, run.id])),
+      );
       if (agentId !== activeAgentIdRef.current) continue;
       setConversations(sortConversationList(next));
       setRunningConversationIds(new Set(activeRuns.map((run) => run.conversation_id)));
@@ -268,6 +316,8 @@ export function useConversations({
     setHasOlderMessages(false);
     setIsLoadingOlderMessages(false);
     setRetryStatus(null);
+    pendingMessagesRef.current = [];
+    setPendingMessages([]);
     olderMessagesCursorRef.current = '';
     setIsLoadingChat(Boolean(conversationId));
   }, []);
@@ -285,8 +335,8 @@ export function useConversations({
     if (conversationsResult.status === 'fulfilled') {
       const next = conversationsResult.value;
       const activeRunIds = activeRunsResult.status === 'fulfilled'
-        ? new Set(activeRunsResult.value.map((run) => run.conversation_id))
-        : new Set<string>();
+        ? new Map(activeRunsResult.value.map((run) => [run.conversation_id, run.id]))
+        : new Map<string, string>();
       reconcileConversationList(agentId, next, activeRunIds);
       const sorted = sortConversationList(next);
       setConversations(sorted);
@@ -364,6 +414,8 @@ export function useConversations({
     setIsLoadingChat(false);
     setRunPhase('idle');
     setRetryStatus(null);
+    pendingMessagesRef.current = [];
+    setPendingMessages([]);
   }, []);
 
   const refreshRunningConversations = useCallback(async (agentId: string) => {
@@ -542,8 +594,6 @@ export function useConversations({
         flushPendingDelta();
       }
       if (evt.event === 'error') {
-        setIsSending(false);
-        setRunPhase('idle');
         setRetryStatus(null);
         setMessages((current) => {
           return interruptActiveRun(current, runInterruptedMessage, 'error');
@@ -552,8 +602,6 @@ export function useConversations({
         return;
       }
       if (evt.event === 'done') {
-        setIsSending(false);
-        setRunPhase('idle');
         setRetryStatus(null);
         setMessages((current) => {
           const last = current[current.length - 1];
@@ -568,8 +616,6 @@ export function useConversations({
         return;
       }
       if (evt.event === 'cancelled') {
-        setIsSending(false);
-        setRunPhase('idle');
         setRetryStatus(null);
         setMessages((current) => {
           return interruptActiveRun(current, runCancelledMessage, 'rejected');
@@ -728,6 +774,8 @@ export function useConversations({
   ) => {
     activeRunIdRef.current = run.id;
     activeStreamRef.current = { agentId, conversationId: run.conversation_id };
+    conversationRunSnapshotsRef.current[run.conversation_id] = run.id;
+    writeJsonStorage(CONVERSATION_RUN_SNAPSHOTS_STORAGE_KEY, conversationRunSnapshotsRef.current);
     setRunningConversationIds((current) => new Set(current).add(run.conversation_id));
     setIsSending(true);
     setRunPhase(run.phase ?? 'waiting_for_model');
@@ -890,6 +938,22 @@ export function useConversations({
           )));
         }
 
+        if (isFirstUserMessage && content.trim()) {
+          const fallbackTitle = content.trim().split(/\s+/).join(' ').slice(0, 40);
+          const currentConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
+          const isPlaceholder = !currentConversation
+            || currentConversation.title.trim() === newConversationTitle.trim()
+            || currentConversation.title.trim() === 'New Conversation'
+            || currentConversation.title.trim() === '新会话';
+          if (isPlaceholder) {
+            setConversations((current) => current.map((conversation) => (
+              conversation.id === conversationId
+                ? { ...conversation, title: fallbackTitle }
+                : conversation
+            )));
+          }
+        }
+
         activeStreamRef.current = { agentId, conversationId };
         const run = await createMessageRun(
           conversationId,
@@ -935,11 +999,27 @@ export function useConversations({
             onErrorRef.current?.(cause instanceof Error ? cause.message : 'Send failed');
           }
         }
-      } finally {
+    } finally {
         if (requestId === sendRequestIdRef.current) {
           sendAbortControllerRef.current = null;
           setIsSending(false);
           setRunPhase('idle');
+          const next = pendingMessagesRef.current[0];
+          if (next) {
+            const remaining = pendingMessagesRef.current.slice(1);
+            pendingMessagesRef.current = remaining;
+            setPendingMessages(remaining);
+            window.queueMicrotask(() => {
+              void sendRef.current?.(
+                next.content,
+                next.agentId,
+                next.isStreamMode,
+                next.attachments,
+                next.thinkingLevel,
+                next.generationMode,
+              );
+            });
+          }
         }
       }
     },
@@ -953,6 +1033,62 @@ export function useConversations({
       runInterruptedMessage,
     ],
   );
+
+  sendRef.current = send;
+
+  const enqueueMessage = useCallback((
+    content: string,
+    agentId: string,
+    isStreamMode: boolean,
+    attachments: ImageAttachment[],
+    thinkingLevel: ThinkingLevel,
+    generationMode: GenerationMode,
+  ) => {
+    const message: PendingChatMessage = {
+      id: genClientId(),
+      content,
+      attachments,
+      agentId,
+      isStreamMode,
+      thinkingLevel,
+      generationMode,
+    };
+    setPendingMessages((current) => {
+      const next = [...current, message];
+      pendingMessagesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const removePendingMessage = useCallback((id: string) => {
+    setPendingMessages((current) => {
+      const next = current.filter((message) => message.id !== id);
+      pendingMessagesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const steerActiveRun = useCallback(async (content: string) => {
+    const runId = activeRunIdRef.current;
+    if (!runId || !content.trim()) return;
+    try {
+      await steerMessageRun(runId, content.trim());
+    } catch (cause) {
+      onErrorRef.current?.(cause instanceof Error ? cause.message : 'Failed to guide the active run');
+    }
+  }, []);
+
+  const steerPendingMessage = useCallback(async (id: string) => {
+    const message = pendingMessagesRef.current.find((item) => item.id === id);
+    const runId = activeRunIdRef.current;
+    if (!message || !runId) return;
+    try {
+      await steerMessageRun(runId, message.content);
+      removePendingMessage(id);
+    } catch (cause) {
+      onErrorRef.current?.(cause instanceof Error ? cause.message : 'Failed to guide the active run');
+    }
+  }, [removePendingMessage]);
 
   const createNewConversation = useCallback(
     async (agentId: string) => {
@@ -984,7 +1120,9 @@ export function useConversations({
     async (conversationId: string, agentId: string) => {
       await deleteConversation(conversationId);
       delete conversationSnapshotsRef.current[conversationId];
+      delete conversationRunSnapshotsRef.current[conversationId];
       writeJsonStorage(CONVERSATION_SNAPSHOTS_STORAGE_KEY, conversationSnapshotsRef.current);
+      writeJsonStorage(CONVERSATION_RUN_SNAPSHOTS_STORAGE_KEY, conversationRunSnapshotsRef.current);
       updateUnreadConversationIds((current) => ({
         ...current,
         [agentId]: (current[agentId] ?? []).filter((id) => id !== conversationId),
@@ -1051,6 +1189,11 @@ export function useConversations({
     resumeActiveRun,
     detachActiveRun,
     cancelActiveSend,
+    pendingMessages,
+    enqueueMessage,
+    removePendingMessage,
+    steerActiveRun,
+    steerPendingMessage,
     clearChat,
     send,
     createNewConversation,

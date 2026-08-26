@@ -15,6 +15,7 @@ pub enum WebSearchProviderKind {
     Jina,
     Grok,
     Firecrawl,
+    Keenable,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -73,6 +74,7 @@ impl WebSearchProviderKind {
             Self::Jina => "jina",
             Self::Grok => "grok",
             Self::Firecrawl => "firecrawl",
+            Self::Keenable => "keenable",
         }
     }
 
@@ -83,6 +85,7 @@ impl WebSearchProviderKind {
             Self::Jina => "https://s.jina.ai",
             Self::Grok => "https://grok.com",
             Self::Firecrawl => "https://api.firecrawl.dev/v2",
+            Self::Keenable => "https://api.keenable.ai/v1",
         }
     }
 
@@ -93,6 +96,7 @@ impl WebSearchProviderKind {
             Self::Jina => "https://r.jina.ai",
             Self::Grok => "https://grok.com",
             Self::Firecrawl => "https://api.firecrawl.dev/v2",
+            Self::Keenable => "https://api.keenable.ai/v1",
         }
     }
 
@@ -103,15 +107,16 @@ impl WebSearchProviderKind {
             Self::Jina => "Jina Search",
             Self::Grok => "Grok Research",
             Self::Firecrawl => "Firecrawl",
+            Self::Keenable => "Keenable",
         }
     }
 
     pub fn supports_anonymous_search(&self) -> bool {
-        matches!(self, Self::Jina | Self::Firecrawl)
+        matches!(self, Self::Jina | Self::Firecrawl | Self::Keenable)
     }
 
     pub fn supports_anonymous_extract(&self) -> bool {
-        matches!(self, Self::Jina | Self::Firecrawl)
+        matches!(self, Self::Jina | Self::Firecrawl | Self::Keenable)
     }
 
     pub fn provider_kind(&self) -> &'static str {
@@ -120,6 +125,7 @@ impl WebSearchProviderKind {
             Self::Exa | Self::Jina => "semantic_search",
             Self::Grok => "ai_research",
             Self::Firecrawl => "search_and_extract",
+            Self::Keenable => "search_and_extract",
         }
     }
 
@@ -127,6 +133,7 @@ impl WebSearchProviderKind {
         match self {
             Self::Grok => "ai_synthesis_and_candidates",
             Self::Firecrawl => "web_evidence_with_extracted_content",
+            Self::Keenable => "web_evidence_with_extracted_content",
             _ => "web_evidence_candidates",
         }
     }
@@ -173,6 +180,14 @@ impl WebSearchProviderKind {
                 WebSearchSourceRole::FactChecking,
                 WebSearchSourceRole::MarketResearch,
                 WebSearchSourceRole::ProductResearch,
+                WebSearchSourceRole::MultilingualSearch,
+            ],
+            Self::Keenable => vec![
+                WebSearchSourceRole::GeneralSearch,
+                WebSearchSourceRole::CurrentNews,
+                WebSearchSourceRole::OfficialDocs,
+                WebSearchSourceRole::TechnicalResearch,
+                WebSearchSourceRole::FactChecking,
                 WebSearchSourceRole::MultilingualSearch,
             ],
         }
@@ -240,13 +255,25 @@ impl WebSearchProviderKind {
                 pdf_extract: true,
                 ai_derived_extract: false,
             },
+            Self::Keenable => WebSearchSourceCapabilities {
+                domain_filter: true,
+                recency_filter: true,
+                native_citations: true,
+                ai_synthesis: false,
+                social_results: false,
+                url_extract: true,
+                batch_extract: false,
+                javascript_rendering: false,
+                pdf_extract: false,
+                ai_derived_extract: false,
+            },
         }
     }
 
     pub fn latency_tier(&self) -> WebSearchLatencyTier {
         match self {
             Self::Tavily | Self::Exa => WebSearchLatencyTier::Fast,
-            Self::Jina | Self::Firecrawl => WebSearchLatencyTier::Medium,
+            Self::Jina | Self::Firecrawl | Self::Keenable => WebSearchLatencyTier::Medium,
             Self::Grok => WebSearchLatencyTier::Slow,
         }
     }
@@ -254,7 +281,9 @@ impl WebSearchProviderKind {
     pub fn cost_tier(&self) -> WebSearchCostTier {
         match self {
             Self::Jina => WebSearchCostTier::Low,
-            Self::Tavily | Self::Exa | Self::Firecrawl => WebSearchCostTier::Medium,
+            Self::Tavily | Self::Exa | Self::Firecrawl | Self::Keenable => {
+                WebSearchCostTier::Medium
+            }
             Self::Grok => WebSearchCostTier::High,
         }
     }
@@ -282,6 +311,11 @@ impl WebSearchProviderKind {
                 "news, GitHub, research, and PDF discovery",
                 "JavaScript-ready page content",
             ],
+            Self::Keenable => &[
+                "web search with indexed page retrieval",
+                "current and multilingual web discovery",
+                "simple REST API integration",
+            ],
         }
     }
 
@@ -299,6 +333,10 @@ impl WebSearchProviderKind {
                 "deep-mode page scraping increases latency and credit usage",
                 "upstream search coverage may overlap other general indexes",
                 "image results are outside the unified text-result schema",
+            ],
+            Self::Keenable => &[
+                "public access is rate limited per egress IP",
+                "deep page extraction is limited to indexed content unless live fetch is requested",
             ],
         }
     }
@@ -429,11 +467,12 @@ pub struct WebSearchToolConfig {
 
 fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
     vec![
-        default_web_search_source("tavily", WebSearchProviderKind::Tavily, 10),
-        default_web_search_source("exa", WebSearchProviderKind::Exa, 20),
-        default_web_search_source("jina", WebSearchProviderKind::Jina, 30),
-        default_web_search_source("grok", WebSearchProviderKind::Grok, 40),
-        default_web_search_source("firecrawl", WebSearchProviderKind::Firecrawl, 50),
+        default_web_search_source("keenable", WebSearchProviderKind::Keenable, 10),
+        default_web_search_source("tavily", WebSearchProviderKind::Tavily, 20),
+        default_web_search_source("exa", WebSearchProviderKind::Exa, 30),
+        default_web_search_source("jina", WebSearchProviderKind::Jina, 40),
+        default_web_search_source("grok", WebSearchProviderKind::Grok, 50),
+        default_web_search_source("firecrawl", WebSearchProviderKind::Firecrawl, 60),
     ]
 }
 
@@ -501,6 +540,7 @@ impl WebSearchToolConfig {
             {
                 continue;
             }
+            let insert_first = default_source.id == "keenable";
             let source = previous
                 .and_then(|config| {
                     config
@@ -510,7 +550,11 @@ impl WebSearchToolConfig {
                 })
                 .cloned()
                 .unwrap_or(default_source);
-            self.sources.push(source);
+            if insert_first {
+                self.sources.insert(0, source);
+            } else {
+                self.sources.push(source);
+            }
             changed = true;
         }
         changed

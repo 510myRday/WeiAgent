@@ -17,7 +17,7 @@ use crate::{
         agent_executor::{AgentRunEvent, run_agent},
         chat::prepare_chat,
         image::run_image,
-        run_manager::SequencedRunEvent,
+        run_manager::{SequencedRunEvent, SteerMessage},
     },
     domain::{
         AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, Conversation,
@@ -281,6 +281,30 @@ pub async fn create_message_run(
     ))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SteerRunRequest {
+    pub content: String,
+}
+
+pub async fn steer_run(
+    State(state): State<AppState>,
+    Path(run_id): Path<Uuid>,
+    Json(request): Json<SteerRunRequest>,
+) -> AppResult<()> {
+    let content = request.content.trim();
+    if content.is_empty() {
+        return Err(AppError::BadRequest(
+            "guidance content cannot be empty".to_string(),
+        ));
+    }
+    state.run_manager.steer(
+        run_id,
+        SteerMessage {
+            content: content.to_string(),
+        },
+    )
+}
+
 pub async fn start_message_run(
     state: AppState,
     conversation_id: Uuid,
@@ -292,7 +316,8 @@ pub async fn start_message_run(
         return create_image_run(state, conversation_id, request).await;
     }
     let settings = state.store.read_settings().await?;
-    let registration = state.run_manager.create(conversation_id)?;
+    let mut registration = state.run_manager.create(conversation_id)?;
+    let steer_receiver = state.run_manager.take_steer_receiver(&mut registration);
     let run_id = registration.info.id;
     let prepared = match prepare_chat(
         &state,
@@ -388,6 +413,7 @@ pub async fn start_message_run(
             options,
             use_streaming_llm,
             Some(event_sender.clone()),
+            steer_receiver,
         );
         let outcome = tokio::select! {
             result = tokio::time::timeout(MAX_AGENT_RUN_DURATION, run) => {

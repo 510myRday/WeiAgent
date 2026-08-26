@@ -4,6 +4,7 @@ pub mod firecrawl;
 pub mod grok;
 pub mod grok_support;
 pub mod jina;
+pub mod keenable;
 pub mod support;
 pub mod tavily;
 

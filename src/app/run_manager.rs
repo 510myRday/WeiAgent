@@ -6,7 +6,7 @@ use std::{
 
 use chrono::Utc;
 use dashmap::DashMap;
-use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard, broadcast, watch};
+use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard, broadcast, mpsc, watch};
 use uuid::Uuid;
 
 use crate::{
@@ -38,13 +38,20 @@ struct RunRecord {
     state: Mutex<RunState>,
     events: broadcast::Sender<SequencedRunEvent>,
     cancel: watch::Sender<bool>,
+    steer: mpsc::UnboundedSender<SteerMessage>,
     finished: Notify,
 }
 
 pub struct RunRegistration {
     pub info: AgentRun,
     pub cancel: watch::Receiver<bool>,
+    steer: Option<mpsc::UnboundedReceiver<SteerMessage>>,
     _guard: OwnedMutexGuard<()>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SteerMessage {
+    pub content: String,
 }
 
 pub struct RunSubscription {
@@ -96,6 +103,7 @@ impl RunManager {
         };
         let (event_sender, _) = broadcast::channel(RUN_EVENT_BUFFER);
         let (cancel_sender, cancel_receiver) = watch::channel(false);
+        let (steer_sender, steer_receiver) = mpsc::unbounded_channel();
         self.runs.insert(
             id,
             Arc::new(RunRecord {
@@ -106,6 +114,7 @@ impl RunManager {
                 }),
                 events: event_sender,
                 cancel: cancel_sender,
+                steer: steer_sender,
                 finished: Notify::new(),
             }),
         );
@@ -113,8 +122,37 @@ impl RunManager {
         Ok(RunRegistration {
             info,
             cancel: cancel_receiver,
+            steer: Some(steer_receiver),
             _guard: guard,
         })
+    }
+
+    pub fn take_steer_receiver(
+        &self,
+        registration: &mut RunRegistration,
+    ) -> mpsc::UnboundedReceiver<SteerMessage> {
+        registration
+            .steer
+            .take()
+            .expect("run steer receiver can only be taken once")
+    }
+
+    pub fn steer(&self, run_id: Uuid, message: SteerMessage) -> AppResult<()> {
+        let record = self
+            .runs
+            .get(&run_id)
+            .map(|entry| entry.clone())
+            .ok_or(AppError::NotFound)?;
+        let info = record.state.lock().unwrap().info.clone();
+        if info.status.is_terminal() {
+            return Err(AppError::Conflict(
+                "the run has already finished".to_string(),
+            ));
+        }
+        record
+            .steer
+            .send(message)
+            .map_err(|_| AppError::Conflict("the run is no longer accepting guidance".to_string()))
     }
 
     pub fn set_user_message(&self, run_id: Uuid, message_id: Uuid) {

@@ -478,6 +478,19 @@
   z-index: 1;
 }
 
+.nav-unread-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  z-index: 2;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--surface-rail);
+  border-radius: 50%;
+  background: var(--color-danger);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-danger) 18%, transparent);
+}
+
 .icon-button-rail:hover::before,
 .icon-button-rail:focus-visible::before {
   opacity: 1;
@@ -655,9 +668,10 @@
 
 .conversation-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px 30px;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  grid-template-rows: 1fr 1fr;
   align-items: center;
-  gap: 3px;
+  gap: 0 3px;
   min-height: var(--list-row-height);
   padding-right: 5px;
   border: 1px solid transparent;
@@ -680,6 +694,8 @@
 
 .conversation-row-main {
   grid-template-columns: minmax(0, 1fr);
+  grid-column: 1;
+  grid-row: 1 / span 2;
   min-width: 0;
   min-height: calc(var(--list-row-height) - 2px);
   padding: 9px 8px 9px 11px;
@@ -735,6 +751,16 @@
   background: transparent;
   color: var(--color-muted);
   box-shadow: none;
+}
+
+.conversation-pin-action {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.conversation-delete-action {
+  grid-column: 2;
+  grid-row: 2;
 }
 
 .conversation-action.icon-button:hover:not(:disabled),

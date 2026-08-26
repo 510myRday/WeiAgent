@@ -516,15 +516,17 @@ impl SkillManager {
                 proxy_url.as_deref(),
                 Some(task_id),
                 group_id.as_deref(),
+                None,
             )
             .await
         } else {
-            self.import_directory_with_progress(&source, Some(task_id), group_id.as_deref())
+            self.import_directory_with_progress(&source, Some(task_id), group_id.as_deref(), None)
                 .await
         };
         match result {
             Ok(()) => {
-                self.import_tasks.write().await.remove(&task_id);
+                self.update_import_task(task_id, "completed", "completed", 100, None, true)
+                    .await;
             }
             Err(error) => {
                 self.update_import_task(
@@ -568,6 +570,7 @@ impl SkillManager {
         source_directory: &str,
         task_id: Option<Uuid>,
         group_id: Option<&str>,
+        expected_name: Option<&str>,
     ) -> AppResult<()> {
         let source = source_directory.trim();
         if source.is_empty() {
@@ -577,6 +580,7 @@ impl SkillManager {
         }
 
         let source = validate_local_skill_directory(source).await?;
+        let source_display = display_path(&source);
         if let Some(task_id) = task_id {
             self.update_import_task(task_id, "running", "copying", 25, None, false)
                 .await;
@@ -589,7 +593,14 @@ impl SkillManager {
             let _ = fs::remove_dir_all(&temporary).await;
             return Err(error);
         }
-        let result = self.finish_import(temporary.clone(), None, group_id).await;
+        let result = self
+            .finish_import(
+                temporary.clone(),
+                Some(&source_display),
+                group_id,
+                expected_name,
+            )
+            .await;
         if result.is_err() {
             let _ = fs::remove_dir_all(&temporary).await;
         }
@@ -602,6 +613,7 @@ impl SkillManager {
         proxy_url: Option<&str>,
         task_id: Option<Uuid>,
         group_id: Option<&str>,
+        expected_name: Option<&str>,
     ) -> AppResult<()> {
         let source = source.trim();
         if source.is_empty() {
@@ -611,7 +623,7 @@ impl SkillManager {
         }
         if !looks_like_url(source) {
             return self
-                .import_directory_with_progress(source, task_id, group_id)
+                .import_directory_with_progress(source, task_id, group_id, expected_name)
                 .await;
         }
 
@@ -709,7 +721,7 @@ impl SkillManager {
                 self.update_import_task(task_id, "running", "installing", 85, None, false)
                     .await;
             }
-            self.finish_import(temporary.clone(), Some(source), group_id)
+            self.finish_import(temporary.clone(), Some(source), group_id, expected_name)
                 .await
         }
         .await;
@@ -725,8 +737,17 @@ impl SkillManager {
         temporary: PathBuf,
         source_url: Option<&str>,
         group_id: Option<&str>,
+        expected_name: Option<&str>,
     ) -> AppResult<()> {
         let manifest = parse_skill(temporary.clone()).await?;
+        if expected_name.is_some_and(|name| manifest.name != name) {
+            let expected = expected_name.unwrap_or_default();
+            let _ = fs::remove_dir_all(&temporary).await;
+            return Err(AppError::BadRequest(format!(
+                "updated Skill name changed from {expected} to {}",
+                manifest.name
+            )));
+        }
         if manifest.name == BUILTIN_WEIAGENT_CLI_SKILL_NAME {
             let _ = fs::remove_dir_all(&temporary).await;
             return Err(AppError::BadRequest(
@@ -870,7 +891,10 @@ impl SkillManager {
             item.group_id = assigned_group.map(|group| group.id.clone());
             item.is_builtin = is_builtin;
             item.icon_url = icons.get(&manifest.name).cloned();
-            item.source_url = sources.get(&manifest.name).cloned();
+            item.source_url = sources
+                .get(&manifest.name)
+                .cloned()
+                .or_else(|| (!is_builtin).then(|| manifest.root_dir.clone()));
             item.enabled = enabled;
             item.global_override = if is_builtin { None } else { global_item };
             item.group_override = if is_builtin { None } else { global_group_item };
@@ -1015,6 +1039,43 @@ impl SkillManager {
             .find(|item| item.name == name)
             .ok_or_else(|| AppError::NotFound)?;
         self.read_content(manifest, file_path).await
+    }
+
+    pub async fn update_skill(&self, name: &str) -> AppResult<()> {
+        let name = name.trim().to_ascii_lowercase();
+        if name == BUILTIN_WEIAGENT_CLI_SKILL_NAME {
+            return Err(AppError::BadRequest(
+                "the built-in weiagentcli Skill cannot be updated".to_string(),
+            ));
+        }
+        let settings = self.settings(None).await?;
+        let manifest = settings
+            .defaults
+            .into_iter()
+            .find(|item| item.name == name)
+            .ok_or(AppError::NotFound)?;
+        let source = manifest
+            .source_url
+            .clone()
+            .ok_or_else(|| AppError::BadRequest("Skill source is not recorded".to_string()))?;
+        if looks_like_url(&source) {
+            self.import_source_with_progress(
+                &source,
+                None,
+                None,
+                manifest.group_id.as_deref(),
+                Some(&name),
+            )
+            .await
+        } else {
+            self.import_directory_with_progress(
+                &source,
+                None,
+                manifest.group_id.as_deref(),
+                Some(&name),
+            )
+            .await
+        }
     }
 
     pub async fn delete_skill(&self, name: &str) -> AppResult<()> {
@@ -2001,6 +2062,45 @@ mod tests {
                 .diagnostics
                 .iter()
                 .any(|item| item.message.contains("duplicate"))
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_import_task_remains_available_for_cli_polling() {
+        let data = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        fs::write(
+            source.path().join("SKILL.md"),
+            "---\nname: local-skill\ndescription: local-skill description\ngroup: development\n---\nInstructions for local-skill.\n",
+        )
+        .await
+        .unwrap();
+        let store = Arc::new(Store::new(data.path()).await.unwrap());
+        let manager = SkillManager::new(store).await.unwrap();
+
+        let task = manager
+            .create_import_task(source.path().to_string_lossy().as_ref(), "local", None)
+            .await
+            .unwrap();
+        manager
+            .run_import_task(task.id, task.source.clone(), None, None)
+            .await;
+
+        let tasks = manager.list_import_tasks().await;
+        let completed = tasks.iter().find(|item| item.id == task.id).unwrap();
+        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.phase, "completed");
+        assert_eq!(completed.progress, 100);
+        assert!(data.path().join("skills").join("local-skill").exists());
+        let expected_source = super::display_path(&fs::canonicalize(source.path()).await.unwrap());
+        let settings = manager.settings(None).await.unwrap();
+        assert_eq!(
+            settings
+                .defaults
+                .iter()
+                .find(|skill| skill.name == "local-skill")
+                .and_then(|skill| skill.source_url.as_deref()),
+            Some(expected_source.as_str()),
         );
     }
 

@@ -14,7 +14,7 @@ export type ListLlmLogsParams = {
   isCompaction?: boolean;
 };
 
-export type WebSearchProviderKind = 'tavily' | 'exa' | 'jina' | 'grok' | 'firecrawl';
+export type WebSearchProviderKind = 'tavily' | 'exa' | 'jina' | 'grok' | 'firecrawl' | 'keenable';
 
 export const MAX_WEB_SEARCH_KEYS_PER_SOURCE = 1_000;
 

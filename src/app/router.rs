@@ -205,6 +205,7 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             "/api/runs/{run_id}/events",
             get(conversations::stream_run_events),
         )
+        .route("/api/runs/{run_id}/steer", post(conversations::steer_run))
         .route(
             "/api/runs/{run_id}",
             get(conversations::read_run).delete(conversations::cancel_run),
@@ -227,6 +228,10 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
         .route(
             "/api/skills/{skill_name}/content",
             get(skills::read_skill_content),
+        )
+        .route(
+            "/api/skills/{skill_name}/update",
+            post(skills::update_skill),
         )
         .route(
             "/api/skills/{skill_name}/enabled",

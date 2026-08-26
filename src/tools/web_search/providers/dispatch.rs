@@ -6,7 +6,7 @@ use crate::tools::web_search::types::{
     ProviderSearchRequest,
 };
 
-use super::{exa, firecrawl, grok, grok_support, jina, tavily};
+use super::{exa, firecrawl, grok, grok_support, jina, keenable, tavily};
 
 pub struct GrokDispatch<'a> {
     pub source_id: &'a str,
@@ -41,6 +41,9 @@ pub async fn dispatch_search(
         }
         WebSearchProviderKind::Firecrawl => {
             firecrawl::search(control_client, base_url, api_key, request).await
+        }
+        WebSearchProviderKind::Keenable => {
+            keenable::search(control_client, base_url, api_key, request).await
         }
         WebSearchProviderKind::Grok => {
             let client = grok_support::build_emulated_client(grok.timeout, grok.proxy_url)
@@ -79,6 +82,9 @@ pub async fn dispatch_extract(
         }
         WebSearchProviderKind::Firecrawl => {
             firecrawl::extract(control_client, base_url, api_key, request).await
+        }
+        WebSearchProviderKind::Keenable => {
+            keenable::extract(control_client, base_url, api_key, request).await
         }
         WebSearchProviderKind::Grok => {
             let client = grok_support::build_emulated_client(grok.timeout, grok.proxy_url)
@@ -129,5 +135,6 @@ pub fn classify_key_status(provider: WebSearchProviderKind, message: &str) -> &'
         WebSearchProviderKind::Jina => jina::classify_key_status(message),
         WebSearchProviderKind::Grok => grok::classify_key_status(message),
         WebSearchProviderKind::Firecrawl => firecrawl::classify_key_status(message),
+        WebSearchProviderKind::Keenable => keenable::classify_key_status(message),
     }
 }

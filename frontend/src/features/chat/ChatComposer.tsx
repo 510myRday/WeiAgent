@@ -13,6 +13,7 @@ import {
   Brain,
   Check,
   Image as ImageIcon,
+  ListPlus,
   LoaderCircle,
   Paperclip,
   Scan,
@@ -46,6 +47,11 @@ const IMAGE_QUALITY_OPTIONS = ['auto', 'low', 'medium', 'high', 'standard', 'hd'
 
 type ComposerImageOptions = Pick<ImageModelConfig, 'size' | 'quality' | 'n'>;
 
+export type QueuedChatMessage = {
+  id: string;
+  content: string;
+};
+
 interface ChatComposerProps {
   disabled: boolean;
   placeholder: string;
@@ -74,6 +80,10 @@ interface ChatComposerProps {
     attachments: ImageAttachment[],
     generationMode: GenerationMode,
   ) => void;
+  onSteer: (content: string) => void;
+  queuedMessages: readonly QueuedChatMessage[];
+  onRemoveQueuedMessage: (id: string) => void;
+  onSteerQueuedMessage: (id: string) => void;
   onStop: () => void;
 }
 
@@ -104,6 +114,10 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
   onThinkingLevelChange,
   onUnsupportedImage,
   onSend,
+  onSteer,
+  queuedMessages,
+  onRemoveQueuedMessage,
+  onSteerQueuedMessage,
   onStop,
 }: ChatComposerProps, ref) {
   const { t, locale } = useI18n();
@@ -171,22 +185,34 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
     input.style.height = `${Math.min(Math.max(input.scrollHeight, 48), 168)}px`;
   }, [draft]);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (isSending || isModelSavePending || isSavingModel) return;
+  function submitMessage(mode: 'send' | 'steer') {
+    if (isModelSavePending || isSavingModel) return;
     const content = draft.trim();
     if ((!content && attachments.length === 0) || disabled) return;
     const submittedAttachments = attachments;
     setDraft('');
     setAttachments([]);
     writeChatDraft(draftKey, '');
-    onSend(content, submittedAttachments, generationMode);
+    if (mode === 'steer') {
+      if (content) onSteer(content);
+    } else {
+      onSend(content, submittedAttachments, generationMode);
+    }
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    submitMessage('send');
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
-    if (disabled || isSending) return;
+    if (disabled) return;
+    if (isSending && (event.ctrlKey || event.metaKey)) {
+      submitMessage('steer');
+      return;
+    }
     formRef.current?.requestSubmit();
   }
 
@@ -407,11 +433,33 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
                 })}
               />
             </div>
+            {isSending ? (
+              <button
+                type="button"
+                className="composer-queue-button"
+                onClick={() => formRef.current?.requestSubmit()}
+                disabled={disabled || !canSend}
+                aria-label={t('chat.queueMessage')}
+                title={t('chat.queueMessage')}
+              >
+                <ListPlus size={16} />
+              </button>
+            ) : null}
             <Button
               className={`send-button${isSending ? ' is-stopping' : ''}`}
               variant={isSending ? 'danger' : 'primary'}
-              type={isSending ? 'button' : 'submit'}
-              onClick={isSending ? onStop : undefined}
+              type="button"
+              onClick={(event) => {
+                // Keep this button out of the form's native activation path. Stopping a
+                // run changes isSending synchronously, which can otherwise turn the
+                // clicked button into a submit button before the click completes.
+                event.preventDefault();
+                if (isSending) {
+                  onStop();
+                } else {
+                  formRef.current?.requestSubmit();
+                }
+              }}
               disabled={disabled || (!isSending && (isModelSavePending || isSavingModel || !canSend))}
               icon={isSending ? <Square className="stop-icon" size={16} /> : <Send size={17} />}
             >
@@ -421,6 +469,34 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
           </div>
         </div>
       </div>
+      {queuedMessages.length > 0 ? (
+        <div className="composer-queue" aria-label={t('chat.queuedMessages')}>
+          {queuedMessages.map((message, index) => (
+            <div className="composer-queue-row" key={message.id}>
+              <span className="composer-queue-index">{index + 1}</span>
+              <span className="composer-queue-content" title={message.content}>{message.content}</span>
+              <button
+                type="button"
+                className="composer-queue-action"
+                onClick={() => onSteerQueuedMessage(message.id)}
+                aria-label={t('chat.steerQueuedMessage')}
+                title={t('chat.steerQueuedMessage')}
+              >
+                <Send size={14} />
+              </button>
+              <button
+                type="button"
+                className="composer-queue-action"
+                onClick={() => onRemoveQueuedMessage(message.id)}
+                aria-label={t('chat.removeQueuedMessage')}
+                title={t('chat.removeQueuedMessage')}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </form>
   );
 }));

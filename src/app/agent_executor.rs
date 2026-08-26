@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
+    app::run_manager::SteerMessage,
     app::{AppState, chat::PreparedChat},
     domain::{
         ChatMessage, ChatMessageStatus, ChatRole, McpServer, ModelUsage, TaskPlan,
@@ -218,6 +219,7 @@ pub async fn run_agent(
     options: RequestOptions,
     use_streaming_llm: bool,
     events: Option<mpsc::Sender<AgentRunEvent>>,
+    mut steer_receiver: mpsc::UnboundedReceiver<SteerMessage>,
 ) -> AppResult<()> {
     let client = state.llm_registry.client_for(&prepared.provider)?;
     let mut messages = prepared.messages_for_llm.clone();
@@ -267,6 +269,14 @@ pub async fn run_agent(
         if iteration >= max_llm_iterations {
             break;
         }
+        apply_pending_steers(
+            &state,
+            runtime.prepared,
+            &mut messages,
+            &mut steer_receiver,
+            &events,
+        )
+        .await?;
         let active_task_plan = if runtime.prepared.tools_config.task_planning.enabled {
             runtime
                 .state
@@ -344,6 +354,19 @@ pub async fn run_agent(
 
         if tool_calls.is_empty() {
             emit(&events, AgentRunEvent::Assistant(assistant_message.clone())).await?;
+            messages.push(assistant_message);
+            if apply_pending_steers(
+                &state,
+                runtime.prepared,
+                &mut messages,
+                &mut steer_receiver,
+                &events,
+            )
+            .await?
+            {
+                iteration += 1;
+                continue;
+            }
             emit(&events, AgentRunEvent::Done).await?;
             return Ok(());
         }
@@ -405,6 +428,45 @@ pub async fn run_agent(
     emit(&events, AgentRunEvent::Assistant(summary.clone())).await?;
     emit(&events, AgentRunEvent::Done).await?;
     Ok(())
+}
+
+async fn apply_pending_steers(
+    state: &AppState,
+    prepared: &PreparedChat,
+    messages: &mut Vec<ChatMessage>,
+    receiver: &mut mpsc::UnboundedReceiver<SteerMessage>,
+    events: &Option<mpsc::Sender<AgentRunEvent>>,
+) -> AppResult<bool> {
+    let mut applied = false;
+    while let Ok(input) = receiver.try_recv() {
+        let content = input.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        let message = ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: prepared.agent.id,
+            conversation_id: prepared.user_message.conversation_id,
+            role: ChatRole::User,
+            content: content.to_string(),
+            reasoning_content: None,
+            openai_response_items: Vec::new(),
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        };
+        state
+            .store
+            .append_conversation_messages(message.conversation_id, std::slice::from_ref(&message))
+            .await?;
+        messages.push(message.clone());
+        emit(events, AgentRunEvent::User(message)).await?;
+        applied = true;
+    }
+    Ok(applied)
 }
 
 async fn freeze_run_tools(state: &AppState, prepared: &PreparedChat) -> FrozenRunTools {

@@ -56,6 +56,7 @@ interface ChatPanelProps {
   onConversationOpened?: () => void;
   latestConversationUpdatedAtByAgent: Record<string, string>;
   onAgentActivity: (agentId: string) => void;
+  onUnreadCountChange: (count: number) => void;
 }
 
 type ModelOption = {
@@ -82,6 +83,36 @@ type PendingImageOptionsSave = {
 type ComposerImageOptions = Pick<ImageModelConfig, 'size' | 'quality' | 'n'>;
 
 const EMPTY_MESSAGES: UiMessageItem[] = [];
+const THINKING_LEVEL_STORAGE_KEY = 'weiagent-thinking-levels';
+const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'high';
+
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return value === 'off'
+    || value === 'low'
+    || value === 'medium'
+    || value === 'high'
+    || value === 'x_high';
+}
+
+function readThinkingLevels(): Record<string, ThinkingLevel> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(THINKING_LEVEL_STORAGE_KEY) ?? '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, ThinkingLevel] => isThinkingLevel(entry[1])),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writeThinkingLevels(levels: Record<string, ThinkingLevel>) {
+  try {
+    localStorage.setItem(THINKING_LEVEL_STORAGE_KEY, JSON.stringify(levels));
+  } catch {
+    // Local storage can be unavailable in restricted browser contexts.
+  }
+}
 
 export function ChatPanel({
   agents,
@@ -99,6 +130,7 @@ export function ChatPanel({
   onConversationOpened,
   latestConversationUpdatedAtByAgent,
   onAgentActivity,
+  onUnreadCountChange,
 }: ChatPanelProps) {
   const { t, locale } = useI18n();
   const { confirm, toast } = useFeedback();
@@ -129,6 +161,11 @@ export function ChatPanel({
     cancelActiveSend,
     clearChat,
     send,
+    pendingMessages,
+    enqueueMessage,
+    removePendingMessage,
+    steerActiveRun,
+    steerPendingMessage,
     createNewConversation,
     removeConversation,
     setConversationPinned,
@@ -142,7 +179,9 @@ export function ChatPanel({
     onError: toast.error,
   });
 
-  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>('medium');
+  const [thinkingLevelsByAgent, setThinkingLevelsByAgent] = useState<Record<string, ThinkingLevel>>(
+    readThinkingLevels,
+  );
   const [generationMode, setGenerationMode] = useState<GenerationMode>('chat');
   const [modelTargetAgentId, setModelTargetAgentId] = useState('');
   const [selectedModelValue, setSelectedModelValue] = useState('');
@@ -223,6 +262,10 @@ export function ChatPanel({
   const supportsImages = activeModelConfig?.multimodal === true;
   const supportsImageGeneration = activeProvider?.provider_type === 'openai_images';
   const supportsThinking = activeModelConfig?.thinking === true;
+  const preferredThinkingLevel = activeAgentId
+    ? thinkingLevelsByAgent[activeAgentId] ?? DEFAULT_THINKING_LEVEL
+    : DEFAULT_THINKING_LEVEL;
+  const thinkingLevel = supportsThinking ? preferredThinkingLevel : 'off';
   const effectiveGenerationMode: GenerationMode = supportsImageGeneration ? 'image' : generationMode;
   const imageOptionSize = activeModelConfig?.image_options?.size;
   const imageOptionQuality = activeModelConfig?.image_options?.quality;
@@ -442,11 +485,14 @@ export function ChatPanel({
     setIsSavingModel(false);
   }, [activeModelValue, conversationActionError, modelTargetAgentId, onAgentEdit, toast]);
 
-  useEffect(() => {
-    // Keep thinking state in sync without resetting a model selection that is
-    // still waiting for auto-save.
-    setThinkingLevel(supportsThinking ? 'medium' : 'off');
-  }, [supportsThinking]);
+  const handleThinkingLevelChange = useCallback((level: ThinkingLevel) => {
+    if (!activeAgentId) return;
+    setThinkingLevelsByAgent((current) => {
+      const next = { ...current, [activeAgentId]: level };
+      writeThinkingLevels(next);
+      return next;
+    });
+  }, [activeAgentId]);
 
   useEffect(() => {
     if (
@@ -532,6 +578,12 @@ export function ChatPanel({
     }, 3000);
     return () => window.clearInterval(timer);
   }, [activeAgentId, agents, isPageVisible, refreshRunningConversations, refreshUnreadState]);
+
+  useEffect(() => {
+    const unreadCount = Object.values(unreadConversationIdsByAgent)
+      .reduce((total, ids) => total + ids.length, 0);
+    onUnreadCountChange(unreadCount);
+  }, [onUnreadCountChange, unreadConversationIdsByAgent]);
 
   useEffect(() => {
     if (!openConversationId || !activeAgentId) return;
@@ -819,19 +871,18 @@ export function ChatPanel({
   ) => {
     if (
       !activeAgent
-      || isSending
       || isModelSavePending
       || isSavingModel
       || isSavingImageOptions
     ) return;
-    void send(
-      content,
-      activeAgent.id,
-      !supportsImageGeneration,
-      attachments,
-      supportsThinking ? thinkingLevel : 'off',
-      supportsImageGeneration ? 'image' : imageMode,
-    );
+    const isStreamMode = !supportsImageGeneration;
+    const thinking = supportsThinking ? thinkingLevel : 'off';
+    const mode = supportsImageGeneration ? 'image' : imageMode;
+    if (isSending) {
+      enqueueMessage(content, activeAgent.id, isStreamMode, attachments, thinking, mode);
+    } else {
+      void send(content, activeAgent.id, isStreamMode, attachments, thinking, mode);
+    }
     onAgentActivity(activeAgent.id);
   }, [
     activeAgent,
@@ -839,12 +890,17 @@ export function ChatPanel({
     isSavingImageOptions,
     isSavingModel,
     isSending,
+    enqueueMessage,
     onAgentActivity,
     send,
     supportsImageGeneration,
     supportsThinking,
     thinkingLevel,
   ]);
+
+  const handleSteerMessage = useCallback((content: string) => {
+    void steerActiveRun(content);
+  }, [steerActiveRun]);
 
   const handleUnsupportedImage = useCallback(() => {
     toast.warning(t('chat.imageUnsupportedModel'));
@@ -1113,11 +1169,15 @@ export function ChatPanel({
             onImageOptionsChange={handleImageOptionsChange}
             supportsThinking={supportsThinking}
             thinkingLevel={thinkingLevel}
-            onThinkingLevelChange={setThinkingLevel}
+            onThinkingLevelChange={handleThinkingLevelChange}
             usage={conversationUsage}
             contextSize={activeModelConfig?.context_size ?? 128000}
             onUnsupportedImage={handleUnsupportedImage}
             onSend={handleSendMessage}
+            onSteer={handleSteerMessage}
+            queuedMessages={pendingMessages}
+            onRemoveQueuedMessage={removePendingMessage}
+            onSteerQueuedMessage={(id) => void steerPendingMessage(id)}
             onStop={cancelActiveSend}
           />
         </div>

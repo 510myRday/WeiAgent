@@ -8,12 +8,47 @@ import { I18nProvider } from '../../i18n';
 import { FeedbackProvider } from '../../components/ui';
 import { SettingsPanel } from './SettingsPanel';
 import { clearNewProviderDraft } from './settings-panel/newProviderDraft';
+import { readToolDefaults, updateToolDefaults } from '../../api';
 
 vi.mock('../../api', () => ({
   fetchModels: vi.fn().mockResolvedValue([]),
   fetchModelsForProvider: vi.fn().mockResolvedValue([]),
   listIpProxies: vi.fn().mockResolvedValue([]),
+  readToolDefaults: vi.fn(),
+  updateToolDefaults: vi.fn(),
 }));
+
+const toolDefaults = {
+  max_llm_iterations: 99,
+  terminal: {
+    enabled: true,
+    permission_mode: 'request_approval' as const,
+    approval_grants: [],
+    default_timeout_ms: 30_000,
+    allowed_cwd_roots: [],
+  },
+  web_search: {
+    enabled: false,
+    max_results: 5,
+    timeout_ms: 15_000,
+    key_selection: 'sequential' as const,
+    extraction: {
+      remote_enabled: true,
+      max_remote_attempts_per_url: 3,
+      allow_grok_fallback: true,
+    },
+    sources: [],
+  },
+  evidence_storage: {
+    enabled: true,
+    retention_days: 30,
+    max_total_mb: 200,
+  },
+  task_planning: {
+    enabled: true,
+    progress_interval: 5,
+  },
+};
 
 const settings: AppSettings = {
   host: '127.0.0.1',
@@ -33,6 +68,8 @@ const settings: AppSettings = {
 beforeEach(() => {
   localStorage.setItem('weiagent-locale', 'zh');
   clearNewProviderDraft();
+  vi.mocked(readToolDefaults).mockResolvedValue(structuredClone(toolDefaults));
+  vi.mocked(updateToolDefaults).mockImplementation(async (config) => config);
 });
 
 const existingProvider: ModelProvider = {
@@ -49,6 +86,23 @@ const existingProvider: ModelProvider = {
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
 };
+
+test('agent settings exposes and saves the tool LOOP limit', async () => {
+  const user = userEvent.setup();
+  render(panelTree({ initialSection: 'agent' }));
+
+  const input = await screen.findByLabelText(/^工具 LOOP 次数/);
+  await waitFor(() => expect(input).toBeEnabled());
+  expect(input).toHaveValue(99);
+  expect(screen.getByText(/达到这个次数后，将停止继续调用工具并结束当前会话/)).toBeInTheDocument();
+
+  await user.clear(input);
+  await user.type(input, '12');
+
+  await waitFor(() => expect(updateToolDefaults).toHaveBeenCalledWith(expect.objectContaining({
+    max_llm_iterations: 12,
+  })));
+});
 
 function panelTree(overrides: Partial<ComponentProps<typeof SettingsPanel>> = {}) {
   return (

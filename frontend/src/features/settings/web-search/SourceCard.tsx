@@ -112,12 +112,13 @@ export const SourceCard = memo(function SourceCard({
   const selected = selectedKeyIndices
     .filter((keyIndex) => keyIndex >= 0 && keyIndex < keyCount);
   const canEnableSource = sourceCanBeEnabled(source);
-  const supportsAnonymousAccess = source.provider === 'jina' || source.provider === 'firecrawl';
+  const supportsAnonymousAccess = source.provider === 'jina' || source.provider === 'firecrawl' || source.provider === 'keenable';
   const isPreferencesExpanded = Boolean(expandedSections?.preferences);
   const isKeysExpanded = Boolean(expandedSections?.keys);
   const isConnectionExpanded = Boolean(expandedSections?.connection);
   const allSelected = keyCount > 0 && selected.length === keyCount;
   const statusSummary = summarizeKeyStatuses(keyCount, sourceStatuses);
+  const quotaProvider = source.provider === 'firecrawl' ? 'tavily' : source.provider;
   const currentCheckProgress = checkProgress;
   const checkIndices = selected.length > 0
     ? selected
@@ -193,6 +194,7 @@ export const SourceCard = memo(function SourceCard({
           <span className="web-search-source__meta">
             <span className="web-search-source__title-line">
               <strong>{providerLabel(source.provider, t)}</strong>
+              <small className="web-search-source__quota">{t(`tools.webSearch.freeQuota.${quotaProvider}`)}</small>
             </span>
             <span className="web-search-source__health" aria-label={t('tools.webSearch.statusSummary')}>
               <span className="is-total">

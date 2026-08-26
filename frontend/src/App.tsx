@@ -25,6 +25,7 @@ export function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('runtime');
   const [mobileView, setMobileView] = useState<MobileView>('list');
   const [pendingConversationId, setPendingConversationId] = useState('');
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
   const [initialLoadError, setInitialLoadError] = useState('');
   const [isRefreshingInitialData, setIsRefreshingInitialData] = useState(false);
   const hasRestoredInitialChatSelectionRef = useRef(false);
@@ -219,6 +220,7 @@ export function App() {
       ) : null}
       <Sidebar
         activeNav={activeNav}
+        chatUnreadCount={chatUnreadCount}
         settings={settingsForm}
         onNavChange={handleNavChange}
         onSettingsSave={saveSettingsWithLocale}
@@ -241,6 +243,7 @@ export function App() {
             onConversationOpened={() => setPendingConversationId('')}
             latestConversationUpdatedAtByAgent={latestConversationUpdatedAtByAgent}
             onAgentActivity={touchAgentActivity}
+            onUnreadCountChange={setChatUnreadCount}
           />
         )}
         <Suspense fallback={<PanelLoading label={t('sidebar.loading')} />}>

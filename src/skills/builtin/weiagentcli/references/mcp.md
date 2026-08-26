@@ -57,6 +57,8 @@ weiagent mcp add --file MCP.json
 weiagent mcp edit SERVER_ID --file MCP.json
 ```
 
+MCP setup is service-first: use the CLI to add the server to the current WeiAgent service, then run `mcp test` or `mcp reload SERVER_ID` and verify the server and tool inventory. Downloaded repositories and JSON files are preparation inputs for this configuration workflow.
+
 The transport type is one of `stdio`, `streamable_http`, or `sse`.
 
 Streamable HTTP example:
