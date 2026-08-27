@@ -26,6 +26,8 @@ export type ModelProvider = {
   has_api_key: boolean;
   /** One masked entry per stored key, in pool order. */
   masked_api_keys: string[];
+  /** Optional user-facing labels aligned with masked_api_keys. */
+  api_key_labels?: string[];
   key_strategy: ApiKeyStrategy;
   models: string[];
   model_configs: ModelConfig[];
@@ -78,6 +80,8 @@ export type ModelProviderPayload = {
   image_edit_url?: string | null;
   /** Masked entries keep the stored key at that slot; plaintext entries are new keys. */
   api_keys: string[];
+  /** Optional labels aligned with api_keys. */
+  api_key_labels?: string[];
   key_strategy: ApiKeyStrategy;
   models: string[];
   model_configs: ModelConfig[];

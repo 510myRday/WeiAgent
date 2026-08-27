@@ -116,7 +116,7 @@ pub async fn prepare_chat(
     if !skill_settings.effective.is_empty() {
         system_prompt.push_str("\n\n## Available Skills (catalog)\n\n");
         system_prompt.push_str(
-            "The entries below are Skill metadata, not loaded Skill instructions. When a Skill is relevant, use skills_list or skill_view to load its instructions for the current task.\n\n<available_skills>\n",
+            "The entries below are Skill metadata, not loaded Skill instructions. When a Skill is relevant, use skill_view to load its instructions for the current task.\n\n<available_skills>\n",
         );
         for skill in &skill_settings.effective {
             let description = compact_skill_description(&skill.description);

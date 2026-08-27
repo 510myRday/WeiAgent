@@ -40,6 +40,8 @@ pub struct ImportWebSearchKeysRequest {
     pub source_id: String,
     #[serde(default)]
     pub api_keys: Vec<String>,
+    #[serde(default)]
+    pub api_key_labels: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -94,9 +96,10 @@ pub async fn import_web_search_keys(
     let additions = request
         .api_keys
         .into_iter()
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty())
-        .filter(|key| {
+        .zip(request.api_key_labels.into_iter().chain(std::iter::repeat(String::new())))
+        .map(|(key, label)| (key.trim().to_string(), label.trim().to_string()))
+        .filter(|(key, _)| !key.is_empty())
+        .filter(|(key, _)| {
             if existing_keys.iter().any(|existing| existing == key) || !seen.insert(key.clone()) {
                 duplicates += 1;
                 false
@@ -115,7 +118,9 @@ pub async fn import_web_search_keys(
 
     if imported > 0 {
         let source = &mut config.web_search.sources[source_index];
-        source.api_keys.extend(additions);
+        source.api_key_labels.resize(source.api_keys.len(), String::new());
+        source.api_keys.extend(additions.iter().map(|(key, _)| key.clone()));
+        source.api_key_labels.extend(additions.into_iter().map(|(_, label)| label));
         source
             .key_statuses
             .resize_with(source.api_keys.len(), || None);
@@ -223,6 +228,9 @@ fn remove_web_search_key_at(
     }
 
     let removed_key = source.api_keys.remove(key_index);
+    if key_index < source.api_key_labels.len() {
+        source.api_key_labels.remove(key_index);
+    }
     let was_officially_blocked = source
         .key_statuses
         .get(key_index)
@@ -414,6 +422,11 @@ mod tests {
             "key-b".to_string(),
             "key-c".to_string(),
         ];
+        source.api_key_labels = vec![
+            "first".to_string(),
+            "middle".to_string(),
+            "last".to_string(),
+        ];
         source.key_statuses = vec![
             status("normal", "search-a"),
             status("anti_bot", "search-b"),
@@ -427,6 +440,7 @@ mod tests {
 
         assert_eq!(remove_web_search_key_at(&mut source, 1).unwrap(), "key-b");
         assert_eq!(source.api_keys, ["key-a", "key-c"]);
+        assert_eq!(source.api_key_labels, ["first", "last"]);
         assert_eq!(
             source
                 .key_statuses

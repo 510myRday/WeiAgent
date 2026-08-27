@@ -72,8 +72,9 @@
 }
 
 .provider-key-row__masked {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: min(42ch, 100%);
   overflow: hidden;
   color: var(--color-text);
   font-size: 13px;
@@ -82,18 +83,83 @@
   white-space: nowrap;
 }
 
-.provider-key-row__input {
-  flex: 1 1 auto;
+.provider-key-row__identity {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
   min-width: 0;
-  min-height: 28px;
-  padding-top: 2px;
-  padding-bottom: 2px;
-  border-color: transparent;
-  background: transparent;
+  max-width: 100%;
+  gap: 4px;
+}
+
+.provider-key-row__edit {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+}
+
+.provider-key-row__label-text {
+  flex: 0 1 auto;
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.key-edit-dialog__body {
+  display: grid;
+  gap: 14px;
+  padding: 16px 18px 18px;
+}
+
+.key-edit-dialog__current,
+.key-edit-dialog__field {
+  display: grid;
+  gap: 7px;
+}
+
+.key-edit-dialog__current > span,
+.key-edit-dialog__field > span {
+  color: var(--color-text-soft);
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-emphasis);
+}
+
+.key-edit-dialog__current code {
+  min-width: 0;
+  overflow: hidden;
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-code);
+  color: var(--color-text);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.key-edit-dialog__field input {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--color-text);
+}
+
+.key-edit-dialog__field input:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring-control);
+  outline: 0;
 }
 
 .provider-key-row__badge {
   flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .provider-key-row__badge.is-new {
@@ -1092,6 +1158,14 @@
 }
 
 @media (max-width: 560px) {
+  .provider-key-row {
+    flex-wrap: wrap;
+  }
+
+  .provider-key-row__badge {
+    margin-left: 26px;
+  }
+
   .provider-template-dialog__body {
     padding: 12px;
   }

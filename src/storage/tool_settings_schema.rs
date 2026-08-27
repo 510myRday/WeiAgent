@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS tool_web_search_api_keys (
     extract_key_status TEXT,
     extract_status_detail TEXT,
     extract_checked_at TEXT,
+    key_label TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (source_id, position),
     UNIQUE (source_id, api_key),
     FOREIGN KEY (source_id) REFERENCES tool_web_search_sources(source_id) ON DELETE CASCADE
@@ -189,6 +190,12 @@ pub(super) fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
         |row| row.get::<_, bool>(0),
     )?;
     conn.execute_batch(TOOL_SETTINGS_SCHEMA_SQL)?;
+    if !column_exists(conn, "tool_web_search_api_keys", "key_label")? {
+        conn.execute(
+            "ALTER TABLE tool_web_search_api_keys ADD COLUMN key_label TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
     migrate_keenable_provider_constraint(conn)?;
     if !column_exists(conn, "tool_settings", "task_planning_enabled")? {
         conn.execute(

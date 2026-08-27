@@ -98,6 +98,7 @@ mod tests {
             name: "test".to_string(),
             base_url: base_url.into(),
             api_keys: vec!["key".to_string()],
+            api_key_labels: vec![],
             key_strategy: Default::default(),
             models: vec!["model".to_string()],
             model_configs: Vec::new(),

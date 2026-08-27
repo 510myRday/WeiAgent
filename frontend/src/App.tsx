@@ -226,26 +226,25 @@ export function App() {
         onSettingsSave={saveSettingsWithLocale}
       />
       <AppErrorBoundary scope="feature" resetKey={`${activeNav}:${activeAgentId}`}>
-        {activeNav === 'chat' && (
-          <ChatPanel
-            agents={agents}
-            providers={providers}
-            activeAgentId={activeAgentId}
-            onAgentChange={handleAgentChange}
-            onAgentEdit={editAgent}
-            onProviderEdit={editProvider}
-            onOpenAgentSettings={openAgentSettings}
-            onOpenMain={openMainPane}
-            onBackToList={openListPane}
-            onCreateAgent={openAgentCreation}
-            settings={settingsForm}
-            openConversationId={pendingConversationId}
-            onConversationOpened={() => setPendingConversationId('')}
-            latestConversationUpdatedAtByAgent={latestConversationUpdatedAtByAgent}
-            onAgentActivity={touchAgentActivity}
-            onUnreadCountChange={setChatUnreadCount}
-          />
-        )}
+        <ChatPanel
+          agents={agents}
+          providers={providers}
+          isVisible={activeNav === 'chat'}
+          activeAgentId={activeAgentId}
+          onAgentChange={handleAgentChange}
+          onAgentEdit={editAgent}
+          onProviderEdit={editProvider}
+          onOpenAgentSettings={openAgentSettings}
+          onOpenMain={openMainPane}
+          onBackToList={openListPane}
+          onCreateAgent={openAgentCreation}
+          settings={settingsForm}
+          openConversationId={pendingConversationId}
+          onConversationOpened={() => setPendingConversationId('')}
+          latestConversationUpdatedAtByAgent={latestConversationUpdatedAtByAgent}
+          onAgentActivity={touchAgentActivity}
+          onUnreadCountChange={setChatUnreadCount}
+        />
         <Suspense fallback={<PanelLoading label={t('sidebar.loading')} />}>
         {activeNav === 'monitor' && (
           <MonitorPanel

@@ -6,7 +6,6 @@ import {
   FilePenLine,
   ListChecks,
   List,
-  Library,
   MonitorPlay,
   Search,
   SquareTerminal,
@@ -26,8 +25,6 @@ function builtinToolIcon(name: string) {
       return <MonitorPlay size={TOOL_ICON_SIZE} aria-hidden="true" />;
     case 'multi_edit_file':
       return <FilePenLine size={TOOL_ICON_SIZE} aria-hidden="true" />;
-    case 'skills_list':
-      return <Library size={TOOL_ICON_SIZE} aria-hidden="true" />;
     case 'skill_view':
       return <BookMarked size={TOOL_ICON_SIZE} aria-hidden="true" />;
     case 'web_search':

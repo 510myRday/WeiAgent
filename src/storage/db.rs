@@ -18,6 +18,7 @@ const PROVIDER_PROXY_SCHEMA_VERSION: i64 = 5;
 const PROVIDER_KEY_STRATEGY_SCHEMA_VERSION: i64 = 6;
 const PROVIDER_IMAGE_ENDPOINTS_SCHEMA_VERSION: i64 = 7;
 const LLM_REQUEST_KIND_SCHEMA_VERSION: i64 = 8;
+const PROVIDER_KEY_LABELS_SCHEMA_VERSION: i64 = 25;
 
 /// Multiple API keys are stored newline-joined in the legacy `api_key` column,
 /// so single-key rows written before key pools existed stay valid as-is.
@@ -192,6 +193,7 @@ CREATE TABLE IF NOT EXISTS model_providers (
     proxy_url TEXT,
     image_generation_url TEXT,
     image_edit_url TEXT,
+    api_key_labels_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -388,6 +390,36 @@ pub(super) fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
                 params![
                     LLM_REQUEST_KIND_SCHEMA_VERSION,
                     "llm_request_kind_v8",
+                    now_rfc3339()
+                ],
+            )?;
+        }
+        tx.commit()?;
+    }
+
+    let key_labels_applied = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM app_schema_migrations WHERE version = ?1
+        )",
+        [PROVIDER_KEY_LABELS_SCHEMA_VERSION],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let has_key_labels_column = column_exists(conn, "model_providers", "api_key_labels_json")?;
+    if !key_labels_applied || !has_key_labels_column {
+        let tx = conn.transaction()?;
+        if !has_key_labels_column {
+            tx.execute(
+                "ALTER TABLE model_providers ADD COLUMN api_key_labels_json TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )?;
+        }
+        if !key_labels_applied {
+            tx.execute(
+                "INSERT INTO app_schema_migrations (version, name, applied_at)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    PROVIDER_KEY_LABELS_SCHEMA_VERSION,
+                    "model_provider_key_labels_v25",
                     now_rfc3339()
                 ],
             )?;

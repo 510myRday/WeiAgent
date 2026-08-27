@@ -607,6 +607,7 @@ async fn stores_provider_type_and_merges_key_pool_updates() {
                 name: Some("OpenAI Compatible".to_string()),
                 base_url: None,
                 api_keys: None,
+                api_key_labels: None,
                 key_strategy: None,
                 models: None,
                 model_configs: None,
@@ -633,6 +634,7 @@ async fn stores_provider_type_and_merges_key_pool_updates() {
                 name: None,
                 base_url: None,
                 api_keys: Some(vec!["****cret".to_string(), "sk-added-key".to_string()]),
+                api_key_labels: Some(vec!["primary".to_string(), "backup".to_string()]),
                 key_strategy: Some(ApiKeyStrategy::RoundRobin),
                 models: None,
                 model_configs: None,
@@ -651,6 +653,7 @@ async fn stores_provider_type_and_merges_key_pool_updates() {
         vec!["****cret".to_string(), "****-key".to_string()]
     );
     assert_eq!(expanded.key_strategy, ApiKeyStrategy::RoundRobin);
+    assert_eq!(expanded.api_key_labels, vec!["primary", "backup"]);
 
     // The merged pool survives a reload from the database.
     let reloaded = store.get_model_provider(provider.id).await.unwrap();
@@ -659,6 +662,7 @@ async fn stores_provider_type_and_merges_key_pool_updates() {
         vec!["sk-test-secret".to_string(), "sk-added-key".to_string()]
     );
     assert_eq!(reloaded.key_strategy, ApiKeyStrategy::RoundRobin);
+    assert_eq!(reloaded.api_key_labels, vec!["primary", "backup"]);
 }
 
 #[tokio::test]
@@ -694,6 +698,7 @@ async fn stores_provider_without_an_api_key_and_can_clear_a_key_pool() {
                 name: None,
                 base_url: None,
                 api_keys: Some(vec!["sk-temporary".to_string()]),
+                api_key_labels: None,
                 key_strategy: None,
                 models: None,
                 model_configs: None,
@@ -717,6 +722,7 @@ async fn stores_provider_without_an_api_key_and_can_clear_a_key_pool() {
                 name: None,
                 base_url: None,
                 api_keys: Some(Vec::new()),
+                api_key_labels: Some(Vec::new()),
                 key_strategy: None,
                 models: None,
                 model_configs: None,
@@ -1532,6 +1538,10 @@ async fn creates_workspace_and_composes_markdown_prompt() {
     assert!(prompt.contains(&format!("- ID: {}", stored.id)));
     assert!(prompt.contains("## Runtime"));
     assert!(prompt.contains("## Task Planning Policy"));
+    assert!(prompt.contains("## File Discovery and Reading Policy"));
+    assert!(prompt.contains("node_modules"));
+    assert!(prompt.contains("target"));
+    assert!(prompt.contains(".venv"));
     assert!(prompt.contains(
         "Every non-planning tool call must include the current conversation's planning_id"
     ));
@@ -1571,7 +1581,15 @@ async fn creates_workspace_and_composes_markdown_prompt() {
         .unwrap();
     assert!(!no_planning_prompt.contains("Task Planning Policy"));
 
+    tools_config.terminal.enabled = false;
+    let no_terminal_prompt = store
+        .build_agent_system_prompt(&stored, &tools_config)
+        .await
+        .unwrap();
+    assert!(!no_terminal_prompt.contains("## File Discovery and Reading Policy"));
+
     tools_config.task_planning.enabled = true;
+    tools_config.terminal.enabled = true;
     tools_config.web_search.enabled = true;
     let search_prompt = store
         .build_agent_system_prompt(&stored, &tools_config)

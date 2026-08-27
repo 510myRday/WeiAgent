@@ -55,6 +55,7 @@ pub async fn fetch_provider_models(
         image_generation_url: request.image_generation_url,
         image_edit_url: request.image_edit_url,
         api_keys: vec![request.api_key],
+        api_key_labels: Vec::new(),
         key_strategy: Default::default(),
         models: Vec::new(),
         model_configs: Vec::new(),

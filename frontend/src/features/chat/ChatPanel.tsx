@@ -45,6 +45,7 @@ import { sortAgentsByRecentConversation } from '../../utils/agentSorting';
 interface ChatPanelProps {
   agents: Agent[];
   providers: ModelProvider[];
+  isVisible: boolean;
   activeAgentId: string;
   onAgentChange: (id: string) => void;
   onAgentEdit: (id: string, payload: UpdateAgentPayload) => Promise<Agent>;
@@ -122,6 +123,7 @@ function writeThinkingLevels(levels: Record<string, ThinkingLevel>) {
 export function ChatPanel({
   agents,
   providers,
+  isVisible,
   activeAgentId,
   onAgentChange,
   onAgentEdit,
@@ -949,7 +951,7 @@ export function ChatPanel({
 
   useEffect(() => {
     const handleShortcut = (event: globalThis.KeyboardEvent) => {
-      if (event.repeat || document.querySelector('[role="dialog"]')) return;
+      if (!isVisible || event.repeat || document.querySelector('[role="dialog"]')) return;
       const commandKey = event.ctrlKey || event.metaKey;
       if (commandKey && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -964,14 +966,14 @@ export function ChatPanel({
     };
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
-  }, [activeAgent, activeAgent?.id, activeConversation?.id, activeConversation?.message_count, handleNewConversation, isSending]);
+  }, [activeAgent, activeAgent?.id, activeConversation?.id, activeConversation?.message_count, handleNewConversation, isSending, isVisible]);
 
   const formatDate = useCallback((value: string) => formatChatDateTime(value, dateFormatters), [dateFormatters]);
   const formatTimelineTime = useCallback((value: string) => formatChatTimelineTime(value, dateFormatters), [dateFormatters]);
 
   return (
     <>
-      <section className="context-pane chat-list-pane" aria-label={t('chat.selectAgent')}>
+      <section hidden={!isVisible} className="context-pane chat-list-pane" aria-label={t('chat.selectAgent')}>
         {!activeAgent ? (
           <>
             <PaneHeader
@@ -1064,7 +1066,7 @@ export function ChatPanel({
         )}
       </section>
 
-      <section className="main-pane chat-area" aria-label={t('chat.ariaLabel')}>
+      <section hidden={!isVisible} className="main-pane chat-area" aria-label={t('chat.ariaLabel')}>
         <header className="chat-main-header">
           <Button className="main-back-button" variant="ghost" type="button" onClick={onBackToList} icon={<ArrowLeft size={17} />} aria-label={t('common.back')} title={t('common.back')}>
             {t('common.back')}

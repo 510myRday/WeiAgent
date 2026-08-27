@@ -267,6 +267,7 @@ mod tests {
             name: "test".into(),
             base_url: "http://localhost".into(),
             api_keys: vec!["TOKEN".into()],
+            api_key_labels: vec![],
             key_strategy: Default::default(),
             models: vec!["model".into()],
             model_configs: vec![],

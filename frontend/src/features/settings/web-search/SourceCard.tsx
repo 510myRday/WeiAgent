@@ -16,7 +16,9 @@ import {
   ScanSearch,
   Settings2,
   Trash2,
+  Pencil,
 } from 'lucide-react';
+import { useState } from 'react';
 
 import type {
   WebSearchKeyCheckResult,
@@ -26,6 +28,7 @@ import type {
 import type { IpProxy } from '../../../types';
 import { useI18n } from '../../../i18n';
 import { Button, IconButton } from '../../../components/ui';
+import { KeyEditDialog } from '../KeyEditDialog';
 import { SOURCE_ROLE_GROUPS } from './types';
 import type { KeyCheckProgress, ProxyPickerField, SourceSection } from './types';
 import {
@@ -39,6 +42,10 @@ import {
   sourceWebsiteUrl,
   summarizeKeyStatuses,
 } from './utils';
+
+function normalizeKeyLabels(labels: string[], length: number): string[] {
+  return Array.from({ length }, (_, index) => labels[index] ?? '');
+}
 
 interface SourceCardProps {
   source: WebSearchSourceConfig;
@@ -109,6 +116,8 @@ export const SourceCard = memo(function SourceCard({
 }: SourceCardProps) {
   const { locale, t } = useI18n();
   const keyCount = source.api_keys.length;
+  const keyLabels = source.api_key_labels ?? [];
+  const [editingKeyIndex, setEditingKeyIndex] = useState<number | null>(null);
   const selected = selectedKeyIndices
     .filter((keyIndex) => keyIndex >= 0 && keyIndex < keyCount);
   const canEnableSource = sourceCanBeEnabled(source);
@@ -134,6 +143,17 @@ export const SourceCard = memo(function SourceCard({
   const preferencesBodyId = `web-search-preferences-body-${source.id}`;
   const keysBodyId = `web-search-keys-body-${source.id}`;
   const connectionBodyId = `web-search-connection-body-${source.id}`;
+
+  function saveKeyEdit(nextKey: string, nextLabel: string) {
+    if (editingKeyIndex === null) return;
+    const keyIndex = editingKeyIndex;
+    const apiKeys = [...source.api_keys];
+    const apiKeyLabels = normalizeKeyLabels(keyLabels, keyCount);
+    if (nextKey) apiKeys[keyIndex] = nextKey;
+    apiKeyLabels[keyIndex] = nextLabel;
+    onUpdateSource(index, { api_keys: apiKeys, api_key_labels: apiKeyLabels });
+    setEditingKeyIndex(null);
+  }
   const websiteUrl = sourceWebsiteUrl(source.provider);
 
   function renderProxySelector(field: ProxyPickerField, labelKey: string, descriptionKey: string) {
@@ -509,7 +529,23 @@ export const SourceCard = memo(function SourceCard({
                           />
                           <div className="web-search-key-card__content">
                             <div className="web-search-key-card__topline">
-                              <code title={key}>{key}</code>
+                              <span className="web-search-key-card__key-copy">
+                                <code title={key}>{key}</code>
+                                {keyLabels[keyIndex]?.trim() ? (
+                                  <small className="web-search-key-card__label-text">
+                                    {keyLabels[keyIndex].trim()}
+                                  </small>
+                                ) : null}
+                                <IconButton
+                                  type="button"
+                                  variant="ghost"
+                                  className="web-search-key-card__edit"
+                                  label={t('tools.webSearch.editKey')}
+                                  onClick={() => setEditingKeyIndex(keyIndex)}
+                                >
+                                  <Pencil size={13} />
+                                </IconButton>
+                              </span>
                               {status ? (
                                 <span
                                   className={`web-search-key-status is-${status.status}`}
@@ -594,6 +630,22 @@ export const SourceCard = memo(function SourceCard({
               ) : null}
           </section>
         </div>
+      ) : null}
+      {editingKeyIndex !== null && source.api_keys[editingKeyIndex] ? (
+        <KeyEditDialog
+          key={editingKeyIndex}
+          currentKey={source.api_keys[editingKeyIndex]}
+          currentLabel={keyLabels[editingKeyIndex] ?? ''}
+          title={t('tools.webSearch.editKeyTitle')}
+          currentKeyLabel={t('tools.webSearch.currentKey')}
+          newKeyLabel={t('tools.webSearch.newKey')}
+          newKeyPlaceholder={t('tools.webSearch.newKeyPlaceholder')}
+          labelLabel={t('tools.webSearch.keyLabel')}
+          labelPlaceholder={t('tools.webSearch.keyLabelPlaceholder')}
+          closeLabel={t('common.close')}
+          onSave={saveKeyEdit}
+          onClose={() => setEditingKeyIndex(null)}
+        />
       ) : null}
     </div>
   );

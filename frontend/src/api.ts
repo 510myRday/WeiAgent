@@ -404,12 +404,13 @@ export function checkWebSearchKeys(
 export function importWebSearchKeys(
   sourceId: string,
   apiKeys: string[],
+  apiKeyLabels: string[] = [],
 ): Promise<WebSearchKeyImportResponse> {
   return request<WebSearchKeyImportResponse>(
     '/api/tools/web-search-keys/import',
     {
       method: 'POST',
-      body: JSON.stringify({ source_id: sourceId, api_keys: apiKeys }),
+      body: JSON.stringify({ source_id: sourceId, api_keys: apiKeys, api_key_labels: apiKeyLabels }),
     },
   );
 }

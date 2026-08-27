@@ -1,6 +1,14 @@
 use chrono::Local;
 use std::path::Path;
 
+/// Default guidance for efficient project file discovery when terminal tools
+/// are available. Keep generated and dependency-heavy directories out of the
+/// model context unless the task explicitly targets them.
+pub const TERMINAL_FILE_DISCOVERY_POLICY: &str = r#"## File Discovery and Reading Policy
+When inspecting a project with terminal or file tools, start from the smallest relevant project or feature directory and inspect only files needed for the current task. By default, do not recursively list, search, or read generated, dependency, build, cache, log, or temporary directories. Exclude these directory names unless the user explicitly asks about them or the task directly requires them: `.git`, `.hg`, `.svn`, `.venv`, `venv`, `env`, `node_modules`, `target`, `dist`, `build`, `out`, `coverage`, `.cache`, `cache`, `tmp`, `temp`, `.pytest_cache`, `__pycache__`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.idea`, `.vscode`, and `logs`. Prefer `rg` for text search and `rg --files` for discovery with explicit `-g '!DIRECTORY/**'` exclusions; never dump an entire repository or a large generated file into context. Read lockfiles, logs, binaries, minified bundles, and other generated files only when they are directly relevant, and use targeted matches or bounded output instead of bulk reads.
+
+If an excluded directory is relevant, enter it deliberately and narrow the command to the required path or filename."#;
+
 pub fn today_date() -> String {
     Local::now().format("%Y-%m-%d").to_string()
 }
@@ -93,6 +101,15 @@ mod tests {
         assert!(!first.to_lowercase().contains("2026-"));
         assert!(!first.contains("expires_at"));
         assert!(!first.contains("created_at"));
+    }
+
+    #[test]
+    fn terminal_file_discovery_policy_excludes_generated_and_dependency_directories() {
+        assert!(TERMINAL_FILE_DISCOVERY_POLICY.contains("node_modules"));
+        assert!(TERMINAL_FILE_DISCOVERY_POLICY.contains("target"));
+        assert!(TERMINAL_FILE_DISCOVERY_POLICY.contains(".venv"));
+        assert!(TERMINAL_FILE_DISCOVERY_POLICY.contains("rg --files"));
+        assert!(TERMINAL_FILE_DISCOVERY_POLICY.contains("unless the user explicitly asks"));
     }
 
     #[test]

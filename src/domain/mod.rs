@@ -39,7 +39,7 @@ pub use mcp::{
 pub use providers::{
     ApiKeyStrategy, CreateModelProviderRequest, FetchProviderModelsRequest, ImageModelConfig,
     ModelConfig, ModelProvider, ModelProviderResponse, ProviderType, UpdateModelProviderRequest,
-    merge_api_keys,
+    merge_api_keys_with_labels,
 };
 pub use runtime::{
     EnvironmentRuntimeStatus, RuntimeComponentKind, RuntimeComponentStatus, RuntimeSource,

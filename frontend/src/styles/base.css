@@ -4,6 +4,11 @@
   box-sizing: border-box;
 }
 
+/* Keep the HTML hidden state authoritative over component display rules. */
+html [hidden] {
+  display: none;
+}
+
 html {
   min-width: 320px;
   min-height: 100%;

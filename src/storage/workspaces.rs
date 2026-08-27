@@ -73,12 +73,18 @@ The current local system date is today's date and is authoritative.\n\
         } else {
             ""
         };
+        let terminal_file_discovery_policy = if tools_config.terminal.enabled {
+            crate::tools::prompt::TERMINAL_FILE_DISCOVERY_POLICY
+        } else {
+            ""
+        };
         Ok([
             environment.as_str(),
             agent_identity.as_str(),
             runtime_date.as_str(),
             web_search_policy,
             task_planning_policy,
+            terminal_file_discovery_policy,
             agent_sections.as_str(),
         ]
         .into_iter()

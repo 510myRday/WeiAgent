@@ -397,6 +397,9 @@ pub struct WebSearchSourceConfig {
     pub roles: Vec<WebSearchSourceRole>,
     #[serde(default)]
     pub api_keys: Vec<String>,
+    /// Optional user-facing labels aligned with api_keys.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub api_key_labels: Vec<String>,
     /// Stable, non-secret identifiers aligned with api_keys in redacted API responses.
     /// They are used to reconcile masked keys after a deletion or reorder.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -494,6 +497,7 @@ fn default_web_search_source(
         extract_enabled: true,
         priority,
         api_keys: Vec::new(),
+        api_key_labels: Vec::new(),
         api_key_fingerprints: Vec::new(),
         blocked_api_key_hashes: Vec::new(),
         key_statuses: Vec::new(),
@@ -587,6 +591,12 @@ impl WebSearchToolConfig {
                 .map(|key| mask_api_key(key))
                 .filter(|key| !key.is_empty())
                 .collect();
+            source.api_key_labels = source
+                .api_key_labels
+                .iter()
+                .take(source.api_keys.len())
+                .map(|label| label.trim().to_string())
+                .collect();
             source.blocked_api_key_hashes.clear();
         }
         redacted
@@ -607,6 +617,10 @@ impl WebSearchToolConfig {
             let previous_keys = previous_source
                 .map(|existing| existing.api_keys.clone())
                 .unwrap_or_default();
+            let previous_labels = previous_source
+                .map(|existing| existing.api_key_labels.clone())
+                .unwrap_or_default();
+            let incoming_labels = source.api_key_labels.clone();
             let incoming_fingerprints = source.api_key_fingerprints.clone();
             let previous_keys_by_fingerprint = previous_keys
                 .iter()
@@ -646,17 +660,21 @@ impl WebSearchToolConfig {
                 // - api_keys: ["__preserve__"] => keep previous
                 // - api_keys: [] => clear
                 // - api_keys: ["sk-..."] => replace
+                source.api_key_labels.clear();
                 continue;
             }
 
             if source.api_keys.len() == 1 && source.api_keys[0] == "__preserve__" {
                 source.api_keys = previous_keys;
+                source.api_key_labels = previous_labels;
                 source.api_key_fingerprints.clear();
                 continue;
             }
 
             let has_aligned_fingerprints = incoming_fingerprints.len() == source.api_keys.len();
+            let has_aligned_labels = incoming_labels.len() == source.api_keys.len();
             let mut next_keys = Vec::new();
+            let mut next_labels = Vec::new();
             for (index, key) in source.api_keys.iter().enumerate() {
                 let trimmed = key.trim();
                 if trimmed.is_empty() {
@@ -673,6 +691,18 @@ impl WebSearchToolConfig {
                     if let Some(previous) = previous {
                         if !previous.trim().is_empty() {
                             next_keys.push(previous.clone());
+                            next_labels.push(if has_aligned_labels {
+                                incoming_labels[index].trim().to_string()
+                            } else {
+                                let previous_index = previous_keys
+                                    .iter()
+                                    .position(|candidate| candidate == previous)
+                                    .unwrap_or(index);
+                                previous_labels
+                                    .get(previous_index)
+                                    .map(|label| label.trim().to_string())
+                                    .unwrap_or_default()
+                            });
                         }
                     }
                     continue;
@@ -681,8 +711,14 @@ impl WebSearchToolConfig {
                     continue;
                 }
                 next_keys.push(trimmed.to_string());
+                next_labels.push(if has_aligned_labels {
+                    incoming_labels[index].trim().to_string()
+                } else {
+                    String::new()
+                });
             }
             source.api_keys = next_keys;
+            source.api_key_labels = next_labels;
             source.api_key_fingerprints.clear();
         }
         merged

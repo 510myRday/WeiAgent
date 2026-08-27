@@ -6,6 +6,7 @@ pub fn provider_request(name: &str, model: &str) -> CreateModelProviderRequest {
         name: name.to_string(),
         base_url: "https://example.test/v1".to_string(),
         api_keys: vec!["sk-test".to_string()],
+        api_key_labels: vec![],
         key_strategy: Default::default(),
         models: vec![model.to_string()],
         model_configs: Vec::new(),

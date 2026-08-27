@@ -349,6 +349,7 @@ mod tests {
             name: "test".into(),
             base_url: "http://localhost/v1".into(),
             api_keys: vec!["key".into()],
+            api_key_labels: vec![],
             key_strategy: Default::default(),
             models: vec!["gpt-4o-mini".into()],
             model_configs: vec![],

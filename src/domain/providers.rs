@@ -97,6 +97,9 @@ pub struct ModelProvider {
     pub image_edit_url: Option<String>,
     /// Ordered API key pool; requests pick a key according to `key_strategy`.
     pub api_keys: Vec<String>,
+    /// Optional user-facing labels aligned with `api_keys`.
+    #[serde(default)]
+    pub api_key_labels: Vec<String>,
     #[serde(default)]
     pub key_strategy: ApiKeyStrategy,
     pub models: Vec<String>,
@@ -132,6 +135,8 @@ pub struct ModelProviderResponse {
     pub has_api_key: bool,
     /// One masked entry per stored key, in pool order.
     pub masked_api_keys: Vec<String>,
+    /// Optional user-facing labels aligned with `masked_api_keys`.
+    pub api_key_labels: Vec<String>,
     pub key_strategy: ApiKeyStrategy,
     pub models: Vec<String>,
     pub model_configs: Vec<ModelConfig>,
@@ -160,6 +165,12 @@ impl From<&ModelProvider> for ModelProviderResponse {
                 .map(|key| super::tools::mask_api_key(key))
                 .filter(|masked| !masked.is_empty())
                 .collect(),
+            api_key_labels: provider
+                .api_key_labels
+                .iter()
+                .take(provider.api_keys.len())
+                .map(|label| label.trim().to_string())
+                .collect(),
             key_strategy: provider.key_strategy,
             models: provider.models.clone(),
             model_configs: provider.model_configs.clone(),
@@ -173,20 +184,24 @@ impl From<&ModelProvider> for ModelProviderResponse {
     }
 }
 
-/// Merge a submitted key list into the stored pool. Masked entries reference
-/// existing keys — resolved positionally when the mask at that slot lines up,
-/// otherwise by unique mask content, so a retried update resolves identically
-/// even after the pool shifted. Plaintext entries are new keys. Order follows
-/// the submitted list; blanks, dangling masks, and duplicates drop out.
-pub fn merge_api_keys(existing: &[String], submitted: &[String]) -> Vec<String> {
+/// Merge keys and their optional labels while keeping labels attached to the
+/// resolved key when masked entries are reordered or removed.
+pub fn merge_api_keys_with_labels(
+    existing: &[String],
+    existing_labels: &[String],
+    submitted: &[String],
+    submitted_labels: &[String],
+) -> (Vec<String>, Vec<String>) {
     let mut used = vec![false; existing.len()];
     let mut merged: Vec<String> = Vec::new();
+    let mut labels: Vec<String> = Vec::new();
+    let has_submitted_labels = submitted_labels.len() == submitted.len();
     for (slot, entry) in submitted.iter().enumerate() {
         let entry = entry.trim();
         if entry.is_empty() {
             continue;
         }
-        let resolved = if super::tools::is_masked_api_key(entry) {
+        let (resolved, existing_index) = if super::tools::is_masked_api_key(entry) {
             let positional = existing
                 .get(slot)
                 .filter(|_| !used[slot])
@@ -202,20 +217,32 @@ pub fn merge_api_keys(existing: &[String], submitted: &[String]) -> Vec<String> 
             match positional.or_else(by_content) {
                 Some((index, key)) => {
                     used[index] = true;
-                    key
+                    (key, Some(index))
                 }
                 // The referenced key no longer exists (e.g. an update retried
                 // after it already applied): drop the stale reference.
                 None => continue,
             }
         } else {
-            entry.to_string()
+            (entry.to_string(), None)
+        };
+        let label = if has_submitted_labels {
+            submitted_labels
+                .get(slot)
+                .map(|label| label.trim().to_string())
+                .unwrap_or_default()
+        } else {
+            existing_index
+                .and_then(|index| existing_labels.get(index))
+                .map(|label| label.trim().to_string())
+                .unwrap_or_default()
         };
         if !merged.contains(&resolved) {
             merged.push(resolved);
+            labels.push(label);
         }
     }
-    merged
+    (merged, labels)
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,6 +259,8 @@ pub struct CreateModelProviderRequest {
     /// list creates a provider that sends requests without an API key.
     #[serde(default)]
     pub api_keys: Vec<String>,
+    #[serde(default)]
+    pub api_key_labels: Vec<String>,
     #[serde(default)]
     pub key_strategy: ApiKeyStrategy,
     pub models: Vec<String>,
@@ -276,6 +305,8 @@ pub struct UpdateModelProviderRequest {
     /// Missing = keys unchanged. Entries: masked = keep that stored key,
     /// plaintext = new key; an empty list clears the stored key pool.
     pub api_keys: Option<Vec<String>>,
+    /// Optional labels aligned with `api_keys`; an empty label clears it.
+    pub api_key_labels: Option<Vec<String>>,
     pub key_strategy: Option<ApiKeyStrategy>,
     pub models: Option<Vec<String>>,
     pub model_configs: Option<Vec<ModelConfig>>,
@@ -350,6 +381,19 @@ mod tests {
             &keys(&["  ", "****1111", "sk-alpha-1111", "****gone", "sk-new-2222"]),
         );
         assert_eq!(merged, keys(&["sk-alpha-1111", "sk-new-2222"]));
+    }
+
+    #[test]
+    fn merge_api_keys_keeps_labels_with_reordered_masked_keys() {
+        let existing = keys(&["sk-alpha-1111", "sk-beta-2222"]);
+        let (merged, labels) = super::merge_api_keys_with_labels(
+            &existing,
+            &keys(&["primary", "backup"]),
+            &keys(&["****2222", "sk-new-3333"]),
+            &keys(&["backup", "temporary"]),
+        );
+        assert_eq!(merged, keys(&["sk-beta-2222", "sk-new-3333"]));
+        assert_eq!(labels, keys(&["backup", "temporary"]));
     }
 
     #[test]

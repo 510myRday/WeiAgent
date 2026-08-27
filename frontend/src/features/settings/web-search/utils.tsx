@@ -45,6 +45,7 @@ export function normalizeWebSearchSources(sources: WebSearchSourceConfig[]): Web
     const normalized = {
       ...source,
       api_keys: source.api_keys ?? [],
+      api_key_labels: Array.from({ length: source.api_keys?.length ?? 0 }, (_, index) => source.api_key_labels?.[index] ?? ''),
       key_statuses: source.key_statuses ?? [],
       extract_key_statuses: source.extract_key_statuses ?? [],
       proxy_url: source.proxy_url ?? null,
@@ -103,7 +104,7 @@ export function serializeDefaultsForAutosave(
       ...config.web_search,
       sources: config.web_search.sources.map((source) => {
         if (!keysDirty[source.id]) {
-          return { ...source, api_keys: [PRESERVE_KEYS_MARKER] };
+          return { ...source, api_keys: [PRESERVE_KEYS_MARKER], api_key_labels: [] };
         }
         return source;
       }),

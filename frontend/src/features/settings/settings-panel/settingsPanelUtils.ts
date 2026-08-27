@@ -35,6 +35,8 @@ export type ProviderForm = {
   image_edit_url: string;
   /** Masked entries reference stored keys; other entries are new plaintext keys. */
   apiKeys: string[];
+  /** Labels aligned with apiKeys. */
+  apiKeyLabels: string[];
   /** Text sitting in the add-key input, not yet committed to `apiKeys`. */
   newKeyText: string;
   key_strategy: ApiKeyStrategy;
@@ -51,6 +53,7 @@ export const defaultProviderForm: ProviderForm = {
   image_generation_url: '',
   image_edit_url: '',
   apiKeys: [],
+  apiKeyLabels: [],
   newKeyText: '',
   key_strategy: 'failover',
   modelsText: '',
@@ -65,11 +68,14 @@ export function commitPendingApiKeys(form: ProviderForm): ProviderForm {
   if (pending.length === 0) {
     return form.newKeyText ? { ...form, newKeyText: '' } : form;
   }
-  return {
-    ...form,
-    apiKeys: normalizeFormApiKeys([...form.apiKeys, ...pending]),
-    newKeyText: '',
-  };
+  const apiKeys = [...form.apiKeys];
+  const apiKeyLabels = Array.from({ length: apiKeys.length }, (_, index) => form.apiKeyLabels[index] ?? '');
+  for (const key of pending) {
+    if (apiKeys.includes(key)) continue;
+    apiKeys.push(key);
+    apiKeyLabels.push('');
+  }
+  return { ...form, apiKeys, apiKeyLabels, newKeyText: '' };
 }
 
 export function providerTemplateToForm(template: ProviderTemplate, name: string): ProviderForm {
@@ -286,13 +292,19 @@ export function formatExtraBodyText(extraBody: unknown): string {
 }
 
 export function providerToForm(provider: ModelProvider): ProviderForm {
+  const apiKeys = [...(provider.masked_api_keys ?? [])];
+  const apiKeyLabels = Array.from(
+    { length: apiKeys.length },
+    (_, index) => provider.api_key_labels?.[index] ?? '',
+  );
   return {
     provider_type: provider.provider_type,
     name: provider.name,
     base_url: provider.base_url,
     image_generation_url: provider.image_generation_url ?? '',
     image_edit_url: provider.image_edit_url ?? '',
-    apiKeys: [...(provider.masked_api_keys ?? [])],
+    apiKeys,
+    apiKeyLabels,
     newKeyText: '',
     key_strategy: provider.key_strategy ?? 'failover',
     modelsText: provider.models.join('\n'),
@@ -338,6 +350,7 @@ export function buildProviderPayload(form: ProviderForm): ModelProviderPayload |
     image_generation_url: form.image_generation_url.trim() || null,
     image_edit_url: form.image_edit_url.trim() || null,
     api_keys: normalizeFormApiKeys(form.apiKeys),
+    api_key_labels: form.apiKeyLabels.map((label) => label.trim()),
     key_strategy: form.key_strategy,
     models,
     model_configs: syncModelConfigs(models, form.modelConfigs, form.provider_type),
@@ -369,6 +382,7 @@ export function serializeProviderForm(form: ProviderForm): string {
     image_generation_url: form.image_generation_url.trim(),
     image_edit_url: form.image_edit_url.trim(),
     api_keys: normalizeFormApiKeys(form.apiKeys),
+    api_key_labels: form.apiKeyLabels.map((label) => label.trim()),
     key_strategy: form.key_strategy,
     models,
     model_configs: syncModelConfigs(models, form.modelConfigs, form.provider_type),
@@ -386,6 +400,7 @@ export function formFromSerializedSnapshot(serialized: string): ProviderForm {
     image_generation_url?: string;
     image_edit_url?: string;
     api_keys?: string[];
+    api_key_labels?: string[];
     key_strategy?: ApiKeyStrategy;
     models: string[];
     model_configs: ModelConfig[];
@@ -399,6 +414,10 @@ export function formFromSerializedSnapshot(serialized: string): ProviderForm {
     image_generation_url: snap.image_generation_url ?? '',
     image_edit_url: snap.image_edit_url ?? '',
     apiKeys: snap.api_keys ?? [],
+    apiKeyLabels: Array.from(
+      { length: snap.api_keys?.length ?? 0 },
+      (_, index) => snap.api_key_labels?.[index] ?? '',
+    ),
     newKeyText: '',
     key_strategy: snap.key_strategy ?? 'failover',
     modelsText: snap.models.join('\n'),

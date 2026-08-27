@@ -305,6 +305,9 @@ export function WebSearchToolSettings({
     if (!source) return;
     if (scope === 'defaults') {
       const sources = config.web_search.sources.map((item, i) => (i === index ? { ...item, ...patch } : item));
+      if (patch.api_keys !== undefined || patch.api_key_labels !== undefined) {
+        dispatchKeys({ type: 'markDirty', sourceId: source.id });
+      }
       updateWebSearch({ sources });
       return;
     }
@@ -622,7 +625,7 @@ export function WebSearchToolSettings({
     ));
     const nextSources = sources.map((source) => (
       source.id === sourceId
-        ? { ...source, api_key_fingerprints: [], key_statuses: [], extract_key_statuses: [] }
+        ? { ...source, api_key_labels: [], api_key_fingerprints: [], key_statuses: [], extract_key_statuses: [] }
         : source
     ));
     dispatchKeys({ type: 'markDirty', sourceId });

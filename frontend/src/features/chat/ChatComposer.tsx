@@ -15,9 +15,9 @@ import {
   ChevronDown,
   ChevronUp,
   Image as ImageIcon,
+  ImagePlus,
   ListPlus,
   LoaderCircle,
-  Paperclip,
   Pencil,
   Scan,
   Send,
@@ -321,7 +321,7 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
               aria-label={t('chat.addImage')}
               title={t('chat.addImage')}
             >
-              <Paperclip size={18} />
+              <ImagePlus size={18} />
             </button>
             {supportsImageGeneration ? (
               <button

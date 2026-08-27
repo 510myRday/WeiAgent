@@ -835,6 +835,7 @@ mod tests {
             name: "test".into(),
             base_url: "http://localhost".into(),
             api_keys: vec!["key".into()],
+            api_key_labels: vec![],
             key_strategy: Default::default(),
             models: vec!["gemini-3-pro".into()],
             model_configs: vec![],

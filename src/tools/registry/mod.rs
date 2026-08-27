@@ -305,8 +305,9 @@ pub(super) fn build_execute_terminal_description(_config: &AgentToolsConfig) -> 
     let examples = shell.command_examples();
 
     format!(
-        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. WeiAgent includes a private ripgrep binary in released builds and adds it to the command PATH; if `rg` is unavailable, use the selected shell's built-in file search or grep fallback. Prefer multi_edit_file for source/config edits (including outside-root paths via sandbox_permissions=require_escalated + justification) instead of rewriting files through shell. Selected shell: {}. {host_guidance} {examples} The server enforces its current execution policy; request elevated access with sandbox_permissions=require_escalated and a justification when needed. Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again. Omit cwd to use the WeiAgent default workspace; relative paths resolve from it. The server checks requested cwd and target paths against its configured permission roots and requests approval when required.",
-        shell.display_name()
+        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. WeiAgent includes a private ripgrep binary in released builds and adds it to the command PATH; if `rg` is unavailable, use the selected shell's built-in file search or grep fallback. Prefer multi_edit_file for source/config edits (including outside-root paths via sandbox_permissions=require_escalated + justification) instead of rewriting files through shell. Selected shell: {}. {host_guidance} {examples} {} The server enforces its current execution policy; request elevated access with sandbox_permissions=require_escalated and a justification when needed. Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again. Omit cwd to use the WeiAgent default workspace; relative paths resolve from it. The server checks requested cwd and target paths against its configured permission roots and requests approval when required.",
+        shell.display_name(),
+        crate::tools::prompt::TERMINAL_FILE_DISCOVERY_POLICY
     )
 }
 
@@ -503,6 +504,12 @@ mod tests {
         assert!(terminal.function.description.contains("process_id"));
         assert!(terminal.function.description.contains("prefer `rg`"));
         assert!(terminal.function.description.contains("`rg --files`"));
+        assert!(terminal
+            .function
+            .description
+            .contains("File Discovery and Reading Policy"));
+        assert!(terminal.function.description.contains("node_modules"));
+        assert!(terminal.function.description.contains("target"));
         if cfg!(windows) {
             assert!(
                 terminal

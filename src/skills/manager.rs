@@ -6,7 +6,6 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use reqwest::Url;
@@ -24,7 +23,6 @@ use crate::{
     fsutil,
     llm::types::{FunctionDefinition, ToolDefinition},
     storage::Store,
-    tools::registry::{AgentTool, ToolExecutionContext},
 };
 
 use super::{
@@ -77,7 +75,6 @@ fn display_path(path: &Path) -> String {
     fsutil::display_path(path)
 }
 
-pub const SKILLS_LIST_TOOL_NAME: &str = "skills_list";
 pub const SKILL_VIEW_TOOL_NAME: &str = "skill_view";
 
 const MAX_REMOTE_SKILL_FILES: usize = 256;
@@ -1237,7 +1234,6 @@ impl SkillManager {
 
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
         vec![
-            ToolDefinition { kind: "function".to_string(), function: FunctionDefinition { name: SKILLS_LIST_TOOL_NAME.to_string(), description: "List compact metadata for Skills enabled for the current Agent. Use this before loading a relevant Skill.".to_string(), parameters: serde_json::json!({"type":"object","properties":{"query":{"type":"string"},"group":{"type":"string"}},"additionalProperties":false}) } },
             ToolDefinition { kind: "function".to_string(), function: FunctionDefinition { name: SKILL_VIEW_TOOL_NAME.to_string(), description: "Load a bounded window of SKILL.md or a reference file for an enabled Skill. file_path may be relative to the Skill directory or an absolute path inside that same Skill directory. Use offset to continue after a truncated result.".to_string(), parameters: serde_json::json!({"type":"object","properties":{"name":{"type":"string"},"file_path":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":1,"maximum":MAX_SKILL_VIEW_MAX_CHARS}},"required":["name"],"additionalProperties":false}) } },
         ]
     }
@@ -1249,51 +1245,6 @@ impl SkillManager {
         arguments: Value,
     ) -> ToolResult {
         match name {
-            SKILLS_LIST_TOOL_NAME => {
-                #[derive(Deserialize)]
-                struct Args {
-                    query: Option<String>,
-                    group: Option<String>,
-                }
-                let args = match serde_json::from_value::<Args>(arguments) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        return ToolResult::Error {
-                            message: error.to_string(),
-                        };
-                    }
-                };
-                let query = args.query.unwrap_or_default().to_ascii_lowercase();
-                let items = snapshot
-                    .iter()
-                    .filter(|item| {
-                        query.is_empty()
-                            || item.name.contains(&query)
-                            || item.description.to_ascii_lowercase().contains(&query)
-                            || item
-                                .tags
-                                .iter()
-                                .any(|tag| tag.to_ascii_lowercase().contains(&query))
-                    })
-                    .filter(|item| {
-                        args.group
-                            .as_deref()
-                            .is_none_or(|group| item.group.as_deref() == Some(group))
-                    })
-                    .map(compact_skill_catalog_item)
-                    .collect::<Vec<_>>();
-                ToolResult::Completed {
-                    stdout: serde_json::to_string(&items).unwrap_or_default(),
-                    stderr: String::new(),
-                    exit_code: 0,
-                    duration_ms: 0,
-                    runtime: Some("skill".to_string()),
-                    cwd: None,
-                    output_cursor: 0,
-                    structured_content: None,
-                    is_error: false,
-                }
-            }
             SKILL_VIEW_TOOL_NAME => {
                 #[derive(Deserialize)]
                 struct Args {
@@ -1359,18 +1310,6 @@ impl SkillManager {
             },
         }
     }
-}
-
-fn compact_skill_catalog_item(item: &SkillManifest) -> Value {
-    serde_json::json!({
-        "name": item.name,
-        "description": item.description,
-        "version": item.version,
-        "group": item.group,
-        "tags": item.tags,
-        "builtin": item.is_builtin,
-        "references": item.references.iter().map(|file| file.path.clone()).collect::<Vec<_>>(),
-    })
 }
 
 fn bounded_skill_content(content: &str, offset: usize, max_chars: usize) -> (String, bool, usize) {
@@ -1887,23 +1826,8 @@ fn valid_download_path(value: &str) -> bool {
             .any(|part| part.is_empty() || part == "." || part == "..")
 }
 
-#[async_trait]
-impl AgentTool for SkillManager {
-    fn definition(&self, _config: &crate::domain::AgentToolsConfig) -> ToolDefinition {
-        self.tool_definitions().into_iter().next().unwrap()
-    }
-    fn is_enabled(&self, _config: &crate::domain::AgentToolsConfig) -> bool {
-        true
-    }
-    async fn execute(&self, _arguments: Value, _context: ToolExecutionContext) -> ToolResult {
-        ToolResult::Error {
-            message: "Skill tools require the SkillManager execution route".to_string(),
-        }
-    }
-}
-
 pub fn is_skill_tool(name: &str) -> bool {
-    matches!(name, SKILLS_LIST_TOOL_NAME | SKILL_VIEW_TOOL_NAME)
+    name == SKILL_VIEW_TOOL_NAME
 }
 
 fn duplicate_names(items: &[SkillManifest]) -> HashSet<String> {
@@ -1958,7 +1882,7 @@ fn normalize_group_overrides(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{SkillFile, SkillGroupOverride, SkillOverride};
+    use crate::domain::{SkillGroupOverride, SkillOverride};
 
     #[test]
     fn normalizes_supported_remote_skill_urls() {
@@ -2020,48 +1944,6 @@ mod tests {
         assert!(files.contains("references/api.md"));
         assert!(files.contains("scripts/check.ps1"));
         assert!(!files.iter().any(|file| file.contains("example.test")));
-    }
-
-    #[test]
-    fn compact_skill_catalog_omits_runtime_and_file_metadata() {
-        let manifest = SkillManifest {
-            name: "demo".to_string(),
-            description: "Demo Skill".to_string(),
-            version: Some("1.0.0".to_string()),
-            group: Some("tools".to_string()),
-            group_id: Some("group-id".to_string()),
-            is_builtin: false,
-            tags: vec!["demo".to_string()],
-            icon_url: None,
-            source_url: None,
-            icon_proxy_url: None,
-            update_proxy_url: None,
-            root_dir: "ROOT".to_string(),
-            skill_md: "ROOT/SKILL.md".to_string(),
-            scripts: Vec::new(),
-            references: vec![SkillFile {
-                path: "references/api.md".to_string(),
-                kind: "reference".to_string(),
-                size_bytes: 123,
-            }],
-            examples: Vec::new(),
-            content_hash: "HASH".to_string(),
-            modified_at: "DATE".to_string(),
-            created_at: "DATE".to_string(),
-            updated_at: "DATE".to_string(),
-            diagnostics: Vec::new(),
-            enabled: true,
-            global_override: None,
-            group_override: None,
-            agent_override: None,
-            agent_group_override: None,
-        };
-
-        let value = compact_skill_catalog_item(&manifest);
-        assert_eq!(value["name"], "demo");
-        assert_eq!(value["references"][0], "references/api.md");
-        assert!(value.get("root_dir").is_none());
-        assert!(value.get("content_hash").is_none());
     }
 
     #[test]

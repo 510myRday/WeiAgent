@@ -978,6 +978,7 @@ export function SettingsPanel({
                 onImageGenerationUrlChange={(image_generation_url) => changeProviderForm((current) => ({ ...current, image_generation_url }))}
                 onImageEditUrlChange={(image_edit_url) => changeProviderForm((current) => ({ ...current, image_edit_url }))}
                 onApiKeysChange={(apiKeys) => changeProviderForm((current) => ({ ...current, apiKeys }))}
+                onApiKeyLabelsChange={(apiKeyLabels) => changeProviderForm((current) => ({ ...current, apiKeyLabels }))}
                 onNewKeyTextChange={(newKeyText) => changeProviderForm((current) => ({ ...current, newKeyText }))}
                 onAppendApiKeys={(raw) => changeProviderForm((current) => commitPendingApiKeys({ ...current, newKeyText: raw }))}
                 onKeyStrategyChange={(key_strategy) => changeProviderForm((current) => ({ ...current, key_strategy }))}

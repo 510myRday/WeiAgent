@@ -105,6 +105,7 @@ async fn test_app() -> (Router, Uuid, Uuid, Uuid) {
             name: "Test Provider".to_string(),
             base_url: "https://example.test/v1".to_string(),
             api_keys: vec!["test-key".to_string()],
+            api_key_labels: vec![],
             key_strategy: Default::default(),
             models: vec!["test-model".to_string(), "other-model".to_string()],
             model_configs: Vec::new(),
@@ -499,8 +500,8 @@ impl ChatClient for ScriptedChatClient {
         tools: Option<Vec<ToolDefinition>>,
     ) -> AppResult<ChatCompletionOutput> {
         if let Some(list) = &tools {
-            // Three terminal tools, three web-search tools, and two Skill tools.
-            assert_eq!(list.len(), 8);
+            // Three terminal tools, three web-search tools, and one Skill tool.
+            assert_eq!(list.len(), 7);
         }
         self.complete_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -560,6 +561,7 @@ async fn scripted_test_app(
             name: "Scripted Provider".to_string(),
             base_url: "https://example.test/v1".to_string(),
             api_keys: vec!["test-key".to_string()],
+            api_key_labels: vec![],
             key_strategy: Default::default(),
             models: vec!["test-model".to_string()],
             model_configs: Vec::new(),
@@ -1429,8 +1431,8 @@ impl ChatClient for StreamingToolClient {
         _options: crate::llm::client::RequestOptions,
         tools: Option<Vec<ToolDefinition>>,
     ) -> AppResult<ChatStream> {
-        // Three terminal tools, three web-search tools, and two Skill tools.
-        assert_eq!(tools.as_ref().map(Vec::len), Some(8));
+        // Three terminal tools, three web-search tools, and one Skill tool.
+        assert_eq!(tools.as_ref().map(Vec::len), Some(7));
         let events =
             self.streams.lock().unwrap().pop_front().ok_or_else(|| {
                 crate::error::AppError::Llm("stream script exhausted".to_string())
@@ -1452,6 +1454,7 @@ async fn streaming_test_app(streams: Vec<Vec<StreamEvent>>) -> (Router, Arc<Stor
             name: "Streaming Provider".to_string(),
             base_url: "https://example.test/v1".to_string(),
             api_keys: vec!["test-key".to_string()],
+            api_key_labels: vec![],
             key_strategy: Default::default(),
             models: vec!["test-model".to_string()],
             model_configs: Vec::new(),

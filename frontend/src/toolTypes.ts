@@ -45,6 +45,7 @@ export type WebSearchSourceConfig = {
   independence_group: string;
   roles: WebSearchSourceRole[];
   api_keys: string[];
+  api_key_labels?: string[];
   api_key_fingerprints?: string[];
   /** SHA-256 fingerprints of keys confirmed as officially blocked (omitted when empty). */
   blocked_api_key_hashes?: string[];

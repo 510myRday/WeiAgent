@@ -99,6 +99,7 @@ mod tests {
                 image_generation_url: None,
                 image_edit_url: None,
                 api_keys: vec!["test-key".to_string()],
+                api_key_labels: vec![],
                 key_strategy: Default::default(),
                 models: vec!["test-model".to_string()],
                 model_configs: Vec::new(),

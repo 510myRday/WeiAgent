@@ -1,7 +1,9 @@
 import type { ClipboardEvent, FormEvent, KeyboardEvent, SyntheticEvent } from 'react';
 import {
   ChevronDown, CircleAlert, Code2, Download, Eye, EyeOff, LockKeyhole, Plus, Save, Trash2,
+  Pencil,
 } from 'lucide-react';
+import { useState } from 'react';
 
 import type {
   ApiKeyStrategy, ImageModelConfig, IpProxy, ModelConfig, ModelProvider, ProviderType,
@@ -20,6 +22,7 @@ import {
   parseOptionalPrice,
 } from './settingsPanelUtils';
 import type { ProviderForm } from './settingsPanelUtils';
+import { KeyEditDialog } from '../KeyEditDialog';
 
 const KEY_STRATEGIES: ApiKeyStrategy[] = ['failover', 'round_robin', 'random'];
 const IMAGE_COUNT_OPTIONS = Array.from({ length: 10 }, (_, index) => index + 1);
@@ -42,6 +45,7 @@ interface ProviderEditorFormProps {
   onImageGenerationUrlChange: (url: string) => void;
   onImageEditUrlChange: (url: string) => void;
   onApiKeysChange: (apiKeys: string[]) => void;
+  onApiKeyLabelsChange: (labels: string[]) => void;
   onNewKeyTextChange: (newKeyText: string) => void;
   onAppendApiKeys: (raw: string) => void;
   onKeyStrategyChange: (strategy: ApiKeyStrategy) => void;
@@ -70,6 +74,7 @@ export function ProviderEditorForm({
   onImageGenerationUrlChange,
   onImageEditUrlChange,
   onApiKeysChange,
+  onApiKeyLabelsChange,
   onNewKeyTextChange,
   onAppendApiKeys,
   onKeyStrategyChange,
@@ -87,6 +92,7 @@ export function ProviderEditorForm({
   const apiKeys = providerForm.apiKeys;
   const newKeyText = providerForm.newKeyText;
   const keyCount = normalizeFormApiKeys(apiKeys).length;
+  const [editingKeyIndex, setEditingKeyIndex] = useState<number | null>(null);
 
   function handleNewKeyEnter(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key !== 'Enter') return;
@@ -101,6 +107,21 @@ export function ProviderEditorForm({
     if (!/[\s,]/.test(text.trim())) return;
     event.preventDefault();
     onAppendApiKeys(`${newKeyText} ${text}`);
+  }
+
+  function saveKeyEdit(nextKey: string, nextLabel: string) {
+    if (editingKeyIndex === null) return;
+    const index = editingKeyIndex;
+    const nextKeys = [...apiKeys];
+    if (nextKey) nextKeys[index] = nextKey;
+    const nextLabels = Array.from(
+      { length: nextKeys.length },
+      (_, keyIndex) => providerForm.apiKeyLabels[keyIndex] ?? '',
+    );
+    nextLabels[index] = nextLabel;
+    onApiKeysChange(nextKeys);
+    onApiKeyLabelsChange(nextLabels);
+    setEditingKeyIndex(null);
   }
 
   return (
@@ -238,25 +259,24 @@ export function ProviderEditorForm({
                     return (
                       <li className={`provider-key-row${saved ? ' is-saved' : ''}`} key={`${saved ? 'saved' : 'new'}-${index}`}>
                         <span className="provider-key-row__index" aria-hidden="true">{index + 1}</span>
-                        {saved ? (
+                        <div className="provider-key-row__identity">
                           <code className="provider-key-row__masked">{key}</code>
-                        ) : (
-                          <input
-                            className="provider-key-row__input"
-                            type={showApiKey ? 'text' : 'password'}
-                            value={key}
-                            onChange={(event) => onApiKeysChange(apiKeys.map((entry, position) => (
-                              position === index ? event.target.value : entry
-                            )))}
-                            onBlur={() => {
-                              if (!key.trim()) {
-                                onApiKeysChange(apiKeys.filter((_, position) => position !== index));
-                              }
-                            }}
+                          {providerForm.apiKeyLabels[index]?.trim() ? (
+                            <small className="provider-key-row__label-text">
+                              {providerForm.apiKeyLabels[index].trim()}
+                            </small>
+                          ) : null}
+                          <IconButton
+                            variant="ghost"
+                            type="button"
+                            className="provider-key-row__edit"
+                            label={t('provider.editKey')}
+                            onClick={() => setEditingKeyIndex(index)}
                             disabled={isSubmittingProvider}
-                            aria-label={`${t('provider.apiKey')} ${index + 1}`}
-                          />
-                        )}
+                          >
+                            <Pencil size={14} />
+                          </IconButton>
+                        </div>
                         <span className={`mini-status-badge provider-key-row__badge${saved ? '' : ' is-new'}`}>
                           {saved ? t('provider.keySaved') : t('provider.keyNew')}
                         </span>
@@ -264,7 +284,10 @@ export function ProviderEditorForm({
                           variant="ghost"
                           type="button"
                           label={t('provider.removeKey')}
-                          onClick={() => onApiKeysChange(apiKeys.filter((_, position) => position !== index))}
+                          onClick={() => {
+                            onApiKeysChange(apiKeys.filter((_, position) => position !== index));
+                            onApiKeyLabelsChange(providerForm.apiKeyLabels.filter((_, position) => position !== index));
+                          }}
                           disabled={isSubmittingProvider}
                         >
                           <Trash2 size={15} />
@@ -278,6 +301,23 @@ export function ProviderEditorForm({
           </div>
         </div>
       </section>
+
+      {editingKeyIndex !== null && apiKeys[editingKeyIndex] ? (
+        <KeyEditDialog
+          key={editingKeyIndex}
+          currentKey={apiKeys[editingKeyIndex]}
+          currentLabel={providerForm.apiKeyLabels[editingKeyIndex] ?? ''}
+          title={t('provider.editKeyTitle')}
+          currentKeyLabel={t('provider.currentKey')}
+          newKeyLabel={t('provider.newKey')}
+          newKeyPlaceholder={t('provider.newKeyPlaceholder')}
+          labelLabel={t('provider.keyLabel')}
+          labelPlaceholder={t('provider.keyLabelPlaceholder')}
+          closeLabel={t('common.close')}
+          onSave={saveKeyEdit}
+          onClose={() => setEditingKeyIndex(null)}
+        />
+      ) : null}
 
       <section className="provider-form-section">
         <div className="provider-model-section-heading">

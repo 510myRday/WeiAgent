@@ -501,8 +501,8 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
             conn.execute(
                 "INSERT INTO tool_web_search_api_keys (
                     source_id, position, api_key, key_status, status_detail, checked_at,
-                    extract_key_status, extract_status_detail, extract_checked_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    extract_key_status, extract_status_detail, extract_checked_at, key_label
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     source.id,
                     usize_to_i64(key_position)?,
@@ -525,6 +525,11 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
                         .get(key_position)
                         .and_then(Option::as_ref)
                         .map(|record| record.checked_at.as_str()),
+                    source
+                        .api_key_labels
+                        .get(key_position)
+                        .map(String::as_str)
+                        .unwrap_or(""),
                 ],
             )?;
         }
@@ -1009,7 +1014,7 @@ fn read_compact_web_search_sources(conn: &Connection) -> AppResult<Vec<WebSearch
 
     let mut sources = Vec::with_capacity(source_rows.len());
     for row in source_rows {
-        let (api_keys, key_statuses, extract_key_statuses) =
+        let (api_keys, api_key_labels, key_statuses, extract_key_statuses) =
             read_compact_web_search_keys(conn, &row.source_id)?;
         sources.push(WebSearchSourceConfig {
             id: row.source_id,
@@ -1022,6 +1027,7 @@ fn read_compact_web_search_sources(conn: &Connection) -> AppResult<Vec<WebSearch
             independence_group: row.independence_group,
             roles: serde_json::from_str(&row.roles_json)?,
             api_keys,
+            api_key_labels,
             api_key_fingerprints: Vec::new(),
             blocked_api_key_hashes: serde_json::from_str(&row.blocked_api_key_hashes_json)?,
             key_statuses,
@@ -1034,6 +1040,7 @@ fn read_compact_web_search_sources(conn: &Connection) -> AppResult<Vec<WebSearch
 
 type CompactWebSearchKeys = (
     Vec<String>,
+    Vec<String>,
     Vec<Option<WebSearchKeyStatusRecord>>,
     Vec<Option<WebSearchKeyStatusRecord>>,
 );
@@ -1044,7 +1051,7 @@ fn read_compact_web_search_keys(
 ) -> AppResult<CompactWebSearchKeys> {
     let mut stmt = conn.prepare(
         "SELECT api_key, key_status, status_detail, checked_at,
-                extract_key_status, extract_status_detail, extract_checked_at
+                extract_key_status, extract_status_detail, extract_checked_at, key_label
          FROM tool_web_search_api_keys WHERE source_id = ?1 ORDER BY position ASC",
     )?;
     let rows = stmt.query_map([source_id], |row| {
@@ -1056,9 +1063,11 @@ fn read_compact_web_search_keys(
             row.get::<_, Option<String>>(4)?,
             row.get::<_, Option<String>>(5)?,
             row.get::<_, Option<String>>(6)?,
+            row.get::<_, String>(7)?,
         ))
     })?;
     let mut api_keys = Vec::new();
+    let mut labels = Vec::new();
     let mut statuses = Vec::new();
     let mut extract_statuses = Vec::new();
     for row in rows {
@@ -1070,8 +1079,10 @@ fn read_compact_web_search_keys(
             extract_status,
             extract_detail,
             extract_checked_at,
+            key_label,
         ) = row?;
         api_keys.push(api_key);
+        labels.push(key_label);
         statuses.push(status.map(|status| WebSearchKeyStatusRecord {
             status,
             detail: detail.unwrap_or_default(),
@@ -1083,7 +1094,7 @@ fn read_compact_web_search_keys(
             checked_at: extract_checked_at.unwrap_or_default(),
         }));
     }
-    Ok((api_keys, statuses, extract_statuses))
+    Ok((api_keys, labels, statuses, extract_statuses))
 }
 
 fn agent_overrides_are_empty(overrides: &AgentToolsOverrides) -> bool {

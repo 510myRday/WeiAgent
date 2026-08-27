@@ -203,6 +203,7 @@ mod tests {
             name: "test".into(),
             base_url: "http://localhost".into(),
             api_keys: keys.iter().map(ToString::to_string).collect(),
+            api_key_labels: vec![],
             key_strategy: strategy,
             models: vec!["model".into()],
             model_configs: vec![],

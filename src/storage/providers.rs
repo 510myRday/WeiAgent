@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         ApiKeyStrategy, CreateModelProviderRequest, ImageModelConfig, ModelConfig, ModelProvider,
-        ModelProviderResponse, ProviderType, UpdateModelProviderRequest, merge_api_keys,
+        ModelProviderResponse, ProviderType, UpdateModelProviderRequest, merge_api_keys_with_labels,
     },
     error::{AppError, AppResult},
     storage::{
@@ -32,7 +32,12 @@ impl Store {
         let provider_type = request.provider_type;
         let name = validate_non_empty("provider name", &request.name)?;
         let base_url = validate_non_empty("base_url", &request.base_url)?;
-        let api_keys = merge_api_keys(&[], &request.api_keys);
+        let (api_keys, api_key_labels) = merge_api_keys_with_labels(
+            &[],
+            &[],
+            &request.api_keys,
+            &request.api_key_labels,
+        );
         let models = normalize_models(request.models)?;
         let model_configs =
             normalize_model_configs_for_provider(&models, request.model_configs, &provider_type)?;
@@ -51,6 +56,7 @@ impl Store {
             image_generation_url,
             image_edit_url,
             api_keys,
+            api_key_labels,
             key_strategy: request.key_strategy,
             models,
             model_configs,
@@ -103,7 +109,22 @@ impl Store {
             provider.image_edit_url = normalize_optional_url(image_edit_url)?;
         }
         if let Some(submitted) = request.api_keys {
-            provider.api_keys = merge_api_keys(&provider.api_keys, &submitted);
+            let submitted_labels = request.api_key_labels.as_deref().unwrap_or_default();
+            let (api_keys, api_key_labels) = merge_api_keys_with_labels(
+                &provider.api_keys,
+                &provider.api_key_labels,
+                &submitted,
+                submitted_labels,
+            );
+            provider.api_keys = api_keys;
+            provider.api_key_labels = api_key_labels;
+        } else if let Some(labels) = request.api_key_labels {
+            provider.api_key_labels = labels
+                .into_iter()
+                .map(|label| label.trim().to_string())
+                .chain(std::iter::repeat(String::new()))
+                .take(provider.api_keys.len())
+                .collect();
         }
         if let Some(key_strategy) = request.key_strategy {
             provider.key_strategy = key_strategy;
@@ -572,7 +593,7 @@ pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
     let mut stmt = conn.prepare(
         "SELECT id, provider_type, name, base_url, api_key, key_strategy, models_json,
                 model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, proxy_url,
-                image_generation_url, image_edit_url, created_at, updated_at
+                image_generation_url, image_edit_url, api_key_labels_json, created_at, updated_at
          FROM model_providers
          ORDER BY created_at ASC, id ASC",
     )?;
@@ -592,8 +613,9 @@ pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
             proxy_url: row.get(11)?,
             image_generation_url: row.get(12)?,
             image_edit_url: row.get(13)?,
-            created_at: row.get(14)?,
-            updated_at: row.get(15)?,
+            api_key_labels_json: row.get(14)?,
+            created_at: row.get(15)?,
+            updated_at: row.get(16)?,
         })
     })?;
 
@@ -613,12 +635,13 @@ pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) 
     let extra_body_json = serde_json::to_string(&provider.extra_body)?;
     let prompt_cache_json = serde_json::to_string(&provider.prompt_cache)?;
     let cache_capabilities_json = serde_json::to_string(&provider.cache_capabilities)?;
+    let api_key_labels_json = serde_json::to_string(&provider.api_key_labels)?;
     conn.execute(
         "INSERT INTO model_providers (
             id, provider_type, name, base_url, api_key, key_strategy, models_json,
             model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, proxy_url,
-            image_generation_url, image_edit_url, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            image_generation_url, image_edit_url, api_key_labels_json, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT(id) DO UPDATE SET
             provider_type = excluded.provider_type,
             name = excluded.name,
@@ -633,6 +656,7 @@ pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) 
             proxy_url = excluded.proxy_url,
             image_generation_url = excluded.image_generation_url,
             image_edit_url = excluded.image_edit_url,
+            api_key_labels_json = excluded.api_key_labels_json,
             updated_at = excluded.updated_at",
         params![
             provider.id.to_string(),
@@ -649,6 +673,7 @@ pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) 
             provider.proxy_url,
             provider.image_generation_url,
             provider.image_edit_url,
+            api_key_labels_json,
             provider.created_at.to_rfc3339(),
             provider.updated_at.to_rfc3339(),
         ],
@@ -696,6 +721,7 @@ struct ProviderRow {
     proxy_url: Option<String>,
     image_generation_url: Option<String>,
     image_edit_url: Option<String>,
+    api_key_labels_json: String,
     created_at: String,
     updated_at: String,
 }
@@ -711,6 +737,7 @@ fn row_to_provider(row: ProviderRow) -> AppResult<ModelProvider> {
     let extra_body: serde_json::Value = serde_json::from_str(&row.extra_body_json)?;
     let prompt_cache = serde_json::from_str(&row.prompt_cache_json)?;
     let cache_capabilities = serde_json::from_str(&row.cache_capabilities_json)?;
+    let api_key_labels = serde_json::from_str(&row.api_key_labels_json).unwrap_or_default();
     let created_at = chrono::DateTime::parse_from_rfc3339(&row.created_at)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|error| crate::error::AppError::Database(error.to_string()))?;
@@ -724,6 +751,7 @@ fn row_to_provider(row: ProviderRow) -> AppResult<ModelProvider> {
         name: row.name,
         base_url: row.base_url,
         api_keys: split_api_keys(&row.api_key),
+        api_key_labels,
         key_strategy,
         models,
         model_configs,
