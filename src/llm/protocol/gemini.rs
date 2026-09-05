@@ -1159,7 +1159,7 @@ mod tests {
         .unwrap();
 
         let declarations = request["tools"][0]["functionDeclarations"].to_string();
-        assert!(declarations.contains("multi_edit_file"));
+        assert!(declarations.contains("multi_file_operation"));
         assert!(declarations.contains("anyOf"));
         assert!(!declarations.contains("oneOf"));
         assert!(!declarations.contains("additionalProperties"));

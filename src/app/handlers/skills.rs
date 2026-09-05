@@ -197,13 +197,8 @@ pub async fn update_skill_icon(
             "Skill icon address is too long".to_string(),
         ));
     }
-    let source_url = request
-        .source_url
-        .map(|value| value.trim().to_string());
-    if source_url
-        .as_ref()
-        .is_some_and(|value| value.len() > 2048)
-    {
+    let source_url = request.source_url.map(|value| value.trim().to_string());
+    if source_url.as_ref().is_some_and(|value| value.len() > 2048) {
         return Err(AppError::BadRequest(
             "Skill source address is too long".to_string(),
         ));
@@ -211,10 +206,7 @@ pub async fn update_skill_icon(
     let icon_proxy_url = selected_skill_proxy(&state, request.icon_proxy_url, "icon").await?;
     let update_proxy_url = selected_skill_proxy(&state, request.update_proxy_url, "update").await?;
     state.store.update_skill_icon(&name, icon_url).await?;
-    state
-        .store
-        .update_skill_source(&name, source_url)
-        .await?;
+    state.store.update_skill_source(&name, source_url).await?;
     state
         .store
         .update_skill_proxies(&name, icon_proxy_url, update_proxy_url)

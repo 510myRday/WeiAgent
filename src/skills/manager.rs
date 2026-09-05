@@ -519,7 +519,11 @@ impl SkillManager {
             .source_url
             .clone()
             .ok_or_else(|| AppError::BadRequest("Skill source is not recorded".to_string()))?;
-        let kind = if looks_like_url(&source) { "network" } else { "local" };
+        let kind = if looks_like_url(&source) {
+            "network"
+        } else {
+            "local"
+        };
         let task = self
             .create_import_task(&source, kind, manifest.group_id.clone())
             .await?;
@@ -980,12 +984,8 @@ impl SkillManager {
                 .get(&manifest.name)
                 .cloned()
                 .or_else(|| (!is_builtin).then(|| manifest.root_dir.clone()));
-            item.icon_proxy_url = proxies
-                .get(&manifest.name)
-                .and_then(|item| item.0.clone());
-            item.update_proxy_url = proxies
-                .get(&manifest.name)
-                .and_then(|item| item.1.clone());
+            item.icon_proxy_url = proxies.get(&manifest.name).and_then(|item| item.0.clone());
+            item.update_proxy_url = proxies.get(&manifest.name).and_then(|item| item.1.clone());
             item.enabled = enabled;
             item.global_override = if is_builtin { None } else { global_item };
             item.group_override = if is_builtin { None } else { global_group_item };

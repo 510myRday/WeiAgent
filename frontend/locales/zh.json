@@ -1372,6 +1372,9 @@
     "rejected": "已拒绝",
     "interrupted": "执行已中断",
     "executionError": "执行错误",
+    "toolNames": {
+      "multiFileOperation": "多文件操作"
+    },
     "duration": "运行时间：{ms} ms",
     "commandTitle": "终端命令",
     "stdoutTitle": "终端输出",

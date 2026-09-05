@@ -47,7 +47,7 @@ impl AgentTool for TaskPlanningTool {
     fn definition(&self, _config: &AgentToolsConfig) -> crate::llm::types::ToolDefinition {
         super::registry::tool_definition(
             TASK_PLANNING_TOOL_NAME,
-            "Create and maintain the active task plan for the current conversation. Before using any other tool, create a plan when the task has multiple steps or meaningful dependencies. When creating a plan, include a clear explanation of the user's requirements, objective, completion criteria, and key constraints so it can be reused in task summaries. Keep the plan updated as work progresses.",
+            "Create and maintain the active task plan for the current conversation. Before using any other tool, create a plan when the task has multiple steps or meaningful dependencies. When creating a plan, include a clear explanation of the user's requirements, objective, completion criteria, and key constraints so it can be reused in task summaries. Keep the plan updated as work progresses. Complete tasks in order: a later task may be completed in the same call only when every earlier incomplete task is included in the item array; skipped tasks are rejected with a corrective error.",
             json!({
                 "type": "object",
                 "properties": {
@@ -116,7 +116,7 @@ impl AgentTool for TaskPlanningTool {
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "completed"],
-                        "description": "New status for the selected task."
+                        "description": "New status for the selected task. When setting completed, tasks must be completed in order. You may provide a contiguous array such as [1, 2]; an incomplete task between the current and requested task makes the update invalid."
                     }
                 },
                 "required": ["action"],
@@ -280,6 +280,11 @@ impl AgentTool for TaskPlanningTool {
                 if let Err(message) = validate_item_indexes(&items, plan.plan.len()) {
                     return ToolResult::Error { message };
                 }
+                if status == TaskPlanItemStatus::Completed {
+                    if let Err(message) = validate_completed_item_order(&plan.plan, &items) {
+                        return ToolResult::Error { message };
+                    }
+                }
                 let last_item = items.iter().copied().max().unwrap_or_default();
                 for item in &items {
                     plan.plan[*item - 1].status = status.clone();
@@ -437,6 +442,42 @@ fn validate_item_indexes(items: &[usize], plan_len: usize) -> Result<(), String>
         ));
     }
     Ok(())
+}
+
+fn validate_completed_item_order(plan: &[TaskPlanItem], items: &[usize]) -> Result<(), String> {
+    let Some(current_item) = plan
+        .iter()
+        .position(|item| item.status != TaskPlanItemStatus::Completed)
+        .map(|index| index + 1)
+    else {
+        return Ok(());
+    };
+
+    let Some(last_requested_item) = items.iter().copied().max() else {
+        return Ok(());
+    };
+    if last_requested_item < current_item {
+        return Ok(());
+    }
+
+    let required_items: Vec<usize> = (current_item..=last_requested_item).collect();
+    if required_items.iter().all(|item| items.contains(item)) {
+        return Ok(());
+    }
+
+    let requested_items = items
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let required_items = required_items
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "task_planning rejected completing task {last_requested_item}: task {current_item} is the first incomplete task. Complete tasks in order and include every task from {current_item} through {last_requested_item} in one call. requested_items=[{requested_items}], required_items=[{required_items}]"
+    ))
 }
 
 fn validate_plan(plan: &[TaskPlanItem]) -> Result<(), String> {
@@ -908,5 +949,103 @@ mod tests {
         assert_eq!(updated["plan"][0]["status"], "completed");
         assert_eq!(updated["plan"][1]["status"], "completed");
         assert_eq!(updated["plan"][2]["status"], "in_progress");
+    }
+
+    #[tokio::test]
+    async fn set_status_rejects_completing_a_later_item_before_the_current_item() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(temp_dir.path()).await.unwrap());
+        let conversation_id = Uuid::new_v4();
+        let tool = TaskPlanningTool;
+
+        let created = tool
+            .execute(
+                serde_json::json!({
+                    "action": "create",
+                    "explanation": "Enforce ordered completion",
+                    "plan": [
+                        {"step": "First", "status": "in_progress"},
+                        {"step": "Second", "status": "pending"},
+                        {"step": "Third", "status": "pending"}
+                    ]
+                }),
+                context(store.clone(), conversation_id),
+            )
+            .await;
+        let ToolResult::Completed { stdout, .. } = created else {
+            panic!("expected plan creation to succeed");
+        };
+        let created: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "action": "set_status",
+                    "planning_id": created["planning_id"],
+                    "item": 3,
+                    "status": "completed"
+                }),
+                context(store.clone(), conversation_id),
+            )
+            .await;
+
+        let ToolResult::Error { message } = result else {
+            panic!("expected a later task to be rejected");
+        };
+        assert!(message.contains("first incomplete task"));
+        assert!(message.contains("requested_items=[3]"));
+        assert!(message.contains("required_items=[1, 2, 3]"));
+        let active = store
+            .read_task_plan(conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(active.plan[0].status, TaskPlanItemStatus::InProgress);
+        assert_eq!(active.plan[2].status, TaskPlanItemStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn set_status_rejects_a_batch_with_a_missing_incomplete_item() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(temp_dir.path()).await.unwrap());
+        let conversation_id = Uuid::new_v4();
+        let tool = TaskPlanningTool;
+
+        let created = tool
+            .execute(
+                serde_json::json!({
+                    "action": "create",
+                    "explanation": "Enforce contiguous completion",
+                    "plan": [
+                        {"step": "First", "status": "in_progress"},
+                        {"step": "Second", "status": "pending"},
+                        {"step": "Third", "status": "pending"}
+                    ]
+                }),
+                context(store.clone(), conversation_id),
+            )
+            .await;
+        let ToolResult::Completed { stdout, .. } = created else {
+            panic!("expected plan creation to succeed");
+        };
+        let created: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "action": "set_status",
+                    "planning_id": created["planning_id"],
+                    "item": [1, 3],
+                    "status": "completed"
+                }),
+                context(store.clone(), conversation_id),
+            )
+            .await;
+
+        let ToolResult::Error { message } = result else {
+            panic!("expected a non-contiguous batch to be rejected");
+        };
+        assert!(message.contains("requested_items=[1, 3]"));
+        assert!(message.contains("required_items=[1, 2, 3]"));
     }
 }

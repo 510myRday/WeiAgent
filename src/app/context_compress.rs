@@ -1107,7 +1107,10 @@ fn normalize_summary(content: &str) -> String {
 mod tests {
     use super::*;
     use crate::{
-        domain::{ModelUsage, TokenUsage, settings::DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT},
+        domain::{
+            ImageAttachment, ImageSource, ModelUsage, TokenUsage,
+            settings::DEFAULT_CONTEXT_COMPRESS_THRESHOLD_PERCENT,
+        },
         llm::types::FunctionDefinition,
     };
 
@@ -1259,6 +1262,31 @@ mod tests {
             .filter(|message| message.content.contains("previous state"))
             .count();
         assert_eq!(occurrences, 1);
+    }
+
+    #[test]
+    fn summarizer_omits_old_image_payloads_but_keeps_attachment_presence() {
+        let mut old = msg(ChatRole::User, "old image context");
+        old.attachments.push(ImageAttachment {
+            id: "old-image".to_string(),
+            name: "old.png".to_string(),
+            media_type: "image/png".to_string(),
+            is_mask: false,
+            source: ImageSource::Base64 {
+                data: "large-base64-payload".to_string(),
+            },
+        });
+
+        let summary_input = build_summarizer_messages(&[old], None);
+
+        assert_eq!(summary_input.len(), 1);
+        assert!(summary_input[0].attachments.is_empty());
+        assert!(
+            summary_input[0]
+                .content
+                .contains("[attachments omitted: 1 image(s)]")
+        );
+        assert!(!summary_input[0].content.contains("large-base64-payload"));
     }
 
     #[test]

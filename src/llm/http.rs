@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -22,13 +22,8 @@ use crate::{
 };
 
 const MAX_LLM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
-const MAX_LLM_LOG_BYTES: usize = 1024 * 1024;
-/// Capture budget when payload logging is disabled: only the stream tail is
-/// kept so usage metrics can still be extracted from the final SSE lines.
-const METRICS_ONLY_LOG_BYTES: usize = 16 * 1024;
 const MAX_SSE_LINE_BUFFER_BYTES: usize = 1024 * 1024;
 pub(crate) const DEFAULT_MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(30);
-const STREAM_LOG_TRUNCATION_MARKER: &str = "[LLM stream log middle truncated]";
 const RETRY_BASE_DELAY_MS: u64 = 1_000;
 const RETRY_MAX_DELAY_MS: u64 = 30_000;
 const RETRY_JITTER_PERCENT: u64 = 25;
@@ -489,124 +484,6 @@ pub(crate) fn stream_metrics(
     metrics
 }
 
-fn capture_log_line(
-    line: &str,
-    raw_lines: &mut Vec<String>,
-    raw_bytes: &mut usize,
-    raw_truncated: &mut bool,
-    max_bytes: usize,
-) {
-    if !*raw_truncated && raw_bytes.saturating_add(line.len()) <= max_bytes {
-        *raw_bytes += line.len();
-        raw_lines.push(line.to_string());
-        return;
-    }
-
-    let available = max_bytes.saturating_sub(STREAM_LOG_TRUNCATION_MARKER.len() + 2);
-    let head_bytes = available / 2;
-    let tail_bytes = available.saturating_sub(head_bytes);
-
-    if *raw_truncated {
-        // Amortized bounded tail: append and only trim the front once the tail
-        // doubles its budget, so each retained byte moves at most once instead
-        // of re-copying ~tail_bytes for every incoming SSE line.
-        if raw_lines.len() < 2 {
-            raw_lines.resize(2, String::new());
-        }
-        let tail = &mut raw_lines[1];
-        if !tail.is_empty() {
-            tail.push('\n');
-        }
-        tail.push_str(line);
-        if tail.len() > tail_bytes.saturating_mul(2) {
-            let cut = tail.len() - suffix_at_most(tail, tail_bytes).len();
-            tail.drain(..cut);
-        }
-    } else {
-        // Keep both ends of a long stream: the beginning is useful for context,
-        // while the end usually contains usage, finish, and cache metadata.
-        let existing = raw_lines.join("\n");
-        let combined = if existing.is_empty() {
-            line.to_string()
-        } else {
-            format!("{existing}\n{line}")
-        };
-        *raw_lines = vec![
-            prefix_at_most(&combined, head_bytes).to_string(),
-            suffix_at_most(&combined, tail_bytes).to_string(),
-        ];
-    }
-    *raw_bytes = raw_lines.iter().map(String::len).sum();
-    *raw_truncated = true;
-}
-
-fn redact_stream_log_line(line: &str) -> String {
-    let (prefix, payload) = if let Some(payload) = line.strip_prefix("data: ") {
-        ("data: ", payload)
-    } else if let Some(payload) = line.strip_prefix("data:") {
-        ("data:", payload)
-    } else {
-        return line.to_string();
-    };
-    if !payload.contains("\"encrypted_content\"") {
-        return line.to_string();
-    }
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(payload) else {
-        return line.to_string();
-    };
-    redact_encrypted_content(&mut value);
-    format!("{prefix}{value}")
-}
-
-fn redact_encrypted_content(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(map) => {
-            for (key, value) in map {
-                if key == "encrypted_content" && value.as_str().is_some() {
-                    let length = value.as_str().map_or(0, str::len);
-                    *value = serde_json::Value::String(format!(
-                        "[encrypted reasoning omitted: {length} chars]"
-                    ));
-                } else {
-                    redact_encrypted_content(value);
-                }
-            }
-        }
-        serde_json::Value::Array(values) => {
-            for value in values {
-                redact_encrypted_content(value);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn prefix_at_most(value: &str, max_bytes: usize) -> &str {
-    let mut end = max_bytes.min(value.len());
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    &value[..end]
-}
-
-fn suffix_at_most(value: &str, max_bytes: usize) -> &str {
-    let mut start = value.len().saturating_sub(max_bytes);
-    while !value.is_char_boundary(start) {
-        start += 1;
-    }
-    &value[start..]
-}
-
-fn format_stream_log(raw_lines: &[String], truncated: bool) -> String {
-    if truncated {
-        let head = raw_lines.first().map(String::as_str).unwrap_or_default();
-        let tail = raw_lines.get(1).map(String::as_str).unwrap_or_default();
-        format!("{head}\n{STREAM_LOG_TRUNCATION_MARKER}\n{tail}")
-    } else {
-        raw_lines.join("\n")
-    }
-}
-
 fn drain_sse_line(buffer: &mut Vec<u8>) -> Option<AppResult<String>> {
     let index = buffer.iter().position(|byte| *byte == b'\n')?;
     let mut line = buffer.drain(..=index).collect::<Vec<_>>();
@@ -628,11 +505,74 @@ fn decode_sse_line(line: &[u8]) -> AppResult<String> {
         .map_err(|error| AppError::Llm(format!("invalid SSE UTF-8: {error}")))
 }
 
-/// Persist one stream-log record (metrics always; payload when enabled).
+#[derive(Default)]
+struct StreamLogToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+fn build_stream_log_response(
+    model_id: &str,
+    content: &str,
+    reasoning: &str,
+    tool_calls: &BTreeMap<usize, StreamLogToolCall>,
+    usage: Option<&TokenUsage>,
+    error: Option<&str>,
+) -> String {
+    let mut message = serde_json::json!({
+        "role": "assistant",
+        "content": content,
+    });
+    if !reasoning.is_empty() {
+        message["reasoning_content"] = serde_json::Value::String(reasoning.to_string());
+    }
+    if !tool_calls.is_empty() {
+        message["tool_calls"] = serde_json::Value::Array(
+            tool_calls
+                .iter()
+                .map(|(index, call)| {
+                    serde_json::json!({
+                        "index": index,
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            "arguments": call.arguments,
+                        }
+                    })
+                })
+                .collect(),
+        );
+    }
+
+    let finish_reason = if error.is_some() {
+        "error"
+    } else if tool_calls.is_empty() {
+        "stop"
+    } else {
+        "tool_calls"
+    };
+    let response = serde_json::json!({
+        "object": "chat.completion",
+        "model": model_id,
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": finish_reason,
+        }],
+        "usage": usage,
+    });
+    serde_json::to_string_pretty(&response).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Persist one stream-log record (metrics always; a final non-stream response
+/// when payload logging is enabled).
 fn log_stream_result(
     context: &StreamLogContext,
-    raw_lines: &[String],
-    raw_truncated: bool,
+    content: &str,
+    reasoning: &str,
+    tool_calls: &BTreeMap<usize, StreamLogToolCall>,
     first_token_ms: Option<u64>,
     usage: Option<&TokenUsage>,
     error: Option<&str>,
@@ -649,7 +589,14 @@ fn log_stream_result(
                 provider_name: context.provider_name.clone(),
             },
             &context.request_json,
-            Some(&format_stream_log(raw_lines, raw_truncated)),
+            Some(&build_stream_log_response(
+                &context.model_id,
+                content,
+                reasoning,
+                tool_calls,
+                usage,
+                error,
+            )),
             Some(context.status),
             error,
             stream_metrics(context.started, first_token_ms, usage),
@@ -664,10 +611,9 @@ fn log_stream_result(
 /// `Drop`, which records a cancellation entry with whatever was captured.
 struct StreamLogState {
     context: StreamLogContext,
-    capture_budget: usize,
-    raw_lines: Vec<String>,
-    raw_bytes: usize,
-    raw_truncated: bool,
+    content: String,
+    reasoning: String,
+    tool_calls: BTreeMap<usize, StreamLogToolCall>,
     first_token_ms: Option<u64>,
     usage: Option<TokenUsage>,
     completed: bool,
@@ -675,37 +621,40 @@ struct StreamLogState {
 
 impl StreamLogState {
     fn new(context: StreamLogContext) -> Self {
-        // Without payload logging only a small tail is kept so token usage can
-        // still be recovered from the closing SSE lines.
-        let capture_budget = if context.enabled {
-            MAX_LLM_LOG_BYTES
-        } else {
-            METRICS_ONLY_LOG_BYTES
-        };
         Self {
             context,
-            capture_budget,
-            raw_lines: Vec::new(),
-            raw_bytes: 0,
-            raw_truncated: false,
+            content: String::new(),
+            reasoning: String::new(),
+            tool_calls: BTreeMap::new(),
             first_token_ms: None,
             usage: None,
             completed: false,
         }
     }
 
-    fn capture(&mut self, line: &str) {
-        let line = redact_stream_log_line(line);
-        capture_log_line(
-            &line,
-            &mut self.raw_lines,
-            &mut self.raw_bytes,
-            &mut self.raw_truncated,
-            self.capture_budget,
-        );
-    }
-
     fn note_event(&mut self, event: &StreamEvent) {
+        if self.context.enabled {
+            match event {
+                StreamEvent::TextDelta(value) => self.content.push_str(value),
+                StreamEvent::ReasoningDelta(value) => self.reasoning.push_str(value),
+                StreamEvent::OpenAiResponseItem(_) => {}
+                StreamEvent::ToolCallStart { index, id, name } => {
+                    let call = self.tool_calls.entry(*index).or_default();
+                    call.id = id.clone();
+                    call.name = name.clone();
+                }
+                StreamEvent::ToolCallArgsDelta { index, arguments } => {
+                    self.tool_calls
+                        .entry(*index)
+                        .or_default()
+                        .arguments
+                        .push_str(arguments);
+                }
+                StreamEvent::Usage(_)
+                | StreamEvent::FinishedWithToolCalls
+                | StreamEvent::Finished => {}
+            }
+        }
         if let StreamEvent::Usage(value) = event {
             self.usage = Some(value.clone());
         }
@@ -718,8 +667,9 @@ impl StreamLogState {
         self.completed = true;
         log_stream_result(
             &self.context,
-            &self.raw_lines,
-            self.raw_truncated,
+            &self.content,
+            &self.reasoning,
+            &self.tool_calls,
             self.first_token_ms,
             self.usage.as_ref(),
             error,
@@ -774,7 +724,6 @@ pub fn stream_response(
                                 return;
                             }
                         };
-                        state.capture(&line);
                         for event in parser.parse_line(&line) {
                             match event {
                                 Ok(event) => {
@@ -814,7 +763,6 @@ pub fn stream_response(
                 return;
             }
         } {
-            state.capture(&line);
             for event in parser.parse_line(&line) {
                 match event {
                     Ok(event) => {
@@ -948,17 +896,6 @@ mod tests {
         assert!(other.headers().get("X-OpenRouter-Title").is_none());
     }
 
-    #[test]
-    fn stream_logs_redact_encrypted_reasoning() {
-        let line = r#"data: {"type":"response.output_item.done","item":{"type":"reasoning","encrypted_content":"opaque-state"}}"#;
-        let redacted = redact_stream_log_line(line);
-        assert!(!redacted.contains("opaque-state"));
-        assert!(redacted.contains("encrypted reasoning omitted: 12 chars"));
-
-        let no_space = redact_stream_log_line(&line.replacen("data: ", "data:", 1));
-        assert!(!no_space.contains("opaque-state"));
-    }
-
     #[tokio::test]
     async fn response_body_has_an_idle_timeout() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1005,37 +942,41 @@ mod tests {
     }
 
     #[test]
-    fn stream_log_capture_keeps_the_head_and_latest_tail() {
-        let mut lines = Vec::new();
-        let mut bytes = 0;
-        let mut truncated = false;
-        capture_log_line(
-            "HEAD",
-            &mut lines,
-            &mut bytes,
-            &mut truncated,
-            MAX_LLM_LOG_BYTES,
+    fn stream_log_response_is_non_streaming_and_aggregated() {
+        let mut calls = BTreeMap::new();
+        calls.insert(
+            0,
+            StreamLogToolCall {
+                id: "call-1".to_string(),
+                name: "run".to_string(),
+                arguments: r#"{"command":"echo hi"}"#.to_string(),
+            },
         );
-        capture_log_line(
-            &"M".repeat(MAX_LLM_LOG_BYTES),
-            &mut lines,
-            &mut bytes,
-            &mut truncated,
-            MAX_LLM_LOG_BYTES,
+        let response = build_stream_log_response(
+            "model",
+            "answer",
+            "thinking",
+            &calls,
+            Some(&TokenUsage {
+                input_tokens: 2,
+                output_tokens: 3,
+                ..TokenUsage::default()
+            }),
+            None,
         );
-        capture_log_line(
-            "TAIL",
-            &mut lines,
-            &mut bytes,
-            &mut truncated,
-            MAX_LLM_LOG_BYTES,
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["object"], "chat.completion");
+        assert_eq!(value["choices"][0]["message"]["content"], "answer");
+        assert_eq!(
+            value["choices"][0]["message"]["reasoning_content"],
+            "thinking"
         );
-
-        let formatted = format_stream_log(&lines, truncated);
-        assert!(truncated);
-        assert!(formatted.starts_with("HEAD"));
-        assert!(formatted.contains("[LLM stream log middle truncated]"));
-        assert!(formatted.ends_with("TAIL"));
+        assert_eq!(
+            value["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+            "run"
+        );
+        assert!(!response.contains("data:"));
+        assert!(!response.contains("[DONE]"));
     }
 
     fn cycle(keys: &[&str]) -> ApiKeyCycle {

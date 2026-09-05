@@ -419,7 +419,7 @@ export function MonitorPanel({
     const text = activeTab === 'request'
       ? formatRawJson(selectedLog?.raw_request)
       : (selectedLog?.raw_response
-        ? formatRawJson(selectedLog.raw_response)
+        ? (formattedResponse?.formatted || formatRawJson(selectedLog.raw_response))
         : selectedLog?.error || '');
     if (!text) return;
     void copy(text);
@@ -1183,21 +1183,6 @@ export function MonitorPanel({
                   <pre className="llm-logs-content monitor-detail-code">
                     {formatRawJson(selectedLog.raw_request)}
                   </pre>
-                ) : formattedResponse?.isStreaming ? (
-                  <div className="llm-logs-response-content monitor-detail-response">
-                    <section className="llm-logs-content-section">
-                      <h3 className="llm-logs-content-label">{t('llmLogs.aggregatedResponse')}</h3>
-                      <pre className="llm-logs-content llm-logs-content-block monitor-detail-code">
-                        {formattedResponse.formatted}
-                      </pre>
-                    </section>
-                    <section className="llm-logs-content-section">
-                      <h3 className="llm-logs-content-label">{t('llmLogs.streamChunks')}</h3>
-                      <pre className="llm-logs-content llm-logs-content-block monitor-detail-code">
-                        {formattedResponse.raw}
-                      </pre>
-                    </section>
-                  </div>
                 ) : (
                   <pre className="llm-logs-content monitor-detail-code">
                     {formattedResponse?.formatted || selectedLog.error || '(empty)'}

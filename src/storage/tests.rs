@@ -100,6 +100,74 @@ async fn initializes_settings_and_database() {
     );
 }
 
+#[test]
+fn startup_migration_removes_legacy_stream_payloads() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let conn = db::open_data_dir(temp_dir.path()).unwrap();
+    let stream_id = Uuid::new_v4().to_string();
+    let regular_id = Uuid::new_v4().to_string();
+    let now = Utc::now();
+
+    for id in [&stream_id, &regular_id] {
+        conn.execute(
+            "INSERT INTO llm_requests (
+                id, created_at, created_at_ms, agent_name, provider_name, model_id, has_payload
+             ) VALUES (?1, ?2, ?3, 'Agent', 'Provider', 'model', 1)",
+            params![id, now.to_rfc3339(), now.timestamp_millis()],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO llm_payloads (request_id, raw_request, raw_response)
+         VALUES (?1, '', ?2)",
+        params![
+            stream_id,
+            "data: {\"choices\":[{\"delta\":{\"content\":\"old\"}}]}\ndata: [DONE]"
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO llm_payloads (request_id, raw_request, raw_response)
+         VALUES (?1, '', ?2)",
+        params![
+            regular_id,
+            "{\"choices\":[{\"message\":{\"content\":\"keep\"}}]}"
+        ],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM app_schema_migrations WHERE version = 26", [])
+        .unwrap();
+    drop(conn);
+
+    let conn = db::open_data_dir(temp_dir.path()).unwrap();
+    let stream_payload_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM llm_payloads WHERE request_id = ?1",
+            [&stream_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stream_payload_count, 0);
+    assert_eq!(
+        conn.query_row(
+            "SELECT has_payload FROM llm_requests WHERE id = ?1",
+            [&stream_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT raw_response FROM llm_payloads WHERE request_id = ?1",
+            [&regular_id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "{\"choices\":[{\"message\":{\"content\":\"keep\"}}]}"
+    );
+}
+
 #[tokio::test]
 async fn upgrades_legacy_task_plans_before_creating_active_indexes() {
     let temp_dir = tempfile::tempdir().unwrap();

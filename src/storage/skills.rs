@@ -433,7 +433,10 @@ impl Store {
                     .query_map([], |row| {
                         Ok((
                             row.get::<_, String>(0)?,
-                            (row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?),
+                            (
+                                row.get::<_, Option<String>>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                            ),
                         ))
                     })?
                     .collect::<Result<HashMap<String, (Option<String>, Option<String>)>, _>>()?;
@@ -485,7 +488,10 @@ impl Store {
                     [&name],
                 )?;
                 tx.execute("DELETE FROM skill_icons WHERE skill_name = ?1", [&name])?;
-                tx.execute("DELETE FROM skill_proxy_settings WHERE skill_name = ?1", [&name])?;
+                tx.execute(
+                    "DELETE FROM skill_proxy_settings WHERE skill_name = ?1",
+                    [&name],
+                )?;
                 tx.execute("DELETE FROM skill_sources WHERE skill_name = ?1", [&name])?;
                 tx.execute(
                     "DELETE FROM skill_group_assignments WHERE skill_name = ?1",

@@ -11,6 +11,7 @@ use crate::{
     storage::Store,
     tools::{
         approval::ApprovalManager,
+        multi_edit::{LEGACY_MULTI_EDIT_TOOL_NAME, MULTI_FILE_OPERATION_TOOL_NAME},
         task_planning::{TASK_PLANNING_TOOL_NAME, TaskPlanningTool},
         terminal::{ExecuteTerminalRequest, SandboxPermissions, TerminalManager},
         web_search::evidence::WebSearchProvenanceCache,
@@ -106,7 +107,11 @@ impl ToolRegistry {
         arguments: Value,
         context: ToolExecutionContext,
     ) -> ToolResult {
-        let Some(tool) = self.tools.get(name) else {
+        let canonical_name = match name {
+            LEGACY_MULTI_EDIT_TOOL_NAME => MULTI_FILE_OPERATION_TOOL_NAME,
+            other => other,
+        };
+        let Some(tool) = self.tools.get(canonical_name) else {
             return ToolResult::Error {
                 message: format!("Unknown tool: {name}"),
             };
@@ -119,7 +124,7 @@ impl ToolRegistry {
             };
         }
         let mut tool_arguments = arguments;
-        if context.tools_config.task_planning.enabled && name != TASK_PLANNING_TOOL_NAME {
+        if context.tools_config.task_planning.enabled && canonical_name != TASK_PLANNING_TOOL_NAME {
             let planning_argument = tool_arguments
                 .get("planning_id")
                 .or_else(|| tool_arguments.get("planningId"));
@@ -174,7 +179,7 @@ impl ToolRegistry {
                     reason,
                     code: Some(code.to_string()),
                     details: Some(serde_json::json!({
-                        "tool": name,
+                        "tool": canonical_name,
                         "planning_id": planning_id,
                         "provided_planning_id": planning_id,
                         "active_planning_id": active_plan.as_ref().map(|plan| plan.public_id()),
@@ -305,7 +310,7 @@ pub(super) fn build_execute_terminal_description(_config: &AgentToolsConfig) -> 
     let examples = shell.command_examples();
 
     format!(
-        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. WeiAgent includes a private ripgrep binary in released builds and adds it to the command PATH; if `rg` is unavailable, use the selected shell's built-in file search or grep fallback. Prefer multi_edit_file for source/config edits (including outside-root paths via sandbox_permissions=require_escalated + justification) instead of rewriting files through shell. Selected shell: {}. {host_guidance} {examples} {} The server enforces its current execution policy; request elevated access with sandbox_permissions=require_escalated and a justification when needed. Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again. Omit cwd to use the WeiAgent default workspace; relative paths resolve from it. The server checks requested cwd and target paths against its configured permission roots and requests approval when required.",
+        "Execute a local command and return stdout, stderr, and exit_code, or process_id when it continues running. Use it to inspect files, search repositories, run builds/tests, and manage local processes; prefer `rg` for text search and `rg --files` for file discovery. WeiAgent includes a private ripgrep binary in released builds and adds it to the command PATH; if `rg` is unavailable, use the selected shell's built-in file search or grep fallback. Prefer multi_file_operation for source/config edits (including outside-root paths via sandbox_permissions=require_escalated + justification) instead of rewriting files through shell. Selected shell: {}. {host_guidance} {examples} {} The server enforces its current execution policy; request elevated access with sandbox_permissions=require_escalated and a justification when needed. Run ordinary commands in the foreground; use background only for long-lived services and tty only for interactive programs. Continue a returned process_id with terminal_session instead of starting the command again. Omit cwd to use the WeiAgent default workspace; relative paths resolve from it. The server checks requested cwd and target paths against its configured permission roots and requests approval when required.",
         shell.display_name(),
         crate::tools::prompt::TERMINAL_FILE_DISCOVERY_POLICY
     )
@@ -504,10 +509,12 @@ mod tests {
         assert!(terminal.function.description.contains("process_id"));
         assert!(terminal.function.description.contains("prefer `rg`"));
         assert!(terminal.function.description.contains("`rg --files`"));
-        assert!(terminal
-            .function
-            .description
-            .contains("File Discovery and Reading Policy"));
+        assert!(
+            terminal
+                .function
+                .description
+                .contains("File Discovery and Reading Policy")
+        );
         assert!(terminal.function.description.contains("node_modules"));
         assert!(terminal.function.description.contains("target"));
         if cfg!(windows) {
@@ -562,7 +569,7 @@ mod tests {
         let default_definitions = registry.definitions(&AgentToolsConfig::default()).unwrap();
         let configured_definitions = registry.definitions(&config).unwrap();
 
-        for tool_name in ["execute_terminal", "multi_edit_file"] {
+        for tool_name in ["execute_terminal", "multi_file_operation"] {
             let default_description = &default_definitions
                 .iter()
                 .find(|definition| definition.function.name == tool_name)
@@ -625,7 +632,7 @@ mod tests {
             .collect();
         assert!(names.contains(&"execute_terminal"));
         assert!(names.contains(&"terminal_session"));
-        assert!(names.contains(&"multi_edit_file"));
+        assert!(names.contains(&"multi_file_operation"));
         assert!(names.contains(&"task_planning"));
         assert_eq!(names.len(), 7);
 
@@ -793,7 +800,7 @@ mod tests {
             names,
             vec![
                 "execute_terminal",
-                "multi_edit_file",
+                "multi_file_operation",
                 "task_planning",
                 "terminal_session",
                 "web_extract",
@@ -812,8 +819,8 @@ mod tests {
             .unwrap();
         let multi = definitions
             .iter()
-            .find(|definition| definition.function.name == "multi_edit_file")
-            .expect("multi_edit_file should be registered");
+            .find(|definition| definition.function.name == "multi_file_operation")
+            .expect("multi_file_operation should be registered");
         let parameters = &multi.function.parameters;
         assert_eq!(
             parameters["properties"]["sandbox_permissions"]["enum"],

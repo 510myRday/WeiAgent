@@ -6,6 +6,7 @@ use std::{
     time::Instant,
 };
 
+use encoding_rs::{GBK, UTF_16BE, UTF_16LE};
 use serde::{
     Deserialize, Serialize,
     de::{self, DeserializeOwned, Deserializer},
@@ -21,9 +22,11 @@ use crate::{
     },
 };
 
-pub const MULTI_EDIT_TOOL_NAME: &str = "multi_edit_file";
+pub const MULTI_FILE_OPERATION_TOOL_NAME: &str = "multi_file_operation";
+pub const LEGACY_MULTI_EDIT_TOOL_NAME: &str = "multi_edit_file";
 /// Stable always-allow grant key (not the human-readable approval summary).
-pub const MULTI_EDIT_GRANT_COMMAND: &str = "multi_edit_file";
+pub const MULTI_FILE_OPERATION_GRANT_COMMAND: &str = MULTI_FILE_OPERATION_TOOL_NAME;
+pub const LEGACY_MULTI_EDIT_GRANT_COMMAND: &str = LEGACY_MULTI_EDIT_TOOL_NAME;
 
 const MAX_OPERATIONS: usize = 32;
 const MAX_EDITS_PER_FILE: usize = 64;
@@ -206,7 +209,7 @@ fn render_edit_failure(failure: FileEditFailure) -> String {
     message
 }
 
-/// Per-path async locks shared by every multi_edit_file call in this process.
+/// Per-path async locks shared by every multi_file_operation call in this process.
 /// Two concurrent calls (e.g. from different conversations) that touch the
 /// same file would otherwise both stage from the same on-disk version and
 /// silently lose one side's changes, or the later writer would fail with an
@@ -244,29 +247,45 @@ async fn acquire_file_locks(paths: &[PathBuf]) -> Vec<tokio::sync::OwnedMutexGua
     guards
 }
 
+#[derive(Debug, Clone, Copy)]
+enum TextEncoding {
+    Utf8,
+    Utf8Bom,
+    Utf16Le,
+    Utf16Be,
+    Gbk,
+}
+
+#[derive(Debug)]
+struct DecodedTextFile {
+    content: String,
+    bytes: Vec<u8>,
+    encoding: TextEncoding,
+}
+
 #[derive(Debug)]
 enum StagedFileOperation {
     Update {
         path: PathBuf,
-        old_content: String,
-        new_content: String,
+        old_content: Vec<u8>,
+        new_content: Vec<u8>,
         replacements: usize,
     },
     Create {
         path: PathBuf,
-        content: String,
+        content: Vec<u8>,
         overwritten: bool,
-        previous_content: Option<String>,
+        previous_content: Option<Vec<u8>>,
     },
     Delete {
         path: PathBuf,
-        content: String,
+        content: Vec<u8>,
     },
     Move {
         from: PathBuf,
         to: PathBuf,
-        content: String,
-        overwritten_content: Option<String>,
+        content: Vec<u8>,
+        overwritten_content: Option<Vec<u8>>,
     },
 }
 
@@ -285,10 +304,10 @@ pub fn parse_multi_edit_file_args(
         Err(_) => {
             if let Some(index) = missing_operation_type(&arguments) {
                 return Err(format!(
-                    "multi_edit_file operations[{index}] is missing required field `type`. Put `type` inside each operation object, for example {{\"type\":\"edit\",\"path\":\"src/file.rs\",\"edits\":[{{\"old_string\":\"old\",\"new_string\":\"new\"}}]}}."
+                    "multi_file_operation operations[{index}] is missing required field `type`. Put `type` inside each operation object, for example {{\"type\":\"edit\",\"path\":\"src/file.rs\",\"edits\":[{{\"old_string\":\"old\",\"new_string\":\"new\"}}]}}."
                 ));
             }
-            Err("Invalid multi_edit_file arguments. Use operations as an array of objects; each operation needs type=edit, create, delete, or move, plus its operation-specific fields.".to_string())
+            Err("Invalid multi_file_operation arguments. Use operations as an array of objects; each operation needs type=edit, create, delete, or move, plus its operation-specific fields.".to_string())
         }
     }
 }
@@ -442,14 +461,14 @@ pub async fn execute_multi_edit(
         }
         Err(join_error) => {
             return ToolResult::Error {
-                message: format!("multi_edit_file worker panicked: {join_error}"),
+                message: format!("multi_file_operation worker panicked: {join_error}"),
             };
         }
     };
 
     let payload = serde_json::json!({
         "status": "completed",
-        "tool": MULTI_EDIT_TOOL_NAME,
+        "tool": MULTI_FILE_OPERATION_TOOL_NAME,
         "cwd": fsutil::display_path(&workspace.cwd),
         "summary": outcome.summary,
         "changes": outcome.changes,
@@ -490,7 +509,9 @@ fn has_multi_edit_grant(
         candidates.push(cwd.to_string());
     }
     config.approval_grants.iter().any(|grant| {
-        if grant.command != MULTI_EDIT_GRANT_COMMAND {
+        if grant.command != MULTI_FILE_OPERATION_GRANT_COMMAND
+            && grant.command != LEGACY_MULTI_EDIT_GRANT_COMMAND
+        {
             return false;
         }
         if grant.permission_mode != TerminalPermissionMode::RequestApproval {
@@ -572,12 +593,12 @@ fn normalize_multi_edit_operations(
 
     if operations.is_empty() {
         return Err(
-            "multi_edit_file requires operations (or legacy path+edits / files)".to_string(),
+            "multi_file_operation requires operations (or legacy path+edits / files)".to_string(),
         );
     }
     if operations.len() > MAX_OPERATIONS {
         return Err(format!(
-            "multi_edit_file supports at most {MAX_OPERATIONS} operations per call"
+            "multi_file_operation supports at most {MAX_OPERATIONS} operations per call"
         ));
     }
 
@@ -723,7 +744,7 @@ fn build_approval_summary(operations: &[MultiEditFileOperation]) -> String {
     if operations.len() > 8 {
         parts.push(format!("… +{} more", operations.len() - 8));
     }
-    format!("{MULTI_EDIT_TOOL_NAME}: {}", parts.join("; "))
+    format!("{MULTI_FILE_OPERATION_TOOL_NAME}: {}", parts.join("; "))
 }
 
 fn apply_multi_edit_file(
@@ -781,7 +802,7 @@ fn apply_multi_edit_file(
 
     if changes.is_empty() {
         return Err(FileEditFailure {
-            message: "multi_edit_file produced no changes".to_string(),
+            message: "multi_file_operation produced no changes".to_string(),
             warnings,
         });
     }
@@ -808,13 +829,13 @@ fn stage_operation(
             if target.is_dir() {
                 return Err(format!("operation {index} target is a directory: {path}"));
             }
-            let original = std::fs::read_to_string(&target)
+            let original = read_text_file(&target)
                 .map_err(|error| format!("operation {index} failed to read {path}: {error}"))?;
-            if original.len() > MAX_CONTENT_BYTES {
+            if original.content.len() > MAX_CONTENT_BYTES {
                 return Err(format!("operation {index} file is too large: {path}"));
             }
-            let endings = detect_line_endings(&original);
-            let original_lf = normalize_to_lf(&original);
+            let endings = detect_line_endings(&original.content);
+            let original_lf = normalize_to_lf(&original.content);
             let (updated_lf, replacements) = apply_edits_to_lf(&original_lf, edits, path, index)?;
             if updated_lf == original_lf {
                 return Err(format!(
@@ -822,11 +843,16 @@ fn stage_operation(
                 ));
             }
             let updated = restore_line_endings(&updated_lf, endings);
-            warnings.extend(collect_edit_warnings(&target, &original, &updated));
+            let updated_bytes = encode_text(&updated, original.encoding).map_err(|error| {
+                format!(
+                    "operation {index} failed to encode {path} using its original encoding: {error}"
+                )
+            })?;
+            warnings.extend(collect_edit_warnings(&target, &original.content, &updated));
             staged.push(StagedFileOperation::Update {
                 path: target,
-                old_content: original,
-                new_content: updated,
+                old_content: original.bytes,
+                new_content: updated_bytes,
                 replacements,
             });
         }
@@ -842,8 +868,16 @@ fn stage_operation(
                     "operation {index} create target is a directory: {path}"
                 ));
             }
-            let previous = match std::fs::read_to_string(&target) {
-                Ok(existing) => {
+            let previous = match std::fs::read(&target) {
+                Ok(bytes) => {
+                    let (content, encoding) = decode_text(&bytes).map_err(|error| {
+                        format!("operation {index} failed to inspect {path}: {error}")
+                    })?;
+                    let existing = DecodedTextFile {
+                        content,
+                        bytes,
+                        encoding,
+                    };
                     if !overwrite {
                         return Err(format!(
                             "operation {index} create target already exists: {path}"
@@ -858,16 +892,23 @@ fn stage_operation(
                     ));
                 }
             };
+            let encoding = previous
+                .as_ref()
+                .map_or(TextEncoding::Utf8, |existing| existing.encoding);
+            let content_bytes = encode_text(content, encoding)
+                .map_err(|error| format!("operation {index} failed to encode {path}: {error}"))?;
             warnings.extend(collect_edit_warnings(
                 &target,
-                previous.as_deref().unwrap_or_default(),
+                previous
+                    .as_ref()
+                    .map_or("", |existing| existing.content.as_str()),
                 content,
             ));
             staged.push(StagedFileOperation::Create {
                 path: target,
-                content: content.clone(),
+                content: content_bytes,
                 overwritten: previous.is_some(),
-                previous_content: previous,
+                previous_content: previous.map(|existing| existing.bytes),
             });
         }
         MultiEditFileOperation::Delete { path } => {
@@ -878,7 +919,7 @@ fn stage_operation(
                     "operation {index} refuses to delete directory: {path}"
                 ));
             }
-            let content = std::fs::read_to_string(&target).map_err(|error| {
+            let content = std::fs::read(&target).map_err(|error| {
                 format!("operation {index} failed to read {path} for delete: {error}")
             })?;
             staged.push(StagedFileOperation::Delete {
@@ -905,10 +946,10 @@ fn stage_operation(
                     "operation {index} move only supports files: {from} -> {to}"
                 ));
             }
-            let content = std::fs::read_to_string(&from_path).map_err(|error| {
+            let content = std::fs::read(&from_path).map_err(|error| {
                 format!("operation {index} failed to read move source {from}: {error}")
             })?;
-            let overwritten = match std::fs::read_to_string(&to_path) {
+            let overwritten = match std::fs::read(&to_path) {
                 Ok(existing) => {
                     if !overwrite {
                         return Err(format!(
@@ -939,7 +980,7 @@ fn ensure_unique(touched: &mut BTreeSet<String>, path: &Path) -> Result<(), Stri
     let key = fsutil::path_identity_key(path);
     if !touched.insert(key) {
         return Err(format!(
-            "path appears in multiple operations in one multi_edit_file call: {}",
+            "path appears in multiple operations in one multi_file_operation call: {}",
             path.display()
         ));
     }
@@ -954,7 +995,7 @@ fn commit_operation(operation: &StagedFileOperation) -> Result<FileEditChange, S
             replacements,
             ..
         } => {
-            write_text_file(path, new_content)?;
+            write_file_bytes(path, new_content)?;
             Ok(FileEditChange::Update {
                 path: fsutil::display_path(path),
                 move_path: None,
@@ -972,7 +1013,7 @@ fn commit_operation(operation: &StagedFileOperation) -> Result<FileEditChange, S
                     format!("failed to create parent for {}: {error}", path.display())
                 })?;
             }
-            write_text_file(path, content)?;
+            write_file_bytes(path, content)?;
             Ok(FileEditChange::Add {
                 path: fsutil::display_path(path),
                 overwritten: Some(*overwritten),
@@ -993,7 +1034,7 @@ fn commit_operation(operation: &StagedFileOperation) -> Result<FileEditChange, S
                     format!("failed to create parent for {}: {error}", to.display())
                 })?;
             }
-            write_text_file(to, content)?;
+            write_file_bytes(to, content)?;
             std::fs::remove_file(from).map_err(|error| {
                 format!("failed to remove move source {}: {error}", from.display())
             })?;
@@ -1016,7 +1057,7 @@ fn rollback_committed(committed: &[StagedFileOperation]) -> Vec<String> {
             StagedFileOperation::Update {
                 path, old_content, ..
             } => {
-                if let Err(error) = write_text_file(path, old_content) {
+                if let Err(error) = write_file_bytes(path, old_content) {
                     warnings.push(error);
                 }
             }
@@ -1028,7 +1069,7 @@ fn rollback_committed(committed: &[StagedFileOperation]) -> Vec<String> {
             } => {
                 let result = if *overwritten {
                     if let Some(previous) = previous_content {
-                        write_text_file(path, previous)
+                        write_file_bytes(path, previous)
                     } else {
                         Ok(())
                     }
@@ -1040,7 +1081,7 @@ fn rollback_committed(committed: &[StagedFileOperation]) -> Vec<String> {
                 }
             }
             StagedFileOperation::Delete { path, content } => {
-                if let Err(error) = write_text_file(path, content) {
+                if let Err(error) = write_file_bytes(path, content) {
                     warnings.push(error);
                 }
             }
@@ -1050,11 +1091,11 @@ fn rollback_committed(committed: &[StagedFileOperation]) -> Vec<String> {
                 content,
                 overwritten_content,
             } => {
-                if let Err(error) = write_text_file(from, content) {
+                if let Err(error) = write_file_bytes(from, content) {
                     warnings.push(error);
                 }
                 let restore_to = if let Some(previous) = overwritten_content {
-                    write_text_file(to, previous)
+                    write_file_bytes(to, previous)
                 } else {
                     remove_file_tolerant(to)
                 };
@@ -1094,7 +1135,92 @@ fn is_path_not_found(error: &std::io::Error) -> bool {
     false
 }
 
-fn write_text_file(path: &Path, content: &str) -> Result<(), String> {
+fn read_text_file(path: &Path) -> Result<DecodedTextFile, String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let (content, encoding) = decode_text(&bytes)?;
+    Ok(DecodedTextFile {
+        content,
+        bytes,
+        encoding,
+    })
+}
+
+fn decode_text(bytes: &[u8]) -> Result<(String, TextEncoding), String> {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8(bytes[3..].to_vec())
+            .map(|content| (content, TextEncoding::Utf8Bom))
+            .map_err(|error| format!("invalid UTF-8 BOM text: {error}"));
+    }
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let (content, had_errors) = UTF_16LE.decode_without_bom_handling(&bytes[2..]);
+        return if had_errors {
+            Err("invalid UTF-16LE text".to_string())
+        } else {
+            Ok((content.into_owned(), TextEncoding::Utf16Le))
+        };
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let (content, had_errors) = UTF_16BE.decode_without_bom_handling(&bytes[2..]);
+        return if had_errors {
+            Err("invalid UTF-16BE text".to_string())
+        } else {
+            Ok((content.into_owned(), TextEncoding::Utf16Be))
+        };
+    }
+    if let Ok(content) = String::from_utf8(bytes.to_vec()) {
+        return Ok((content, TextEncoding::Utf8));
+    }
+
+    let (content, _, had_errors) = GBK.decode(bytes);
+    if had_errors {
+        return Err("file is neither valid UTF-8 nor decodable GBK text".to_string());
+    }
+    Ok((content.into_owned(), TextEncoding::Gbk))
+}
+
+fn encode_text(content: &str, encoding: TextEncoding) -> Result<Vec<u8>, String> {
+    match encoding {
+        TextEncoding::Utf8 => Ok(content.as_bytes().to_vec()),
+        TextEncoding::Utf8Bom => {
+            let mut bytes = Vec::with_capacity(content.len() + 3);
+            bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+            bytes.extend_from_slice(content.as_bytes());
+            Ok(bytes)
+        }
+        TextEncoding::Utf16Le => {
+            let (encoded, _, had_errors) = UTF_16LE.encode(content);
+            if had_errors {
+                Err("text contains characters that cannot be encoded as UTF-16LE".to_string())
+            } else {
+                let mut bytes = Vec::with_capacity(encoded.len() + 2);
+                bytes.extend_from_slice(&[0xFF, 0xFE]);
+                bytes.extend_from_slice(&encoded);
+                Ok(bytes)
+            }
+        }
+        TextEncoding::Utf16Be => {
+            let (encoded, _, had_errors) = UTF_16BE.encode(content);
+            if had_errors {
+                Err("text contains characters that cannot be encoded as UTF-16BE".to_string())
+            } else {
+                let mut bytes = Vec::with_capacity(encoded.len() + 2);
+                bytes.extend_from_slice(&[0xFE, 0xFF]);
+                bytes.extend_from_slice(&encoded);
+                Ok(bytes)
+            }
+        }
+        TextEncoding::Gbk => {
+            let (encoded, _, had_errors) = GBK.encode(content);
+            if had_errors {
+                Err("text contains characters that cannot be encoded as GBK".to_string())
+            } else {
+                Ok(encoded.into_owned())
+            }
+        }
+    }
+}
+
+fn write_file_bytes(path: &Path, content: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create parent for {}: {error}", path.display()))?;
@@ -1525,6 +1651,51 @@ mod tests {
         assert!(edits[0].replace_all);
     }
 
+    #[test]
+    fn replaces_chinese_text_without_confusing_char_and_byte_offsets() {
+        let content = "标题：你好\n内容：你好\n";
+        let edits = vec![MultiEditFileEdit {
+            old_string: "你好".to_string(),
+            new_string: "世界".to_string(),
+            replace_all: false,
+            start_line: Some(2),
+        }];
+
+        let (updated, replacements) = apply_edits_to_lf(content, &edits, "a.txt", 1)
+            .expect("Chinese replacement should use valid UTF-8 boundaries");
+
+        assert_eq!(replacements, 1);
+        assert_eq!(updated, "标题：你好\n内容：世界\n");
+    }
+
+    #[test]
+    fn edits_gbk_chinese_files_and_preserves_the_original_encoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gbk.txt");
+        let (original_bytes, _, had_errors) = GBK.encode("标题：旧内容\n");
+        assert!(!had_errors);
+        std::fs::write(&path, original_bytes.as_ref()).unwrap();
+
+        apply_multi_edit_file(
+            dir.path(),
+            &[MultiEditFileOperation::Edit {
+                path: "gbk.txt".to_string(),
+                edits: vec![MultiEditFileEdit {
+                    old_string: "旧内容".to_string(),
+                    new_string: "新内容".to_string(),
+                    replace_all: false,
+                    start_line: None,
+                }],
+            }],
+        )
+        .expect("GBK text should be decoded, edited, and encoded again");
+
+        let updated_bytes = std::fs::read(&path).unwrap();
+        let (updated, encoding) = decode_text(&updated_bytes).unwrap();
+        assert!(matches!(encoding, TextEncoding::Gbk));
+        assert_eq!(updated, "标题：新内容\n");
+    }
+
     fn temp_workspace() -> (tempfile::TempDir, TerminalToolConfig) {
         let dir = tempfile::tempdir().unwrap();
         let config = TerminalToolConfig {
@@ -1726,7 +1897,7 @@ mod tests {
         config
             .approval_grants
             .push(crate::domain::TerminalApprovalGrant {
-                command: MULTI_EDIT_GRANT_COMMAND.to_string(),
+                command: MULTI_FILE_OPERATION_GRANT_COMMAND.to_string(),
                 cwd: Some(root.display().to_string()),
                 permission_mode: TerminalPermissionMode::RequestApproval,
                 created_at: Some(chrono::Utc::now()),

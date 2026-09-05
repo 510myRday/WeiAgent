@@ -327,7 +327,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{ModelConfig, UpdateModelProviderRequest, merge_api_keys};
+    use super::{ModelConfig, UpdateModelProviderRequest, merge_api_keys_with_labels};
+
+    fn merge_api_keys(existing: &[String], submitted: &[String]) -> Vec<String> {
+        merge_api_keys_with_labels(existing, &[], submitted, &[]).0
+    }
 
     fn keys(values: &[&str]) -> Vec<String> {
         values.iter().map(ToString::to_string).collect()

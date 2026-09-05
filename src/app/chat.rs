@@ -21,8 +21,9 @@ const MAX_SKILL_DESCRIPTION_CHARS: usize = 512;
 const MAX_IMAGE_ATTACHMENTS: usize = 8;
 const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+// Aggregate model input is governed by context compaction; this remains a
+// per-image outbound guard after resizing and JPEG compression.
 const MAX_LLM_IMAGE_BYTES: usize = 1_500_000;
-const MAX_LLM_TOTAL_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LLM_IMAGE_DIMENSION: u32 = 1536;
 const LLM_IMAGE_JPEG_QUALITY: u8 = 78;
 const SUPPORTED_IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
@@ -161,11 +162,9 @@ pub async fn prepare_chat(
         .store
         .read_conversation_messages(conversation_id)
         .await?;
-    let mut llm_image_bytes = 0;
     let history = normalize_history_for_llm(
         history,
         model_config.is_some_and(|config| config.multimodal),
-        &mut llm_image_bytes,
     )
     .await?;
     let checkpoint = state.store.read_context_checkpoint(conversation_id).await?;
@@ -194,7 +193,7 @@ pub async fn prepare_chat(
         usage: None,
     };
     let mut llm_attachments = attachments.to_vec();
-    normalize_attachments_for_llm(&mut llm_attachments, &mut llm_image_bytes).await?;
+    normalize_attachments_for_llm(&mut llm_attachments).await?;
     let mut llm_user_message = user_message.clone();
     llm_user_message.attachments = llm_attachments;
     let mut messages_for_llm = history_for_llm;
@@ -281,7 +280,6 @@ fn compact_skill_description(description: &str) -> String {
 async fn normalize_history_for_llm(
     history: Vec<ChatMessage>,
     supports_multimodal: bool,
-    llm_image_bytes: &mut usize,
 ) -> AppResult<Vec<ChatMessage>> {
     if history
         .iter()
@@ -298,7 +296,7 @@ async fn normalize_history_for_llm(
         if message.role == ChatRole::Tool {
             message.content = normalize_stored_tool_result_for_llm(&message.content);
         }
-        normalize_attachments_for_llm(&mut message.attachments, llm_image_bytes).await?;
+        normalize_attachments_for_llm(&mut message.attachments).await?;
 
         if message.role == ChatRole::Assistant
             && !message.attachments.is_empty()
@@ -429,10 +427,7 @@ mod skill_prompt_tests {
     }
 }
 
-async fn normalize_attachments_for_llm(
-    attachments: &mut [ImageAttachment],
-    llm_image_bytes: &mut usize,
-) -> AppResult<()> {
+async fn normalize_attachments_for_llm(attachments: &mut [ImageAttachment]) -> AppResult<()> {
     for attachment in attachments {
         let bytes = match &attachment.source {
             ImageSource::Base64 { data } => STANDARD.decode(data).map_err(|_| {
@@ -456,13 +451,6 @@ async fn normalize_attachments_for_llm(
             )));
         }
         let (media_type, data) = compact_image_for_llm(&bytes, &attachment.name)?;
-        *llm_image_bytes = llm_image_bytes.saturating_add(data.len());
-        if *llm_image_bytes > MAX_LLM_TOTAL_IMAGE_BYTES {
-            return Err(AppError::BadRequest(format!(
-                "combined image context exceeds {} MB after optimization",
-                MAX_LLM_TOTAL_IMAGE_BYTES / (1024 * 1024)
-            )));
-        }
         attachment.media_type = media_type;
         attachment.source = ImageSource::Base64 { data };
     }
@@ -623,8 +611,7 @@ mod tests {
             assistant_with_attachment(image_attachment(ImageSource::Base64 { data: png_data() }));
         let message_id = message.id;
 
-        let mut llm_image_bytes = 0;
-        let normalized = normalize_history_for_llm(vec![message], true, &mut llm_image_bytes)
+        let normalized = normalize_history_for_llm(vec![message], true)
             .await
             .expect("multimodal history should be accepted");
 
@@ -641,8 +628,7 @@ mod tests {
             ImageSource::Base64 { data: png_data() },
         ))];
 
-        let mut llm_image_bytes = 0;
-        let error = normalize_history_for_llm(history, false, &mut llm_image_bytes)
+        let error = normalize_history_for_llm(history, false)
             .await
             .expect_err("text-only model should reject image context");
 

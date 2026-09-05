@@ -9,6 +9,8 @@ import {
 } from 'react';
 import {
   Bot,
+  Check,
+  Copy,
   Download,
   LoaderCircle,
   Maximize2,
@@ -33,6 +35,7 @@ import type { McpServer } from '../../toolTypes';
 import { AvatarBadge } from '../../components/AvatarPicker';
 import { agentDisplayName } from '../../components/AgentListItem';
 import { Dialog, useFeedback } from '../../components/ui';
+import { useClipboard } from '../../hooks/useClipboard';
 import { useI18n } from '../../i18n';
 import { MarkdownContent } from './MarkdownContent';
 import { StreamingMarkdown } from './StreamingMarkdown';
@@ -235,6 +238,7 @@ const MessageRow = memo(function MessageRow({
   mcpServers: McpServer[];
 }) {
   const { t } = useI18n();
+  const { copied, copy } = useClipboard();
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.content);
@@ -262,6 +266,8 @@ const MessageRow = memo(function MessageRow({
     interactionDisabled: actionsDisabled,
   });
   const canRestart = isUser && Boolean(message.id) && message.status !== 'streaming';
+  const canCopy = isUser && Boolean(message.content);
+  const showMessageActions = isUser && (canCopy || canRestart);
 
   useLayoutEffect(() => {
     const input = editInputRef.current;
@@ -460,28 +466,42 @@ const MessageRow = memo(function MessageRow({
                 />
                 {message.status === 'failed' ? <span className="message-status error">{failedLabel}</span> : null}
               </div>
-              {canRestart ? (
+              {showMessageActions ? (
                 <div className="message-actions">
                   <button
                     className="message-action-button"
                     type="button"
-                    onClick={beginEditing}
-                    disabled={actionsDisabled}
-                    aria-label={t('chat.editMessage')}
-                    title={t('chat.editMessage')}
+                    onClick={() => void copy(message.content)}
+                    disabled={actionsDisabled || !canCopy}
+                    aria-label={t(copied ? 'chat.copied' : 'chat.copy')}
+                    title={t(copied ? 'chat.copied' : 'chat.copy')}
                   >
-                    <Pencil size={15} />
+                    {copied ? <Check size={15} /> : <Copy size={15} />}
                   </button>
-                  <button
-                    className="message-action-button"
-                    type="button"
-                    onClick={() => onRestart(message.id, message.content, message.attachments)}
-                    disabled={actionsDisabled}
-                    aria-label={t('chat.retryMessage')}
-                    title={t('chat.retryMessage')}
-                  >
-                    <RotateCcw size={15} />
-                  </button>
+                  {canRestart ? (
+                    <>
+                      <button
+                        className="message-action-button"
+                        type="button"
+                        onClick={beginEditing}
+                        disabled={actionsDisabled}
+                        aria-label={t('chat.editMessage')}
+                        title={t('chat.editMessage')}
+                      >
+                        <Pencil size={15} />
+                      </button>
+                      <button
+                        className="message-action-button"
+                        type="button"
+                        onClick={() => onRestart(message.id, message.content, message.attachments)}
+                        disabled={actionsDisabled}
+                        aria-label={t('chat.retryMessage')}
+                        title={t('chat.retryMessage')}
+                      >
+                        <RotateCcw size={15} />
+                      </button>
+                    </>
+                  ) : null}
                 </div>
               ) : null}
             </>

@@ -96,7 +96,12 @@ pub async fn import_web_search_keys(
     let additions = request
         .api_keys
         .into_iter()
-        .zip(request.api_key_labels.into_iter().chain(std::iter::repeat(String::new())))
+        .zip(
+            request
+                .api_key_labels
+                .into_iter()
+                .chain(std::iter::repeat(String::new())),
+        )
         .map(|(key, label)| (key.trim().to_string(), label.trim().to_string()))
         .filter(|(key, _)| !key.is_empty())
         .filter(|(key, _)| {
@@ -118,9 +123,15 @@ pub async fn import_web_search_keys(
 
     if imported > 0 {
         let source = &mut config.web_search.sources[source_index];
-        source.api_key_labels.resize(source.api_keys.len(), String::new());
-        source.api_keys.extend(additions.iter().map(|(key, _)| key.clone()));
-        source.api_key_labels.extend(additions.into_iter().map(|(_, label)| label));
+        source
+            .api_key_labels
+            .resize(source.api_keys.len(), String::new());
+        source
+            .api_keys
+            .extend(additions.iter().map(|(key, _)| key.clone()));
+        source
+            .api_key_labels
+            .extend(additions.into_iter().map(|(_, label)| label));
         source
             .key_statuses
             .resize_with(source.api_keys.len(), || None);

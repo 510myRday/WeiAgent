@@ -6,7 +6,8 @@ use uuid::Uuid;
 use crate::{
     domain::{
         ApiKeyStrategy, CreateModelProviderRequest, ImageModelConfig, ModelConfig, ModelProvider,
-        ModelProviderResponse, ProviderType, UpdateModelProviderRequest, merge_api_keys_with_labels,
+        ModelProviderResponse, ProviderType, UpdateModelProviderRequest,
+        merge_api_keys_with_labels,
     },
     error::{AppError, AppResult},
     storage::{
@@ -32,12 +33,8 @@ impl Store {
         let provider_type = request.provider_type;
         let name = validate_non_empty("provider name", &request.name)?;
         let base_url = validate_non_empty("base_url", &request.base_url)?;
-        let (api_keys, api_key_labels) = merge_api_keys_with_labels(
-            &[],
-            &[],
-            &request.api_keys,
-            &request.api_key_labels,
-        );
+        let (api_keys, api_key_labels) =
+            merge_api_keys_with_labels(&[], &[], &request.api_keys, &request.api_key_labels);
         let models = normalize_models(request.models)?;
         let model_configs =
             normalize_model_configs_for_provider(&models, request.model_configs, &provider_type)?;

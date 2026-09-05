@@ -31,7 +31,20 @@ pub async fn read_local_asset(
     State(state): State<AppState>,
     Query(query): Query<LocalAssetQuery>,
 ) -> AppResult<Response> {
-    let path = resolve_local_asset_path(&query.path, &state.store.terminal_workspace_dir).await?;
+    let skill_roots = state
+        .skill_manager
+        .settings(None)
+        .await?
+        .defaults
+        .into_iter()
+        .map(|skill| PathBuf::from(skill.root_dir))
+        .collect::<Vec<_>>();
+    let path = resolve_local_asset_path(
+        &query.path,
+        &state.store.terminal_workspace_dir,
+        &skill_roots,
+    )
+    .await?;
     let metadata = tokio::fs::metadata(&path).await?;
     if !metadata.is_file() {
         return Err(AppError::NotFound);
@@ -78,7 +91,8 @@ pub async fn read_remote_asset(
             "selected Skill proxy is unavailable".to_string(),
         ));
     }
-    let url = crate::llm::image::validate_remote_image_url(&query.url, Duration::from_secs(10)).await?;
+    let url =
+        crate::llm::image::validate_remote_image_url(&query.url, Duration::from_secs(10)).await?;
     let client = crate::http_client::build_reqwest_client(
         crate::http_client::HttpClientConfig::new()
             .timeout(Duration::from_secs(20))
@@ -171,21 +185,41 @@ fn validate_image_bytes(path: &std::path::Path, bytes: &[u8]) -> AppResult<&'sta
 async fn resolve_local_asset_path(
     raw_path: &str,
     relative_root: &std::path::Path,
+    skill_roots: &[PathBuf],
 ) -> AppResult<PathBuf> {
     let requested = path_from_local_source(raw_path)?;
-    let requested = if requested.is_absolute() {
-        requested
-    } else {
-        relative_root.join(requested)
-    };
-    let resolved =
-        tokio::fs::canonicalize(&requested)
-            .await
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => AppError::NotFound,
-                _ => AppError::Storage(error),
-            })?;
-    Ok(resolved)
+    if requested.is_absolute() {
+        return canonicalize_local_asset(&requested).await;
+    }
+
+    let workspace_path = relative_root.join(&requested);
+    match canonicalize_local_asset(&workspace_path).await {
+        Ok(resolved) => return Ok(resolved),
+        Err(AppError::NotFound) => {}
+        Err(error) => return Err(error),
+    }
+
+    // Markdown emitted by a Skill commonly uses paths such as `assets/chart.png`.
+    // Resolve those relative to the installed Skill that owns the asset.
+    for skill_root in skill_roots {
+        let skill_path = skill_root.join(&requested);
+        match canonicalize_local_asset(&skill_path).await {
+            Ok(resolved) => return Ok(resolved),
+            Err(AppError::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(AppError::NotFound)
+}
+
+async fn canonicalize_local_asset(path: &std::path::Path) -> AppResult<PathBuf> {
+    tokio::fs::canonicalize(path)
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => AppError::NotFound,
+            _ => AppError::Storage(error),
+        })
 }
 
 fn allowed_image_format(path: &std::path::Path) -> AppResult<image::ImageFormat> {
@@ -273,9 +307,10 @@ mod tests {
             .unwrap();
         tokio::fs::write(&image, valid_png).await.unwrap();
 
-        let resolved = resolve_local_asset_path(image.to_string_lossy().as_ref(), directory.path())
-            .await
-            .unwrap();
+        let resolved =
+            resolve_local_asset_path(image.to_string_lossy().as_ref(), directory.path(), &[])
+                .await
+                .unwrap();
 
         assert_eq!(resolved, tokio::fs::canonicalize(image).await.unwrap());
     }
@@ -289,7 +324,7 @@ mod tests {
         tokio::fs::write(&outside, valid_png()).await.unwrap();
 
         let resolved =
-            resolve_local_asset_path(outside.to_string_lossy().as_ref(), directory.path())
+            resolve_local_asset_path(outside.to_string_lossy().as_ref(), directory.path(), &[])
                 .await
                 .unwrap();
 
@@ -328,9 +363,10 @@ mod tests {
         tokio::fs::write(&image, valid_png()).await.unwrap();
         let relative = image.strip_prefix(&current_dir).unwrap();
 
-        let resolved = resolve_local_asset_path(relative.to_string_lossy().as_ref(), &current_dir)
-            .await
-            .unwrap();
+        let resolved =
+            resolve_local_asset_path(relative.to_string_lossy().as_ref(), &current_dir, &[])
+                .await
+                .unwrap();
 
         assert_eq!(resolved, tokio::fs::canonicalize(image).await.unwrap());
     }
@@ -345,9 +381,31 @@ mod tests {
             .unwrap();
         tokio::fs::write(&image, valid_png()).await.unwrap();
 
-        let resolved = resolve_local_asset_path("attachments/linuxdo.png", &workspace)
+        let resolved = resolve_local_asset_path("attachments/linuxdo.png", &workspace, &[])
             .await
             .unwrap();
+
+        assert_eq!(resolved, tokio::fs::canonicalize(image).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn resolves_relative_image_paths_from_an_installed_skill_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let skill_root = directory.path().join("skills").join("example-skill");
+        let image = skill_root.join("assets").join("chart.png");
+        tokio::fs::create_dir_all(image.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&image, valid_png()).await.unwrap();
+
+        let resolved = resolve_local_asset_path(
+            "assets/chart.png",
+            &workspace,
+            std::slice::from_ref(&skill_root),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(resolved, tokio::fs::canonicalize(image).await.unwrap());
     }

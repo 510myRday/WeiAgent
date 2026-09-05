@@ -23,6 +23,7 @@ function builtinToolIcon(name: string) {
       return <SquareTerminal size={TOOL_ICON_SIZE} aria-hidden="true" />;
     case 'terminal_session':
       return <MonitorPlay size={TOOL_ICON_SIZE} aria-hidden="true" />;
+    case 'multi_file_operation':
     case 'multi_edit_file':
       return <FilePenLine size={TOOL_ICON_SIZE} aria-hidden="true" />;
     case 'skill_view':

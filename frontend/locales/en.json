@@ -1372,6 +1372,9 @@
     "rejected": "Rejected",
     "interrupted": "Execution interrupted",
     "executionError": "Execution error",
+    "toolNames": {
+      "multiFileOperation": "Multi-file operation"
+    },
     "duration": "Duration: {ms} ms",
     "commandTitle": "Terminal command",
     "stdoutTitle": "Terminal output",

@@ -957,14 +957,44 @@ fn suffix_at_most(value: &str, max_bytes: usize) -> &str {
 }
 
 pub fn finalize_response_for_log(raw_response: &str) -> String {
-    // A head/tail stream preview must remain a stream preview so the UI can
-    // show the explicit middle-truncation marker instead of silently
-    // aggregating the two retained fragments together.
+    // Older versions persisted a bounded SSE head/tail preview. Keep those
+    // records readable as JSON, but never expose the original stream format.
     if raw_response.contains("middle truncated") {
-        return raw_response.to_string();
+        let payloads = collect_json_payloads(raw_response);
+        let mut response = aggregate_stream_payloads(&payloads).unwrap_or_else(|| {
+            serde_json::json!({
+                "object": "chat.completion",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": ""},
+                    "finish_reason": "error"
+                }]
+            })
+        });
+        if let Value::Object(map) = &mut response {
+            map.insert("truncated".to_string(), Value::Bool(true));
+            map.insert(
+                "truncation_notice".to_string(),
+                Value::String(
+                    "stream log was truncated before this record was migrated".to_string(),
+                ),
+            );
+        }
+        return serde_json::to_string_pretty(&response).unwrap_or_else(|_| "{}".to_string());
     }
     let payloads = collect_json_payloads(raw_response);
     if payloads.is_empty() {
+        if looks_like_sse(raw_response) {
+            return serde_json::to_string_pretty(&serde_json::json!({
+                "object": "chat.completion",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": ""},
+                    "finish_reason": "error"
+                }]
+            }))
+            .unwrap_or_else(|_| "{}".to_string());
+        }
         return raw_response.to_string();
     }
 
@@ -1737,9 +1767,14 @@ mod tests {
     }
 
     #[test]
-    fn finalize_keeps_head_tail_stream_marker_visible() {
+    fn finalize_migrates_head_tail_stream_preview_to_json() {
         let raw = "data: {\"choices\":[{\"delta\":{\"content\":\"HEAD\"}}]}\n[LLM stream log middle truncated]\ndata: {\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}";
-        assert_eq!(finalize_response_for_log(raw), raw);
+        let finalized = finalize_response_for_log(raw);
+        let value: Value = serde_json::from_str(&finalized).unwrap();
+        assert_eq!(value["choices"][0]["message"]["content"], "HEAD");
+        assert_eq!(value["truncated"], true);
+        assert!(!finalized.contains("data:"));
+        assert!(!finalized.contains("middle truncated"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

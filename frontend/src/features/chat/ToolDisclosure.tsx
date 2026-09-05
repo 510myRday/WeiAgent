@@ -189,6 +189,9 @@ export function ToolDisclosure({
     : statusLabel(displayTool, t);
   const tone = statusTone(displayTool);
   const toneClass = tone === 'default' ? '' : ` is-${tone}`;
+  const toolNameLabel = tool.name === 'multi_file_operation' || tool.name === 'multi_edit_file'
+    ? t('toolCard.toolNames.multiFileOperation')
+    : tool.name;
   const canStopProcess = tool.status === 'running' && process?.status === 'running' && Boolean(processId);
 
   async function handleStopProcess() {
@@ -221,7 +224,7 @@ export function ToolDisclosure({
             <span className="message-tool__title">{label}</span>
             <code className="message-tool__name">
               <ToolIcon toolName={tool.name} mcpServers={mcpServers} />
-              <span className="message-tool__name-label">{tool.name}</span>
+              <span className="message-tool__name-label">{toolNameLabel}</span>
             </code>
             {isBackgroundTerminal(tool) ? (
               <span className="message-tool__background-badge">{t('toolCard.backgroundBadge')}</span>

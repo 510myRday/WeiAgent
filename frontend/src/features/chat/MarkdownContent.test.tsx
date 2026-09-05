@@ -43,6 +43,20 @@ test('loads a local Windows image emitted in Markdown', async () => {
   expect(requestInit).toMatchObject({ credentials: 'same-origin' });
 });
 
+test('loads a local Windows image with single backslashes emitted in Markdown', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(new Blob(['png-data'], { type: 'image/png' }), { status: 200 }),
+  );
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:single-slash-image');
+
+  renderMarkdown(String.raw`![Windows image](C:\Users\Administrator\.WeiAgent\skills\dashi-ppt\assets\skill\theme-style-grid.png)`);
+
+  expect(await screen.findByRole('img', { name: 'Windows image' })).toHaveAttribute(
+    'src',
+    'blob:single-slash-image',
+  );
+});
+
 describe('MarkdownContent tables', () => {
   test('renders GFM tables inside a horizontal scroll container', async () => {
     const { container } = renderMarkdown('| 维度 | 评分 |\n| --- | ---: |\n| 编码性能 | 8 |');
