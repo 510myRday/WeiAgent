@@ -8,7 +8,7 @@ import { Button, IconButton } from '../../components/ui';
 export function normalizeRuntimeComponents(runtime: EnvironmentRuntimeStatus | null): RuntimeComponentStatus[] {
   if (runtime?.components?.length) return runtime.components;
   return [
-    ...(['node', 'python', 'uv', 'git'] as const).map((kind) => ({
+    ...(['node', 'python', 'uv', 'git', 'ffmpeg'] as const).map((kind) => ({
       kind,
       available: false,
       required: false,
@@ -41,6 +41,7 @@ export function RuntimeComponentRow({
     python: '/tool-icons/python.svg',
     uv: '/tool-icons/uv.svg',
     git: '/tool-icons/git.svg',
+    ffmpeg: '/tool-icons/ffmpeg.svg',
   }[component.kind];
   const source = component.source ? t(`tools.terminal.runtimeSource.${component.source}`) : '';
   const latest = component.target_version

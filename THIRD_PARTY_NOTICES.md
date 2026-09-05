@@ -103,6 +103,7 @@ projects.
 - Python mark: official Python community logo asset
 - uv mark: official Astral uv documentation asset
 - Git mark: official Git project logo asset
+- FFmpeg mark: FFmpeg project branding asset
 
 The complete Lobe Icons MIT License is distributed with the provider assets at
 `frontend/public/model-providers/LICENSE.txt`.

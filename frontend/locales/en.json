@@ -655,7 +655,8 @@
         "node": "Node.js",
         "python": "Python",
         "uv": "uv",
-        "git": "Git"
+        "git": "Git",
+        "ffmpeg": "FFmpeg"
       },
       "runtimeReadyDesc": "The local shell is ready. Optional developer tools detected below can be used by terminal tasks.",
       "runtimeMissingDesc": "No optional developer tools were detected. The local shell remains available for terminal tasks.",

@@ -297,7 +297,8 @@
         "node": "Node.js",
         "python": "Python",
         "uv": "uv",
-        "git": "Git"
+        "git": "Git",
+        "ffmpeg": "FFmpeg"
       },
       "runtimeReadyDesc": "本机 Shell 已准备好，下方检测到的开发工具可供终端任务使用。",
       "runtimeMissingDesc": "暂未检测到可选开发工具，但本机 Shell 仍可执行终端任务。",

@@ -21,7 +21,7 @@ use crate::{
 
 const MAX_DOWNLOAD_BYTES: u64 = 600 * 1024 * 1024;
 const COMPONENT_LATEST_VERSION_CACHE_DIR: &str = "latest-versions";
-/// Shared TTL for all runtime latest-version lookups (Node/Python/uv/Git and future components).
+/// Shared TTL for all runtime latest-version lookups.
 pub const LATEST_VERSION_CACHE_HOURS: i64 = 3;
 /// Pause between remote latest-version lookups to avoid bursting public APIs (e.g. GitHub).
 pub const COMPONENT_VERSION_LOOKUP_DELAY: Duration = Duration::from_millis(800);
@@ -180,6 +180,13 @@ async fn fetch_latest_component_version(
             .max()
             .map(|version| version.to_string())
             .ok_or_else(|| AppError::Process("no stable Git release was found".to_string())),
+        RuntimeComponentKind::Ffmpeg => fetch_ffmpeg_tags(client)
+            .await?
+            .into_iter()
+            .filter_map(|tag| stable_ffmpeg_version(&tag.name))
+            .max()
+            .map(|version| version.to_string())
+            .ok_or_else(|| AppError::Process("no stable FFmpeg release was found".to_string())),
     }
 }
 
@@ -211,7 +218,13 @@ pub async fn detect_components(
         installing == Some(RuntimeComponentKind::Git),
     )
     .await;
-    vec![node, python, uv, git]
+    let ffmpeg = detect_component(
+        RuntimeComponentKind::Ffmpeg,
+        ffmpeg_candidates(runtimes_root).await,
+        installing == Some(RuntimeComponentKind::Ffmpeg),
+    )
+    .await;
+    vec![node, python, uv, git, ffmpeg]
 }
 
 pub async fn managed_bin_paths(runtimes_root: &Path) -> Vec<PathBuf> {
@@ -220,6 +233,10 @@ pub async fn managed_bin_paths(runtimes_root: &Path) -> Vec<PathBuf> {
         (runtimes_root.join("python"), python_program()),
         (runtimes_root.join("uv").join("current"), uv_program()),
         (runtimes_root.join("git").join("current"), git_program()),
+        (
+            runtimes_root.join("ffmpeg").join("current"),
+            ffmpeg_program(),
+        ),
     ];
     let mut paths = Vec::new();
     for (root, program) in managed_programs {
@@ -246,6 +263,7 @@ pub async fn install_component(
         RuntimeComponentKind::Node => install_node(runtimes_root, client).await,
         RuntimeComponentKind::Uv => install_uv(runtimes_root, client).await,
         RuntimeComponentKind::Git => install_git(runtimes_root, client).await,
+        RuntimeComponentKind::Ffmpeg => install_ffmpeg(runtimes_root, client).await,
         RuntimeComponentKind::Python => {
             if component_missing(
                 &detect_components(runtimes_root, Some(RuntimeComponentKind::Python)).await,
@@ -350,6 +368,16 @@ fn normalize_detected_version(kind: RuntimeComponentKind, version: &str) -> Stri
             .strip_prefix("git version ")
             .unwrap_or(version)
             .to_string(),
+        RuntimeComponentKind::Ffmpeg => version
+            .split_whitespace()
+            .find_map(|token| {
+                let token = token.trim_start_matches('n');
+                let token = token.split('-').next().unwrap_or(token);
+                Version::parse(token)
+                    .ok()
+                    .map(|version| version.to_string())
+            })
+            .unwrap_or_else(|| version.to_string()),
     }
 }
 
@@ -368,6 +396,17 @@ async fn uv_candidates(root: &Path) -> Vec<ProbeCandidate> {
 async fn git_candidates(root: &Path) -> Vec<ProbeCandidate> {
     let mut candidates = managed_programs(&root.join("git").join("current"), git_program()).await;
     candidates.push(system_candidate(git_program(), &["--version"]));
+    candidates
+}
+
+async fn ffmpeg_candidates(root: &Path) -> Vec<ProbeCandidate> {
+    let mut candidates = managed_programs_with_args(
+        &root.join("ffmpeg").join("current"),
+        ffmpeg_program(),
+        &["-version"],
+    )
+    .await;
+    candidates.push(system_candidate(ffmpeg_program(), &["-version"]));
     candidates
 }
 
@@ -392,12 +431,20 @@ fn system_candidate(program: &'static str, args: &'static [&'static str]) -> Pro
 }
 
 async fn managed_programs(root: &Path, expected: &str) -> Vec<ProbeCandidate> {
+    managed_programs_with_args(root, expected, &["--version"]).await
+}
+
+async fn managed_programs_with_args(
+    root: &Path,
+    expected: &str,
+    args: &'static [&'static str],
+) -> Vec<ProbeCandidate> {
     find_named_files(root, expected)
         .await
         .into_iter()
         .map(|program| ProbeCandidate {
             program,
-            args: &["--version"],
+            args,
             source: RuntimeSource::Managed,
         })
         .collect()
@@ -684,6 +731,147 @@ async fn install_git_with_package_manager(
         })
 }
 
+async fn install_ffmpeg(root: &Path, client: &reqwest::Client) -> AppResult<()> {
+    if cfg!(target_os = "linux") {
+        return install_ffmpeg_with_linux_package_manager().await;
+    }
+    if cfg!(target_os = "macos") {
+        let brew = macos_brew_program();
+        return install_ffmpeg_with_package_manager(&brew, &["install", "ffmpeg"], false).await;
+    }
+
+    install_ffmpeg_for_windows(root, client).await
+}
+
+async fn install_ffmpeg_for_windows(root: &Path, client: &reqwest::Client) -> AppResult<()> {
+    let target = ffmpeg_asset_target().ok_or_else(unsupported_platform)?;
+    let version = latest_component_version(RuntimeComponentKind::Ffmpeg, client, root).await?;
+    let version = Version::parse(&version).map_err(|_| {
+        AppError::Process(format!(
+            "FFmpeg returned an invalid stable version '{version}'"
+        ))
+    })?;
+    let release = fetch_ffmpeg_release(client).await?;
+    let version_short = format!("{}.{}", version.major, version.minor);
+    let asset_name = format!("ffmpeg-n{version_short}-latest-{target}-gpl-{version_short}.zip");
+    let asset = release
+        .assets
+        .into_iter()
+        .find(|asset| asset.name == asset_name)
+        .ok_or_else(|| {
+            AppError::Process(format!(
+                "FFmpeg release '{}' did not provide {asset_name}",
+                release.tag_name
+            ))
+        })?;
+    let checksum = asset
+        .digest
+        .as_deref()
+        .and_then(|digest| digest.strip_prefix("sha256:"))
+        .ok_or_else(|| {
+            AppError::Process("FFmpeg release did not provide a SHA-256 digest".to_string())
+        })?;
+    install_archive(
+        root,
+        "ffmpeg",
+        client,
+        &asset.browser_download_url,
+        &asset_name,
+        checksum,
+        ffmpeg_program(),
+    )
+    .await
+}
+
+async fn install_ffmpeg_with_linux_package_manager() -> AppResult<()> {
+    let Some((program, args)) = linux_ffmpeg_package_manager(|program| {
+        std::process::Command::new(program)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }) else {
+        return Err(AppError::Process(
+            "no supported Linux package manager was found (apt, dnf, yum, zypper, pacman, or apk)"
+                .to_string(),
+        ));
+    };
+    install_ffmpeg_with_package_manager(program, args, true).await
+}
+
+async fn install_ffmpeg_with_package_manager(
+    program: &str,
+    args: &[&str],
+    elevate: bool,
+) -> AppResult<()> {
+    let is_root = if elevate {
+        current_user_is_root().await
+    } else {
+        true
+    };
+    let mut command = if elevate && !is_root {
+        let use_pkexec = executable_is_available("pkexec").await;
+        let mut command = Command::new(if use_pkexec { "pkexec" } else { "sudo" });
+        if use_pkexec {
+            command.arg(program);
+        } else {
+            command.args(["-n", program]);
+        }
+        command
+    } else {
+        Command::new(program)
+    };
+    let output = tokio::time::timeout(
+        Duration::from_secs(15 * 60),
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| AppError::Process(format!("{program} FFmpeg installation timed out")))?
+    .map_err(|error| {
+        AppError::Process(format!(
+            "failed to start {program} for FFmpeg installation: {error}"
+        ))
+    })?;
+    if !output.status.success() {
+        return Err(AppError::Process(format!(
+            "{program} FFmpeg installation failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    probe_version(Path::new(ffmpeg_program()), &["-version"])
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            AppError::Process(format!(
+                "{program} completed but FFmpeg was not available: {error}"
+            ))
+        })
+}
+
+fn linux_ffmpeg_package_manager(
+    mut available: impl FnMut(&str) -> bool,
+) -> Option<(&'static str, &'static [&'static str])> {
+    const CANDIDATES: [(&str, &[&str]); 6] = [
+        ("apt-get", &["install", "-y", "ffmpeg"]),
+        ("dnf", &["install", "-y", "ffmpeg"]),
+        ("yum", &["install", "-y", "ffmpeg"]),
+        ("zypper", &["--non-interactive", "install", "ffmpeg"]),
+        ("pacman", &["--noconfirm", "-S", "ffmpeg"]),
+        ("apk", &["add", "ffmpeg"]),
+    ];
+    CANDIDATES
+        .into_iter()
+        .find(|(program, _)| available(program))
+}
+
 async fn current_user_is_root() -> bool {
     Command::new("id")
         .arg("-u")
@@ -820,6 +1008,36 @@ async fn fetch_git_for_windows_release(client: &reqwest::Client) -> AppResult<Gi
     .error_for_status()
     .map_err(download_error)?
     .json::<GithubRelease>()
+    .await
+    .map_err(download_error)
+}
+
+async fn fetch_ffmpeg_release(client: &reqwest::Client) -> AppResult<GithubRelease> {
+    github_api_request(
+        client,
+        "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest",
+    )
+    .send()
+    .await
+    .map_err(download_error)?
+    .error_for_status()
+    .map_err(download_error)?
+    .json::<GithubRelease>()
+    .await
+    .map_err(download_error)
+}
+
+async fn fetch_ffmpeg_tags(client: &reqwest::Client) -> AppResult<Vec<GithubTag>> {
+    github_api_request(
+        client,
+        "https://api.github.com/repos/FFmpeg/FFmpeg/tags?per_page=100",
+    )
+    .send()
+    .await
+    .map_err(download_error)?
+    .error_for_status()
+    .map_err(download_error)?
+    .json::<Vec<GithubTag>>()
     .await
     .map_err(download_error)
 }
@@ -1005,6 +1223,14 @@ fn git_program() -> &'static str {
     if cfg!(windows) { "git.exe" } else { "git" }
 }
 
+fn ffmpeg_program() -> &'static str {
+    if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    }
+}
+
 fn python_program() -> &'static str {
     if cfg!(windows) {
         "python.exe"
@@ -1105,9 +1331,23 @@ fn git_asset_suffix() -> Option<&'static str> {
     }
 }
 
+fn ffmpeg_asset_target() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => Some("win64"),
+        ("windows", "aarch64") => Some("winarm64"),
+        _ => None,
+    }
+}
+
 fn stable_git_version(tag: &str) -> Option<Version> {
     let version = tag.trim_start_matches('v');
     Version::parse(version)
+        .ok()
+        .filter(|version| version.pre.is_empty() && version.build.is_empty())
+}
+
+fn stable_ffmpeg_version(tag: &str) -> Option<Version> {
+    Version::parse(tag.trim_start_matches('n'))
         .ok()
         .filter(|version| version.pre.is_empty() && version.build.is_empty())
 }
@@ -1131,6 +1371,7 @@ fn component_cache_key(kind: RuntimeComponentKind) -> Option<&'static str> {
         RuntimeComponentKind::Python => Some("python"),
         RuntimeComponentKind::Uv => Some("uv"),
         RuntimeComponentKind::Git => Some("git"),
+        RuntimeComponentKind::Ffmpeg => Some("ffmpeg"),
     }
 }
 
@@ -1261,6 +1502,13 @@ mod tests {
             normalize_detected_version(RuntimeComponentKind::Git, "git version 2.55.0"),
             "2.55.0"
         );
+        assert_eq!(
+            normalize_detected_version(
+                RuntimeComponentKind::Ffmpeg,
+                "ffmpeg version 8.1.2-full_build-www.gyan.dev"
+            ),
+            "8.1.2"
+        );
     }
 
     #[test]
@@ -1270,6 +1518,15 @@ mod tests {
 
         let selected = linux_git_package_manager(|program| program == "pacman").unwrap();
         assert_eq!(selected, ("pacman", &["--noconfirm", "-S", "git"][..]));
+    }
+
+    #[test]
+    fn linux_ffmpeg_install_uses_the_available_distribution_package_manager() {
+        let selected = linux_ffmpeg_package_manager(|program| program == "apk").unwrap();
+        assert_eq!(selected, ("apk", &["add", "ffmpeg"][..]));
+
+        let selected = linux_ffmpeg_package_manager(|program| program == "pacman").unwrap();
+        assert_eq!(selected, ("pacman", &["--noconfirm", "-S", "ffmpeg"][..]));
     }
 
     #[test]
@@ -1299,9 +1556,10 @@ mod tests {
                 .filter(|status| status.kind != RuntimeComponentKind::Python)
                 .all(|status| !status.installing)
         );
+        assert_eq!(statuses.len(), 5);
         assert_eq!(
             statuses.last().map(|status| status.kind),
-            Some(RuntimeComponentKind::Git)
+            Some(RuntimeComponentKind::Ffmpeg)
         );
     }
 

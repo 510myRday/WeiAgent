@@ -268,7 +268,17 @@ fn build_gemini_request(
     if let Some(level) = thinking_level.filter(|level| *level != ThinkingLevel::Off)
         && let Some(thinking_config) = gemini_thinking_config(model_id, level)
     {
-        generation_config.insert("thinkingConfig".to_string(), thinking_config);
+        let mut merged_thinking_config = generation_config
+            .remove("thinkingConfig")
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        if let Some(thinking_config) = thinking_config.as_object() {
+            merged_thinking_config.extend(thinking_config.clone());
+        }
+        generation_config.insert(
+            "thinkingConfig".to_string(),
+            Value::Object(merged_thinking_config),
+        );
     }
     if !generation_config.is_empty() {
         body.insert(
@@ -302,6 +312,7 @@ fn gemini_thinking_config(model_id: &str, level: ThinkingLevel) -> Option<Value>
     let lower = model_id.to_ascii_lowercase();
     if lower.contains("2.5") {
         return Some(json!({
+            "includeThoughts": true,
             "thinkingBudget": match level {
                 ThinkingLevel::Low => 1024,
                 ThinkingLevel::Medium => 4096,
@@ -321,6 +332,7 @@ fn gemini_thinking_config(model_id: &str, level: ThinkingLevel) -> Option<Value>
         .and_then(|version| version.parse::<u32>().ok());
     (major >= Some(3)).then(|| {
         json!({
+            "includeThoughts": true,
             "thinkingLevel": match level {
                 ThinkingLevel::Low => "MINIMAL",
                 ThinkingLevel::Medium => "LOW",
@@ -614,19 +626,51 @@ fn parse_gemini_output(value: &Value) -> AppResult<ChatCompletionOutput> {
         reasoning_content,
         openai_response_items: response_items,
         tool_calls,
-        usage: parse_gemini_usage(&value["usageMetadata"]),
+        usage: parse_gemini_usage(value),
     })
 }
 
 fn parse_gemini_usage(value: &Value) -> TokenUsage {
-    let cached = value["cachedContentTokenCount"].as_u64().unwrap_or(0);
-    let prompt = value["promptTokenCount"].as_u64().unwrap_or(0);
+    let usage = value
+        .get("usageMetadata")
+        .or_else(|| value.get("usage"))
+        .unwrap_or(value);
+    let cached = gemini_usage_number(
+        usage,
+        &[
+            "cachedContentTokenCount",
+            "cached_content_token_count",
+            "cached_tokens",
+            "total_cached_tokens",
+            "cache_read_tokens",
+        ],
+    );
+    let prompt = gemini_usage_number(
+        usage,
+        &[
+            "promptTokenCount",
+            "prompt_token_count",
+            "prompt_tokens",
+            "inputTokenCount",
+            "input_tokens",
+            "total_prompt_tokens",
+        ],
+    );
     TokenUsage {
         input_tokens: prompt.saturating_sub(cached),
-        output_tokens: value["candidatesTokenCount"]
-            .as_u64()
-            .unwrap_or(0)
-            .saturating_add(value["thoughtsTokenCount"].as_u64().unwrap_or(0)),
+        output_tokens: gemini_usage_number(
+            usage,
+            &[
+                "candidatesTokenCount",
+                "candidates_token_count",
+                "outputTokenCount",
+                "output_tokens",
+            ],
+        )
+        .saturating_add(gemini_usage_number(
+            usage,
+            &["thoughtsTokenCount", "thoughts_token_count"],
+        )),
         cache_write_tokens: 0,
         cache_read_tokens: cached,
         total_prompt_tokens: prompt,
@@ -637,6 +681,19 @@ fn parse_gemini_usage(value: &Value) -> TokenUsage {
             cached as f64 / prompt as f64
         },
     }
+}
+
+fn gemini_usage_number(value: &Value, keys: &[&str]) -> u64 {
+    keys.iter()
+        .find_map(|key| {
+            let value = value.get(*key)?;
+            value
+                .as_u64()
+                .or_else(|| value.as_i64().and_then(|number| u64::try_from(number).ok()))
+                .or_else(|| value.as_f64().map(|number| number.max(0.0) as u64))
+                .or_else(|| value.as_str()?.parse().ok())
+        })
+        .unwrap_or(0)
 }
 
 fn validate_gemini_finish_reason(reason: Option<&str>) -> AppResult<()> {
@@ -693,8 +750,8 @@ impl GeminiStreamParser {
     }
 
     fn parse_chunk(&mut self, value: &Value) -> Vec<AppResult<StreamEvent>> {
-        if value.get("usageMetadata").is_some() {
-            self.usage = parse_gemini_usage(&value["usageMetadata"]);
+        if value.get("usageMetadata").is_some() || value.get("usage").is_some() {
+            self.usage = parse_gemini_usage(value);
         }
         let Some(candidate) = value["candidates"]
             .as_array()
@@ -960,6 +1017,47 @@ mod tests {
                 .is_none()
         );
     }
+
+    #[test]
+    fn requests_thought_summaries_when_thinking_is_enabled() {
+        let conversation_id = Uuid::new_v4();
+        let agent_id = Uuid::new_v4();
+        let messages = vec![ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id,
+            conversation_id,
+            role: ChatRole::User,
+            content: "hi".to_string(),
+            reasoning_content: None,
+            openai_response_items: Vec::new(),
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+        }];
+        let request = build_gemini_request(
+            "gemini-2.5-flash",
+            &test_provider(),
+            &messages,
+            "system",
+            &json!({"generationConfig": {"temperature": 0.2}}),
+            None,
+            Some(ThinkingLevel::High),
+        )
+        .unwrap();
+        assert_eq!(request["generationConfig"]["temperature"], 0.2);
+        assert_eq!(
+            request["generationConfig"]["thinkingConfig"]["includeThoughts"],
+            true
+        );
+        assert_eq!(
+            request["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            8192
+        );
+    }
+
     #[test]
     fn parses_output_and_stream_events() {
         let output = parse_gemini_output(&json!({
@@ -981,19 +1079,46 @@ mod tests {
         assert_eq!(output.tool_calls[0].id, "call-g");
         assert_eq!(output.usage.input_tokens, 100);
         assert_eq!(output.usage.output_tokens, 40);
+        assert_eq!(output.usage.cache_read_tokens, 20);
 
         let mut parser = GeminiStreamParser::new();
         let events = parser.parse_line(
-            r#"data: {"candidates":[{"content":{"parts":[{"text":"gem"}]},"finishReason":"STOP"}]}"#,
+            r#"data: {"candidates":[{"content":{"parts":[{"thought":true,"text":"plan"}]}}]}"#,
+        );
+        assert!(matches!(
+            events.first().unwrap().as_ref().unwrap(),
+            StreamEvent::ReasoningDelta(text) if text == "plan"
+        ));
+        let events = parser.parse_line(
+            r#"data: {"candidates":[{"content":{"parts":[{"text":"gem"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":30,"thoughtsTokenCount":10,"cachedContentTokenCount":20}}"#,
         );
         assert!(matches!(
             events.first().unwrap().as_ref().unwrap(),
             StreamEvent::TextDelta(text) if text == "gem"
         ));
+        assert!(events.iter().any(|event| matches!(
+            event.as_ref().unwrap(),
+            StreamEvent::Usage(usage) if usage.cache_read_tokens == 20
+        )));
         assert!(matches!(
             events.last().unwrap().as_ref().unwrap(),
             StreamEvent::Finished
         ));
+    }
+
+    #[test]
+    fn parses_interactions_style_usage_aliases() {
+        let output = parse_gemini_usage(&json!({
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 12,
+                "total_cached_tokens": 60
+            }
+        }));
+        assert_eq!(output.input_tokens, 40);
+        assert_eq!(output.output_tokens, 12);
+        assert_eq!(output.cache_read_tokens, 60);
+        assert_eq!(output.total_prompt_tokens, 100);
     }
 
     #[test]

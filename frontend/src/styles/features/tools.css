@@ -488,9 +488,10 @@
 
 .skills-agent-group { border-bottom: 1px solid var(--color-border); }
 .skills-agent-group__header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; background: var(--color-surface-muted); }
-.skills-agent-group__toggle { display: inline-flex; align-items: center; gap: 7px; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--color-text); cursor: pointer; }
+.skills-agent-group__toggle { display: flex; align-items: center; gap: 7px; width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--color-text); cursor: pointer; }
 .skills-agent-group__toggle strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skills-agent-group__toggle span { color: var(--color-muted); font-size: var(--font-size-caption); }
+.skills-agent-group__toggle::after { content: ''; flex: 1 1 auto; min-width: 18px; margin-left: 4px; border-top: 1px dashed var(--border-strong); }
 .skills-agent-group__actions { display: inline-flex; align-items: center; gap: 6px; }
 
 .skills-detail-stack {

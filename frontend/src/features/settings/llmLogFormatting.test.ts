@@ -54,6 +54,7 @@ describe('LLM log formatting', () => {
       'data: {"type":"message_stop"}',
     ].join('\n'));
     const gemini = formatLlmResponse([
+      'data: {"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"plan"}]}}]}',
       'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"gem"}]}}]}',
       'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"ini"}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":5}}',
     ].join('\n'));
@@ -63,7 +64,10 @@ describe('LLM log formatting', () => {
       input_tokens: 4,
       output_tokens: 1,
     });
-    expect(JSON.parse(gemini.formatted).candidates[0].content.parts[0].text).toBe('gemini');
+    expect(JSON.parse(gemini.formatted).candidates[0].content.parts).toEqual([
+      { thought: true, text: 'plan' },
+      { text: 'gemini' },
+    ]);
     expect(JSON.parse(gemini.formatted).usageMetadata.totalTokenCount).toBe(5);
   });
 

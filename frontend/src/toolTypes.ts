@@ -411,7 +411,7 @@ export type EnvironmentRuntimeStatus = {
 };
 
 export type RuntimeComponentStatus = {
-  kind: 'node' | 'python' | 'uv' | 'git';
+  kind: 'node' | 'python' | 'uv' | 'git' | 'ffmpeg';
   available: boolean;
   required: boolean;
   managed_installed: boolean;

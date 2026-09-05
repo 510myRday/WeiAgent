@@ -290,6 +290,7 @@ function aggregateGemini(payloads: JsonRecord[]): JsonRecord | null {
   let finishReason: unknown;
   let usageMetadata: unknown;
   let modelVersion: unknown;
+  const parts: JsonRecord[] = [];
 
   for (const payload of geminiPayloads) {
     const candidate = (payload.candidates as unknown[]).find(isRecord);
@@ -297,7 +298,16 @@ function aggregateGemini(payloads: JsonRecord[]): JsonRecord | null {
       if (typeof candidate.content.role === 'string') role = candidate.content.role;
       if (Array.isArray(candidate.content.parts)) {
         for (const part of candidate.content.parts) {
-          if (isRecord(part) && typeof part.text === 'string') text += part.text;
+          if (isRecord(part) && typeof part.text === 'string') {
+            text += part.text;
+            const isThought = part.thought === true;
+            const last = parts[parts.length - 1];
+            if (last && (last.thought === true) === isThought && typeof last.text === 'string') {
+              last.text += part.text;
+            } else {
+              parts.push(isThought ? { thought: true, text: part.text } : { text: part.text });
+            }
+          }
         }
       }
     }
@@ -310,7 +320,7 @@ function aggregateGemini(payloads: JsonRecord[]): JsonRecord | null {
     candidates: [{
       content: {
         role,
-        parts: [{ text }],
+        parts: parts.length ? parts : [{ text }],
       },
       finishReason: finishReason ?? null,
     }],

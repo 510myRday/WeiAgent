@@ -15,6 +15,7 @@ pub enum RuntimeComponentKind {
     Python,
     Uv,
     Git,
+    Ffmpeg,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

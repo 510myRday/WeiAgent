@@ -256,12 +256,13 @@ fn materialize_bundled_ripgrep(runtimes_root: &Path) -> Option<PathBuf> {
     Some(tool_path)
 }
 
-fn supported_components() -> [RuntimeComponentKind; 4] {
+fn supported_components() -> [RuntimeComponentKind; 5] {
     [
         RuntimeComponentKind::Node,
         RuntimeComponentKind::Python,
         RuntimeComponentKind::Uv,
         RuntimeComponentKind::Git,
+        RuntimeComponentKind::Ffmpeg,
     ]
 }
 
@@ -292,8 +293,9 @@ mod tests {
 
     #[test]
     fn supported_components_exclude_terminal_backend() {
-        assert_eq!(supported_components().len(), 4);
+        assert_eq!(supported_components().len(), 5);
         assert!(supported_components().contains(&RuntimeComponentKind::Node));
+        assert!(supported_components().contains(&RuntimeComponentKind::Ffmpeg));
     }
 
     #[test]
