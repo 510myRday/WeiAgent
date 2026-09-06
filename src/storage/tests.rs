@@ -5,7 +5,9 @@ use uuid::Uuid;
 use super::*;
 use crate::domain::agents::UpdateAgentWorkspaceRequest;
 use crate::domain::{
-    ApiKeyStrategy, ChatMessage, ChatMessageStatus, ChatRole, ContextCheckpoint,
+    ApiKeyStrategy, ChatMessage, ChatMessageStatus, ChatRole, ChatShortcutAction,
+    ChatShortcutKind, ChatSystemEvent, ContextCheckpoint, ContextCompactionEvent,
+    ContextCompactionSource,
     CreateAgentRequest, CreateConversationRequest, CreateModelProviderRequest, ImageAttachment,
     ImageSource, ProviderType, UpdateAgentProfileRequest, UpdateAgentRequest,
     UpdateConversationRequest, UpdateModelProviderRequest,
@@ -883,6 +885,18 @@ async fn validates_agent_provider_and_stores_conversations() {
         tool_call_id: None,
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: vec![ChatShortcutAction {
+            kind: ChatShortcutKind::Skill,
+            id: "research".to_string(),
+            name: "research".to_string(),
+        }],
+        system_event: Some(ChatSystemEvent::ContextCompacted(ContextCompactionEvent {
+            source: ContextCompactionSource::Manual,
+            threshold_percent: 80,
+            before_tokens: 1000,
+            after_tokens: 200,
+            created_at: Utc::now(),
+        })),
     };
     store
         .append_conversation_messages(conversation.id, std::slice::from_ref(&message))
@@ -938,6 +952,8 @@ async fn repairs_missing_tool_outputs_idempotently() {
         tool_call_id: None,
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     let completed = ChatMessage {
         id: Uuid::new_v4(),
@@ -953,6 +969,8 @@ async fn repairs_missing_tool_outputs_idempotently() {
         tool_call_id: Some("call-complete".to_string()),
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     store
         .append_conversation_messages(conversation.id, &[assistant, completed])
@@ -1010,6 +1028,8 @@ async fn conversation_append_preserves_context_checkpoint() {
         tool_call_id: None,
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     store
         .append_conversation_messages(conversation.id, std::slice::from_ref(&old))
@@ -1075,6 +1095,8 @@ async fn history_restart_only_invalidates_intersected_checkpoint() {
         tool_call_id: None,
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     let first_user = make_message(ChatRole::User, "first");
     let first_assistant = make_message(ChatRole::Assistant, "answer");
@@ -1170,6 +1192,8 @@ async fn history_restart_removes_deleted_generated_images() {
         tool_call_id: None,
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     let first_user = user("first");
     let second_user = user("second");
@@ -1206,6 +1230,8 @@ async fn history_restart_removes_deleted_generated_images() {
             },
         ],
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     store
         .append_conversation_messages(
@@ -1270,6 +1296,8 @@ async fn deleting_a_conversation_removes_generated_images() {
             },
         }],
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     store
         .append_conversation_messages(conversation.id, &[message])
@@ -1322,6 +1350,8 @@ async fn paginates_messages_on_user_turn_boundaries() {
                 tool_call_id: None,
                 attachments: Vec::new(),
                 usage: None,
+                shortcut_actions: Vec::new(),
+                system_event: None,
             });
         }
     }
@@ -1401,6 +1431,8 @@ async fn conversation_list_derives_title_and_message_count_from_messages() {
         tool_call_id: None,
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
 
     store

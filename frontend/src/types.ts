@@ -270,6 +270,26 @@ export type ChatToolCall = {
   };
 };
 
+export type ChatShortcutKind = 'mcp' | 'skill' | 'builtin_tool';
+
+export type ChatShortcutAction = {
+  kind: ChatShortcutKind;
+  id: string;
+  name: string;
+};
+
+export type ContextCompactionEvent = {
+  source: 'manual' | 'automatic';
+  threshold_percent: number;
+  before_tokens: number;
+  after_tokens: number;
+  created_at: string;
+};
+
+export type ChatSystemEvent = ContextCompactionEvent & {
+  type: 'context_compacted';
+};
+
 export type ChatMessage = {
   id: string;
   agent_id: string;
@@ -283,6 +303,8 @@ export type ChatMessage = {
   tool_call_id?: string;
   attachments?: ImageAttachment[];
   usage?: ModelUsage;
+  shortcut_actions?: ChatShortcutAction[];
+  system_event?: ChatSystemEvent;
 };
 
 export type ConversationMessagePage = {
@@ -450,6 +472,7 @@ export type StreamEvent =
   | { event: 'user'; data: ChatMessage; sequence?: number }
   | { event: 'assistant'; data: ChatMessage; sequence?: number }
   | { event: 'usage'; data: ModelUsage; sequence?: number }
+  | { event: 'context_compacted'; data: ContextCompactionEvent; sequence?: number }
   | { event: 'delta'; data: string; sequence?: number }
   | { event: 'reasoning_delta'; data: string; sequence?: number }
   | { event: 'done'; data: string; sequence?: number }

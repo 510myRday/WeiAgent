@@ -12,7 +12,7 @@ const QUERY_INDEXES_SCHEMA_VERSION: i64 = 12;
 const TASK_PLANNING_DEFAULT_SCHEMA_VERSION: i64 = 11;
 const LLM_STREAM_LOG_CLEANUP_SCHEMA_VERSION: i64 = 26;
 #[cfg(test)]
-pub(super) const LATEST_SCHEMA_VERSION: i64 = LLM_STREAM_LOG_CLEANUP_SCHEMA_VERSION;
+pub(super) const LATEST_SCHEMA_VERSION: i64 = 28;
 
 pub(super) fn initialize(conn: &mut Connection) -> AppResult<()> {
     super::db::migrate_base_schema(conn)?;

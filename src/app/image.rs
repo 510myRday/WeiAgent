@@ -72,6 +72,8 @@ pub async fn run_image(
         tool_call_id: None,
         attachments: attachments.clone(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     state
         .store
@@ -171,6 +173,8 @@ pub async fn run_image(
         tool_call_id: None,
         attachments: generated_attachments,
         usage: Some(usage),
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     state
         .store

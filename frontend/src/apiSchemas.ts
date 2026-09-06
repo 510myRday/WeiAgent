@@ -103,6 +103,19 @@ export const chatMessageSchema = looseObject({
   tool_call_id: optional(string()),
   attachments: optional(array(imageAttachmentSchema)),
   usage: optional(modelUsageSchema),
+  shortcut_actions: optional(array(looseObject({
+    kind: picklist(['mcp', 'skill', 'builtin_tool']),
+    id: string(),
+    name: string(),
+  }))),
+  system_event: optional(looseObject({
+    type: picklist(['context_compacted']),
+    source: picklist(['manual', 'automatic']),
+    threshold_percent: number(),
+    before_tokens: number(),
+    after_tokens: number(),
+    created_at: string(),
+  })),
 });
 
 export const conversationMessagePageSchema = looseObject({
@@ -208,7 +221,7 @@ export function parseChatMessage(value: unknown): ChatMessage {
 }
 
 export function parseJsonStreamEvent(
-  event: 'user' | 'assistant' | 'usage' | 'phase' | 'retry' | 'tool_call_started' | 'tool_call_args_delta' | 'tool_call' | 'tool_result' | 'approval_required',
+  event: 'user' | 'assistant' | 'usage' | 'context_compacted' | 'phase' | 'retry' | 'tool_call_started' | 'tool_call_args_delta' | 'tool_call' | 'tool_result' | 'approval_required',
   data: string,
   sequence?: number,
 ): StreamEvent {
@@ -219,6 +232,18 @@ export function parseJsonStreamEvent(
       return { event, data: parseChatMessage(parsed), sequence };
     case 'usage':
       return { event, data: parse(modelUsageSchema, parsed) as ModelUsage, sequence };
+    case 'context_compacted':
+      return {
+        event,
+        data: parse(looseObject({
+          source: picklist(['manual', 'automatic']),
+          threshold_percent: number(),
+          before_tokens: number(),
+          after_tokens: number(),
+          created_at: string(),
+        }), parsed),
+        sequence,
+      };
     case 'phase': {
       const { call_id, ...phaseData } = parse(phaseEventDataSchema, parsed);
       return {

@@ -22,6 +22,7 @@ import {
   Scan,
   Send,
   Square,
+  Wrench,
   X,
 } from 'lucide-react';
 
@@ -31,6 +32,7 @@ import type {
   ImageAttachment,
   ImageModelConfig,
   ThinkingLevel,
+  ChatShortcutAction,
 } from '../../types';
 import { ImageSizeControl } from '../../components/ImageSizeControl';
 import { Button, useDismissiblePopover } from '../../components/ui';
@@ -55,7 +57,10 @@ export type QueuedChatMessage = {
   content: string;
   attachments?: readonly ImageAttachment[];
   generationMode?: GenerationMode;
+  shortcutActions?: ChatShortcutAction[];
 };
+
+export type ComposerShortcutItem = ChatShortcutAction & { label: string };
 
 export type QueuedMessageMoveDirection = 'up' | 'down';
 
@@ -94,9 +99,13 @@ interface ChatComposerProps {
     content: string,
     attachments: ImageAttachment[],
     generationMode: GenerationMode,
+    shortcutActions: ChatShortcutAction[],
   ) => void;
   onSteer: (content: string) => void;
   onStop: () => void;
+  shortcutItems?: ComposerShortcutItem[];
+  onCompress?: () => void;
+  isCompressing?: boolean;
 }
 
 export type ChatComposerHandle = {
@@ -129,14 +138,22 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
   onSend,
   onSteer,
   onStop,
+  shortcutItems = [],
+  onCompress = () => undefined,
+  isCompressing = false,
 }: ChatComposerProps, ref) {
   const { t, locale } = useI18n();
   const [draft, setDraft] = useState('');
   const [thinkingOpen, setThinkingOpen] = useState(false);
+  const [shortcutOpen, setShortcutOpen] = useState(false);
+  const [shortcutActions, setShortcutActions] = useState<ChatShortcutAction[]>([]);
+  const [shortcutIndent, setShortcutIndent] = useState(0);
   const formRef = useRef<HTMLFormElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const shortcutStripRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const thinkingRef = useDismissiblePopover<HTMLDivElement>(thinkingOpen, () => setThinkingOpen(false));
+  const shortcutRef = useDismissiblePopover<HTMLDivElement>(shortcutOpen, () => setShortcutOpen(false));
   const {
     attachments,
     setAttachments,
@@ -169,8 +186,18 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
       inputRef.current?.focus();
     },
     restoreQueuedMessage(message) {
-      const content = message.content;
+      const shortcutActions = message.shortcutActions ?? [];
+      const prefix = shortcutActions.map((action) => {
+        if (action.kind === 'skill') return t('chat.shortcutPreferSkill', { name: action.name });
+        if (action.kind === 'mcp') return t('chat.shortcutPreferMcp', { name: action.name });
+        return t('chat.shortcutPreferTool', { name: action.name });
+      }).join('\n');
+      const serializedPrefix = prefix ? `${prefix}\n\n` : '';
+      const content = serializedPrefix && message.content.startsWith(serializedPrefix)
+        ? message.content.slice(serializedPrefix.length)
+        : message.content;
       setDraft(content);
+      setShortcutActions(shortcutActions);
       setAttachments((message.attachments ?? []).slice(0, MAX_IMAGE_COUNT).map((attachment) => ({
         ...attachment,
         id: createAttachmentId(),
@@ -179,10 +206,11 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
       writeChatDraft(draftKey, content);
       inputRef.current?.focus();
     },
-  }), [canAttachImages, draftKey, onGenerationModeChange, onUnsupportedImage, setAttachments]);
+  }), [canAttachImages, draftKey, onGenerationModeChange, onUnsupportedImage, setAttachments, t]);
 
   useEffect(() => {
     setDraft(readChatDraft(draftKey));
+    setShortcutActions([]);
     setAttachments([]);
     resetDragState();
     setThinkingOpen(false);
@@ -206,19 +234,44 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
     input.style.height = `${Math.min(Math.max(input.scrollHeight, 48), 168)}px`;
   }, [draft]);
 
+  useLayoutEffect(() => {
+    const strip = shortcutStripRef.current;
+    setShortcutIndent(strip ? strip.offsetWidth + 8 : 0);
+  }, [shortcutActions]);
+
   function submitMessage(mode: 'send' | 'steer') {
     if (isModelSavePending || isSavingModel) return;
     const content = draft.trim();
     if ((!content && attachments.length === 0) || disabled) return;
+    const prefix = shortcutActions.map((action) => {
+      if (action.kind === 'skill') return t('chat.shortcutPreferSkill', { name: action.name });
+      if (action.kind === 'mcp') return t('chat.shortcutPreferMcp', { name: action.name });
+      return t('chat.shortcutPreferTool', { name: action.name });
+    }).join('\n');
+    const submittedContent = prefix ? `${prefix}\n\n${content}` : content;
     const submittedAttachments = attachments;
     setDraft('');
+    setShortcutActions([]);
     setAttachments([]);
     writeChatDraft(draftKey, '');
     if (mode === 'steer') {
-      if (content) onSteer(content);
+      if (content) onSteer(submittedContent);
     } else {
-      onSend(content, submittedAttachments, generationMode);
+      onSend(submittedContent, submittedAttachments, generationMode, shortcutActions);
     }
+  }
+
+  function addShortcut(action: ChatShortcutAction) {
+    const selectedAction: ChatShortcutAction = {
+      kind: action.kind,
+      id: action.id,
+      name: action.name,
+    };
+    setShortcutActions((current) => current.some((item) => item.kind === selectedAction.kind && item.id === selectedAction.id)
+      ? current
+      : [...current, selectedAction]);
+    setShortcutOpen(false);
+    inputRef.current?.focus();
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -288,20 +341,81 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
             ))}
           </div>
         ) : null}
-        <textarea
-          ref={inputRef}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder={placeholder}
-          aria-label={inputLabel}
-          disabled={disabled}
-          rows={1}
-        />
+        <div className="composer-input-line">
+          {shortcutActions.length > 0 ? (
+            <div ref={shortcutStripRef} className="composer-shortcut-strip" aria-label={t('chat.selectedShortcuts')}>
+              {shortcutActions.map((action) => (
+                <span className="composer-shortcut-chip" key={`${action.kind}:${action.id}`}>
+                  <span>{action.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => setShortcutActions((current) => current.filter((item) => item !== action))}
+                    aria-label={t('chat.removeShortcut', { name: action.name })}
+                    title={t('chat.removeShortcut', { name: action.name })}
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <textarea
+            ref={inputRef}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            placeholder={placeholder}
+            aria-label={inputLabel}
+            disabled={disabled}
+            style={{ textIndent: shortcutIndent ? `${shortcutIndent}px` : undefined }}
+            rows={1}
+          />
+        </div>
         <div className="composer-toolbar">
           <div className="composer-toolbar-main">
             <div className="composer-controls">
+              <div className="shortcut-control" ref={shortcutRef}>
+                <button
+                  type="button"
+                  className={`composer-icon-button${shortcutOpen ? ' is-active' : ''}`}
+                  onClick={() => setShortcutOpen((open) => !open)}
+                  disabled={disabled || isSending || isCompressing}
+                  aria-expanded={shortcutOpen}
+                  aria-label={t('chat.shortcuts')}
+                  title={t('chat.shortcuts')}
+                >
+                  <Wrench size={18} aria-hidden="true" />
+                </button>
+                {shortcutOpen ? (
+                  <div className="shortcut-menu" role="menu">
+                    <div className="shortcut-menu-title">{t('chat.shortcuts')}</div>
+                    {shortcutItems.length > 0 ? shortcutItems.map((item) => {
+                      const selected = shortcutActions.some((action) => (
+                        action.kind === item.kind && action.id === item.id
+                      ));
+                      return (
+                        <button
+                          key={`${item.kind}:${item.id}`}
+                          type="button"
+                          role="menuitem"
+                          className={selected ? 'is-selected' : undefined}
+                          onClick={() => addShortcut(item)}
+                          disabled={selected}
+                        >
+                          <span className="shortcut-menu-kind">{item.kind === 'mcp' ? 'MCP' : item.kind === 'skill' ? 'Skill' : t('chat.tool')}</span>
+                          <span>{item.label}</span>
+                          {selected ? <Check size={15} aria-hidden="true" /> : null}
+                        </button>
+                      );
+                    }) : <div className="shortcut-menu-empty">{t('chat.noEnabledShortcuts')}</div>}
+                    <button type="button" onClick={() => { setShortcutOpen(false); onCompress(); }} disabled={isCompressing}>
+                      <span className="shortcut-menu-kind">{t('chat.command')}</span>
+                      <span>{t('chat.compressCommand')}</span>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             <input
               ref={fileInputRef}
               className="composer-file-input"

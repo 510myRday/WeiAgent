@@ -55,8 +55,47 @@ pub async fn prepare_chat(
     thinking_level: ThinkingLevel,
     restart_from_message_id: Option<Uuid>,
 ) -> AppResult<PreparedChat> {
+    prepare_chat_inner(
+        state,
+        conversation_id,
+        content,
+        attachments,
+        thinking_level,
+        restart_from_message_id,
+        false,
+    )
+    .await
+}
+
+/// Prepare the agent context for internal operations that do not create a user turn.
+pub async fn prepare_chat_context(
+    state: &AppState,
+    conversation_id: Uuid,
+    thinking_level: ThinkingLevel,
+) -> AppResult<PreparedChat> {
+    prepare_chat_inner(
+        state,
+        conversation_id,
+        "",
+        &[],
+        thinking_level,
+        None,
+        true,
+    )
+    .await
+}
+
+async fn prepare_chat_inner(
+    state: &AppState,
+    conversation_id: Uuid,
+    content: &str,
+    attachments: &[ImageAttachment],
+    thinking_level: ThinkingLevel,
+    restart_from_message_id: Option<Uuid>,
+    allow_empty_message: bool,
+) -> AppResult<PreparedChat> {
     let content = content.trim();
-    if content.is_empty() && attachments.is_empty() {
+    if !allow_empty_message && content.is_empty() && attachments.is_empty() {
         return Err(AppError::BadRequest(
             "message content and attachments cannot both be empty".to_string(),
         ));
@@ -191,6 +230,8 @@ pub async fn prepare_chat(
         tool_call_id: None,
         attachments: attachments.to_vec(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     let mut llm_attachments = attachments.to_vec();
     normalize_attachments_for_llm(&mut llm_attachments).await?;
@@ -231,6 +272,8 @@ pub async fn prepare_chat(
             tool_call_id: None,
             attachments: Vec::new(),
             usage: None,
+            shortcut_actions: Vec::new(),
+            system_event: None,
         });
     }
     messages_for_llm.push(llm_user_message);
@@ -328,6 +371,8 @@ async fn normalize_history_for_llm(
                 tool_call_id: None,
                 attachments,
                 usage: None,
+                shortcut_actions: Vec::new(),
+                system_event: None,
             });
         } else {
             normalized.push(message);
@@ -583,6 +628,8 @@ mod tests {
             tool_call_id: None,
             attachments: vec![attachment],
             usage: None,
+            shortcut_actions: Vec::new(),
+            system_event: None,
         }
     }
 

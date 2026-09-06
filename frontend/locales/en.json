@@ -235,6 +235,23 @@
     "contextUsageUsed": "{percent}% used ({remaining}% left)",
     "contextUsageStats": "Used {used} of {limit}",
     "compactingContext": "Compressing context…"
+    ,"shortcuts": "Commands and tools"
+    ,"selectedShortcuts": "Selected shortcuts"
+    ,"removeShortcut": "Remove {name}"
+    ,"noEnabledShortcuts": "No enabled shortcuts for this agent"
+    ,"tool": "Tool"
+    ,"command": "Command"
+    ,"shortcutPreferSkill": "Please prioritize using the “{name}” skill."
+    ,"shortcutPreferMcp": "Please prioritize using the “{name}” MCP service."
+    ,"shortcutPreferTool": "Please prioritize using the “{name}” tool."
+    ,"compressCommand": "Compress context"
+    ,"compressTitle": "Compress context"
+    ,"compressMessage": "Compress the current conversation context? Earlier content will remain available as a summary."
+    ,"compressConfirm": "Compress"
+    ,"contextCompactedManual": "Context manually compressed"
+    ,"contextCompactedAutomatic": "Context automatically compressed"
+    ,"contextCompactedStats": "{before} → {after} tokens"
+    ,"compressFailed": "Failed to compress context"
   },
   "conversation": {
     "create": "New conversation",

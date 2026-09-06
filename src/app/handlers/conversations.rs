@@ -15,14 +15,15 @@ use crate::{
     app::{
         AppState,
         agent_executor::{AgentRunEvent, run_agent},
-        chat::prepare_chat,
+        chat::{prepare_chat, prepare_chat_context},
         image::run_image,
         run_manager::{SequencedRunEvent, SteerMessage},
     },
     domain::{
-        AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, Conversation,
-        ConversationMessagePage, ConversationUsage, CreateConversationRequest, GenerationMode,
-        SendMessageRequest, UpdateConversationRequest,
+        AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, ChatSystemEvent,
+        ContextCompactionEvent, ContextCompactionSource, Conversation, ConversationMessagePage,
+        ConversationUsage, CreateConversationRequest, GenerationMode, SendMessageRequest,
+        ThinkingLevel, UpdateConversationRequest,
     },
     error::{AppError, AppResult},
     llm::client::RequestOptions,
@@ -158,6 +159,8 @@ pub async fn generate_conversation_title(
         tool_call_id: None,
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     let language_instruction = match request.locale.as_deref() {
         Some("en") => "Write the title in English.",
@@ -243,6 +246,80 @@ pub async fn read_conversation_usage(
     ))
 }
 
+pub async fn compress_conversation_context(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<Uuid>,
+) -> AppResult<Json<ContextCompactionEvent>> {
+    let _registration = state.run_manager.create(conversation_id)?;
+    let settings = state.store.read_settings().await?;
+    let prepared = prepare_chat_context(&state, conversation_id, ThinkingLevel::Off).await?;
+    let history = state
+        .store
+        .read_conversation_messages(conversation_id)
+        .await?;
+    let config = crate::app::context_compress::CompactionConfig::from_agent_provider_and_threshold(
+        &prepared.agent,
+        &prepared.provider,
+        settings.context_compress_threshold_percent,
+        Some(ThinkingLevel::Off),
+    );
+    let options = request_options(&settings, Some(ThinkingLevel::Off));
+    let outcome = crate::app::context_compress::force_compact::<()>(
+        &state.llm_registry.client_for(&prepared.provider)?,
+        &prepared.agent,
+        &prepared.provider,
+        &config,
+        &prepared.system_prompt,
+        &options,
+        None,
+        None,
+        history,
+        state.store.read_context_checkpoint(conversation_id).await?,
+        None,
+    )
+    .await?;
+    if !outcome.did_compact {
+        return Err(AppError::BadRequest(
+            "conversation has no context that can be compacted".to_string(),
+        ));
+    }
+    if let Some(checkpoint) = outcome.checkpoint {
+        state
+            .store
+            .write_context_checkpoint(conversation_id, checkpoint)
+            .await?;
+    }
+    let event = ContextCompactionEvent {
+        source: ContextCompactionSource::Manual,
+        threshold_percent: config.threshold_percent,
+        before_tokens: outcome.estimated_tokens_before,
+        after_tokens: outcome.estimated_tokens_after,
+        created_at: Utc::now(),
+    };
+    let marker = ChatMessage {
+        id: Uuid::new_v4(),
+        agent_id: prepared.agent.id,
+        conversation_id,
+        role: ChatRole::Assistant,
+        content: String::new(),
+        reasoning_content: None,
+        openai_response_items: Vec::new(),
+        status: ChatMessageStatus::Done,
+        created_at: Utc::now(),
+        tool_calls: None,
+        tool_call_id: None,
+        attachments: Vec::new(),
+        usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: Some(ChatSystemEvent::ContextCompacted(event.clone())),
+    };
+    state
+        .store
+        .append_conversation_messages(conversation_id, &[marker])
+        .await?;
+    Ok(Json(event))
+}
+
 pub async fn read_task_plan(
     State(state): State<AppState>,
     Path(conversation_id): Path<Uuid>,
@@ -319,7 +396,7 @@ pub async fn start_message_run(
     let mut registration = state.run_manager.create(conversation_id)?;
     let steer_receiver = state.run_manager.take_steer_receiver(&mut registration);
     let run_id = registration.info.id;
-    let prepared = match prepare_chat(
+    let mut prepared = match prepare_chat(
         &state,
         conversation_id,
         &request.content,
@@ -337,6 +414,7 @@ pub async fn start_message_run(
             return Err(error);
         }
     };
+    prepared.user_message.shortcut_actions = request.shortcut_actions;
     state
         .run_manager
         .set_user_message(run_id, prepared.user_message.id);
@@ -604,6 +682,7 @@ fn agent_event_to_sse(event: AgentRunEvent) -> Event {
         AgentRunEvent::User(message) => json_event("user", &message),
         AgentRunEvent::Assistant(message) => json_event("assistant", &message),
         AgentRunEvent::Usage(usage) => json_event("usage", &usage),
+        AgentRunEvent::ContextCompacted(event) => json_event("context_compacted", &event),
         AgentRunEvent::Delta(delta) => json_event("delta", &serde_json::json!({ "text": delta })),
         AgentRunEvent::ReasoningDelta(delta) => {
             json_event("reasoning_delta", &serde_json::json!({ "text": delta }))

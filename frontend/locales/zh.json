@@ -235,6 +235,23 @@
     "contextUsageUsed": "{percent}% 已用（剩余 {remaining}%）",
     "contextUsageStats": "已用 {used}，共 {limit}",
     "compactingContext": "正在压缩上下文…"
+    ,"shortcuts": "快捷命令与工具"
+    ,"selectedShortcuts": "已选择的快捷项"
+    ,"removeShortcut": "移除 {name}"
+    ,"noEnabledShortcuts": "当前智能体没有已启用的快捷项"
+    ,"tool": "工具"
+    ,"command": "命令"
+    ,"shortcutPreferSkill": "请优先帮我使用「{name}」技能。"
+    ,"shortcutPreferMcp": "请优先帮我使用「{name}」MCP 服务。"
+    ,"shortcutPreferTool": "请优先帮我使用「{name}」工具。"
+    ,"compressCommand": "压缩上下文"
+    ,"compressTitle": "压缩上下文"
+    ,"compressMessage": "确认压缩当前会话上下文吗？压缩完成后，较早内容会以摘要形式保留。"
+    ,"compressConfirm": "确认压缩"
+    ,"contextCompactedManual": "已手动压缩上下文"
+    ,"contextCompactedAutomatic": "已自动压缩上下文"
+    ,"contextCompactedStats": "{before} → {after} tokens"
+    ,"compressFailed": "压缩上下文失败"
   },
   "conversation": {
     "create": "新建会话",

@@ -222,6 +222,8 @@ mod tests {
                 },
             }],
             usage: None,
+            shortcut_actions: Vec::new(),
+            system_event: None,
         }];
 
         let request = build_chat_request(
@@ -282,6 +284,8 @@ mod tests {
             tool_call_id: None,
             attachments: Vec::new(),
             usage: None,
+            shortcut_actions: Vec::new(),
+            system_event: None,
         }];
 
         let off_request = build_chat_request(
@@ -376,6 +380,8 @@ mod tests {
             tool_call_id: None,
             attachments: Vec::new(),
             usage: None,
+            shortcut_actions: Vec::new(),
+            system_event: None,
         }];
 
         let request = build_openai_chat_request(

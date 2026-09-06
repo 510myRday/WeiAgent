@@ -29,6 +29,8 @@ import type {
   UpdateAgentProfilePayload,
   UpdateAgentPayload,
   UpdateConversationPayload,
+  ChatShortcutAction,
+  ContextCompactionEvent,
 } from './types';
 import type {
   AgentToolsConfig,
@@ -766,11 +768,19 @@ export function readAgentSkillsConfig(agentId: string): Promise<SkillSettings> {
   return request<SkillSettings>(`/api/agents/${encodeURIComponent(agentId)}/skills-config`);
 }
 
-export function updateAgentSkillsConfig(agentId: string, overrides: SkillOverrides): Promise<SkillSettings> {
-  return request<SkillSettings>(`/api/agents/${encodeURIComponent(agentId)}/skills-config`, {
+export const AGENT_SKILLS_CONFIG_CHANGED_EVENT = 'weiagent:agent-skills-config-changed';
+
+export async function updateAgentSkillsConfig(agentId: string, overrides: SkillOverrides): Promise<SkillSettings> {
+  const settings = await request<SkillSettings>(`/api/agents/${encodeURIComponent(agentId)}/skills-config`, {
     method: 'PUT',
     body: JSON.stringify(overrides),
   });
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(AGENT_SKILLS_CONFIG_CHANGED_EVENT, {
+      detail: { agentId },
+    }));
+  }
+  return settings;
 }
 
 export function updateAgentMcpConfig(agentId: string, overrides: McpAgentOverrides): Promise<McpAgentSettings> {
@@ -838,6 +848,7 @@ export function createMessageRun(
   thinkingLevel: ThinkingLevel,
   generationMode: GenerationMode = 'chat',
   restartFromMessageId?: string,
+  shortcutActions: ChatShortcutAction[] = [],
   signal?: AbortSignal,
 ): Promise<AgentRun> {
   return request(`/api/conversations/${conversationId}/runs`, {
@@ -848,10 +859,20 @@ export function createMessageRun(
       thinking_level: thinkingLevel,
       stream: streamOutput,
       generation_mode: generationMode,
+      shortcut_actions: shortcutActions,
       ...(restartFromMessageId ? { restart_from_message_id: restartFromMessageId } : {}),
     }),
     signal,
   }, agentRunRuntimeSchema);
+}
+
+export function compressConversationContext(
+  conversationId: string,
+): Promise<ContextCompactionEvent> {
+  return request<ContextCompactionEvent>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/context-compress`,
+    { method: 'POST' },
+  );
 }
 
 export function steerMessageRun(runId: string, content: string): Promise<void> {

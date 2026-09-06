@@ -184,6 +184,7 @@ async fn execute_heartbeat(state: &AppState, heartbeat: ConversationHeartbeat) -
         stream: false,
         generation_mode: GenerationMode::Chat,
         restart_from_message_id: None,
+        shortcut_actions: Vec::new(),
     };
     let result = start_message_run(state.clone(), heartbeat.conversation_id, request).await;
     match result {
@@ -363,6 +364,7 @@ async fn execute_cron_task(
         stream: false,
         generation_mode: GenerationMode::Chat,
         restart_from_message_id: None,
+        shortcut_actions: Vec::new(),
     };
     let run = match start_message_run(state.clone(), conversation.id, request).await {
         Ok(run) => run,

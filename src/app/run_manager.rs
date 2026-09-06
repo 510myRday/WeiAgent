@@ -355,6 +355,9 @@ fn run_event_size(event: &AgentRunEvent) -> usize {
             message.content.len() + message.tool_calls.as_ref().map_or(0, estimate_json_bytes)
         }
         AgentRunEvent::Usage(usage) => serde_json::to_vec(usage).map_or(0, |value| value.len()),
+        AgentRunEvent::ContextCompacted(event) => {
+            serde_json::to_vec(event).map_or(0, |value| value.len())
+        }
         AgentRunEvent::Delta(delta)
         | AgentRunEvent::ReasoningDelta(delta)
         | AgentRunEvent::Error(delta) => delta.len(),

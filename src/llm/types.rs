@@ -535,6 +535,8 @@ mod tests {
             tool_call_id: None,
             attachments: Vec::new(),
             usage: None,
+            shortcut_actions: Vec::new(),
+            system_event: None,
         }
     }
 

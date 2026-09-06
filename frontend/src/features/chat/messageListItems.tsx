@@ -53,6 +53,92 @@ import { userErrorMessage } from '../../utils/userError';
 
 const MAX_MESSAGE_IMAGE_EDGE = 360;
 
+type MessageShortcutAction = NonNullable<UiMessage['shortcut_actions']>[number];
+
+type ShortcutPresentation = {
+  actions: MessageShortcutAction[];
+  content: string;
+};
+
+function shortcutPrefixLines(action: MessageShortcutAction) {
+  if (action.kind === 'skill') {
+    return [
+      `请优先帮我使用「${action.name}」技能。`,
+      `Please prioritize using the “${action.name}” skill.`,
+    ];
+  }
+  if (action.kind === 'mcp') {
+    return [
+      `请优先帮我使用「${action.name}」MCP 服务。`,
+      `Please prioritize using the “${action.name}” MCP service.`,
+    ];
+  }
+  return [
+    `请优先帮我使用「${action.name}」工具。`,
+    `Please prioritize using the “${action.name}” tool.`,
+  ];
+}
+
+function parseShortcutPrefix(line: string, index: number): MessageShortcutAction | null {
+  const chineseMatch = line.match(/^请优先帮我使用「(.+?)」(MCP 服务|技能|工具)。$/);
+  if (chineseMatch) {
+    const kind = chineseMatch[2] === 'MCP 服务'
+      ? 'mcp'
+      : chineseMatch[2] === '技能' ? 'skill' : 'builtin_tool';
+    return {
+      kind,
+      id: `legacy-${kind}-${index}`,
+      name: chineseMatch[1],
+    };
+  }
+
+  const englishMatch = line.match(/^Please prioritize using the [“"](.+?)[”"] (MCP service|skill|tool)\.$/i);
+  if (!englishMatch) return null;
+  const kind = englishMatch[2].toLowerCase() === 'mcp service'
+    ? 'mcp'
+    : englishMatch[2].toLowerCase() === 'skill' ? 'skill' : 'builtin_tool';
+  return {
+    kind,
+    id: `legacy-${kind}-${index}`,
+    name: englishMatch[1],
+  };
+}
+
+function stripShortcutPrefix(content: string, actions: MessageShortcutAction[]) {
+  const lines = content.split('\n');
+  let index = 0;
+  for (const action of actions) {
+    if (!shortcutPrefixLines(action).includes(lines[index] ?? '')) return null;
+    index += 1;
+  }
+  if (lines[index] === '') index += 1;
+  return lines.slice(index).join('\n');
+}
+
+function shortcutPresentation(message: UiMessage): ShortcutPresentation {
+  const actions = message.shortcut_actions ?? [];
+  if (message.role !== 'user') return { actions: [], content: message.content };
+
+  if (actions.length > 0) {
+    const strippedContent = stripShortcutPrefix(message.content, actions);
+    if (strippedContent !== null) return { actions, content: strippedContent };
+  }
+
+  const lines = message.content.split('\n');
+  const parsedActions: MessageShortcutAction[] = [];
+  while (parsedActions.length < lines.length) {
+    const action = parseShortcutPrefix(lines[parsedActions.length], parsedActions.length);
+    if (!action) break;
+    parsedActions.push(action);
+  }
+  if (parsedActions.length === 0) return { actions: [], content: message.content };
+
+  const strippedContent = stripShortcutPrefix(message.content, parsedActions);
+  return strippedContent === null
+    ? { actions: [], content: message.content }
+    : { actions: parsedActions, content: strippedContent };
+}
+
 type MessageImageDisplaySize = {
   width: number;
   height: number;
@@ -65,7 +151,12 @@ type RetryStatus = {
 };
 
 type MessageActions = {
-  onRestart: (messageId: string, content: string, attachments?: ImageAttachment[]) => void;
+  onRestart: (
+    messageId: string,
+    content: string,
+    attachments?: ImageAttachment[],
+    shortcutActions?: MessageShortcutAction[],
+  ) => void;
   onEditImage: (attachment: ImageAttachment) => void;
   onApproveToolCall: (
     approvalId: string,
@@ -108,6 +199,21 @@ export const MessageListItem = memo(function MessageListItem({
   formatTimelineTime: (value: string) => string;
 }) {
   const { t } = useI18n();
+  if (item.system_event?.type === 'context_compacted') {
+    const label = item.system_event.source === 'manual'
+      ? t('chat.contextCompactedManual')
+      : t('chat.contextCompactedAutomatic');
+    return (
+      <ContextCompactedSeparator
+        label={label}
+        stats={t('chat.contextCompactedStats', {
+          before: formatTokenCount(item.system_event.before_tokens),
+          after: formatTokenCount(item.system_event.after_tokens),
+        })}
+        timestamp={formatTimelineTime(item.system_event.created_at)}
+      />
+    );
+  }
   return (
     <MessageRow
       message={item}
@@ -129,6 +235,32 @@ export const MessageListItem = memo(function MessageListItem({
     />
   );
 });
+
+function ContextCompactedSeparator({
+  label,
+  stats,
+  timestamp,
+}: {
+  label: string;
+  stats: string;
+  timestamp: string;
+}) {
+  return (
+    <div className="context-compacted-separator" role="status">
+      <span className="context-compacted-separator__line" aria-hidden="true" />
+      <span className="context-compacted-separator__content">
+        <strong>{label}</strong>
+        <span>{stats}</span>
+        <time>{timestamp}</time>
+      </span>
+      <span className="context-compacted-separator__line" aria-hidden="true" />
+    </div>
+  );
+}
+
+function formatTokenCount(value: number): string {
+  return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+}
 
 export function shouldShowAgentWaitingBubble(
   messages: UiMessageItem[],
@@ -240,6 +372,7 @@ const MessageRow = memo(function MessageRow({
   const { t } = useI18n();
   const { copied, copy } = useClipboard();
   const isUser = message.role === 'user';
+  const shortcutView = shortcutPresentation(message);
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.content);
   const editInputRef = useRef<HTMLTextAreaElement>(null);
@@ -454,7 +587,19 @@ const MessageRow = memo(function MessageRow({
             </form>
           ) : (
             <>
-              <div className="message-bubble">
+              <div className={`message-bubble${isUser && shortcutView.actions.length ? ' message-bubble--with-shortcuts' : ''}`}>
+                {isUser && shortcutView.actions.length ? (
+                  <div className="message-shortcut-strip" aria-label={t('chat.selectedShortcuts')}>
+                    {shortcutView.actions.map((action) => (
+                      <span
+                        className="message-shortcut-chip"
+                        key={`${action.kind}:${action.id}`}
+                      >
+                        {action.name}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
                 <MessageContent
                   message={message}
                   agentId={agent?.id ?? ''}
@@ -493,7 +638,7 @@ const MessageRow = memo(function MessageRow({
                       <button
                         className="message-action-button"
                         type="button"
-                        onClick={() => onRestart(message.id, message.content, message.attachments)}
+                        onClick={() => onRestart(message.id, message.content, message.attachments, shortcutView.actions)}
                         disabled={actionsDisabled}
                         aria-label={t('chat.retryMessage')}
                         title={t('chat.retryMessage')}
@@ -553,6 +698,7 @@ function MessageContent({
   const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
   const [imageDisplaySizes, setImageDisplaySizes] = useState<Record<string, MessageImageDisplaySize>>({});
   const blocks = message.blocks ?? [];
+  const displayContent = shortcutPresentation(message).content;
   const tools = blocks
     .filter((block): block is Extract<NonNullable<UiMessage['blocks']>[number], { type: 'tool' }> => block.type === 'tool')
     .map((block) => block.tool);
@@ -727,12 +873,12 @@ function MessageContent({
           })}
           {waitingAfterTool ? <TypingIndicator label={t('chat.sending')} /> : null}
         </>
-      ) : message.content ? (
+      ) : displayContent ? (
         <div className={`message-markdown${message.status === 'streaming' ? ' streaming-content' : ''}`}>
           {message.status === 'streaming' ? (
-            <StreamingMarkdown content={message.content} />
+            <StreamingMarkdown content={displayContent} />
           ) : (
-            <MarkdownContent content={message.content} />
+            <MarkdownContent content={displayContent} />
           )}
         </div>
       ) : null}

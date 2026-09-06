@@ -15,8 +15,9 @@ use crate::{
     app::run_manager::SteerMessage,
     app::{AppState, chat::PreparedChat},
     domain::{
-        ChatMessage, ChatMessageStatus, ChatRole, McpServer, ModelUsage, TaskPlan,
-        TaskPlanItemStatus, TerminalPermissionMode, TokenUsage, ToolResult,
+        ChatMessage, ChatMessageStatus, ChatRole, ChatSystemEvent, ContextCompactionEvent,
+        ContextCompactionSource, McpServer, ModelUsage, TaskPlan, TaskPlanItemStatus,
+        TerminalPermissionMode, TokenUsage, ToolResult,
     },
     error::{AppError, AppResult},
     llm::{
@@ -49,6 +50,7 @@ pub enum AgentRunEvent {
     User(ChatMessage),
     Assistant(ChatMessage),
     Usage(ModelUsage),
+    ContextCompacted(ContextCompactionEvent),
     Delta(String),
     ReasoningDelta(String),
     Phase {
@@ -191,9 +193,11 @@ async fn ensure_messages_within_context(
     .await?;
 
     if outcome.did_compact {
+        let before_tokens = outcome.estimated_tokens_before;
+        let after_tokens = outcome.estimated_tokens_after;
         tracing::info!(
-            before = outcome.estimated_tokens_before,
-            after = outcome.estimated_tokens_after,
+            before = before_tokens,
+            after = after_tokens,
             reason = ?outcome.reason,
             "auto-compacted conversation context"
         );
@@ -209,6 +213,39 @@ async fn ensure_messages_within_context(
                 .await?;
             compaction.checkpoint = Some(checkpoint);
         }
+        let event = ContextCompactionEvent {
+            source: ContextCompactionSource::Automatic,
+            threshold_percent: compaction.config.threshold_percent,
+            before_tokens,
+            after_tokens,
+            created_at: Utc::now(),
+        };
+        let marker = ChatMessage {
+            id: Uuid::new_v4(),
+            agent_id: runtime.prepared.agent.id,
+            conversation_id: runtime.prepared.user_message.conversation_id,
+            role: ChatRole::Assistant,
+            content: String::new(),
+            reasoning_content: None,
+            openai_response_items: Vec::new(),
+            status: ChatMessageStatus::Done,
+            created_at: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            attachments: Vec::new(),
+            usage: None,
+            shortcut_actions: Vec::new(),
+            system_event: Some(ChatSystemEvent::ContextCompacted(event.clone())),
+        };
+        runtime
+            .state
+            .store
+            .append_conversation_messages(
+                runtime.prepared.user_message.conversation_id,
+                std::slice::from_ref(&marker),
+            )
+            .await?;
+        emit(runtime.events, AgentRunEvent::ContextCompacted(event)).await?;
     }
     Ok(())
 }
@@ -345,6 +382,8 @@ pub async fn run_agent(
             tool_call_id: None,
             attachments: Vec::new(),
             usage: Some(usage.clone()),
+            shortcut_actions: Vec::new(),
+            system_event: None,
         };
         state
             .store
@@ -457,6 +496,8 @@ async fn apply_pending_steers(
             tool_call_id: None,
             attachments: Vec::new(),
             usage: None,
+            shortcut_actions: Vec::new(),
+            system_event: None,
         };
         state
             .store
@@ -538,6 +579,8 @@ async fn persist_run_failure(runtime: &AgentRuntime<'_>, error: &AppError) {
         tool_call_id: None,
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     let _ = runtime
         .state
@@ -569,6 +612,8 @@ async fn finalize_after_budget(
         tool_call_id: None,
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     // Keep the budget notice in the in-memory LLM context only.
     messages.push(budget_notice);
@@ -626,6 +671,8 @@ async fn finalize_after_budget(
         tool_call_id: None,
         attachments: Vec::new(),
         usage: Some(model_usage(runtime.prepared, &output.output.usage)),
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     runtime
         .state
@@ -1481,6 +1528,8 @@ async fn persist_tool_result(
         attachments: Vec::new(),
         openai_response_items: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     state
         .store
@@ -1544,6 +1593,8 @@ fn partial_assistant(
         tool_call_id: None,
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     }
 }
 

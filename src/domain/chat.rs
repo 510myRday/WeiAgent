@@ -130,6 +130,47 @@ pub struct ChatMessage {
     pub attachments: Vec<ImageAttachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ModelUsage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shortcut_actions: Vec<ChatShortcutAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_event: Option<ChatSystemEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatShortcutKind {
+    Mcp,
+    Skill,
+    BuiltinTool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatShortcutAction {
+    pub kind: ChatShortcutKind,
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextCompactionSource {
+    Manual,
+    Automatic,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextCompactionEvent {
+    pub source: ContextCompactionSource,
+    pub threshold_percent: u8,
+    pub before_tokens: u64,
+    pub after_tokens: u64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum ChatSystemEvent {
+    ContextCompacted(ContextCompactionEvent),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -180,6 +221,8 @@ pub struct SendMessageRequest {
     pub generation_mode: GenerationMode,
     #[serde(default)]
     pub restart_from_message_id: Option<Uuid>,
+    #[serde(default)]
+    pub shortcut_actions: Vec<ChatShortcutAction>,
 }
 
 fn default_stream_response() -> bool {
@@ -237,6 +280,8 @@ mod tests {
             tool_call_id: None,
             attachments: Vec::new(),
             usage: None,
+            shortcut_actions: Vec::new(),
+            system_event: None,
         };
 
         let serialized = serde_json::to_value(message).unwrap();

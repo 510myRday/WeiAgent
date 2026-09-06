@@ -12,7 +12,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        ChatMessage, ChatMessageStatus, ChatRole, ContextCheckpoint, Conversation,
+        ChatMessage, ChatMessageStatus, ChatRole, ChatShortcutAction, ChatShortcutKind,
+        ContextCheckpoint, Conversation,
         ConversationMessagePage, ConversationUsage, ModelUsage,
     },
     error::{AppError, AppResult},
@@ -20,6 +21,8 @@ use crate::{
 
 const CONVERSATIONS_SCHEMA_VERSION: i64 = 3;
 const RESPONSES_ITEMS_SCHEMA_VERSION: i64 = 4;
+const CONVERSATION_METADATA_SCHEMA_VERSION: i64 = 27;
+const LEGACY_SHORTCUT_METADATA_SCHEMA_VERSION: i64 = 28;
 const CONVERSATION_TITLE_CHAR_LIMIT: usize = 80;
 
 pub(super) const INTERRUPTED_TOOL_REASON: &str = "Tool execution was interrupted before a result was received. Do not assume it completed; retry the tool if needed.";
@@ -52,7 +55,9 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     tool_calls_json TEXT,
     tool_call_id TEXT,
     attachments_json TEXT NOT NULL DEFAULT '[]',
-    usage_json TEXT
+    usage_json TEXT,
+    shortcut_actions_json TEXT NOT NULL DEFAULT '[]',
+    system_event_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation
     ON conversation_messages(conversation_id, seq);
@@ -160,7 +165,133 @@ pub(super) fn migrate_conversations(conn: &mut Connection) -> AppResult<()> {
         )?;
         tx.commit()?;
     }
+    let tx = conn.transaction()?;
+    if !column_exists(&tx, "conversation_messages", "shortcut_actions_json")? {
+        tx.execute(
+            "ALTER TABLE conversation_messages
+             ADD COLUMN shortcut_actions_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
+    }
+    if !column_exists(&tx, "conversation_messages", "system_event_json")? {
+        tx.execute(
+            "ALTER TABLE conversation_messages ADD COLUMN system_event_json TEXT",
+            [],
+        )?;
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO app_schema_migrations (version, name, applied_at)
+         VALUES (?1, ?2, ?3)",
+        params![
+            CONVERSATION_METADATA_SCHEMA_VERSION,
+            "conversation_message_metadata_sqlite_v27",
+            now_rfc3339()
+        ],
+    )?;
+    tx.commit()?;
+    migrate_legacy_shortcut_metadata(conn)?;
     Ok(())
+}
+
+fn migrate_legacy_shortcut_metadata(conn: &mut Connection) -> AppResult<()> {
+    let applied = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_schema_migrations WHERE version = ?1)",
+        [LEGACY_SHORTCUT_METADATA_SCHEMA_VERSION],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if applied {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    if column_exists(&tx, "conversation_messages", "id")?
+        && column_exists(&tx, "conversation_messages", "content")?
+    {
+        let legacy_messages = {
+            let mut statement = tx.prepare(
+                "SELECT id, content
+                 FROM conversation_messages
+                 WHERE shortcut_actions_json = '[]'",
+            )?;
+            statement
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for (id, content) in legacy_messages {
+            let actions = parse_legacy_shortcut_actions(&content);
+            if actions.is_empty() {
+                continue;
+            }
+            tx.execute(
+                "UPDATE conversation_messages
+                 SET shortcut_actions_json = ?2
+                 WHERE id = ?1",
+                params![id, serde_json::to_string(&actions)?],
+            )?;
+        }
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO app_schema_migrations (version, name, applied_at)
+         VALUES (?1, ?2, ?3)",
+        params![
+            LEGACY_SHORTCUT_METADATA_SCHEMA_VERSION,
+            "legacy_shortcut_metadata_v28",
+            now_rfc3339()
+        ],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn parse_legacy_shortcut_actions(content: &str) -> Vec<ChatShortcutAction> {
+    content
+        .lines()
+        .take_while(|line| !line.trim().is_empty())
+        .filter_map(parse_legacy_shortcut_line)
+        .collect()
+}
+
+fn parse_legacy_shortcut_line(line: &str) -> Option<ChatShortcutAction> {
+    const PREFIXES: &[(&str, &str, ChatShortcutKind)] = &[
+        (
+            "请优先帮我使用「",
+            "」MCP 服务。",
+            ChatShortcutKind::Mcp,
+        ),
+        (
+            "请优先帮我使用「",
+            "」技能。",
+            ChatShortcutKind::Skill,
+        ),
+        (
+            "请优先帮我使用「",
+            "」工具。",
+            ChatShortcutKind::BuiltinTool,
+        ),
+        (
+            "Please prioritize using the “",
+            "” MCP service.",
+            ChatShortcutKind::Mcp,
+        ),
+        (
+            "Please prioritize using the “",
+            "” skill.",
+            ChatShortcutKind::Skill,
+        ),
+        (
+            "Please prioritize using the “",
+            "” tool.",
+            ChatShortcutKind::BuiltinTool,
+        ),
+    ];
+    PREFIXES.iter().find_map(|(prefix, suffix, kind)| {
+        let name = line.strip_prefix(prefix)?.strip_suffix(suffix)?.trim();
+        (!name.is_empty()).then(|| ChatShortcutAction {
+            kind: kind.clone(),
+            id: name.to_string(),
+            name: name.to_string(),
+        })
+    })
 }
 
 /*
@@ -283,11 +414,13 @@ struct MessageRow {
     tool_call_id: Option<String>,
     attachments_json: String,
     usage_json: Option<String>,
+    shortcut_actions_json: String,
+    system_event_json: Option<String>,
 }
 
 const MESSAGE_COLUMNS: &str = "id, agent_id, conversation_id, role, content, reasoning_content,
     openai_response_items_json, status, created_at, tool_calls_json, tool_call_id,
-    attachments_json, usage_json";
+    attachments_json, usage_json, shortcut_actions_json, system_event_json";
 
 fn map_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
     Ok(MessageRow {
@@ -304,6 +437,8 @@ fn map_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
         tool_call_id: row.get(10)?,
         attachments_json: row.get(11)?,
         usage_json: row.get(12)?,
+        shortcut_actions_json: row.get(13)?,
+        system_event_json: row.get(14)?,
     })
 }
 
@@ -330,6 +465,12 @@ fn row_to_message(row: MessageRow) -> AppResult<ChatMessage> {
             .as_deref()
             .map(serde_json::from_str)
             .transpose()?,
+        shortcut_actions: serde_json::from_str(&row.shortcut_actions_json)?,
+        system_event: row
+            .system_event_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?,
     })
 }
 
@@ -340,6 +481,8 @@ struct MessageValues {
     tool_calls_json: Option<String>,
     attachments_json: String,
     usage_json: Option<String>,
+    shortcut_actions_json: String,
+    system_event_json: Option<String>,
 }
 
 fn message_values(message: &ChatMessage) -> AppResult<MessageValues> {
@@ -358,6 +501,12 @@ fn message_values(message: &ChatMessage) -> AppResult<MessageValues> {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?,
+        shortcut_actions_json: serde_json::to_string(&message.shortcut_actions)?,
+        system_event_json: message
+            .system_event
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?,
     })
 }
 
@@ -372,7 +521,8 @@ fn insert_message(
             id, agent_id, conversation_id, role, content, reasoning_content,
             openai_response_items_json, status, created_at, tool_calls_json,
             tool_call_id, attachments_json, usage_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            , shortcut_actions_json, system_event_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             message.id.to_string(),
             message.agent_id.to_string(),
@@ -387,6 +537,8 @@ fn insert_message(
             message.tool_call_id,
             values.attachments_json,
             values.usage_json,
+            values.shortcut_actions_json,
+            values.system_event_json,
         ],
     )?;
     Ok(())
@@ -400,7 +552,7 @@ fn update_message(conn: &Connection, message: &ChatMessage) -> AppResult<()> {
             agent_id = ?2, role = ?3, content = ?4, reasoning_content = ?5,
             openai_response_items_json = ?6, status = ?7, created_at = ?8,
             tool_calls_json = ?9, tool_call_id = ?10, attachments_json = ?11,
-            usage_json = ?12
+            usage_json = ?12, shortcut_actions_json = ?13, system_event_json = ?14
          WHERE id = ?1",
         params![
             message.id.to_string(),
@@ -415,6 +567,8 @@ fn update_message(conn: &Connection, message: &ChatMessage) -> AppResult<()> {
             message.tool_call_id,
             values.attachments_json,
             values.usage_json,
+            values.shortcut_actions_json,
+            values.system_event_json,
         ],
     )?;
     Ok(())
@@ -890,6 +1044,8 @@ fn append_interrupted_tool_outputs(
             tool_call_id: Some(call_id.to_string()),
             attachments: Vec::new(),
             usage: None,
+            shortcut_actions: Vec::new(),
+            system_event: None,
         };
         insert_message(tx, &conversation_id, &message)?;
     }
@@ -917,12 +1073,57 @@ pub(super) fn write_checkpoint_conn(
 
 #[cfg(test)]
 mod tests {
-    use super::is_generated_conversation_title;
+    use super::{is_generated_conversation_title, migrate_conversations};
+    use rusqlite::Connection;
 
     #[test]
     fn localized_generated_titles_are_placeholders() {
         assert!(is_generated_conversation_title("New Conversation"));
         assert!(is_generated_conversation_title("新会话"));
         assert!(!is_generated_conversation_title("用户输入的标题"));
+    }
+
+    #[test]
+    fn legacy_shortcut_metadata_migration_is_idempotent() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE app_schema_migrations (
+                version INTEGER PRIMARY KEY NOT NULL,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+             );
+             INSERT INTO app_schema_migrations (version, name, applied_at)
+             VALUES (3, 'conversations_sqlite_v3', '2026-01-01T00:00:00Z');
+             CREATE TABLE conversation_messages (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                shortcut_actions_json TEXT NOT NULL DEFAULT '[]'
+             );
+             INSERT INTO conversation_messages (id, content)
+             VALUES ('legacy', '请优先帮我使用「搜索」工具。\n\n查找资料');",
+        )
+        .unwrap();
+
+        migrate_conversations(&mut conn).unwrap();
+        let actions: serde_json::Value = conn
+            .query_row(
+                "SELECT shortcut_actions_json FROM conversation_messages WHERE id = 'legacy'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|value| serde_json::from_str(&value).unwrap())
+            .unwrap();
+        assert_eq!(actions[0]["kind"], "builtin_tool");
+        assert_eq!(actions[0]["name"], "搜索");
+
+        migrate_conversations(&mut conn).unwrap();
+        let migration_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM app_schema_migrations WHERE version = 28",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(migration_count, 1);
     }
 }

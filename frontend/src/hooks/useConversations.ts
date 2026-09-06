@@ -5,6 +5,8 @@ import type {
   AgentRunPhase,
   Conversation,
   ConversationUsage,
+  ChatShortcutAction,
+  ContextCompactionEvent,
   ImageAttachment,
   ModelUsage,
   GenerationMode,
@@ -81,6 +83,7 @@ export type PendingChatMessage = {
   isStreamMode: boolean;
   thinkingLevel: ThinkingLevel;
   generationMode: GenerationMode;
+  shortcutActions: ChatShortcutAction[];
 };
 
 export type PendingMessageMoveDirection = 'up' | 'down';
@@ -185,6 +188,7 @@ export function useConversations({
     thinkingLevel: ThinkingLevel,
     generationMode?: GenerationMode,
     restartFromMessageId?: string,
+    shortcutActions?: ChatShortcutAction[],
   ) => Promise<void>)>();
 
   const updateUnreadConversationIds = useCallback(
@@ -666,6 +670,21 @@ export function useConversations({
         setConversationUsage(modelUsageToConversationUsage(evt.data));
         return;
       }
+      if (evt.event === 'context_compacted') {
+        const event = evt.data as ContextCompactionEvent;
+        setMessages((current) => [...current, {
+          id: '',
+          agent_id: activeStreamRef.current.agentId,
+          conversation_id: activeStreamRef.current.conversationId,
+          role: 'assistant' as const,
+          content: '',
+          status: 'done' as const,
+          created_at: event.created_at,
+          clientId: genClientId(),
+          system_event: { type: 'context_compacted' as const, ...event },
+        }]);
+        return;
+      }
       if (evt.event === 'assistant') {
         // A successful model response ends the current retry budget. The next
         // model turn will receive its own waiting_for_model phase and start at
@@ -872,6 +891,7 @@ export function useConversations({
       thinkingLevel: ThinkingLevel,
       generationMode: GenerationMode = 'chat',
       restartFromMessageId?: string,
+      shortcutActions: ChatShortcutAction[] = [],
     ) => {
       const requestId = ++sendRequestIdRef.current;
       const controller = new AbortController();
@@ -900,6 +920,7 @@ export function useConversations({
             conversation_id: activeConversationId,
             role: 'user' as const,
             content,
+            shortcut_actions: shortcutActions,
             attachments,
             status: 'done' as const,
             created_at: new Date().toISOString(),
@@ -963,6 +984,7 @@ export function useConversations({
           thinkingLevel,
           generationMode,
           restartFromMessageId,
+          shortcutActions,
           controller.signal,
         );
         if (isFirstUserMessage && content.trim()) {
@@ -1017,6 +1039,8 @@ export function useConversations({
                 next.attachments,
                 next.thinkingLevel,
                 next.generationMode,
+                undefined,
+                next.shortcutActions,
               );
             });
           }
@@ -1065,6 +1089,7 @@ export function useConversations({
     attachments: ImageAttachment[],
     thinkingLevel: ThinkingLevel,
     generationMode: GenerationMode,
+    shortcutActions: ChatShortcutAction[] = [],
   ) => {
     const message: PendingChatMessage = {
       id: genClientId(),
@@ -1074,6 +1099,7 @@ export function useConversations({
       isStreamMode,
       thinkingLevel,
       generationMode,
+      shortcutActions,
     };
     setPendingMessages((current) => {
       const next = [...current, message];

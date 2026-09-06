@@ -180,10 +180,18 @@ pub fn build_llm_messages(
     active_task_plan: Option<&ActiveTaskPlanContext>,
 ) -> Vec<ChatMessage> {
     let Some(checkpoint) = checkpoint else {
-        return history.to_vec();
+        return history
+            .iter()
+            .filter(|message| message.system_event.is_none())
+            .cloned()
+            .collect();
     };
     if checkpoint.summary.trim().is_empty() {
-        return history.to_vec();
+        return history
+            .iter()
+            .filter(|message| message.system_event.is_none())
+            .cloned()
+            .collect();
     }
 
     let boundary = history
@@ -194,19 +202,83 @@ pub fn build_llm_messages(
         Some(index) => history.split_at(index.saturating_add(1)),
         None => {
             // Stale checkpoint id (history rewritten). Fall back to full history.
-            return history.to_vec();
+            return history
+                .iter()
+                .filter(|message| message.system_event.is_none())
+                .cloned()
+                .collect();
         }
     };
 
     if covered.is_empty() {
-        return history.to_vec();
+        return history
+            .iter()
+            .filter(|message| message.system_event.is_none())
+            .cloned()
+            .collect();
     }
 
     let summary_message = summary_anchor_message(covered, checkpoint, active_task_plan);
     let mut out = Vec::with_capacity(tail.len() + 1);
     out.push(summary_message);
-    out.extend(tail.iter().cloned().map(clear_message_usage));
+    out.extend(
+        tail.iter()
+            .filter(|message| message.system_event.is_none())
+            .cloned()
+            .map(clear_message_usage),
+    );
     out
+}
+
+/// Force a compaction pass for the manual `/compress` command.
+#[allow(clippy::too_many_arguments)]
+pub async fn force_compact<T: Send>(
+    client: &DynChatClient,
+    agent: &Agent,
+    provider: &ModelProvider,
+    config: &CompactionConfig,
+    system_prompt: &str,
+    options: &RequestOptions,
+    tools: Option<&[ToolDefinition]>,
+    active_task_plan: Option<&ActiveTaskPlanContext>,
+    messages: Vec<ChatMessage>,
+    existing_checkpoint: Option<ContextCheckpoint>,
+    cancel: Option<&tokio::sync::mpsc::Sender<T>>,
+) -> AppResult<CompactOutcome> {
+    let messages: Vec<_> = messages
+        .into_iter()
+        .filter(|message| message.system_event.is_none())
+        .collect();
+    let fixed_prompt_tokens = fixed_request_tokens(system_prompt, tools);
+    let before = projected_request_tokens(&messages, system_prompt, tools);
+    match compact_with_summary(
+        client,
+        agent,
+        provider,
+        system_prompt,
+        options,
+        tools,
+        active_task_plan,
+        &messages,
+        existing_checkpoint.as_ref(),
+        config,
+        cancel,
+    )
+    .await
+    {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            tracing::warn!(%error, "manual semantic context compaction failed; applying structural trim");
+            Ok(compact_structurally(
+                messages,
+                existing_checkpoint,
+                config,
+                fixed_prompt_tokens,
+                before,
+                active_task_plan,
+            ))
+        }
+    }
 }
 
 fn summary_anchor_message(
@@ -240,6 +312,8 @@ fn summary_anchor_message(
         tool_call_id: None,
         attachments,
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     }
 }
 
@@ -408,6 +482,8 @@ fn compaction_instruction_message(agent: &Agent, covered: &[ChatMessage]) -> Cha
         tool_call_id: None,
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     }
 }
 
@@ -829,6 +905,8 @@ fn build_summarizer_messages(
             tool_call_id: None,
             attachments: Vec::new(),
             usage: None,
+            shortcut_actions: Vec::new(),
+            system_event: None,
         });
     }
     for message in covered {
@@ -1141,6 +1219,8 @@ mod tests {
             tool_call_id: None,
             attachments: Vec::new(),
             usage: None,
+            shortcut_actions: Vec::new(),
+            system_event: None,
         }
     }
 
@@ -1245,6 +1325,8 @@ mod tests {
                 tool_call_id: None,
                 attachments: Vec::new(),
                 usage: None,
+                shortcut_actions: Vec::new(),
+                system_event: None,
             },
             msg(ChatRole::User, "new work"),
         ];

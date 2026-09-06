@@ -648,6 +648,8 @@ mod tests {
                 tool_call_id: None,
                 attachments: Vec::new(),
                 usage: None,
+                shortcut_actions: Vec::new(),
+                system_event: None,
             },
             ChatMessage {
                 id: Uuid::new_v4(),
@@ -663,6 +665,8 @@ mod tests {
                 tool_call_id: Some("call-1".to_string()),
                 attachments: Vec::new(),
                 usage: None,
+                shortcut_actions: Vec::new(),
+                system_event: None,
             },
         ];
         (agent, messages)
@@ -771,6 +775,8 @@ mod tests {
                     },
                 }],
                 usage: None,
+                shortcut_actions: Vec::new(),
+                system_event: None,
             },
         );
         let request = build_anthropic_request(

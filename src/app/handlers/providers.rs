@@ -154,6 +154,8 @@ pub async fn test_model(
         tool_call_id: None,
         attachments: Vec::new(),
         usage: None,
+        shortcut_actions: Vec::new(),
+        system_event: None,
     };
     let settings = state.store.read_settings().await?;
     let started = std::time::Instant::now();

@@ -196,6 +196,44 @@
   font-size: var(--font-size-caption);
 }
 
+.context-compacted-separator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-block: 8px;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}
+
+.context-compacted-separator__line {
+  height: 1px;
+  flex: 1;
+  background: var(--border-subtle);
+}
+
+.context-compacted-separator__content {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  text-align: center;
+}
+
+.context-compacted-separator__content strong {
+  color: var(--color-text-soft);
+  font-weight: var(--font-weight-emphasis);
+}
+
+.context-compacted-separator__content time {
+  color: var(--color-placeholder);
+}
+
 .message-row {
   display: flex;
   gap: 10px;
@@ -226,6 +264,85 @@
   border-radius: 4px 14px 14px 14px;
   background: var(--surface-pane);
   box-shadow: var(--shadow-message);
+}
+
+.message-shortcut-strip,
+.composer-shortcut-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.message-shortcut-strip {
+  display: inline-flex;
+  margin: 0 6px 0 0;
+  vertical-align: middle;
+}
+
+.message-bubble--with-shortcuts > .message-markdown {
+  display: inline;
+}
+
+.message-bubble--with-shortcuts > .message-markdown > p:first-child {
+  display: inline;
+  margin: 0;
+}
+
+.message-shortcut-chip,
+.composer-shortcut-chip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-primary-soft);
+  color: var(--color-primary-deep);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-snug);
+  overflow-wrap: anywhere;
+}
+
+.composer-shortcut-strip {
+  position: absolute;
+  top: 7px;
+  left: 6px;
+  z-index: 1;
+  display: inline-flex;
+  flex: none;
+  max-width: 62%;
+  align-items: center;
+  flex-wrap: nowrap;
+  padding: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.composer-input-line {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.composer-shortcut-chip button {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.composer-shortcut-chip button:hover,
+.composer-shortcut-chip button:focus-visible {
+  outline: none;
+  background: rgba(7, 193, 96, 0.16);
 }
 
 .message-row.is-image-only .message-body,
@@ -1546,10 +1663,12 @@
 }
 
 .composer-box textarea {
-  flex: none;
+  width: 100%;
+  min-width: 0;
   min-height: 48px;
   max-height: 168px;
   padding: 7px 6px;
+  text-indent: 0;
   overflow-y: auto;
   font-size: var(--font-size-body);
   line-height: var(--line-height-normal);
@@ -1747,6 +1866,95 @@
 .composer-icon-button:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+.shortcut-control {
+  position: relative;
+}
+
+.shortcut-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  display: grid;
+  width: min(320px, calc(100vw - 32px));
+  max-height: min(360px, 60vh);
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-pane);
+  box-shadow: var(--shadow-lg);
+}
+
+.shortcut-menu-title {
+  padding: 6px 9px 7px;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-emphasis);
+}
+
+.shortcut-menu button {
+  display: flex;
+  min-width: 0;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-text-soft);
+  font-size: var(--font-size-label);
+  text-align: left;
+  cursor: pointer;
+}
+
+.shortcut-menu button > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shortcut-menu button:hover,
+.shortcut-menu button:focus-visible {
+  outline: none;
+  background: var(--surface-hover);
+  color: var(--color-primary-deep);
+}
+
+.shortcut-menu button.is-selected,
+.shortcut-menu button.is-selected:disabled {
+  border: 1px solid color-mix(in srgb, var(--color-primary) 42%, var(--border-subtle));
+  background: color-mix(in srgb, var(--color-primary) 13%, var(--surface-pane));
+  color: var(--color-primary-deep);
+  cursor: default;
+}
+
+.shortcut-menu button.is-selected .shortcut-menu-kind {
+  color: var(--color-primary);
+}
+
+.shortcut-menu button.is-selected > svg {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--color-primary);
+}
+
+.shortcut-menu-kind {
+  min-width: 42px;
+  color: var(--color-placeholder);
+  font-size: var(--font-size-micro);
+  font-weight: var(--font-weight-emphasis);
+  text-transform: uppercase;
+}
+
+.shortcut-menu-empty {
+  padding: 8px 9px;
+  color: var(--color-placeholder);
+  font-size: var(--font-size-caption);
 }
 
 .thinking-control {

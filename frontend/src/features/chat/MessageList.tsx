@@ -21,6 +21,7 @@ import type {
   Agent,
   AgentRunPhase,
   AppSettings,
+  ChatShortcutAction,
   ImageAttachment,
   UiMessageItem,
 } from '../../types';
@@ -45,13 +46,19 @@ interface MessageListProps {
   hasOlderMessages: boolean;
   isLoadingOlderMessages: boolean;
   isSending: boolean;
+  isCompressing: boolean;
   supportsImages: boolean;
   supportsImageMasks: boolean;
   runPhase: AgentRunPhase;
   retryStatus: { attempt: number; maxAttempts: number; reason: string } | null;
   timelineMessageIndexes: readonly number[];
   onLoadOlder: () => Promise<boolean>;
-  onRestart: (messageId: string, content: string, attachments?: ImageAttachment[]) => void;
+  onRestart: (
+    messageId: string,
+    content: string,
+    attachments?: ImageAttachment[],
+    shortcutActions?: ChatShortcutAction[],
+  ) => void;
   onEditImage: (attachment: ImageAttachment) => void;
   onApproveToolCall: (
     approvalId: string,
@@ -101,6 +108,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   hasOlderMessages,
   isLoadingOlderMessages,
   isSending,
+  isCompressing,
   supportsImages,
   supportsImageMasks,
   runPhase,
@@ -142,11 +150,14 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
         item,
       });
     });
-    if (activeAgent && shouldShowAgentWaitingBubble(messages, isSending, runPhase, retryStatus)) {
+    if (
+      activeAgent
+      && (isCompressing || shouldShowAgentWaitingBubble(messages, isSending, runPhase, retryStatus))
+    ) {
       next.push({ key: 'waiting', kind: 'waiting' });
     }
     return next;
-  }, [activeAgent, hasOlderMessages, isSending, messages, retryStatus, runPhase]);
+  }, [activeAgent, hasOlderMessages, isCompressing, isSending, messages, retryStatus, runPhase]);
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -162,7 +173,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     // count. Keep follow behavior in this component so a reader's scroll
     // position is never overridden by the virtualizer's implicit follow.
     followOnAppend: false,
-    paddingEnd: isSending ? WAITING_SCROLL_PADDING : 0,
+    paddingEnd: isSending || isCompressing ? WAITING_SCROLL_PADDING : 0,
     scrollEndThreshold: BOTTOM_POSITION_TOLERANCE,
     overscan: 6,
   });
@@ -333,9 +344,10 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
 
   useLayoutEffect(() => {
     const conversationChanged = followConversationRef.current !== conversationId;
-    const sendJustStarted = isSending && !wasSendingRef.current;
+    const isBusy = isSending || isCompressing;
+    const sendJustStarted = isBusy && !wasSendingRef.current;
     followConversationRef.current = conversationId;
-    wasSendingRef.current = isSending;
+    wasSendingRef.current = isBusy;
 
     if (conversationChanged || sendJustStarted) {
       followOutputRef.current = true;
@@ -345,8 +357,8 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     if (messages.length === 0 || !followOutputRef.current) return;
 
     // Keep the live response pinned without scrolling once per stream chunk.
-    scheduleStreamScroll(!isSending || conversationChanged || sendJustStarted);
-  }, [conversationId, isSending, messages, scheduleStreamScroll]);
+    scheduleStreamScroll(!isBusy || conversationChanged || sendJustStarted);
+  }, [conversationId, isCompressing, isSending, messages, scheduleStreamScroll]);
 
   useEffect(() => () => {
     if (pendingStreamScrollTimerRef.current !== undefined) {
@@ -493,7 +505,12 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                     </Button>
                   </div>
                 ) : row.kind === 'waiting' ? (
-                  <WaitingBubble agent={activeAgent} settings={settings} retryStatus={retryStatus} runPhase={runPhase} />
+                  <WaitingBubble
+                    agent={activeAgent}
+                    settings={settings}
+                    retryStatus={retryStatus}
+                    runPhase={isCompressing ? 'compacting_context' : runPhase}
+                  />
                 ) : (
                   <MessageListItem
                     item={row.item}

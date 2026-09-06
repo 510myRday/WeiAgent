@@ -241,7 +241,39 @@ test('queues Enter submissions while a run is active', () => {
   expect(screen.getByRole('button', { name: '排队发送' })).toBeInTheDocument();
   fireEvent.keyDown(input, { key: 'Enter' });
 
-  expect(onSend).toHaveBeenCalledWith('排队的下一条消息', [], 'chat');
+  expect(onSend).toHaveBeenCalledWith('排队的下一条消息', [], 'chat', []);
+});
+
+test('adds shortcut instructions and metadata when sending', () => {
+  const onSend = vi.fn();
+  renderComposer({
+    onSend,
+    shortcutItems: [
+      { kind: 'skill', id: 'research', name: 'research', label: 'research' },
+      { kind: 'builtin_tool', id: 'web_search', name: '网页搜索', label: '网页搜索' },
+    ],
+  });
+  fireEvent.click(screen.getByRole('button', { name: '快捷命令与工具' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: /research/ }));
+  expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '快捷命令与工具' }));
+  expect(screen.getByRole('menuitem', { name: /research/ })).toBeDisabled();
+  expect(screen.getByRole('menuitem', { name: /research/ })).toHaveClass('is-selected');
+  fireEvent.click(screen.getByRole('menuitem', { name: /网页搜索/ }));
+
+  const input = screen.getByRole('textbox', { name: '消息' });
+  fireEvent.change(input, { target: { value: '查资料' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+
+  expect(onSend).toHaveBeenCalledWith(
+    '请优先帮我使用「research」技能。\n请优先帮我使用「网页搜索」工具。\n\n查资料',
+    [],
+    'chat',
+    [
+      { kind: 'skill', id: 'research', name: 'research' },
+      { kind: 'builtin_tool', id: 'web_search', name: '网页搜索' },
+    ],
+  );
 });
 
 test('hides the queue button while the active run has no draft', () => {

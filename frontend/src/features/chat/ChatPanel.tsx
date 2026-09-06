@@ -16,9 +16,10 @@ import type {
   ThinkingLevel,
   UiMessageItem,
   UpdateAgentPayload,
+  ChatShortcutAction,
 } from '../../types';
-import { approveToolCall, readAgentMcpConfig, readTaskPlans } from '../../api';
-import type { McpServer, TaskPlan } from '../../toolTypes';
+import { AGENT_SKILLS_CONFIG_CHANGED_EVENT, approveToolCall, compressConversationContext, readAgentMcpConfig, readAgentSkillsConfig, readAgentToolsConfig, readTaskPlans } from '../../api';
+import type { McpServer, SkillSettings, TaskPlan, AgentToolsSettings } from '../../toolTypes';
 import { useI18n } from '../../i18n';
 import { useConversations, usePageVisibility } from '../../hooks';
 import { AUTO_SAVE_DELAY_MS } from '../../hooks/useSerializedAutoSave';
@@ -29,6 +30,7 @@ import {
   QueuedMessages,
   type ChatComposerHandle,
   type QueuedChatMessage,
+  type ComposerShortcutItem,
 } from './ChatComposer';
 import { ChatAgentSelect } from './ChatAgentSelect';
 import { ConversationRow } from './ConversationRow';
@@ -204,6 +206,9 @@ export function ChatPanel({
   const [isTaskPlanOpen, setIsTaskPlanOpen] = useState(false);
   const [isTaskPlanLoading, setIsTaskPlanLoading] = useState(false);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [agentSkills, setAgentSkills] = useState<SkillSettings | null>(null);
+  const [agentTools, setAgentTools] = useState<AgentToolsSettings | null>(null);
+  const [isCompressing, setIsCompressing] = useState(false);
   const isPageVisible = usePageVisibility();
 
   const conversationSearchRef = useRef<HTMLInputElement>(null);
@@ -394,20 +399,58 @@ export function ChatPanel({
   useEffect(() => {
     let cancelled = false;
     setMcpServers([]);
+    setAgentSkills(null);
+    setAgentTools(null);
     if (!activeAgentId) return undefined;
 
-    void readAgentMcpConfig(activeAgentId)
-      .then((settings) => {
-        if (!cancelled) setMcpServers(settings.effective);
-      })
-      .catch(() => {
-        if (!cancelled) setMcpServers([]);
-      });
+    const handleSkillsConfigChanged = (event: Event) => {
+      const agentId = (event as CustomEvent<{ agentId?: string }>).detail?.agentId;
+      if (agentId !== activeAgentId) return;
+      void readAgentSkillsConfig(activeAgentId)
+        .then((skills) => {
+          if (!cancelled) setAgentSkills(skills);
+        })
+        .catch(() => {
+          // Keep the current list when a follow-up refresh fails.
+        });
+    };
+    window.addEventListener(AGENT_SKILLS_CONFIG_CHANGED_EVENT, handleSkillsConfigChanged);
+
+    void Promise.allSettled([
+      readAgentMcpConfig(activeAgentId),
+      readAgentSkillsConfig(activeAgentId),
+      readAgentToolsConfig(activeAgentId),
+    ]).then(([mcp, skills, tools]) => {
+      if (cancelled) return;
+      setMcpServers(mcp.status === 'fulfilled' ? mcp.value.effective : []);
+      setAgentSkills(skills.status === 'fulfilled' ? skills.value : null);
+      setAgentTools(tools.status === 'fulfilled' ? tools.value : null);
+    });
 
     return () => {
       cancelled = true;
+      window.removeEventListener(AGENT_SKILLS_CONFIG_CHANGED_EVENT, handleSkillsConfigChanged);
     };
   }, [activeAgentId]);
+
+  const shortcutItems = useMemo<ComposerShortcutItem[]>(() => {
+    const items: ComposerShortcutItem[] = [];
+    mcpServers
+      .filter((server) => server.enabled)
+      .forEach((server) => items.push({ kind: 'mcp', id: server.id, name: server.name, label: server.name }));
+    agentSkills?.effective
+      .filter((skill) => skill.enabled)
+      .forEach((skill) => items.push({ kind: 'skill', id: skill.name, name: skill.name, label: skill.name }));
+    const enabledTools = [
+      ['execute_terminal', t('tools.terminal.name'), agentTools?.effective.terminal.enabled],
+      ['web_search', t('tools.webSearch.name'), agentTools?.effective.web_search.enabled],
+      ['task_planning', t('tools.taskPlanning.name'), agentTools?.effective.task_planning.enabled],
+    ] as const;
+    enabledTools.forEach(([id, label, enabled]) => {
+      if (enabled) items.push({ kind: 'builtin_tool', id, name: label, label });
+    });
+    return items;
+  }, [agentSkills, agentTools, mcpServers, t]);
 
   useEffect(() => {
     if (!activeConversationId || !isPageVisible || !isSending) return;
@@ -644,6 +687,7 @@ export function ChatPanel({
     messageId: string,
     content: string,
     attachments: ImageAttachment[] = [],
+    shortcutActions: ChatShortcutAction[] = [],
   ) => {
     if (
       !activeAgent
@@ -659,6 +703,7 @@ export function ChatPanel({
       supportsThinking ? thinkingLevel : 'off',
       effectiveGenerationMode,
       messageId,
+      shortcutActions,
     );
   }, [
     activeAgent,
@@ -876,6 +921,7 @@ export function ChatPanel({
     content: string,
     attachments: ImageAttachment[],
     imageMode: GenerationMode,
+    shortcutActions: ChatShortcutAction[],
   ) => {
     if (
       !activeAgent
@@ -887,9 +933,9 @@ export function ChatPanel({
     const thinking = supportsThinking ? thinkingLevel : 'off';
     const mode = supportsImageGeneration ? 'image' : imageMode;
     if (isSending) {
-      enqueueMessage(content, activeAgent.id, isStreamMode, attachments, thinking, mode);
+      enqueueMessage(content, activeAgent.id, isStreamMode, attachments, thinking, mode, shortcutActions);
     } else {
-      void send(content, activeAgent.id, isStreamMode, attachments, thinking, mode);
+      void send(content, activeAgent.id, isStreamMode, attachments, thinking, mode, undefined, shortcutActions);
     }
     onAgentActivity(activeAgent.id);
   }, [
@@ -905,6 +951,27 @@ export function ChatPanel({
     supportsThinking,
     thinkingLevel,
   ]);
+
+  const handleCompress = useCallback(async () => {
+    if (!activeConversationId || isSending || isCompressing) return;
+    const confirmed = await confirm({
+      title: t('chat.compressTitle'),
+      message: t('chat.compressMessage'),
+      confirmLabel: t('chat.compressConfirm'),
+      tone: 'default',
+    });
+    if (!confirmed) return;
+    setIsCompressing(true);
+    try {
+      await compressConversationContext(activeConversationId);
+      toast.success(t('chat.contextCompactedManual'));
+      await loadMessages(activeConversationId);
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : t('chat.compressFailed'));
+    } finally {
+      setIsCompressing(false);
+    }
+  }, [activeConversationId, confirm, isCompressing, isSending, loadMessages, t, toast]);
 
   const handleSteerMessage = useCallback((content: string) => {
     void steerActiveRun(content);
@@ -1130,6 +1197,7 @@ export function ChatPanel({
           hasOlderMessages={hasOlderMessages}
           isLoadingOlderMessages={isLoadingOlderMessages}
           isSending={isSending}
+          isCompressing={isCompressing}
           supportsImages={supportsImages || supportsImageGeneration}
           supportsImageMasks={supportsImageGeneration}
           runPhase={runPhase}
@@ -1196,6 +1264,9 @@ export function ChatPanel({
             onSend={handleSendMessage}
             onSteer={handleSteerMessage}
             onStop={cancelActiveSend}
+            shortcutItems={shortcutItems}
+            onCompress={() => void handleCompress()}
+            isCompressing={isCompressing}
           />
         </div>
       </section>

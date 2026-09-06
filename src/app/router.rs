@@ -138,6 +138,10 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
             get(conversations::read_conversation_usage),
         )
         .route(
+            "/api/conversations/{conversation_id}/context-compress",
+            post(conversations::compress_conversation_context),
+        )
+        .route(
             "/api/conversations/{conversation_id}/task-plan",
             get(conversations::read_task_plan),
         )

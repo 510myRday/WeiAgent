@@ -18,9 +18,11 @@ pub use agents::{
     UpdateAgentProfileRequest, UpdateAgentRequest,
 };
 pub use chat::{
-    AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, ConversationUsage,
-    GenerationMode, ImageAttachment, ImageSource, ModelUsage, SendMessageRequest, ThinkingLevel,
-    TokenUsage,
+    AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, ChatShortcutAction,
+    ChatShortcutKind, ConversationUsage, ChatSystemEvent, ContextCompactionEvent,
+    ContextCompactionSource, GenerationMode,
+    ImageAttachment, ImageSource, ModelUsage,
+    SendMessageRequest, ThinkingLevel, TokenUsage,
 };
 pub use conversations::{
     ContextCheckpoint, Conversation, ConversationMessagePage, CreateConversationRequest,
