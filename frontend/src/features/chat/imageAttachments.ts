@@ -1,5 +1,5 @@
 import type { ImageAttachment } from '../../types';
-import { apiAuthorizationHeaders, apiAuthorizationToken } from '../../apiAuth';
+import { apiAuthorizationHeaders } from '../../apiAuth';
 
 export const MAX_IMAGE_COUNT = 8;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -45,9 +45,7 @@ export function attachmentImageUrl(attachment: ImageAttachment): string {
     return `data:${attachment.media_type};base64,${attachment.data}`;
   }
   if (attachment.source_type === 'local') {
-    const token = apiAuthorizationToken();
-    const tokenQuery = token ? `&token=${encodeURIComponent(token)}` : '';
-    return `/api/assets/image?path=${encodeURIComponent(attachment.path)}${tokenQuery}`;
+    return `/api/assets/image?path=${encodeURIComponent(attachment.path)}`;
   }
   try {
     const parsed = new URL(attachment.url, window.location.origin);
@@ -89,6 +87,22 @@ export async function materializeImageAttachment(
     source_type: 'base64',
     data: btoa(binary),
   };
+}
+
+export async function downloadImageAttachment(attachment: ImageAttachment): Promise<void> {
+  const source = attachmentImageUrl(attachment);
+  if (!source) return;
+  const response = await fetch(source, {
+    credentials: 'same-origin',
+    headers: apiAuthorizationHeaders(),
+  });
+  if (!response.ok) throw new Error('Image download failed (' + response.status + ')');
+  const objectUrl = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = attachment.name;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
 export function attachmentByteLength(attachment: ImageAttachment): number {

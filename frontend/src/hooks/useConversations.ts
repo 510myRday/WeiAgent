@@ -153,6 +153,7 @@ export function useConversations({
   const resumeRequestIdRef = useRef(0);
   const sendRequestIdRef = useRef(0);
   const sendAbortControllerRef = useRef<AbortController | null>(null);
+  const unreadRefreshRequestIdRef = useRef(0);
   const activeRunIdRef = useRef('');
   const activeStreamRef = useRef({ agentId: '', conversationId: '' });
   const suppressNextLoadConversationIdRef = useRef('');
@@ -281,6 +282,7 @@ export function useConversations({
   }, []);
 
   const refreshUnreadState = useCallback(async (agentIds: string[]) => {
+    const requestId = ++unreadRefreshRequestIdRef.current;
     const uniqueAgentIds = [...new Set(agentIds.filter(Boolean))];
     const results = await Promise.allSettled(uniqueAgentIds.map(async (agentId) => {
       const [conversationsResult, activeRunsResult] = await Promise.all([
@@ -289,10 +291,13 @@ export function useConversations({
       ]);
       return { agentId, conversations: conversationsResult, activeRuns: activeRunsResult };
     }));
+    if (requestId !== unreadRefreshRequestIdRef.current) return;
+    const listedConversationIds = new Set<string>();
 
     for (const result of results) {
       if (result.status !== 'fulfilled') continue;
       const { agentId, conversations: next, activeRuns } = result.value;
+      next.forEach((conversation) => listedConversationIds.add(conversation.id));
       reconcileConversationList(
         agentId,
         next,
@@ -301,6 +306,16 @@ export function useConversations({
       if (agentId !== activeAgentIdRef.current) continue;
       setConversations(sortConversationList(next));
       setRunningConversationIds(new Set(activeRuns.map((run) => run.conversation_id)));
+    }
+    let snapshotsChanged = false;
+    for (const conversationId of Object.keys(conversationSnapshotsRef.current)) {
+      if (!listedConversationIds.has(conversationId)) {
+        delete conversationSnapshotsRef.current[conversationId];
+        snapshotsChanged = true;
+      }
+    }
+    if (snapshotsChanged) {
+      writeJsonStorage(CONVERSATION_SNAPSHOTS_STORAGE_KEY, conversationSnapshotsRef.current);
     }
   }, [reconcileConversationList]);
 

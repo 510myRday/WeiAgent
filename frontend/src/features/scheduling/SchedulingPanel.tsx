@@ -76,6 +76,15 @@ export function SchedulingPanel({ agents, providers, onOpenMain, onBackToList, o
   const [saving, setSaving] = useState(false);
   const [cronForm, setCronForm] = useState(EMPTY_CRON);
   const [heartbeatForm, setHeartbeatForm] = useState(EMPTY_HEARTBEAT);
+  const refreshRequestIdRef = useRef(0);
+  const taskExecutionsRequestIdRef = useRef(0);
+  const heartbeatExecutionsRequestIdRef = useRef(0);
+  const invalidateTaskExecutions = useCallback(() => {
+    ++taskExecutionsRequestIdRef.current;
+  }, []);
+  const invalidateHeartbeatExecutions = useCallback(() => {
+    ++heartbeatExecutionsRequestIdRef.current;
+  }, []);
 
   const selectedTask = mode === 'cron' ? tasks.find((task) => task.id === selectedId) : undefined;
   const selectedTaskAgent = selectedTask ? agents.find((agent) => agent.id === selectedTask.agent_id) : undefined;
@@ -104,6 +113,7 @@ export function SchedulingPanel({ agents, providers, onOpenMain, onBackToList, o
   ) : undefined;
 
   const refresh = useCallback(async (options?: { silent?: boolean }) => {
+    const requestId = ++refreshRequestIdRef.current;
     if (!options?.silent) setLoading(true);
     try {
       const [nextTasks, nextHeartbeats, conversationGroups] = await Promise.all([
@@ -111,15 +121,17 @@ export function SchedulingPanel({ agents, providers, onOpenMain, onBackToList, o
         listHeartbeats(),
         Promise.all(agents.map((agent) => listConversations(agent.id))),
       ]);
+      if (requestId !== refreshRequestIdRef.current) return;
       setTasks(nextTasks);
       setHeartbeats(nextHeartbeats);
       setConversations(conversationGroups.flat());
       if (mode === 'cron' && selectedId && !nextTasks.some((task) => task.id === selectedId)) setSelectedId('');
       if (mode === 'heartbeat' && selectedId && !nextHeartbeats.some((item) => item.conversation_id === selectedId)) setSelectedId('');
     } catch (error) {
+      if (requestId !== refreshRequestIdRef.current) return;
       toast.error(error instanceof Error ? error.message : t('scheduling.loadFailed'));
     } finally {
-      if (!options?.silent) setLoading(false);
+      if (requestId === refreshRequestIdRef.current && !options?.silent) setLoading(false);
     }
   }, [agents, mode, selectedId, t, toast]);
 
@@ -139,41 +151,53 @@ export function SchedulingPanel({ agents, providers, onOpenMain, onBackToList, o
 
   const selectedTaskId = selectedTask?.id;
   const refreshExecutions = useCallback(async (taskId: string) => {
+    const requestId = ++taskExecutionsRequestIdRef.current;
     try {
-      setExecutions(await listScheduledTaskExecutions(taskId));
+      const next = await listScheduledTaskExecutions(taskId);
+      if (requestId === taskExecutionsRequestIdRef.current) setExecutions(next);
     } catch {
-      setExecutions([]);
+      if (requestId === taskExecutionsRequestIdRef.current) setExecutions([]);
     }
   }, []);
 
   useEffect(() => {
     if (!selectedTaskId) {
+      invalidateTaskExecutions();
       setExecutions([]);
       return;
     }
     void refreshExecutions(selectedTaskId);
     const intervalId = window.setInterval(() => void refreshExecutions(selectedTaskId), 1500);
-    return () => window.clearInterval(intervalId);
-  }, [refreshExecutions, selectedTaskId]);
+    return () => {
+      window.clearInterval(intervalId);
+      invalidateTaskExecutions();
+    };
+  }, [invalidateTaskExecutions, refreshExecutions, selectedTaskId]);
 
   const selectedHeartbeatId = selectedHeartbeat?.conversation_id;
   const refreshHeartbeatExecutions = useCallback(async (conversationId: string) => {
+    const requestId = ++heartbeatExecutionsRequestIdRef.current;
     try {
-      setHeartbeatExecutions(await listHeartbeatExecutions(conversationId));
+      const next = await listHeartbeatExecutions(conversationId);
+      if (requestId === heartbeatExecutionsRequestIdRef.current) setHeartbeatExecutions(next);
     } catch {
-      setHeartbeatExecutions([]);
+      if (requestId === heartbeatExecutionsRequestIdRef.current) setHeartbeatExecutions([]);
     }
   }, []);
 
   useEffect(() => {
     if (!selectedHeartbeatId) {
+      invalidateHeartbeatExecutions();
       setHeartbeatExecutions([]);
       return;
     }
     void refreshHeartbeatExecutions(selectedHeartbeatId);
     const intervalId = window.setInterval(() => void refreshHeartbeatExecutions(selectedHeartbeatId), 1500);
-    return () => window.clearInterval(intervalId);
-  }, [refreshHeartbeatExecutions, selectedHeartbeatId]);
+    return () => {
+      window.clearInterval(intervalId);
+      invalidateHeartbeatExecutions();
+    };
+  }, [invalidateHeartbeatExecutions, refreshHeartbeatExecutions, selectedHeartbeatId]);
 
   function selectMode(nextMode: Mode) {
     setMode(nextMode);

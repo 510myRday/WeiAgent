@@ -42,10 +42,12 @@ import { StreamingMarkdown } from './StreamingMarkdown';
 import {
   MAX_IMAGE_COUNT,
   attachmentImageUrl,
+  downloadImageAttachment,
   removeAttachment,
   toggleAttachmentMask,
 } from './imageAttachments';
 import { useImageAttachments } from './useImageAttachments';
+import { AttachmentImage } from './AttachmentImage';
 import { ReasoningDisclosure } from './ReasoningDisclosure';
 import { ToolDisclosure } from './ToolDisclosure';
 import { classifyRetryReason } from './retryReason';
@@ -487,11 +489,7 @@ const MessageRow = memo(function MessageRow({
                           className={`message-edit-image-preview${attachment.is_mask ? ' is-mask' : ''}`}
                           key={attachment.id}
                         >
-                          <img
-                            src={attachmentImageUrl(attachment)}
-                            alt={attachment.name}
-                            referrerPolicy="no-referrer"
-                          />
+                          <AttachmentImage attachment={attachment} alt={attachment.name} />
                           {supportsImageMasks && attachment.media_type === 'image/png' ? (
                             <button
                               type="button"
@@ -791,24 +789,35 @@ function MessageContent({
                   title={t('chat.openImage')}
                   aria-label={`${t('chat.openImage')}: ${attachment.name}`}
                 >
-                  <img
-                    src={imageUrl}
+                  <AttachmentImage
+                    attachment={attachment}
                     alt={attachment.name}
                     loading="lazy"
-                    referrerPolicy="no-referrer"
                     onLoad={(event) => handleImageLoad(attachment.id, event)}
                   />
                 </button>
                 <div className="message-image-preview__actions">
-                  <a
-                    className="message-image-action"
-                    href={imageUrl}
-                    download={attachment.name}
-                    title={t('chat.downloadImage')}
-                    aria-label={`${t('chat.downloadImage')}: ${attachment.name}`}
-                  >
-                    <Download size={14} aria-hidden="true" />
-                  </a>
+                  {attachment.source_type === 'local' ? (
+                    <button
+                      className="message-image-action"
+                      type="button"
+                      title={t('chat.downloadImage')}
+                      aria-label={`${t('chat.downloadImage')}: ${attachment.name}`}
+                      onClick={() => void downloadImageAttachment(attachment)}
+                    >
+                      <Download size={14} aria-hidden="true" />
+                    </button>
+                  ) : (
+                    <a
+                      className="message-image-action"
+                      href={imageUrl}
+                      download={attachment.name}
+                      title={t('chat.downloadImage')}
+                      aria-label={`${t('chat.downloadImage')}: ${attachment.name}`}
+                    >
+                      <Download size={14} aria-hidden="true" />
+                    </a>
+                  )}
                   <button
                     className="message-image-action"
                     type="button"
@@ -893,11 +902,10 @@ function MessageContent({
         bodyClassName="image-preview-dialog__body"
       >
         {previewAttachment ? (
-          <img
+          <AttachmentImage
             className="image-preview-dialog__image"
-            src={attachmentImageUrl(previewAttachment)}
+            attachment={previewAttachment}
             alt={previewAttachment.name}
-            referrerPolicy="no-referrer"
           />
         ) : null}
       </Dialog>

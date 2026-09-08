@@ -37,8 +37,11 @@ export function useProviders() {
 
   const removeProvider = useCallback(async (id: string) => {
     await deleteModelProvider(id);
-    setProviders((current) => current.filter((p) => p.id !== id));
-    setActiveProviderId('');
+    setProviders((current) => {
+      const next = current.filter((p) => p.id !== id);
+      setActiveProviderId((active) => active === id ? next[0]?.id ?? '' : active);
+      return next;
+    });
   }, []);
 
   return {
@@ -51,4 +54,3 @@ export function useProviders() {
     removeProvider,
   };
 }
-

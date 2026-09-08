@@ -110,9 +110,17 @@ export function App() {
     if (settingsResult.status === 'fulfilled' && isLocale(settingsResult.value.language)) {
       setLocale(settingsResult.value.language);
     }
-    const errors = [settingsResult, providersResult, agentsResult]
-      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-      .map(() => t('error.unknown'));
+    const initialResults: Array<[string, PromiseSettledResult<unknown>]> = [
+      ['settings', settingsResult],
+      ['providers', providersResult],
+      ['agents', agentsResult],
+    ];
+    const errors = initialResults
+      .filter((entry): entry is [string, PromiseRejectedResult] => entry[1].status === 'rejected')
+      .map(([name, result]) => {
+        const detail = result.reason instanceof Error ? result.reason.message.trim() : '';
+        return detail ? `${name}: ${detail}` : `${name}: ${t('error.unknown')}`;
+      });
     if (errors.length > 0) {
       const message = userErrorMessage(new Error(errors.join(' ')), {
         summary: t('error.initialLoadFailed'),

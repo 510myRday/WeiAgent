@@ -62,8 +62,11 @@ export function useAgents() {
 
   const removeAgent = useCallback(async (id: string) => {
     await deleteAgent(id);
-    setAgents((current) => current.filter((a) => a.id !== id));
-    setActiveAgentId('');
+    setAgents((current) => {
+      const next = current.filter((a) => a.id !== id);
+      setActiveAgentId((active) => active === id ? next[0]?.id ?? '' : active);
+      return next;
+    });
   }, []);
 
   return {

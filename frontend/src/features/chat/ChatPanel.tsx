@@ -619,7 +619,7 @@ export function ChatPanel({
   }, [activeAgentId, clearChat, detachActiveRun, loadConversationsForAgent]);
 
   useEffect(() => {
-    if (!isPageVisible) return;
+    if (!isVisible || !isPageVisible) return;
     const agentIds = agents.map((agent) => agent.id);
     void refreshUnreadState(agentIds);
     if (activeAgentId) void refreshRunningConversations(activeAgentId);
@@ -628,7 +628,7 @@ export function ChatPanel({
       if (activeAgentId) void refreshRunningConversations(activeAgentId);
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [activeAgentId, agents, isPageVisible, refreshRunningConversations, refreshUnreadState]);
+  }, [activeAgentId, agents, isPageVisible, isVisible, refreshRunningConversations, refreshUnreadState]);
 
   useEffect(() => {
     const unreadCount = Object.values(unreadConversationIdsByAgent)

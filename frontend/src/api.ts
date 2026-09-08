@@ -146,20 +146,20 @@ export function updateModelProvider(
   providerId: string,
   payload: Partial<ModelProviderPayload>,
 ): Promise<ModelProvider> {
-  return request<ModelProvider>(`/api/model-providers/${providerId}`, {
+  return request<ModelProvider>(`/api/model-providers/${encodeURIComponent(providerId)}`, {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
 }
 
 export function deleteModelProvider(providerId: string): Promise<void> {
-  return request<void>(`/api/model-providers/${providerId}`, {
+  return request<void>(`/api/model-providers/${encodeURIComponent(providerId)}`, {
     method: 'DELETE',
   });
 }
 
 export function fetchModels(providerId: string): Promise<string[]> {
-  return request<string[]>(`/api/model-providers/${providerId}/models`);
+  return request<string[]>(`/api/model-providers/${encodeURIComponent(providerId)}/models`);
 }
 
 export function fetchModelsForProvider(payload: FetchProviderModelsPayload): Promise<string[]> {
@@ -181,31 +181,31 @@ export function createAgent(payload: CreateAgentPayload): Promise<Agent> {
 }
 
 export function updateAgent(agentId: string, payload: UpdateAgentPayload): Promise<Agent> {
-  return request<Agent>(`/api/agents/${agentId}`, {
+  return request<Agent>(`/api/agents/${encodeURIComponent(agentId)}`, {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
 }
 
 export function deleteAgent(agentId: string): Promise<void> {
-  return request<void>(`/api/agents/${agentId}`, {
+  return request<void>(`/api/agents/${encodeURIComponent(agentId)}`, {
     method: 'DELETE',
   });
 }
 
 export function readAgentWorkspace(agentId: string): Promise<AgentWorkspace> {
-  return request<AgentWorkspace>(`/api/agents/${agentId}/workspace`);
+  return request<AgentWorkspace>(`/api/agents/${encodeURIComponent(agentId)}/workspace`);
 }
 
 export function listConversations(agentId: string): Promise<Conversation[]> {
-  return request<Conversation[]>(`/api/agents/${agentId}/conversations`);
+  return request<Conversation[]>(`/api/agents/${encodeURIComponent(agentId)}/conversations`);
 }
 
 export function createConversation(
   agentId: string,
   payload: CreateConversationPayload,
 ): Promise<Conversation> {
-  return request<Conversation>(`/api/agents/${agentId}/conversations`, {
+  return request<Conversation>(`/api/agents/${encodeURIComponent(agentId)}/conversations`, {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -215,7 +215,7 @@ export function updateAgentProfile(
   agentId: string,
   payload: UpdateAgentProfilePayload,
 ): Promise<AgentProfile> {
-  return request<AgentProfile>(`/api/agents/${agentId}/profile`, {
+  return request<AgentProfile>(`/api/agents/${encodeURIComponent(agentId)}/profile`, {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
@@ -225,14 +225,14 @@ export function updateConversation(
   conversationId: string,
   payload: UpdateConversationPayload,
 ): Promise<Conversation> {
-  return request<Conversation>(`/api/conversations/${conversationId}`, {
+  return request<Conversation>(`/api/conversations/${encodeURIComponent(conversationId)}`, {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
 }
 
 export function deleteConversation(conversationId: string): Promise<void> {
-  return request<void>(`/api/conversations/${conversationId}`, {
+  return request<void>(`/api/conversations/${encodeURIComponent(conversationId)}`, {
     method: 'DELETE',
   });
 }
@@ -319,7 +319,7 @@ export type {
 
 
 export function readTaskPlans(conversationId: string): Promise<TaskPlan[]> {
-  return request<TaskPlan[]>(`/api/conversations/${conversationId}/task-plans`);
+  return request<TaskPlan[]>(`/api/conversations/${encodeURIComponent(conversationId)}/task-plans`);
 }
 
 
@@ -351,14 +351,14 @@ export function createIpProxy(payload: IpProxyPayload): Promise<IpProxy> {
 }
 
 export function updateIpProxy(id: string, payload: Partial<IpProxyPayload>): Promise<IpProxy> {
-  return request<IpProxy>(`/api/ip-proxies/${id}`, {
+  return request<IpProxy>(`/api/ip-proxies/${encodeURIComponent(id)}`, {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
 }
 
 export function deleteIpProxy(id: string): Promise<void> {
-  return request<void>(`/api/ip-proxies/${id}`, { method: 'DELETE' });
+  return request<void>(`/api/ip-proxies/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export function importIpProxies(
@@ -372,7 +372,7 @@ export function importIpProxies(
 }
 
 export function testIpProxy(id: string): Promise<IpProxy> {
-  return request<IpProxy>(`/api/ip-proxies/${id}/test`, { method: 'POST' }, undefined, 30000);
+  return request<IpProxy>(`/api/ip-proxies/${encodeURIComponent(id)}/test`, { method: 'POST' }, undefined, 30000);
 }
 
 export function generateConversationTitle(
@@ -380,7 +380,7 @@ export function generateConversationTitle(
   content: string,
   locale?: string,
 ): Promise<Conversation> {
-  return request<Conversation>(`/api/conversations/${conversationId}/title`, {
+  return request<Conversation>(`/api/conversations/${encodeURIComponent(conversationId)}/title`, {
     method: 'POST',
     body: JSON.stringify({ content, locale }),
   }, undefined, CONVERSATION_TITLE_REQUEST_TIMEOUT_MS);
@@ -438,14 +438,14 @@ export function deleteWebSearchKey(
 }
 
 export function readAgentToolsConfig(agentId: string): Promise<AgentToolsSettings> {
-  return request<AgentToolsSettings>(`/api/agents/${agentId}/tools-config`);
+  return request<AgentToolsSettings>(`/api/agents/${encodeURIComponent(agentId)}/tools-config`);
 }
 
 export function updateAgentToolsConfig(
   agentId: string,
   config: AgentToolsOverrides,
 ): Promise<AgentToolsSettings> {
-  return request<AgentToolsSettings>(`/api/agents/${agentId}/tools-config`, {
+  return request<AgentToolsSettings>(`/api/agents/${encodeURIComponent(agentId)}/tools-config`, {
     method: 'PUT',
     body: JSON.stringify(config),
   });
@@ -834,7 +834,7 @@ export function readConversationMessages(
   const query = new URLSearchParams({ limit: String(limit) });
   if (before) query.set('before', before);
   return request(
-    `/api/conversations/${conversationId}/messages/page?${query}`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/messages/page?${query}`,
     undefined,
     conversationMessagePageRuntimeSchema,
   );
@@ -851,7 +851,7 @@ export function createMessageRun(
   shortcutActions: ChatShortcutAction[] = [],
   signal?: AbortSignal,
 ): Promise<AgentRun> {
-  return request(`/api/conversations/${conversationId}/runs`, {
+  return request(`/api/conversations/${encodeURIComponent(conversationId)}/runs`, {
     method: 'POST',
     body: JSON.stringify({
       content,
@@ -876,30 +876,30 @@ export function compressConversationContext(
 }
 
 export function steerMessageRun(runId: string, content: string): Promise<void> {
-  return request(`/api/runs/${runId}/steer`, {
+  return request(`/api/runs/${encodeURIComponent(runId)}/steer`, {
     method: 'POST',
     body: JSON.stringify({ content }),
   });
 }
 
 export function readConversationUsage(conversationId: string): Promise<ConversationUsage> {
-  return request<ConversationUsage>(`/api/conversations/${conversationId}/usage`);
+  return request<ConversationUsage>(`/api/conversations/${encodeURIComponent(conversationId)}/usage`);
 }
 
 export function readActiveConversationRun(conversationId: string): Promise<AgentRun | null> {
   return request(
-    `/api/conversations/${conversationId}/run`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/run`,
     undefined,
     nullableAgentRunRuntimeSchema,
   );
 }
 
 export function listActiveAgentRuns(agentId: string): Promise<AgentRun[]> {
-  return request(`/api/agents/${agentId}/runs`, undefined, agentRunListRuntimeSchema);
+  return request(`/api/agents/${encodeURIComponent(agentId)}/runs`, undefined, agentRunListRuntimeSchema);
 }
 
 export function cancelMessageRun(runId: string): Promise<AgentRun> {
-  return request(`/api/runs/${runId}`, { method: 'DELETE' }, agentRunRuntimeSchema);
+  return request(`/api/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' }, agentRunRuntimeSchema);
 }
 
 export async function streamRunEvents(
@@ -908,7 +908,7 @@ export async function streamRunEvents(
   onEvent: (event: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`/api/runs/${runId}/events?after=${after}`, {
+  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/events?after=${encodeURIComponent(String(after))}`, {
     signal,
     headers: apiAuthorizationHeaders(),
   });

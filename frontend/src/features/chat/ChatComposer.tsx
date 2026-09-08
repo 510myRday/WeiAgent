@@ -40,12 +40,12 @@ import { useI18n } from '../../i18n';
 import { readChatDraft, writeChatDraft } from './chatDrafts';
 import {
   MAX_IMAGE_COUNT,
-  attachmentImageUrl,
   createAttachmentId,
   removeAttachment,
   toggleAttachmentMask,
 } from './imageAttachments';
 import { useImageAttachments } from './useImageAttachments';
+import { AttachmentImage } from './AttachmentImage';
 
 const THINKING_LEVELS: ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'x_high'];
 const IMAGE_QUALITY_OPTIONS = ['auto', 'low', 'medium', 'high', 'standard', 'hd'];
@@ -307,7 +307,7 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
                 className={`composer-image-preview${attachment.is_mask ? ' is-mask' : ''}`}
                 key={attachment.id}
               >
-                <img src={attachmentImageUrl(attachment)} alt={attachment.name} referrerPolicy="no-referrer" />
+                <AttachmentImage attachment={attachment} alt={attachment.name} />
                 {generationMode === 'image' && attachment.media_type === 'image/png' ? (
                   <button
                     type="button"

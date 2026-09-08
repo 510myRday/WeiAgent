@@ -3,7 +3,7 @@ import { ImageOff } from 'lucide-react';
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown';
 
 import { useI18n } from '../../i18n';
-import { apiAuthorizationHeaders, apiAuthorizationToken } from '../../apiAuth';
+import { apiAuthorizationHeaders } from '../../apiAuth';
 
 type MarkdownImageProps = ImgHTMLAttributes<HTMLImageElement>;
 
@@ -20,7 +20,7 @@ export function MarkdownImage({ alt = '', src = '', title }: MarkdownImageProps)
 
     const controller = new AbortController();
     let objectUrl: string | null = null;
-    void fetch(withApiToken(resolved.url), {
+    void fetch(resolved.url, {
       credentials: 'same-origin',
       headers: apiAuthorizationHeaders(),
       signal: controller.signal,
@@ -151,13 +151,6 @@ function normalizeWindowsPath(path: string): string {
     return `\\\\${path.slice(2).replace(/\\{2,}/g, '\\').replace(/\/{2,}/g, '/')}`;
   }
   return path;
-}
-
-function withApiToken(url: string): string {
-  const token = apiAuthorizationToken();
-  if (!token) return url;
-  const separator = url.includes('?') ? '&' : '?';
-  return `${url}${separator}token=${encodeURIComponent(token)}`;
 }
 
 function decodeSource(source: string): string {

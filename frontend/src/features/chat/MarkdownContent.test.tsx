@@ -39,8 +39,11 @@ test('loads a local Windows image emitted in Markdown', async () => {
   expect(parsedUrl.searchParams.get('path')).toBe(
     'C:\\Users\\Administrator\\.WeiAgent\\skills\\dashi-ppt\\assets\\skill\\theme-style-grid.png',
   );
-  expect(parsedUrl.searchParams.get('token')).toBe('test-token');
-  expect(requestInit).toMatchObject({ credentials: 'same-origin' });
+  expect(parsedUrl.searchParams.get('token')).toBeNull();
+  expect(requestInit).toMatchObject({
+    credentials: 'same-origin',
+    headers: { Authorization: 'Bearer test-token' },
+  });
 });
 
 test('loads a local Windows image with single backslashes emitted in Markdown', async () => {
