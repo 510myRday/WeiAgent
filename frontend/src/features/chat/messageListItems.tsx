@@ -617,7 +617,7 @@ const MessageRow = memo(function MessageRow({
                     className="message-action-button"
                     type="button"
                     onClick={() => void copy(message.content)}
-                    disabled={actionsDisabled || !canCopy}
+                    disabled={!canCopy}
                     aria-label={t(copied ? 'chat.copied' : 'chat.copy')}
                     title={t(copied ? 'chat.copied' : 'chat.copy')}
                   >

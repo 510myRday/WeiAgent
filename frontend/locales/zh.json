@@ -1352,6 +1352,7 @@
     "conversationPinned": "会话已置顶。",
     "conversationUnpinned": "已取消置顶。",
     "conversationDeleted": "会话已删除。",
+    "copied": "内容已复制。",
     "copyFailed": "复制失败，请检查浏览器剪贴板权限后重试。",
     "runtimeInstallStarted": "{name} 已开始下载，离开此页面后仍会继续。",
     "runtimeUpdateStarted": "{name} 已开始更新，离开此页面后仍会继续。",

@@ -1352,6 +1352,7 @@
     "conversationPinned": "Conversation pinned.",
     "conversationUnpinned": "Conversation unpinned.",
     "conversationDeleted": "Conversation deleted.",
+    "copied": "Content copied.",
     "copyFailed": "Copy failed. Check clipboard permission and try again.",
     "runtimeInstallStarted": "{name} download started and will continue after leaving this page.",
     "runtimeUpdateStarted": "{name} update started and will continue after leaving this page.",
