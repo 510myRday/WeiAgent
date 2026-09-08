@@ -236,22 +236,6 @@ impl Store {
         Ok(overrides.apply_to(&defaults))
     }
 
-    pub(super) async fn delete_agent_tool_settings_unlocked(&self, id: Uuid) -> AppResult<()> {
-        self.database
-            .call(move |conn| {
-                conn.execute(
-                    "DELETE FROM tool_web_search_agent_sources WHERE agent_id = ?1",
-                    [id.to_string()],
-                )?;
-                conn.execute(
-                    "DELETE FROM tool_settings WHERE scope_type = 'agent' AND scope_id = ?1",
-                    [id.to_string()],
-                )?;
-                Ok(())
-            })
-            .await
-    }
-
     async fn read_tool_defaults_unlocked(&self) -> AppResult<AgentToolsConfig> {
         self.database
             .call(|conn| {

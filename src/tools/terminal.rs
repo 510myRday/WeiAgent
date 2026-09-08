@@ -1103,6 +1103,15 @@ impl TerminalManager {
         self.terminate_all(ids).await;
     }
 
+    pub async fn stop_all(&self) {
+        let ids = self
+            .processes
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        self.terminate_all(ids).await;
+    }
+
     async fn terminate_all(&self, ids: Vec<String>) {
         futures_util::future::join_all(ids.iter().map(|id| self.terminate(id))).await;
     }

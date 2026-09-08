@@ -1,5 +1,5 @@
 use chrono::Utc;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -83,7 +83,6 @@ impl Store {
             .call(|connection| read_providers_conn(connection))
             .await?;
         let mut agents = self.read_agents_unlocked().await?;
-        let original_agents = agents.clone();
         let mut agents_changed = false;
         let provider = providers
             .iter_mut()
@@ -162,20 +161,18 @@ impl Store {
 
         provider.updated_at = Utc::now();
         let updated = provider.clone();
-        if agents_changed {
-            self.write_agents_unlocked(&agents).await?;
-        }
         let stored = updated.clone();
-        if let Err(error) = self
-            .database
-            .call(move |connection| upsert_provider_conn(connection, &stored))
-            .await
-        {
-            if agents_changed {
-                let _ = self.write_agents_unlocked(&original_agents).await;
-            }
-            return Err(error);
-        }
+        self.database
+            .call(move |connection| {
+                let tx = connection.transaction()?;
+                if agents_changed {
+                    crate::storage::agents::write_agents_tx(&tx, &agents)?;
+                }
+                upsert_provider_conn(&tx, &stored)?;
+                tx.commit()?;
+                Ok(())
+            })
+            .await?;
         Ok(ModelProviderResponse::from(&updated))
     }
 
@@ -183,7 +180,6 @@ impl Store {
         let _guard = self.provider_lock.lock().await;
         let _agents_guard = self.agents_lock.lock().await;
         let mut agents = self.read_agents_unlocked().await?;
-        let original_agents = agents.clone();
         let mut agents_changed = false;
         for agent in agents
             .iter_mut()
@@ -195,38 +191,29 @@ impl Store {
             agents_changed = true;
         }
 
-        if agents_changed {
-            self.write_agents_unlocked(&agents).await?;
-        }
-
         let deleted = self
             .database
-            .call(move |connection| delete_provider_conn(connection, id))
-            .await;
-        let deleted = match deleted {
-            Ok(deleted) => deleted,
-            Err(error) => {
-                if agents_changed {
-                    let _ = self.write_agents_unlocked(&original_agents).await;
+            .call(move |connection| {
+                let tx = connection.transaction()?;
+                let deleted = delete_provider_conn(&tx, id)?;
+                if !deleted {
+                    return Err(AppError::NotFound);
                 }
-                return Err(error);
-            }
-        };
-        if !deleted {
-            if agents_changed {
-                let _ = self.write_agents_unlocked(&original_agents).await;
-            }
-            return Err(AppError::NotFound);
-        }
+                if agents_changed {
+                    crate::storage::agents::write_agents_tx(&tx, &agents)?;
+                }
+                tx.commit()?;
+                Ok(deleted)
+            })
+            .await?;
+        debug_assert!(deleted);
         Ok(())
     }
 
     pub async fn get_model_provider(&self, id: Uuid) -> AppResult<ModelProvider> {
-        self.read_providers()
-            .await?
-            .into_iter()
-            .find(|provider| provider.id == id)
-            .ok_or(AppError::NotFound)
+        self.database
+            .read(move |connection| get_provider_conn(connection, id))
+            .await
     }
 }
 
@@ -621,6 +608,41 @@ pub fn read_providers_conn(conn: &Connection) -> AppResult<Vec<ModelProvider>> {
         providers.push(row_to_provider(row?)?);
     }
     Ok(providers)
+}
+
+pub(super) fn get_provider_conn(conn: &Connection, id: Uuid) -> AppResult<ModelProvider> {
+    let mut statement = conn.prepare(
+        "SELECT id, provider_type, name, base_url, api_key, key_strategy, models_json,
+                model_configs_json, extra_body_json, prompt_cache_json, cache_capabilities_json, proxy_url,
+                image_generation_url, image_edit_url, api_key_labels_json, created_at, updated_at
+         FROM model_providers WHERE id = ?1",
+    )?;
+    let row = statement
+        .query_row([id.to_string()], |row| {
+            Ok(ProviderRow {
+                id: row.get(0)?,
+                provider_type: row.get(1)?,
+                name: row.get(2)?,
+                base_url: row.get(3)?,
+                api_key: row.get(4)?,
+                key_strategy: row.get(5)?,
+                models_json: row.get(6)?,
+                model_configs_json: row.get(7)?,
+                extra_body_json: row.get(8)?,
+                prompt_cache_json: row.get(9)?,
+                cache_capabilities_json: row.get(10)?,
+                proxy_url: row.get(11)?,
+                image_generation_url: row.get(12)?,
+                image_edit_url: row.get(13)?,
+                api_key_labels_json: row.get(14)?,
+                created_at: row.get(15)?,
+                updated_at: row.get(16)?,
+            })
+        })
+        .optional()?;
+    row.map(row_to_provider)
+        .transpose()?
+        .ok_or(AppError::NotFound)
 }
 
 pub(super) fn upsert_provider_conn(conn: &Connection, provider: &ModelProvider) -> AppResult<()> {

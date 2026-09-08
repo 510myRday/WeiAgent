@@ -3,7 +3,10 @@ use std::{
     sync::Arc,
 };
 
-use tokio::{fs, sync::Mutex};
+use tokio::{
+    fs,
+    sync::{Mutex, RwLock},
+};
 use uuid::Uuid;
 
 use super::providers;
@@ -27,6 +30,7 @@ pub struct Store {
     pub(super) agents_dir: PathBuf,
     pub(super) database: Arc<db::Database>,
     pub(super) settings_lock: Mutex<()>,
+    settings_snapshot: RwLock<AppSettings>,
     pub(super) agents_lock: Mutex<()>,
     pub(super) workspace_lock: Mutex<()>,
     pub(super) provider_lock: Mutex<()>,
@@ -44,11 +48,11 @@ impl Store {
         let settings_file = root.join("settings.json");
         let agents_file = root.join("agents.json");
         let agents_dir = root.join("agents");
-        fs::create_dir_all(&root).await?;
+        crate::fsutil::ensure_private_dir(&root).await?;
         fs::create_dir_all(&terminal_workspace_dir).await?;
         fs::create_dir_all(&attachments_dir).await?;
         fs::create_dir_all(&agents_dir).await?;
-        load_or_init_settings(&settings_file).await?;
+        let initial_settings = load_or_init_settings(&settings_file).await?;
         let database = Arc::new(db::Database::open(&root)?);
 
         let store = Self {
@@ -60,6 +64,7 @@ impl Store {
             agents_dir,
             database,
             settings_lock: Mutex::new(()),
+            settings_snapshot: RwLock::new(initial_settings),
             agents_lock: Mutex::new(()),
             workspace_lock: Mutex::new(()),
             provider_lock: Mutex::new(()),
@@ -73,24 +78,25 @@ impl Store {
         store.initialize_mcp_settings().await?;
         store.initialize_skill_settings().await?;
         store.ensure_builtin_agents().await?;
+        store.recover_interrupted_executions().await?;
         Ok(store)
     }
 
     pub async fn read_settings(&self) -> AppResult<AppSettings> {
-        let _guard = self.settings_lock.lock().await;
-        crate::config::read_settings(&self.settings_file).await
+        Ok(self.settings_snapshot.read().await.clone())
     }
 
     pub async fn write_settings(&self, settings: AppSettings) -> AppResult<AppSettings> {
         let _guard = self.settings_lock.lock().await;
         write_settings(&self.settings_file, &settings).await?;
+        *self.settings_snapshot.write().await = settings.clone();
         Ok(settings)
     }
 
     pub(super) async fn read_providers(&self) -> AppResult<Vec<ModelProvider>> {
         let _guard = self.provider_lock.lock().await;
         self.database
-            .call(|connection| providers::read_providers_conn(connection))
+            .read(|connection| providers::read_providers_conn(connection))
             .await
     }
 
@@ -105,7 +111,7 @@ impl Store {
 
     pub(super) async fn read_agents_unlocked(&self) -> AppResult<Vec<Agent>> {
         self.database
-            .call(|connection| read_agents_conn(connection))
+            .read(|connection| read_agents_conn(connection))
             .await
     }
 

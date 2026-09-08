@@ -73,16 +73,7 @@ pub async fn prepare_chat_context(
     conversation_id: Uuid,
     thinking_level: ThinkingLevel,
 ) -> AppResult<PreparedChat> {
-    prepare_chat_inner(
-        state,
-        conversation_id,
-        "",
-        &[],
-        thinking_level,
-        None,
-        true,
-    )
-    .await
+    prepare_chat_inner(state, conversation_id, "", &[], thinking_level, None, true).await
 }
 
 async fn prepare_chat_inner(

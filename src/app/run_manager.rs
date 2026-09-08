@@ -21,6 +21,7 @@ const MAX_REPLAY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RETAINED_FINISHED_RUNS: usize = 64;
 const FINISHED_RUN_RETENTION_MINUTES: i64 = 10;
 const CANCEL_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+const STEER_QUEUE_CAPACITY: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct SequencedRunEvent {
@@ -38,14 +39,14 @@ struct RunRecord {
     state: Mutex<RunState>,
     events: broadcast::Sender<SequencedRunEvent>,
     cancel: watch::Sender<bool>,
-    steer: mpsc::UnboundedSender<SteerMessage>,
+    steer: mpsc::Sender<SteerMessage>,
     finished: Notify,
 }
 
 pub struct RunRegistration {
     pub info: AgentRun,
     pub cancel: watch::Receiver<bool>,
-    steer: Option<mpsc::UnboundedReceiver<SteerMessage>>,
+    steer: Option<mpsc::Receiver<SteerMessage>>,
     _guard: OwnedMutexGuard<()>,
 }
 
@@ -103,7 +104,7 @@ impl RunManager {
         };
         let (event_sender, _) = broadcast::channel(RUN_EVENT_BUFFER);
         let (cancel_sender, cancel_receiver) = watch::channel(false);
-        let (steer_sender, steer_receiver) = mpsc::unbounded_channel();
+        let (steer_sender, steer_receiver) = mpsc::channel(STEER_QUEUE_CAPACITY);
         self.runs.insert(
             id,
             Arc::new(RunRecord {
@@ -130,7 +131,7 @@ impl RunManager {
     pub fn take_steer_receiver(
         &self,
         registration: &mut RunRegistration,
-    ) -> mpsc::UnboundedReceiver<SteerMessage> {
+    ) -> mpsc::Receiver<SteerMessage> {
         registration
             .steer
             .take()
@@ -149,10 +150,14 @@ impl RunManager {
                 "the run has already finished".to_string(),
             ));
         }
-        record
-            .steer
-            .send(message)
-            .map_err(|_| AppError::Conflict("the run is no longer accepting guidance".to_string()))
+        record.steer.try_send(message).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => {
+                AppError::Conflict("the run guidance queue is full".to_string())
+            }
+            mpsc::error::TrySendError::Closed(_) => {
+                AppError::Conflict("the run is no longer accepting guidance".to_string())
+            }
+        })
     }
 
     pub fn set_user_message(&self, run_id: Uuid, message_id: Uuid) {
@@ -301,6 +306,18 @@ impl RunManager {
             return Ok(());
         };
         self.cancel_and_wait(run_id).await?;
+        Ok(())
+    }
+
+    pub async fn cancel_all_and_wait(&self) -> AppResult<()> {
+        let run_ids = self
+            .active_by_conversation
+            .iter()
+            .map(|entry| *entry.value())
+            .collect::<Vec<_>>();
+        for run_id in run_ids {
+            self.cancel_and_wait(run_id).await?;
+        }
         Ok(())
     }
 

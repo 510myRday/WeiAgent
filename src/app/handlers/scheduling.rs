@@ -25,6 +25,9 @@ pub async fn create_cron_task(
     let schedule = scheduler::normalize_schedule(&request.schedule)?;
     let timezone_offset = scheduler::normalize_timezone_offset(request.timezone_offset.as_deref())?;
     let prompt = request.prompt.trim().to_string();
+    if prompt.chars().count() > 100_000 {
+        return Err(AppError::BadRequest("cron prompt is too long".to_string()));
+    }
     if prompt.is_empty() {
         return Err(AppError::BadRequest(
             "cron prompt cannot be empty".to_string(),
@@ -93,6 +96,9 @@ pub async fn update_cron_task(
         .prompt
         .map(|value| {
             let value = value.trim().to_string();
+            if value.chars().count() > 100_000 {
+                return Err(AppError::BadRequest("cron prompt is too long".to_string()));
+            }
             if value.is_empty() {
                 Err(AppError::BadRequest(
                     "cron prompt cannot be empty".to_string(),
@@ -219,10 +225,6 @@ pub async fn set_heartbeat(
                 "target conversation already has a heartbeat".to_string(),
             ));
         }
-        state
-            .store
-            .delete_conversation_heartbeat(conversation_id)
-            .await?;
     }
     let heartbeat = ConversationHeartbeat {
         conversation_id: target_conversation_id,
@@ -237,7 +239,10 @@ pub async fn set_heartbeat(
         last_error: None,
     };
     Ok(Json(
-        state.store.upsert_conversation_heartbeat(heartbeat).await?,
+        state
+            .store
+            .move_conversation_heartbeat(conversation_id, heartbeat)
+            .await?,
     ))
 }
 

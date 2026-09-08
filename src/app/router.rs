@@ -26,15 +26,15 @@ pub fn build_router(state: AppState) -> Router {
             let security = frontend_security.clone();
             async move { serve_frontend(uri, security.token()).await }
         })
-        .layer(DefaultBodyLimit::max(48 * 1024 * 1024))
-        .layer(ConcurrencyLimitLayer::new(64))
+        .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
+        .layer(ConcurrencyLimitLayer::new(32))
         .with_state(state)
 }
 
 pub fn build_router_dev(state: AppState) -> Router {
     api_router(state.api_security.clone())
-        .layer(DefaultBodyLimit::max(48 * 1024 * 1024))
-        .layer(ConcurrencyLimitLayer::new(64))
+        .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
+        .layer(ConcurrencyLimitLayer::new(32))
         .with_state(state)
 }
 

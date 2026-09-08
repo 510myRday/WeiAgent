@@ -112,6 +112,11 @@ pub async fn generate_conversation_title(
     Json(request): Json<GenerateConversationTitleRequest>,
 ) -> AppResult<Json<Conversation>> {
     let content = request.content.trim();
+    if content.chars().count() > 32_000 {
+        return Err(AppError::BadRequest(
+            "guidance content is too long".to_string(),
+        ));
+    }
     if content.is_empty() {
         return Err(AppError::BadRequest(
             "conversation title input cannot be empty".to_string(),
@@ -387,6 +392,7 @@ pub async fn start_message_run(
     conversation_id: Uuid,
     request: SendMessageRequest,
 ) -> AppResult<AgentRun> {
+    validate_message_request(&request)?;
     // Image runs intentionally bypass prepare_chat and run_agent: image models
     // receive only the prompt and reference images, never chat history or tools.
     if request.generation_mode == GenerationMode::Image {
@@ -527,6 +533,20 @@ pub async fn start_message_run(
     });
 
     Ok(info)
+}
+
+fn validate_message_request(request: &SendMessageRequest) -> AppResult<()> {
+    if request.content.chars().count() > 100_000 {
+        return Err(AppError::BadRequest(
+            "message content is too long".to_string(),
+        ));
+    }
+    if request.shortcut_actions.len() > 64 {
+        return Err(AppError::BadRequest(
+            "too many shortcut actions".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 async fn create_image_run(

@@ -98,6 +98,7 @@ pub async fn read_remote_asset(
             .timeout(Duration::from_secs(20))
             .connect_timeout(Duration::from_secs(10))
             .user_agent("WeiAgent Skill icon")
+            .no_redirects()
             .no_system_proxy()
             .proxy_url(Some(proxy_url)),
     )

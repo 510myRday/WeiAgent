@@ -235,6 +235,7 @@ pub async fn write_settings(path: &std::path::Path, settings: &AppSettings) -> A
     validate_settings(settings)?;
     let content = serde_json::to_string_pretty(settings)?;
     fsutil::write_atomic(path, content).await?;
+    fsutil::set_private_file(path).await?;
     Ok(())
 }
 

@@ -12,6 +12,9 @@ pub(super) fn validate_non_empty(field: &str, value: &str) -> AppResult<String> 
     if trimmed.is_empty() {
         return Err(AppError::BadRequest(format!("{field} cannot be empty")));
     }
+    if trimmed.chars().count() > 4096 {
+        return Err(AppError::BadRequest(format!("{field} is too long")));
+    }
     Ok(trimmed.to_string())
 }
 
@@ -20,6 +23,7 @@ pub(super) fn normalize_models(models: Vec<String>) -> AppResult<Vec<String>> {
         .into_iter()
         .map(|model| model.trim().to_string())
         .filter(|model| !model.is_empty())
+        .filter(|model| model.chars().count() <= 512)
         .collect::<Vec<_>>();
     models.sort();
     models.dedup();

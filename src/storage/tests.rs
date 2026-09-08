@@ -5,9 +5,8 @@ use uuid::Uuid;
 use super::*;
 use crate::domain::agents::UpdateAgentWorkspaceRequest;
 use crate::domain::{
-    ApiKeyStrategy, ChatMessage, ChatMessageStatus, ChatRole, ChatShortcutAction,
-    ChatShortcutKind, ChatSystemEvent, ContextCheckpoint, ContextCompactionEvent,
-    ContextCompactionSource,
+    ApiKeyStrategy, ChatMessage, ChatMessageStatus, ChatRole, ChatShortcutAction, ChatShortcutKind,
+    ChatSystemEvent, ContextCheckpoint, ContextCompactionEvent, ContextCompactionSource,
     CreateAgentRequest, CreateConversationRequest, CreateModelProviderRequest, ImageAttachment,
     ImageSource, ProviderType, UpdateAgentProfileRequest, UpdateAgentRequest,
     UpdateConversationRequest, UpdateModelProviderRequest,

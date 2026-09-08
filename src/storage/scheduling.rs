@@ -390,7 +390,7 @@ pub(crate) fn list_executions_conn(
     conn: &Connection,
     task_id: Uuid,
 ) -> AppResult<Vec<ScheduledTaskExecution>> {
-    let mut statement = conn.prepare(&format!("SELECT {EXECUTION_COLUMNS} FROM scheduled_task_executions e WHERE e.task_id = ?1 ORDER BY e.scheduled_at DESC"))?;
+    let mut statement = conn.prepare(&format!("SELECT {EXECUTION_COLUMNS} FROM scheduled_task_executions e WHERE e.task_id = ?1 ORDER BY e.scheduled_at DESC LIMIT 200"))?;
     let rows = statement.query_map([task_id.to_string()], execution_from_row)?;
     rows.map(|row| row.map_err(AppError::from).and_then(|row| Ok(row)))
         .collect()
@@ -400,7 +400,7 @@ pub(crate) fn list_heartbeat_executions_conn(
     conn: &Connection,
     conversation_id: Uuid,
 ) -> AppResult<Vec<ConversationHeartbeatExecution>> {
-    let mut statement = conn.prepare(&format!("SELECT {HEARTBEAT_EXECUTION_COLUMNS} FROM conversation_heartbeat_executions e WHERE e.conversation_id = ?1 ORDER BY e.scheduled_at DESC"))?;
+    let mut statement = conn.prepare(&format!("SELECT {HEARTBEAT_EXECUTION_COLUMNS} FROM conversation_heartbeat_executions e WHERE e.conversation_id = ?1 ORDER BY e.scheduled_at DESC LIMIT 200"))?;
     let rows = statement.query_map([conversation_id.to_string()], heartbeat_execution_from_row)?;
     rows.map(|row| row.map_err(AppError::from).and_then(|row| Ok(row)))
         .collect()
@@ -418,21 +418,23 @@ pub(crate) fn insert_heartbeat_execution_conn(
 }
 
 pub(crate) fn finish_heartbeat_execution_conn(
-    conn: &Connection,
+    conn: &mut Connection,
     execution_id: Uuid,
     conversation_id: Uuid,
     status: &str,
     error: Option<String>,
 ) -> AppResult<()> {
     let now = Utc::now();
-    conn.execute(
+    let tx = conn.transaction()?;
+    tx.execute(
         "UPDATE conversation_heartbeat_executions SET finished_at = ?2, status = ?3, error = ?4 WHERE id = ?1",
         params![execution_id.to_string(), now.to_rfc3339(), status, error],
     )?;
-    conn.execute(
+    tx.execute(
         "UPDATE conversation_heartbeats SET last_run_at = ?2, last_status = ?3, last_error = ?4 WHERE conversation_id = ?1",
         params![conversation_id.to_string(), now.to_rfc3339(), status, error],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -507,7 +509,7 @@ pub(crate) fn insert_execution_conn(
 }
 
 pub(crate) fn finish_execution_conn(
-    conn: &Connection,
+    conn: &mut Connection,
     execution_id: Uuid,
     task_id: Uuid,
     conversation_id: Uuid,
@@ -516,14 +518,16 @@ pub(crate) fn finish_execution_conn(
     error: Option<String>,
 ) -> AppResult<()> {
     let now = Utc::now();
-    conn.execute(
+    let tx = conn.transaction()?;
+    tx.execute(
         "UPDATE scheduled_task_executions SET finished_at = ?2, status = ?3, error = ?4 WHERE id = ?1",
         params![execution_id.to_string(), now.to_rfc3339(), status, error],
     )?;
-    conn.execute(
+    tx.execute(
         "UPDATE scheduled_tasks SET active_execution_id = NULL, last_run_at = ?2, last_status = ?3, last_error = ?4, next_run_at = ?5, latest_execution_conversation_id = ?6, updated_at = ?2 WHERE id = ?1 AND active_execution_id = ?7",
         params![task_id.to_string(), now.to_rfc3339(), status, error, next_run_at.to_rfc3339(), conversation_id.to_string(), execution_id.to_string()],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -539,6 +543,51 @@ pub(crate) fn fail_claimed_task_conn(
         "UPDATE scheduled_tasks SET active_execution_id = NULL, last_run_at = ?2, last_status = 'failed', last_error = ?3, next_run_at = ?4, updated_at = ?2 WHERE id = ?1 AND active_execution_id = ?5",
         params![task_id.to_string(), now.to_rfc3339(), error, next_run_at.to_rfc3339(), execution_id.to_string()],
     )?;
+    Ok(())
+}
+
+pub(crate) fn recover_interrupted_executions_conn(conn: &mut Connection) -> AppResult<()> {
+    let now = Utc::now().to_rfc3339();
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE scheduled_task_executions
+         SET finished_at = ?1, status = 'failed',
+             error = COALESCE(error, 'interrupted by previous process shutdown')
+         WHERE status IN ('claimed', 'running') AND finished_at IS NULL",
+        [&now],
+    )?;
+    tx.execute(
+        "UPDATE scheduled_tasks
+         SET active_execution_id = NULL,
+             last_run_at = ?1,
+             last_status = 'failed',
+             last_error = 'interrupted by previous process shutdown',
+             next_run_at = CASE WHEN next_run_at > ?1 THEN next_run_at ELSE ?1 END,
+             updated_at = ?1
+         WHERE active_execution_id IS NOT NULL",
+        [&now],
+    )?;
+    tx.execute(
+        "UPDATE conversation_heartbeat_executions
+         SET finished_at = ?1, status = 'failed',
+             error = COALESCE(error, 'interrupted by previous process shutdown')
+         WHERE status = 'running' AND finished_at IS NULL",
+        [&now],
+    )?;
+    tx.execute(
+        "UPDATE conversation_heartbeats
+         SET pending = 1, last_status = 'failed',
+             last_error = 'interrupted by previous process shutdown'
+         WHERE EXISTS (
+             SELECT 1 FROM conversation_heartbeat_executions e
+             WHERE e.conversation_id = conversation_heartbeats.conversation_id
+               AND e.status = 'failed'
+               AND e.error = 'interrupted by previous process shutdown'
+               AND e.finished_at = ?1
+         )",
+        [&now],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -574,6 +623,27 @@ pub(crate) fn upsert_heartbeat_conn(
         params![heartbeat.conversation_id.to_string(), heartbeat.agent_id.to_string(), heartbeat.interval_seconds as i64, heartbeat.prompt, i64::from(heartbeat.enabled), heartbeat.next_fire_at.to_rfc3339(), i64::from(heartbeat.pending), heartbeat.last_run_at.map(|value| value.to_rfc3339()), heartbeat.last_status, heartbeat.last_error],
     )?;
     get_heartbeat_conn(conn, heartbeat.conversation_id)
+}
+
+pub(crate) fn move_heartbeat_conn(
+    conn: &mut Connection,
+    from_conversation_id: Uuid,
+    heartbeat: &ConversationHeartbeat,
+) -> AppResult<ConversationHeartbeat> {
+    let tx = conn.transaction()?;
+    if from_conversation_id != heartbeat.conversation_id {
+        let deleted = tx.execute(
+            "DELETE FROM conversation_heartbeats WHERE conversation_id = ?1",
+            [from_conversation_id.to_string()],
+        )?;
+        if deleted == 0 {
+            return Err(AppError::NotFound);
+        }
+    }
+    upsert_heartbeat_conn(&tx, heartbeat)?;
+    let result = get_heartbeat_conn(&tx, heartbeat.conversation_id)?;
+    tx.commit()?;
+    Ok(result)
 }
 
 pub(crate) fn set_heartbeat_enabled_conn(
@@ -629,13 +699,18 @@ pub(crate) fn mark_heartbeat_pending_conn(
 }
 
 impl Store {
+    pub async fn recover_interrupted_executions(&self) -> AppResult<()> {
+        self.database
+            .call(|conn| recover_interrupted_executions_conn(conn))
+            .await
+    }
     pub async fn list_scheduled_tasks(&self) -> AppResult<Vec<ScheduledTask>> {
-        self.database.call(|conn| list_tasks_conn(conn)).await
+        self.database.read(|conn| list_tasks_conn(conn)).await
     }
 
     pub async fn get_scheduled_task(&self, task_id: Uuid) -> AppResult<ScheduledTask> {
         self.database
-            .call(move |conn| get_task_conn(conn, task_id))
+            .read(move |conn| get_task_conn(conn, task_id))
             .await
     }
 
@@ -698,7 +773,7 @@ impl Store {
     ) -> AppResult<Vec<ScheduledTaskExecution>> {
         self.get_scheduled_task(task_id).await?;
         self.database
-            .call(move |conn| list_executions_conn(conn, task_id))
+            .read(move |conn| list_executions_conn(conn, task_id))
             .await
     }
 
@@ -708,7 +783,7 @@ impl Store {
     ) -> AppResult<Vec<ConversationHeartbeatExecution>> {
         self.get_conversation_heartbeat(conversation_id).await?;
         self.database
-            .call(move |conn| list_heartbeat_executions_conn(conn, conversation_id))
+            .read(move |conn| list_heartbeat_executions_conn(conn, conversation_id))
             .await
     }
 
@@ -810,12 +885,12 @@ impl Store {
         conversation_id: Uuid,
     ) -> AppResult<ConversationHeartbeat> {
         self.database
-            .call(move |conn| get_heartbeat_conn(conn, conversation_id))
+            .read(move |conn| get_heartbeat_conn(conn, conversation_id))
             .await
     }
 
     pub async fn list_conversation_heartbeats(&self) -> AppResult<Vec<ConversationHeartbeat>> {
-        self.database.call(|conn| list_heartbeats_conn(conn)).await
+        self.database.read(|conn| list_heartbeats_conn(conn)).await
     }
 
     pub async fn upsert_conversation_heartbeat(
@@ -826,6 +901,18 @@ impl Store {
         validate_heartbeat_interval(heartbeat.interval_seconds)?;
         self.database
             .call(move |conn| upsert_heartbeat_conn(conn, &heartbeat))
+            .await
+    }
+
+    pub async fn move_conversation_heartbeat(
+        &self,
+        from_conversation_id: Uuid,
+        heartbeat: ConversationHeartbeat,
+    ) -> AppResult<ConversationHeartbeat> {
+        self.get_conversation(heartbeat.conversation_id).await?;
+        validate_heartbeat_interval(heartbeat.interval_seconds)?;
+        self.database
+            .call(move |conn| move_heartbeat_conn(conn, from_conversation_id, &heartbeat))
             .await
     }
 

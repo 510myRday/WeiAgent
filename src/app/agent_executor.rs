@@ -256,7 +256,7 @@ pub async fn run_agent(
     options: RequestOptions,
     use_streaming_llm: bool,
     events: Option<mpsc::Sender<AgentRunEvent>>,
-    mut steer_receiver: mpsc::UnboundedReceiver<SteerMessage>,
+    mut steer_receiver: mpsc::Receiver<SteerMessage>,
 ) -> AppResult<()> {
     let client = state.llm_registry.client_for(&prepared.provider)?;
     let mut messages = prepared.messages_for_llm.clone();
@@ -473,7 +473,7 @@ async fn apply_pending_steers(
     state: &AppState,
     prepared: &PreparedChat,
     messages: &mut Vec<ChatMessage>,
-    receiver: &mut mpsc::UnboundedReceiver<SteerMessage>,
+    receiver: &mut mpsc::Receiver<SteerMessage>,
     events: &Option<mpsc::Sender<AgentRunEvent>>,
 ) -> AppResult<bool> {
     let mut applied = false;

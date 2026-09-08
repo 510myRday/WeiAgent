@@ -13,8 +13,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         ChatMessage, ChatMessageStatus, ChatRole, ChatShortcutAction, ChatShortcutKind,
-        ContextCheckpoint, Conversation,
-        ConversationMessagePage, ConversationUsage, ModelUsage,
+        ContextCheckpoint, Conversation, ConversationMessagePage, ConversationUsage, ModelUsage,
     },
     error::{AppError, AppResult},
 };
@@ -214,7 +213,9 @@ fn migrate_legacy_shortcut_metadata(conn: &mut Connection) -> AppResult<()> {
                  WHERE shortcut_actions_json = '[]'",
             )?;
             statement
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
                 .collect::<Result<Vec<_>, _>>()?
         };
         for (id, content) in legacy_messages {
@@ -253,16 +254,8 @@ fn parse_legacy_shortcut_actions(content: &str) -> Vec<ChatShortcutAction> {
 
 fn parse_legacy_shortcut_line(line: &str) -> Option<ChatShortcutAction> {
     const PREFIXES: &[(&str, &str, ChatShortcutKind)] = &[
-        (
-            "请优先帮我使用「",
-            "」MCP 服务。",
-            ChatShortcutKind::Mcp,
-        ),
-        (
-            "请优先帮我使用「",
-            "」技能。",
-            ChatShortcutKind::Skill,
-        ),
+        ("请优先帮我使用「", "」MCP 服务。", ChatShortcutKind::Mcp),
+        ("请优先帮我使用「", "」技能。", ChatShortcutKind::Skill),
         (
             "请优先帮我使用「",
             "」工具。",
@@ -749,10 +742,9 @@ pub(super) fn delete_conversation_conn(
 }
 
 pub(super) fn delete_agent_conversations_conn(
-    conn: &mut Connection,
+    tx: &Transaction<'_>,
     agent_id: Uuid,
 ) -> AppResult<Vec<(Uuid, Vec<ChatMessage>)>> {
-    let tx = conn.transaction()?;
     let conversations = list_conversations_conn(&tx, agent_id)?;
     let mut removed = Vec::with_capacity(conversations.len());
     for conversation in &conversations {
@@ -768,7 +760,6 @@ pub(super) fn delete_agent_conversations_conn(
         "DELETE FROM conversations WHERE agent_id = ?1",
         [agent_id.to_string()],
     )?;
-    tx.commit()?;
     Ok(removed)
 }
 

@@ -482,10 +482,17 @@ impl McpAuthRuntime {
                                         .map(|seconds| chrono::Utc::now().timestamp() + seconds),
                                 };
                                 let dir = runtime.session_dir(server_id);
-                                if fs::create_dir_all(&dir).await.is_ok() {
+                                if crate::fsutil::ensure_private_dir(&dir).await.is_ok() {
                                     if let Ok(serialized) = serde_json::to_string_pretty(&token) {
-                                        let _ = fs::write(dir.join("oauth-token.json"), serialized)
-                                            .await;
+                                        let _ = crate::fsutil::write_atomic(
+                                            &dir.join("oauth-token.json"),
+                                            serialized,
+                                        )
+                                        .await;
+                                        let _ = crate::fsutil::set_private_file(
+                                            &dir.join("oauth-token.json"),
+                                        )
+                                        .await;
                                     }
                                 }
                                 runtime.mark_connected(server_id).await;

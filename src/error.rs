@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use uuid::Uuid;
 
 use axum::{
     Json,
@@ -44,7 +45,7 @@ struct ErrorBody {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let status = match self {
+        let status = match &self {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
@@ -57,8 +58,19 @@ impl IntoResponse for AppError {
             | AppError::AddressInUse(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
+        let public_message = match status {
+            StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::CONFLICT => {
+                self.to_string()
+            }
+            _ => {
+                let error_id = Uuid::new_v4();
+                tracing::error!(%error_id, error = %self, "request failed");
+                format!("internal server error (id: {error_id})")
+            }
+        };
+
         let body = Json(ErrorBody {
-            error: self.to_string(),
+            error: public_message,
         });
         (status, body).into_response()
     }

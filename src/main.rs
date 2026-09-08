@@ -103,16 +103,16 @@ async fn main() -> AppResult<()> {
         "Local environment status"
     );
     let terminal_manager = tools::terminal::TerminalManager::new(environment_runtime.clone());
-    tokio::spawn(terminal_manager.clone().cleanup_loop());
+    let terminal_cleanup = tokio::spawn(terminal_manager.clone().cleanup_loop());
     let tool_registry = Arc::new(tools::registry::ToolRegistry::with_builtin_tools());
     let mcp_manager = Arc::new(tools::mcp::McpManager::new(
         store.clone(),
         environment_runtime.clone(),
     ));
-    tokio::spawn(mcp_manager.clone().cleanup_loop());
+    let mcp_cleanup = tokio::spawn(mcp_manager.clone().cleanup_loop());
     mcp_manager.load_cached().await?;
     let skill_manager = Arc::new(skills::SkillManager::new(store.clone()).await?);
-    skill_manager.clone().start_monitor();
+    let skill_monitor = skill_manager.clone().start_monitor();
     let state = AppState {
         api_security: api_security.clone(),
         store,
@@ -126,11 +126,11 @@ async fn main() -> AppResult<()> {
         skill_manager,
         run_manager: Arc::new(app::RunManager::new()),
     };
-    let _scheduler = app::scheduler::start(state.clone());
+    let scheduler = app::scheduler::start(state.clone());
     let app = if is_dev {
-        build_router_dev(state)
+        build_router_dev(state.clone())
     } else {
-        build_router(state)
+        build_router(state.clone())
     };
     let _vite_child = if is_dev {
         Some(start_vite_dev_server(api_security.token()).await?)
@@ -147,6 +147,12 @@ async fn main() -> AppResult<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    scheduler.abort();
+    skill_monitor.abort();
+    mcp_cleanup.abort();
+    terminal_cleanup.abort();
+    state.run_manager.cancel_all_and_wait().await?;
+    state.terminal_manager.stop_all().await;
     llm_logger.shutdown().await?;
     tracing::info!(
         failed_writes = llm_logger.failed_write_count(),

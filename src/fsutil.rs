@@ -82,6 +82,32 @@ pub async fn write_atomic(path: &Path, content: impl AsRef<[u8]>) -> AppResult<(
     Ok(())
 }
 
+/// Restrict a directory to the current OS user where the platform exposes
+/// portable Unix permission bits. Windows user-data directories inherit the
+/// profile ACL, so this is intentionally a no-op there.
+pub async fn ensure_private_dir(path: &Path) -> AppResult<()> {
+    fs::create_dir_all(path).await?;
+    set_private_dir(path).await
+}
+
+pub async fn set_private_file(_path: &Path) -> AppResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(_path, std::fs::Permissions::from_mode(0o600)).await?;
+    }
+    Ok(())
+}
+
+async fn set_private_dir(_path: &Path) -> AppResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(_path, std::fs::Permissions::from_mode(0o700)).await?;
+    }
+    Ok(())
+}
+
 #[cfg(not(windows))]
 async fn replace_file(temp_path: &Path, path: &Path) -> std::io::Result<()> {
     fs::rename(temp_path, path).await

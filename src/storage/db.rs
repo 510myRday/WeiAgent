@@ -5,7 +5,11 @@ use std::{
     time::Duration,
 };
 
+const DATABASE_QUEUE_CAPACITY: usize = 256;
+const DATABASE_READ_POOL_SIZE: usize = 4;
+
 use rusqlite::{Connection, params};
+use tokio::sync::Semaphore;
 
 use super::sql_util::{column_exists, now_rfc3339};
 
@@ -31,8 +35,10 @@ enum DatabaseCommand {
 
 struct DatabaseInner {
     path: PathBuf,
-    sender: mpsc::Sender<DatabaseCommand>,
+    sender: mpsc::SyncSender<DatabaseCommand>,
     worker: Mutex<Option<thread::JoinHandle<()>>>,
+    read_connections: Arc<Mutex<Vec<Connection>>>,
+    read_slots: Arc<Semaphore>,
 }
 
 impl Drop for DatabaseInner {
@@ -58,7 +64,7 @@ impl Database {
             std::fs::create_dir_all(parent)?;
         }
 
-        let (sender, receiver) = mpsc::channel::<DatabaseCommand>();
+        let (sender, receiver) = mpsc::sync_channel::<DatabaseCommand>(DATABASE_QUEUE_CAPACITY);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let worker_path = path.clone();
         let worker = thread::Builder::new()
@@ -93,6 +99,8 @@ impl Database {
                 path,
                 sender,
                 worker: Mutex::new(Some(worker)),
+                read_connections: Arc::new(Mutex::new(Vec::with_capacity(DATABASE_READ_POOL_SIZE))),
+                read_slots: Arc::new(Semaphore::new(DATABASE_READ_POOL_SIZE)),
             }),
         })
     }
@@ -107,12 +115,15 @@ impl Database {
         F: FnOnce(&mut Connection) -> AppResult<T> + Send + 'static,
     {
         let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
-        self.inner
-            .sender
-            .send(DatabaseCommand::Run(Box::new(move |connection| {
+        let sender = self.inner.sender.clone();
+        tokio::task::spawn_blocking(move || {
+            sender.send(DatabaseCommand::Run(Box::new(move |connection| {
                 let _ = result_sender.send(operation(connection));
             })))
-            .map_err(|_| AppError::Database("database worker is not running".to_string()))?;
+        })
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .map_err(|_| AppError::Database("database worker is not running".to_string()))?;
         result_receiver.await.map_err(|_| {
             AppError::Database("database worker dropped a pending operation".to_string())
         })?
@@ -136,6 +147,44 @@ impl Database {
                 .map_err(|_| AppError::Database("database worker panicked".to_string()))?;
         }
         Ok(())
+    }
+
+    pub async fn read<T, F>(&self, operation: F) -> AppResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> AppResult<T> + Send + 'static,
+    {
+        let permit = self
+            .inner
+            .read_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| AppError::Database("database read pool is closed".to_string()))?;
+        let path = self.inner.path.clone();
+        let connections = self.inner.read_connections.clone();
+        tokio::task::spawn_blocking(move || {
+            let connection = connections
+                .lock()
+                .map_err(|_| AppError::Database("database read pool lock is poisoned".to_string()))?
+                .pop()
+                .map(Ok)
+                .unwrap_or_else(|| open_read_connection(&path));
+            let result = match connection {
+                Ok(connection) => {
+                    let result = operation(&connection);
+                    if let Ok(mut pool) = connections.lock() {
+                        pool.push(connection);
+                    }
+                    result
+                }
+                Err(error) => Err(error),
+            };
+            drop(permit);
+            result
+        })
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?
     }
 }
 
@@ -243,6 +292,11 @@ fn open_initialized_connection(db_path: &Path) -> AppResult<Connection> {
     let mut conn = Connection::open(db_path)?;
     configure_connection(&conn)?;
     super::migrations::initialize(&mut conn)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(db_path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(conn)
 }
 
@@ -427,6 +481,14 @@ pub(super) fn migrate_base_schema(conn: &mut Connection) -> AppResult<()> {
         tx.commit()?;
     }
     Ok(())
+}
+
+fn open_read_connection(db_path: &Path) -> AppResult<Connection> {
+    let connection = Connection::open(db_path)?;
+    connection.busy_timeout(DATABASE_BUSY_TIMEOUT)?;
+    connection.pragma_update(None, "foreign_keys", true)?;
+    connection.pragma_update(None, "query_only", true)?;
+    Ok(connection)
 }
 
 #[cfg(test)]

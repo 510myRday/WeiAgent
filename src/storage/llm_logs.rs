@@ -691,7 +691,7 @@ fn cleanup_logs_conn(conn: &mut Connection) -> AppResult<()> {
     let cutoff_ms = Utc::now()
         .timestamp_millis()
         .saturating_sub((MAX_RETAINED_DAYS as i64) * 24 * 60 * 60 * 1000);
-    let mut changed = conn.execute(
+    let _ = conn.execute(
         "DELETE FROM llm_requests WHERE created_at_ms < ?1",
         params![cutoff_ms],
     )? > 0;
@@ -699,7 +699,7 @@ fn cleanup_logs_conn(conn: &mut Connection) -> AppResult<()> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM llm_requests", [], |row| row.get(0))?;
     if count > MAX_RETAINED_LOGS as i64 {
         let excess = count - MAX_RETAINED_LOGS as i64;
-        changed |= conn.execute(
+        let _ = conn.execute(
             "DELETE FROM llm_requests WHERE id IN (
                 SELECT id FROM llm_requests
                 ORDER BY created_at_ms ASC, id ASC
@@ -722,15 +722,11 @@ fn cleanup_logs_conn(conn: &mut Connection) -> AppResult<()> {
         if removed == 0 {
             break;
         }
-        changed = true;
     }
 
     conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")?;
-    let (page_count, free_count) = database_page_counts(conn)?;
-    let fragmented = page_count > 0 && free_count.saturating_mul(4) >= page_count;
-    if changed && (database_files_bytes(conn)? > MAX_DATABASE_BYTES || fragmented) {
-        conn.execute_batch("VACUUM;")?;
-    }
+    // VACUUM rewrites the whole database and blocks the single writer. The
+    // next maintenance window can compact it without delaying a user write.
     Ok(())
 }
 
@@ -746,15 +742,6 @@ fn database_page_counts(conn: &Connection) -> AppResult<(u64, u64)> {
     let page_count = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
     let free_count = conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
     Ok((page_count, free_count))
-}
-
-fn database_files_bytes(conn: &Connection) -> AppResult<u64> {
-    let path: String = conn.query_row(
-        "SELECT file FROM pragma_database_list WHERE name = 'main'",
-        [],
-        |row| row.get(0),
-    )?;
-    Ok(database_files_bytes_for_path(Path::new(&path)))
 }
 
 fn database_files_bytes_for_path(path: &Path) -> u64 {

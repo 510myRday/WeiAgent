@@ -1,5 +1,5 @@
 use chrono::Utc;
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use tokio::fs;
 use uuid::Uuid;
 
@@ -26,11 +26,9 @@ impl Store {
     }
 
     pub async fn get_agent(&self, id: Uuid) -> AppResult<Agent> {
-        self.read_agents()
-            .await?
-            .into_iter()
-            .find(|agent| agent.id == id)
-            .ok_or(AppError::NotFound)
+        self.database
+            .read(move |connection| get_agent_conn(connection, id))
+            .await
     }
 
     pub async fn create_agent(&self, request: CreateAgentRequest) -> AppResult<AgentResponse> {
@@ -133,8 +131,8 @@ impl Store {
     pub async fn delete_agent(&self, id: Uuid) -> AppResult<()> {
         let _guard = self.agents_lock.lock().await;
         let _workspace_guard = self.workspace_lock.lock().await;
-        let agents = self.read_agents_unlocked().await?;
-        if agents
+        let original_agents = self.read_agents_unlocked().await?;
+        if original_agents
             .iter()
             .any(|agent| agent.id == id && agent.is_builtin)
         {
@@ -142,53 +140,62 @@ impl Store {
                 "built-in agents cannot be deleted".to_string(),
             ));
         }
-        let mut agents = agents;
-        let before = agents.len();
-        agents.retain(|agent| agent.id != id);
-        if agents.len() == before {
-            return Err(AppError::NotFound);
-        }
-        self.write_agents_unlocked(&agents).await?;
         match self
             .database
             .call(move |conn| {
-                conn.execute(
+                let tx = conn.transaction()?;
+                tx.execute(
                     "DELETE FROM tool_mcp_agent_tools WHERE agent_id = ?1",
                     [id.to_string()],
                 )?;
-                conn.execute(
+                tx.execute(
                     "DELETE FROM tool_mcp_agent_servers WHERE agent_id = ?1",
                     [id.to_string()],
                 )?;
-                conn.execute(
+                tx.execute(
                     "DELETE FROM tool_mcp_agent_seen_tools WHERE agent_id = ?1",
                     [id.to_string()],
                 )?;
-                conn.execute(
+                tx.execute(
                     "DELETE FROM tool_mcp_agent_seen_servers WHERE agent_id = ?1",
                     [id.to_string()],
                 )?;
-                conn.execute(
+                tx.execute(
                     "DELETE FROM tool_mcp_agent_baselines WHERE agent_id = ?1",
                     [id.to_string()],
                 )?;
-                conn.execute(
+                tx.execute(
                     "DELETE FROM skill_agent_overrides WHERE agent_id = ?1",
                     [id.to_string()],
                 )?;
-                conn.execute(
+                tx.execute(
                     "DELETE FROM skill_agent_group_overrides WHERE agent_id = ?1",
                     [id.to_string()],
                 )?;
-                conn.execute(
+                tx.execute(
                     "DELETE FROM skill_agent_seen WHERE agent_id = ?1",
                     [id.to_string()],
                 )?;
-                conn.execute(
+                tx.execute(
                     "DELETE FROM skill_agent_baselines WHERE agent_id = ?1",
                     [id.to_string()],
                 )?;
-                crate::storage::conversation_db::delete_agent_conversations_conn(conn, id)
+                tx.execute(
+                    "DELETE FROM tool_web_search_agent_sources WHERE agent_id = ?1",
+                    [id.to_string()],
+                )?;
+                tx.execute(
+                    "DELETE FROM tool_settings WHERE scope_type = 'agent' AND scope_id = ?1",
+                    [id.to_string()],
+                )?;
+                let removed =
+                    crate::storage::conversation_db::delete_agent_conversations_conn(&tx, id)?;
+                let deleted = tx.execute("DELETE FROM agents WHERE id = ?1", [id.to_string()])?;
+                if deleted == 0 {
+                    return Err(AppError::NotFound);
+                }
+                tx.commit()?;
+                Ok(removed)
             })
             .await
         {
@@ -198,13 +205,7 @@ impl Store {
                         .await;
                 }
             }
-            Err(error) => {
-                let _ = self.write_agents_unlocked(&agents).await;
-                return Err(error);
-            }
-        }
-        if let Err(error) = self.delete_agent_tool_settings_unlocked(id).await {
-            tracing::warn!(agent_id = %id, %error, "failed to remove deleted agent tool settings");
+            Err(error) => return Err(error),
         }
         let workspace = self.agent_workspace_dir(id);
         if fs::metadata(&workspace).await.is_ok()
@@ -360,6 +361,61 @@ pub(super) fn read_agents_conn(conn: &Connection) -> AppResult<Vec<Agent>> {
     Ok(agents)
 }
 
+pub(super) fn get_agent_conn(conn: &Connection, id: Uuid) -> AppResult<Agent> {
+    let row = conn
+        .query_row(
+            "SELECT id, name, description, model_provider_id, model_id, is_builtin,
+                    avatar_icon, avatar_color, created_at, updated_at
+             FROM agents WHERE id = ?1",
+            [id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        id,
+        name,
+        description,
+        model_provider_id,
+        model_id,
+        is_builtin,
+        avatar_icon,
+        avatar_color,
+        created_at,
+        updated_at,
+    )) = row
+    else {
+        return Err(AppError::NotFound);
+    };
+    Ok(Agent {
+        id: crate::storage::sql_util::parse_uuid(&id, "agents.id")?,
+        name,
+        description,
+        model_provider_id: crate::storage::sql_util::parse_uuid(
+            &model_provider_id,
+            "agents.model_provider_id",
+        )?,
+        model_id,
+        is_builtin: crate::storage::sql_util::i64_to_bool(is_builtin, "agents.is_builtin")?,
+        avatar_icon,
+        avatar_color,
+        created_at: crate::storage::sql_util::parse_datetime(&created_at, "agents.created_at")?,
+        updated_at: crate::storage::sql_util::parse_datetime(&updated_at, "agents.updated_at")?,
+    })
+}
+
 fn upsert_agent_tx(tx: &Transaction<'_>, agent: &Agent) -> AppResult<()> {
     tx.execute(
         "INSERT INTO agents (
@@ -393,6 +449,12 @@ fn upsert_agent_tx(tx: &Transaction<'_>, agent: &Agent) -> AppResult<()> {
 
 pub(super) fn write_agents_conn(conn: &mut Connection, agents: &[Agent]) -> AppResult<()> {
     let tx = conn.transaction()?;
+    write_agents_tx(&tx, agents)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn write_agents_tx(tx: &Transaction<'_>, agents: &[Agent]) -> AppResult<()> {
     let keep = agents
         .iter()
         .map(|agent| agent.id.to_string())
@@ -409,6 +471,5 @@ pub(super) fn write_agents_conn(conn: &mut Connection, agents: &[Agent]) -> AppR
     for agent in agents {
         upsert_agent_tx(&tx, agent)?;
     }
-    tx.commit()?;
     Ok(())
 }

@@ -273,10 +273,10 @@ impl SkillManager {
         Ok(())
     }
 
-    pub fn start_monitor(self: Arc<Self>) {
+    pub fn start_monitor(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             self.monitor_loop().await;
-        });
+        })
     }
 
     async fn monitor_loop(self: Arc<Self>) {
