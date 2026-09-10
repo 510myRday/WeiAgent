@@ -44,6 +44,7 @@ pub struct ToolExecutionContext {
     pub approval_manager: Arc<ApprovalManager>,
     pub event_sender: Option<mpsc::Sender<ToolExecutionEvent>>,
     pub web_search_provenance: WebSearchProvenanceCache,
+    pub supports_multimodal: bool,
 }
 
 #[async_trait]
@@ -64,6 +65,7 @@ impl ToolRegistry {
         };
         registry.register(ExecuteTerminalTool);
         registry.register(TerminalSessionTool);
+        registry.register(ReadImagesTool);
         registry.register(MultiEditFileTool);
         registry.register(WebExtractTool);
         registry.register(WebSearchTool);
@@ -116,6 +118,14 @@ impl ToolRegistry {
                 message: format!("Unknown tool: {name}"),
             };
         };
+        if canonical_name == READ_IMAGES_TOOL_NAME && !context.supports_multimodal {
+            return ToolResult::Blocked {
+                reason: "The selected model is not configured for multimodal image input"
+                    .to_string(),
+                code: Some("MultimodalRequired".to_string()),
+                details: None,
+            };
+        }
         if !tool.is_enabled(&context.tools_config) {
             return ToolResult::Blocked {
                 reason: format!("Tool '{name}' is disabled"),
@@ -196,10 +206,12 @@ impl ToolRegistry {
     }
 }
 
+mod image;
 mod multi_edit;
 mod terminal;
 mod web_search;
 
+use image::{READ_IMAGES_TOOL_NAME, ReadImagesTool};
 use multi_edit::MultiEditFileTool;
 use terminal::{ExecuteTerminalTool, TerminalSessionTool};
 use web_search::{WebExtractTool, WebSearchSourcesTool, WebSearchTool};
@@ -634,7 +646,8 @@ mod tests {
         assert!(names.contains(&"terminal_session"));
         assert!(names.contains(&"multi_file_operation"));
         assert!(names.contains(&"task_planning"));
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 8);
+        assert!(names.contains(&"read_images"));
 
         config.terminal.enabled = false;
         let terminal_disabled = ToolRegistry::with_builtin_tools()
@@ -801,6 +814,7 @@ mod tests {
             vec![
                 "execute_terminal",
                 "multi_file_operation",
+                "read_images",
                 "task_planning",
                 "terminal_session",
                 "web_extract",
@@ -927,6 +941,7 @@ mod tests {
             approval_manager: Arc::new(crate::tools::approval::ApprovalManager::new()),
             event_sender: None,
             web_search_provenance: Default::default(),
+            supports_multimodal: false,
         };
         let registry = ToolRegistry::with_builtin_tools();
         let conversation_id = Uuid::new_v4();

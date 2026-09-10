@@ -192,7 +192,7 @@ pub(crate) fn strip_tool_call_ui_fields(tool_calls: &serde_json::Value) -> serde
 }
 
 fn openai_message_content(message: &ChatMessage) -> serde_json::Value {
-    if message.role != ChatRole::User || message.attachments.is_empty() {
+    if !matches!(message.role, ChatRole::User | ChatRole::Tool) || message.attachments.is_empty() {
         return serde_json::Value::String(message.content.clone());
     }
     let mut content = Vec::new();

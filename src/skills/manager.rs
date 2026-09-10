@@ -3,11 +3,11 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 
 use chrono::Utc;
-use futures_util::{StreamExt, stream::FuturesUnordered};
+use futures_util::{StreamExt, stream};
 use reqwest::Url;
 use serde::Deserialize;
 use serde_json::Value;
@@ -27,7 +27,7 @@ use crate::{
 
 use super::{
     parser::{COLLAPSED_FILE_KIND, discover_display_files, is_collapsed_directory, parse_skill},
-    path_policy::{MAX_SKILL_FILE_BYTES, relative_file},
+    path_policy::relative_file,
 };
 
 use crate::storage::{BUILTIN_SKILL_GROUP_ID, BUILTIN_WEIAGENT_CLI_SKILL_NAME};
@@ -77,13 +77,16 @@ fn display_path(path: &Path) -> String {
 
 pub const SKILL_VIEW_TOOL_NAME: &str = "skill_view";
 
-const MAX_REMOTE_SKILL_FILES: usize = 256;
-const MAX_REMOTE_SKILL_BYTES: usize = 32 * 1024 * 1024;
+const MAX_REMOTE_SKILL_BYTES: u64 = 1024 * 1024 * 1024;
+const REMOTE_DOWNLOAD_CONCURRENCY: usize = 8;
 const REMOTE_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(8);
+const REMOTE_REQUEST_RETRIES: usize = 3;
+const REMOTE_RETRY_BACKOFF: Duration = Duration::from_millis(300);
 const DEFAULT_SKILL_VIEW_MAX_CHARS: usize = 12_000;
 const MAX_SKILL_VIEW_MAX_CHARS: usize = 12_000;
 const SKILL_RESOURCE_DIRECTORIES: [&str; 5] =
     ["references", "scripts", "examples", "templates", "assets"];
+const SKILL_RELATIONS_FILE: &str = "skill-relations.json";
 
 #[derive(Default)]
 struct Catalog {
@@ -451,11 +454,13 @@ impl SkillManager {
         Ok(())
     }
 
-    pub async fn create_import_task(
+    pub async fn create_import_task_with_context(
         &self,
         source: &str,
         kind: &str,
         group_id: Option<String>,
+        proxy_url: Option<String>,
+        expected_name: Option<String>,
     ) -> AppResult<SkillImportTask> {
         let source = source.trim();
         if source.is_empty() {
@@ -478,10 +483,17 @@ impl SkillManager {
             status: "queued".to_string(),
             phase: "preparing".to_string(),
             progress: 0,
+            current_file: None,
+            downloaded_files: 0,
+            total_files: 0,
+            downloaded_bytes: 0,
+            total_bytes: None,
             error: None,
             created_at: now.clone(),
             updated_at: now,
             finished_at: None,
+            proxy_url,
+            expected_name,
         };
         let mut tasks = self.import_tasks.write().await;
         tasks.insert(task.id, task.clone());
@@ -525,14 +537,20 @@ impl SkillManager {
             "local"
         };
         let task = self
-            .create_import_task(&source, kind, manifest.group_id.clone())
+            .create_import_task_with_context(
+                &source,
+                kind,
+                manifest.group_id.clone(),
+                if kind == "network" {
+                    manifest.update_proxy_url.clone()
+                } else {
+                    None
+                },
+                Some(name.clone()),
+            )
             .await?;
         let manager = self.clone();
-        let proxy_url = if kind == "network" {
-            manifest.update_proxy_url.clone()
-        } else {
-            None
-        };
+        let proxy_url = task.proxy_url.clone();
         let group_id = manifest.group_id.clone();
         tokio::spawn(async move {
             manager
@@ -549,6 +567,18 @@ impl SkillManager {
         proxy_url: Option<String>,
         group_id: Option<String>,
     ) {
+        self.run_import_task_with_expected(task_id, source, proxy_url, group_id, None)
+            .await;
+    }
+
+    async fn run_import_task_with_expected(
+        &self,
+        task_id: Uuid,
+        source: String,
+        proxy_url: Option<String>,
+        group_id: Option<String>,
+        expected_name: Option<String>,
+    ) {
         self.update_import_task(task_id, "running", "preparing", 5, None, false)
             .await;
         let result = if looks_like_url(&source) {
@@ -557,12 +587,17 @@ impl SkillManager {
                 proxy_url.as_deref(),
                 Some(task_id),
                 group_id.as_deref(),
-                None,
+                expected_name.as_deref(),
             )
             .await
         } else {
-            self.import_directory_with_progress(&source, Some(task_id), group_id.as_deref(), None)
-                .await
+            self.import_directory_with_progress(
+                &source,
+                Some(task_id),
+                group_id.as_deref(),
+                expected_name.as_deref(),
+            )
+            .await
         };
         match result {
             Ok(()) => {
@@ -581,6 +616,47 @@ impl SkillManager {
                 .await;
             }
         }
+    }
+
+    pub async fn retry_import_task(self: &Arc<Self>, task_id: Uuid) -> AppResult<SkillImportTask> {
+        let task = {
+            let tasks = self.import_tasks.read().await;
+            tasks.get(&task_id).cloned().ok_or(AppError::NotFound)?
+        };
+        if task.status != "failed" {
+            return Err(AppError::BadRequest(
+                "only failed Skill downloads can be retried".to_string(),
+            ));
+        }
+        {
+            let mut tasks = self.import_tasks.write().await;
+            let current = tasks.get_mut(&task_id).ok_or(AppError::NotFound)?;
+            current.status = "queued".to_string();
+            current.phase = "preparing".to_string();
+            current.progress = 0;
+            current.current_file = None;
+            current.downloaded_files = 0;
+            current.total_files = 0;
+            current.downloaded_bytes = 0;
+            current.total_bytes = None;
+            current.error = None;
+            current.updated_at = Utc::now().to_rfc3339();
+            current.finished_at = None;
+        }
+        let manager = self.clone();
+        tokio::spawn(async move {
+            manager
+                .run_import_task_with_expected(
+                    task_id,
+                    task.source,
+                    task.proxy_url,
+                    task.group_id,
+                    task.expected_name,
+                )
+                .await;
+        });
+        let tasks = self.import_tasks.read().await;
+        tasks.get(&task_id).cloned().ok_or(AppError::NotFound)
     }
 
     pub async fn run_update_task(
@@ -653,6 +729,51 @@ impl SkillManager {
         }
     }
 
+    async fn update_import_download_progress(
+        &self,
+        task_id: Option<Uuid>,
+        current_file: Option<String>,
+        downloaded_files: usize,
+        total_files: usize,
+        downloaded_bytes: u64,
+        total_bytes: Option<u64>,
+    ) {
+        let Some(task_id) = task_id else {
+            return;
+        };
+        let mut tasks = self.import_tasks.write().await;
+        let Some(task) = tasks.get_mut(&task_id) else {
+            return;
+        };
+        let progress = total_bytes
+            .filter(|total| *total > 0)
+            .map(|total| {
+                downloaded_bytes
+                    .saturating_mul(60)
+                    .checked_div(total)
+                    .unwrap_or(0) as u8
+            })
+            .unwrap_or_else(|| {
+                if total_files == 0 {
+                    0
+                } else {
+                    downloaded_files
+                        .saturating_mul(60)
+                        .checked_div(total_files)
+                        .unwrap_or(0) as u8
+                }
+            })
+            .min(60);
+        task.phase = "downloading".to_string();
+        task.progress = 20u8.saturating_add(progress);
+        task.current_file = current_file;
+        task.downloaded_files = downloaded_files;
+        task.total_files = total_files;
+        task.downloaded_bytes = downloaded_bytes;
+        task.total_bytes = total_bytes;
+        task.updated_at = Utc::now().to_rfc3339();
+    }
+
     async fn import_directory_with_progress(
         &self,
         source_directory: &str,
@@ -674,9 +795,7 @@ impl SkillManager {
                 .await;
         }
 
-        let temporary = self
-            .root
-            .join(format!(".import-{}", Uuid::new_v4().simple()));
+        let temporary = self.import_temporary_path(task_id);
         if let Err(error) = copy_skill_directory(&source, &temporary).await {
             let _ = fs::remove_dir_all(&temporary).await;
             return Err(error);
@@ -684,12 +803,13 @@ impl SkillManager {
         let result = self
             .finish_import(
                 temporary.clone(),
+                None,
                 Some(&source_display),
                 group_id,
                 expected_name,
             )
             .await;
-        if result.is_err() {
+        if result.is_err() && task_id.is_none() {
             let _ = fs::remove_dir_all(&temporary).await;
         }
         result
@@ -722,10 +842,10 @@ impl SkillManager {
                 .await;
         }
         let selected = select_remote_route(parsed, cdn, proxy_url).await?;
-        let temporary = self
-            .root
-            .join(format!(".import-{}", Uuid::new_v4().simple()));
-        fs::create_dir_all(&temporary).await?;
+        let temporary = self.import_temporary_path(task_id);
+        let skill_temporary = temporary.join("skill");
+        let sibling_temporary = temporary.join("siblings");
+        fs::create_dir_all(&skill_temporary).await?;
 
         let result = async {
             let skill_md = selected.skill_md;
@@ -734,60 +854,136 @@ impl SkillManager {
                 self.update_import_task(task_id, "running", "downloading", 45, None, false)
                     .await;
             }
-            fs::write(temporary.join("SKILL.md"), skill_md.as_bytes()).await?;
+            write_skill_download(&skill_temporary.join("SKILL.md"), skill_md.as_bytes()).await?;
 
             let mut downloaded = 1usize;
-            let mut downloaded_bytes = skill_md.len();
+            let mut downloaded_bytes = skill_md.len() as u64;
             let referenced = referenced_skill_files(&skill_md);
 
-            if let Some(github) = selected.github.as_ref() {
-                if let Ok(tree) = fetch_github_tree(&selected.client, github).await {
+            if let Some(github) = selected
+                .routes
+                .first()
+                .and_then(|route| route.source.github.as_ref())
+            {
+                if let Some(tree) = fetch_github_tree_with_fallback(&selected.routes, github).await
+                {
                     let files =
-                        select_github_skill_files(&tree, &github.skill_directory, &referenced);
-                    for path in files {
-                        if downloaded >= MAX_REMOTE_SKILL_FILES {
-                            return Err(AppError::BadRequest(
-                                "remote Skill contains too many files".to_string(),
-                            ));
+                        select_github_skill_files(&tree, &github.skill_directory, &referenced)
+                            .into_iter()
+                            .filter(|file| {
+                                !file.relative_path.eq_ignore_ascii_case("SKILL.md")
+                                    && valid_download_path(&file.relative_path)
+                            })
+                            .collect::<Vec<_>>();
+                    let total_files = files.len() + 1;
+                    let total_bytes = files
+                        .iter()
+                        .map(|file| file.size)
+                        .collect::<Option<Vec<_>>>()
+                        .map(|sizes| {
+                            sizes
+                                .into_iter()
+                                .fold(skill_md.len() as u64, |total, size| {
+                                    total.saturating_add(size)
+                                })
+                        });
+                    if total_bytes.is_some_and(|total| total > MAX_REMOTE_SKILL_BYTES) {
+                        return Err(AppError::BadRequest(
+                            "remote Skill exceeds the 1 GiB download limit".to_string(),
+                        ));
+                    }
+                    self.update_import_download_progress(
+                        task_id,
+                        files.first().map(|file| file.relative_path.clone()),
+                        downloaded,
+                        total_files,
+                        downloaded_bytes,
+                        total_bytes,
+                    )
+                    .await;
+                    let mut pending_files = Vec::new();
+                    for file in files {
+                        let destination_root = if file.sibling {
+                            &sibling_temporary
+                        } else {
+                            &skill_temporary
+                        };
+                        let destination = destination_root.join(&file.relative_path);
+                        if is_cached_download(&destination, file.size).await {
+                            downloaded += 1;
+                            downloaded_bytes = downloaded_bytes.saturating_add(
+                                fs::metadata(&destination)
+                                    .await
+                                    .map(|item| item.len())
+                                    .unwrap_or(0),
+                            );
+                        } else {
+                            pending_files.push(file);
                         }
-                        let relative = path
-                            .strip_prefix(&format!("{}/", github.skill_directory))
-                            .unwrap_or(&path)
-                            .to_string();
-                        if relative.eq_ignore_ascii_case("SKILL.md")
-                            || !valid_download_path(&relative)
-                        {
-                            continue;
+                    }
+                    self.update_import_download_progress(
+                        task_id,
+                        pending_files.first().map(|file| file.relative_path.clone()),
+                        downloaded,
+                        total_files,
+                        downloaded_bytes,
+                        total_bytes,
+                    )
+                    .await;
+                    let routes = Arc::new(selected.routes.clone());
+                    let github = github.clone();
+                    let downloads = stream::iter(pending_files.into_iter().map(|file| {
+                        let routes = routes.clone();
+                        let github = github.clone();
+                        async move {
+                            let bytes = download_bytes_with_fallback(
+                                routes.as_ref(),
+                                &github,
+                                &file.remote_path,
+                            )
+                            .await?;
+                            Ok::<_, AppError>((file, bytes))
                         }
-                        let file_url = selected
-                            .source
-                            .skill_md_url
-                            .join(relative.as_str())
-                            .map_err(|error| {
-                                AppError::BadRequest(format!(
-                                    "invalid Skill resource path: {error}"
-                                ))
-                            })?;
-                        let bytes = download_bytes(&selected.client, &file_url).await?;
-                        downloaded_bytes = downloaded_bytes.saturating_add(bytes.len());
+                    }))
+                    .buffer_unordered(REMOTE_DOWNLOAD_CONCURRENCY);
+                    tokio::pin!(downloads);
+                    while let Some(result) = downloads.next().await {
+                        let (file, bytes) = result?;
+                        downloaded_bytes = downloaded_bytes.saturating_add(bytes.len() as u64);
                         if downloaded_bytes > MAX_REMOTE_SKILL_BYTES {
                             return Err(AppError::BadRequest(
-                                "remote Skill is too large".to_string(),
+                                "remote Skill exceeds the 1 GiB download limit".to_string(),
                             ));
                         }
-                        let destination = temporary.join(&relative);
+                        let destination_root = if file.sibling {
+                            &sibling_temporary
+                        } else {
+                            &skill_temporary
+                        };
+                        let destination = destination_root.join(&file.relative_path);
                         if let Some(parent) = destination.parent() {
                             fs::create_dir_all(parent).await?;
                         }
-                        fs::write(destination, &bytes).await?;
+                        write_skill_download(&destination, &bytes).await?;
                         downloaded += 1;
+                        self.update_import_download_progress(
+                            task_id,
+                            Some(file.relative_path),
+                            downloaded,
+                            total_files,
+                            downloaded_bytes,
+                            total_bytes,
+                        )
+                        .await;
                     }
                 } else {
                     download_referenced_files(
-                        &selected.client,
-                        &temporary,
-                        &selected.source.skill_md_url,
+                        self,
+                        &selected.routes,
+                        &skill_temporary,
+                        task_id,
                         &referenced,
+                        referenced.iter().filter(|item| !item.sibling).count() + 1,
                         &mut downloaded,
                         &mut downloaded_bytes,
                     )
@@ -795,10 +991,12 @@ impl SkillManager {
                 }
             } else {
                 download_referenced_files(
-                    &selected.client,
-                    &temporary,
-                    &selected.source.skill_md_url,
+                    self,
+                    &selected.routes,
+                    &skill_temporary,
+                    task_id,
                     &referenced,
+                    referenced.iter().filter(|item| !item.sibling).count() + 1,
                     &mut downloaded,
                     &mut downloaded_bytes,
                 )
@@ -809,20 +1007,34 @@ impl SkillManager {
                 self.update_import_task(task_id, "running", "installing", 85, None, false)
                     .await;
             }
-            self.finish_import(temporary.clone(), Some(source), group_id, expected_name)
-                .await
+            self.finish_import(
+                skill_temporary.clone(),
+                Some(&sibling_temporary),
+                Some(source),
+                group_id,
+                expected_name,
+            )
+            .await
         }
         .await;
 
-        if result.is_err() {
+        if result.is_err() && task_id.is_none() {
             let _ = fs::remove_dir_all(&temporary).await;
         }
         result
     }
 
+    fn import_temporary_path(&self, task_id: Option<Uuid>) -> PathBuf {
+        self.root.join(match task_id {
+            Some(task_id) => format!(".import-{task_id}"),
+            None => format!(".import-{}", Uuid::new_v4().simple()),
+        })
+    }
+
     async fn finish_import(
         &self,
         temporary: PathBuf,
+        sibling_temporary: Option<&Path>,
         source_url: Option<&str>,
         group_id: Option<&str>,
         expected_name: Option<&str>,
@@ -865,11 +1077,131 @@ impl SkillManager {
             let _ = fs::remove_dir_all(&temporary).await;
             return Err(error.into());
         }
+        let attached_skill_names = if let Some(sibling_temporary) = sibling_temporary {
+            match Self::install_sibling_directories(sibling_temporary, &self.root).await {
+                Ok(names) => names,
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&destination).await;
+                    return Err(error);
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        if let Some(sibling_temporary) = sibling_temporary {
+            if let Some(staging_root) = sibling_temporary.parent() {
+                let _ = fs::remove_dir_all(staging_root).await;
+            }
+        }
+        self.update_skill_relations(&manifest.name, &attached_skill_names)
+            .await?;
         self.store
             .update_skill_source(&manifest.name, source_url.map(str::to_string))
             .await?;
         self.store.set_skill_group(&manifest.name, group_id).await?;
         self.refresh().await
+    }
+
+    async fn read_skill_relations(&self) -> AppResult<(BTreeMap<String, Vec<String>>, bool)> {
+        let path = self.root.join(SKILL_RELATIONS_FILE);
+        match fs::read_to_string(path).await {
+            Ok(content) => Ok((serde_json::from_str(&content)?, true)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok((BTreeMap::new(), false))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn write_skill_relations(
+        &self,
+        relations: &BTreeMap<String, Vec<String>>,
+    ) -> AppResult<()> {
+        let path = self.root.join(SKILL_RELATIONS_FILE);
+        if relations.is_empty() {
+            match fs::remove_file(path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            return Ok(());
+        }
+        fsutil::write_atomic(&path, serde_json::to_string_pretty(relations)?).await
+    }
+
+    async fn update_skill_relations(&self, source: &str, attached: &[String]) -> AppResult<()> {
+        let (mut relations, _) = self.read_skill_relations().await?;
+        for names in relations.values_mut() {
+            names.retain(|name| !attached.iter().any(|attached_name| attached_name == name));
+        }
+        relations.retain(|_, names| {
+            names.sort();
+            names.dedup();
+            !names.is_empty()
+        });
+        relations.remove(source);
+        let mut attached = attached.to_vec();
+        attached.sort();
+        attached.dedup();
+        if !attached.is_empty() {
+            relations.insert(source.to_string(), attached);
+        }
+        self.write_skill_relations(&relations).await
+    }
+
+    async fn sync_skill_relations(
+        &self,
+        manifests: &[SkillManifest],
+    ) -> AppResult<HashMap<String, String>> {
+        let (mut relations, existed) = self.read_skill_relations().await?;
+        let known = manifests
+            .iter()
+            .map(|manifest| manifest.name.as_str())
+            .collect::<HashSet<_>>();
+        for names in relations.values_mut() {
+            names.retain(|name| known.contains(name.as_str()));
+            names.sort();
+            names.dedup();
+        }
+        relations.retain(|source, names| known.contains(source.as_str()) && !names.is_empty());
+        if existed || !relations.is_empty() {
+            self.write_skill_relations(&relations).await?;
+        }
+        let mut source_by_skill = HashMap::new();
+        for (source, names) in relations {
+            for name in names {
+                source_by_skill
+                    .entry(name)
+                    .or_insert_with(|| source.clone());
+            }
+        }
+        Ok(source_by_skill)
+    }
+
+    async fn install_sibling_directories(staging: &Path, root: &Path) -> AppResult<Vec<String>> {
+        if !fs::try_exists(staging).await? {
+            return Ok(Vec::new());
+        }
+        let mut attached_names = Vec::new();
+        let mut entries = fs::read_dir(staging).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let source = entry.path();
+            let metadata = fs::symlink_metadata(&source).await?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(AppError::BadRequest(
+                    "downloaded sibling resources must be directories".to_string(),
+                ));
+            }
+            if let Ok(manifest) = parse_skill(source.clone()).await {
+                attached_names.push(manifest.name);
+            }
+            let destination = root.join(entry.file_name());
+            if fs::try_exists(&destination).await? {
+                fs::remove_dir_all(&destination).await?;
+            }
+            fs::rename(source, destination).await?;
+        }
+        Ok(attached_names)
     }
 
     pub async fn settings(&self, agent_id: Option<Uuid>) -> AppResult<SkillSettings> {
@@ -898,6 +1230,8 @@ impl SkillManager {
             })
             .collect::<Vec<_>>();
         conflicts.sort_by(|a, b| a.name.cmp(&b.name));
+        let catalog_manifests = catalog.manifests.clone();
+        let catalog_diagnostics = catalog.diagnostics.clone();
         let known_skill_names = catalog
             .manifests
             .iter()
@@ -908,6 +1242,7 @@ impl SkillManager {
         self.store
             .ensure_skill_group_assignments(&known_skill_names)
             .await?;
+        let source_by_skill = self.sync_skill_relations(&catalog_manifests).await?;
         let assignments = self.store.read_skill_group_assignments().await?;
         let assignments_by_skill = assignments
             .iter()
@@ -932,7 +1267,6 @@ impl SkillManager {
         };
         global.groups = normalize_group_overrides(global.groups, &groups_by_name);
         agent.groups = normalize_group_overrides(agent.groups, &groups_by_name);
-        let catalog = self.catalog.read().await;
         let mut defaults = Vec::new();
         let mut effective = Vec::new();
         let groups = group_records
@@ -956,7 +1290,7 @@ impl SkillManager {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        for manifest in &catalog.manifests {
+        for manifest in &catalog_manifests {
             if duplicate_names.contains(&manifest.name) {
                 continue;
             }
@@ -979,12 +1313,19 @@ impl SkillManager {
             item.group = assigned_group.map(|group| group.name.clone());
             item.group_id = assigned_group.map(|group| group.id.clone());
             item.is_builtin = is_builtin;
-            item.icon_url = icons.get(&manifest.name).cloned();
+            // Attached Skills share the icon owned by their source Skill. Keep the
+            // storage entries independent so an attached Skill can never shadow it.
+            let icon_owner = source_by_skill
+                .get(&manifest.name)
+                .map(String::as_str)
+                .unwrap_or(manifest.name.as_str());
+            item.icon_url = icons.get(icon_owner).cloned();
             item.source_url = sources
                 .get(&manifest.name)
                 .cloned()
                 .or_else(|| (!is_builtin).then(|| manifest.root_dir.clone()));
-            item.icon_proxy_url = proxies.get(&manifest.name).and_then(|item| item.0.clone());
+            item.source_skill = source_by_skill.get(&manifest.name).cloned();
+            item.icon_proxy_url = proxies.get(icon_owner).and_then(|item| item.0.clone());
             item.update_proxy_url = proxies.get(&manifest.name).and_then(|item| item.1.clone());
             item.enabled = enabled;
             item.global_override = if is_builtin { None } else { global_item };
@@ -1010,7 +1351,7 @@ impl SkillManager {
             .into_iter()
             .collect();
         let orphan_groups = Vec::new();
-        let mut diagnostics = catalog.diagnostics.clone();
+        let mut diagnostics = catalog_diagnostics;
         for item in &defaults {
             diagnostics.extend(item.diagnostics.clone());
         }
@@ -1152,8 +1493,19 @@ impl SkillManager {
             ));
         }
         fs::remove_dir_all(&skill_root).await?;
+        self.remove_skill_relation(&name).await?;
         self.store.delete_skill_metadata(&name).await?;
         self.refresh().await
+    }
+
+    async fn remove_skill_relation(&self, name: &str) -> AppResult<()> {
+        let (mut relations, _) = self.read_skill_relations().await?;
+        relations.remove(name);
+        for names in relations.values_mut() {
+            names.retain(|item| item != name);
+        }
+        relations.retain(|_, names| !names.is_empty());
+        self.write_skill_relations(&relations).await
     }
 
     async fn read_content(
@@ -1380,18 +1732,15 @@ struct RemoteSkillSource {
     github: Option<GithubSkillSource>,
 }
 
-struct SelectedRemoteRoute {
+#[derive(Clone)]
+struct RemoteRoute {
     source: RemoteSkillSource,
-    github: Option<GithubSkillSource>,
     client: reqwest::Client,
-    skill_md: String,
 }
 
-struct RemoteProbeResult {
-    source: RemoteSkillSource,
-    proxy_url: Option<String>,
-    elapsed: Duration,
-    skill_md: AppResult<String>,
+struct SelectedRemoteRoute {
+    routes: Vec<RemoteRoute>,
+    skill_md: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1404,6 +1753,22 @@ struct GithubTreeEntry {
     path: String,
     #[serde(rename = "type")]
     entry_type: String,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SkillReference {
+    path: String,
+    sibling: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GithubSkillFile {
+    remote_path: String,
+    relative_path: String,
+    sibling: bool,
+    size: Option<u64>,
 }
 
 fn looks_like_url(value: &str) -> bool {
@@ -1573,72 +1938,173 @@ async fn select_remote_route(
     cdn: Option<RemoteSkillSource>,
     proxy_url: Option<&str>,
 ) -> AppResult<SelectedRemoteRoute> {
+    let has_proxy = proxy_url
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
     let mut candidates = Vec::new();
-    candidates.push((source, None));
-    if let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) {
-        candidates.push((candidates[0].0.clone(), Some(proxy_url.to_string())));
+    if has_proxy {
+        candidates.push((source.clone(), proxy_url.map(str::to_string)));
+        if let Some(cdn) = cdn.clone() {
+            candidates.push((cdn, proxy_url.map(str::to_string)));
+        }
     }
+    candidates.push((source, None));
     if let Some(cdn) = cdn {
         candidates.push((cdn, None));
-        if let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) {
-            let cdn = candidates
-                .last()
-                .map(|item| item.0.clone())
-                .ok_or_else(|| {
-                    AppError::Process("failed to prepare Skill CDN route".to_string())
-                })?;
-            candidates.push((cdn, Some(proxy_url.to_string())));
+    }
+
+    let mut routes = Vec::new();
+    let mut errors = Vec::new();
+    for (source, proxy_url) in candidates.iter() {
+        let client = match build_remote_client(proxy_url.as_deref(), REMOTE_PREFLIGHT_TIMEOUT) {
+            Ok(client) => client,
+            Err(error) => {
+                errors.push(error.to_string());
+                continue;
+            }
+        };
+        match download_text_with_retries(&client, &source.skill_md_url).await {
+            Ok(skill_md) => match validate_skill_markdown_text(&skill_md) {
+                Ok(()) => {
+                    routes.push(RemoteRoute {
+                        source: source.clone(),
+                        client,
+                    });
+                    for (remaining_source, remaining_proxy_url) in candidates.iter() {
+                        if remaining_source.skill_md_url == source.skill_md_url
+                            && remaining_proxy_url == proxy_url
+                        {
+                            continue;
+                        }
+                        let Ok(remaining_client) = build_remote_client(
+                            remaining_proxy_url.as_deref(),
+                            REMOTE_PREFLIGHT_TIMEOUT,
+                        ) else {
+                            continue;
+                        };
+                        routes.push(RemoteRoute {
+                            source: remaining_source.clone(),
+                            client: remaining_client,
+                        });
+                    }
+                    return Ok(SelectedRemoteRoute { routes, skill_md });
+                }
+                Err(error) => errors.push(error.to_string()),
+            },
+            Err(error) => errors.push(error.to_string()),
         }
     }
-    let mut probes = FuturesUnordered::new();
-    for (source, proxy_url) in candidates {
-        let probe_client = build_remote_client(proxy_url.as_deref(), REMOTE_PREFLIGHT_TIMEOUT)?;
-        probes.push(async move {
-            let started = Instant::now();
-            let skill_md = download_text(&probe_client, &source.skill_md_url).await;
-            RemoteProbeResult {
-                source,
-                proxy_url,
-                elapsed: started.elapsed(),
-                skill_md,
-            }
-        });
-    }
 
-    let mut successful = Vec::new();
-    while let Some(result) = probes.next().await {
-        if let Ok(skill_md) = result.skill_md {
-            if validate_skill_markdown_text(&skill_md).is_ok() {
-                successful.push((result.elapsed, result.source, result.proxy_url, skill_md));
-            }
-        }
-    }
-
-    if let Some((_, source, proxy_url, skill_md)) = successful
-        .into_iter()
-        .min_by_key(|(elapsed, _, _, _)| *elapsed)
-    {
-        let client = build_remote_client(proxy_url.as_deref(), Duration::from_secs(30))?;
-        let github = source.github.clone();
-        return Ok(SelectedRemoteRoute {
-            source,
-            github,
-            client,
-            skill_md,
-        });
-    }
-
-    Err(AppError::BadRequest(format!(
-        "could not reach a valid Skill source within {} seconds; check the URL or proxy",
-        REMOTE_PREFLIGHT_TIMEOUT.as_secs()
+    Err(AppError::Process(format!(
+        "could not reach a valid Skill source after fallback attempts: {}",
+        errors.join("; "),
     )))
 }
 
+async fn download_bytes_with_fallback(
+    routes: &[RemoteRoute],
+    github: &GithubSkillSource,
+    remote_path: &str,
+) -> AppResult<Vec<u8>> {
+    let mut errors = Vec::new();
+    for route in routes {
+        let url = remote_skill_file_url(&route.source, github, remote_path)?;
+        match download_bytes_with_retries(&route.client, &url).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) => errors.push(format!("{url}: {error}")),
+        }
+    }
+    Err(AppError::Process(format!(
+        "failed to download Skill resource after fallback attempts: {}",
+        errors.join("; "),
+    )))
+}
+
+async fn download_referenced_bytes_with_fallback(
+    routes: &[RemoteRoute],
+    relative: &str,
+) -> AppResult<Option<Vec<u8>>> {
+    let mut errors = Vec::new();
+    for route in routes {
+        let file_url = route.source.skill_md_url.join(relative).map_err(|error| {
+            AppError::BadRequest(format!("invalid referenced Skill path: {error}"))
+        })?;
+        match download_bytes_if_exists_with_retries(&route.client, &file_url).await {
+            Ok(Some(bytes)) => return Ok(Some(bytes)),
+            Ok(None) => continue,
+            Err(error) => errors.push(format!("{file_url}: {error}")),
+        }
+    }
+    if errors.is_empty() {
+        Ok(None)
+    } else {
+        Err(AppError::Process(format!(
+            "failed to download referenced Skill resource after fallback attempts: {}",
+            errors.join("; "),
+        )))
+    }
+}
+
+async fn download_text_with_retries(client: &reqwest::Client, url: &Url) -> AppResult<String> {
+    let bytes = download_bytes_with_retries(client, url).await?;
+    String::from_utf8(bytes)
+        .map_err(|_| AppError::BadRequest("Skill resource is not valid UTF-8".to_string()))
+}
+
+async fn download_bytes_with_retries(client: &reqwest::Client, url: &Url) -> AppResult<Vec<u8>> {
+    let mut last_error = None;
+    for attempt in 0..REMOTE_REQUEST_RETRIES {
+        match download_bytes(client, url).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < REMOTE_REQUEST_RETRIES {
+                    tokio::time::sleep(REMOTE_RETRY_BACKOFF * (attempt as u32 + 1)).await;
+                }
+            }
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| AppError::Process(format!("failed to download Skill resource: {url}"))))
+}
+
+async fn download_bytes_if_exists_with_retries(
+    client: &reqwest::Client,
+    url: &Url,
+) -> AppResult<Option<Vec<u8>>> {
+    let mut last_error = None;
+    for attempt in 0..REMOTE_REQUEST_RETRIES {
+        match download_bytes_if_exists(client, url).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < REMOTE_REQUEST_RETRIES {
+                    tokio::time::sleep(REMOTE_RETRY_BACKOFF * (attempt as u32 + 1)).await;
+                }
+            }
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| AppError::Process(format!("failed to download Skill resource: {url}"))))
+}
+
 async fn download_bytes(client: &reqwest::Client, url: &Url) -> AppResult<Vec<u8>> {
+    download_bytes_if_exists(client, url)
+        .await?
+        .ok_or_else(|| AppError::BadRequest(format!("Skill resource returned HTTP 404: {}", url)))
+}
+
+async fn download_bytes_if_exists(
+    client: &reqwest::Client,
+    url: &Url,
+) -> AppResult<Option<Vec<u8>>> {
     let response = client.get(url.clone()).send().await.map_err(|error| {
         AppError::Process(format!("failed to download Skill resource: {error}"))
     })?;
     let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
     if !status.is_success() {
         return Err(AppError::BadRequest(format!(
             "Skill resource returned HTTP {}: {}",
@@ -1646,42 +2112,68 @@ async fn download_bytes(client: &reqwest::Client, url: &Url) -> AppResult<Vec<u8
             url
         )));
     }
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_SKILL_FILE_BYTES)
-    {
-        return Err(AppError::BadRequest(format!(
-            "Skill resource exceeds the {MAX_SKILL_FILE_BYTES} byte limit"
-        )));
-    }
     let bytes = response
         .bytes()
         .await
         .map_err(|error| AppError::Process(format!("failed to read Skill resource: {error}")))?;
-    if bytes.len() as u64 > MAX_SKILL_FILE_BYTES {
-        return Err(AppError::BadRequest(format!(
-            "Skill resource exceeds the {MAX_SKILL_FILE_BYTES} byte limit"
-        )));
-    }
-    Ok(bytes.to_vec())
-}
-
-async fn download_text(client: &reqwest::Client, url: &Url) -> AppResult<String> {
-    let bytes = download_bytes(client, url).await?;
-    String::from_utf8(bytes)
-        .map_err(|_| AppError::BadRequest("Skill resource is not valid UTF-8".to_string()))
+    Ok(Some(bytes.to_vec()))
 }
 
 fn validate_skill_markdown_text(content: &str) -> AppResult<()> {
     let trimmed = content.trim_start_matches('\u{feff}').trim_start();
-    if trimmed.is_empty() || !trimmed.contains("name:") || !trimmed.contains("description:") {
+    if trimmed.is_empty() {
         return Err(AppError::BadRequest(
-            "downloaded file is not a valid SKILL.md with name and description".to_string(),
+            "downloaded file is empty, expected SKILL.md frontmatter".to_string(),
         ));
     }
-    if trimmed.contains("<html") || trimmed.contains("<!doctype html") {
+
+    let leading = trimmed
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if leading.starts_with("<!doctype html")
+        || leading.starts_with("<html")
+        || leading.starts_with("<head")
+    {
         return Err(AppError::BadRequest(
             "downloaded Skill URL returned an HTML page instead of SKILL.md".to_string(),
+        ));
+    }
+
+    let Some(frontmatter_rest) = trimmed.strip_prefix("---") else {
+        return Err(AppError::BadRequest(
+            "downloaded file is not a valid SKILL.md: missing frontmatter".to_string(),
+        ));
+    };
+    if !frontmatter_rest.starts_with('\n') && !frontmatter_rest.starts_with("\r\n") {
+        return Err(AppError::BadRequest(
+            "downloaded file is not a valid SKILL.md: invalid frontmatter opening".to_string(),
+        ));
+    }
+
+    let Some((frontmatter, _)) = frontmatter_rest.split_once("\n---") else {
+        return Err(AppError::BadRequest(
+            "downloaded file is not a valid SKILL.md: missing frontmatter closing".to_string(),
+        ));
+    };
+    let mut name = None;
+    let mut description = None;
+    for line in frontmatter.lines() {
+        let Some((key, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let value = value.trim().trim_matches(['\"', '\'']);
+        match key.trim().to_ascii_lowercase().as_str() {
+            "name" if !value.is_empty() => name = Some(value),
+            "description" if !value.is_empty() => description = Some(value),
+            _ => {}
+        }
+    }
+    if name.is_none() || description.is_none() {
+        return Err(AppError::BadRequest(
+            "downloaded file is not a valid SKILL.md with name and description".to_string(),
         ));
     }
     Ok(())
@@ -1713,70 +2205,236 @@ async fn fetch_github_tree(
         .map_err(|error| AppError::Process(format!("invalid GitHub tree response: {error}")))
 }
 
+async fn fetch_github_tree_with_fallback(
+    routes: &[RemoteRoute],
+    source: &GithubSkillSource,
+) -> Option<Vec<GithubTreeEntry>> {
+    for route in routes {
+        if let Ok(tree) = fetch_github_tree_with_retries(&route.client, source).await {
+            return Some(tree);
+        }
+    }
+    None
+}
+
+async fn fetch_github_tree_with_retries(
+    client: &reqwest::Client,
+    source: &GithubSkillSource,
+) -> AppResult<Vec<GithubTreeEntry>> {
+    let mut last_error = None;
+    for attempt in 0..REMOTE_REQUEST_RETRIES {
+        match fetch_github_tree(client, source).await {
+            Ok(tree) => return Ok(tree),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < REMOTE_REQUEST_RETRIES {
+                    tokio::time::sleep(REMOTE_RETRY_BACKOFF * (attempt as u32 + 1)).await;
+                }
+            }
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| AppError::Process("failed to read GitHub Skill tree".to_string())))
+}
+
 fn select_github_skill_files(
     tree: &[GithubTreeEntry],
     skill_directory: &str,
-    referenced: &HashSet<String>,
-) -> Vec<String> {
-    let prefix = format!("{}/", skill_directory.trim_matches('/'));
+    referenced: &HashSet<SkillReference>,
+) -> Vec<GithubSkillFile> {
+    let skill_directory = skill_directory.trim_matches('/');
+    let prefix = format!("{skill_directory}/");
+    let (sibling_prefix, skill_name) = skill_directory
+        .rsplit_once('/')
+        .map(|(parent, name)| (format!("{parent}/"), name))
+        .unwrap_or_else(|| (String::new(), skill_directory));
+    let referenced_directories = referenced
+        .iter()
+        .filter(|item| !item.sibling)
+        .filter_map(|item| item.path.split_once('/').map(|(directory, _)| directory))
+        .collect::<HashSet<_>>();
     let mut files = tree
         .iter()
-        .filter(|entry| entry.entry_type == "blob" && entry.path.starts_with(&prefix))
+        .filter(|entry| entry.entry_type == "blob")
         .filter_map(|entry| {
-            let relative = entry.path.strip_prefix(&prefix)?.to_string();
+            let (relative, sibling) = if let Some(relative) = entry.path.strip_prefix(&prefix) {
+                (relative.to_string(), false)
+            } else if let Some(relative) = entry.path.strip_prefix(&sibling_prefix) {
+                let first = relative.split('/').next().unwrap_or_default();
+                // Every directory next to the requested Skill is an attached resource.
+                // Files directly in the parent directory are not sibling directories.
+                if first.is_empty() || first == skill_name || !relative.contains('/') {
+                    return None;
+                }
+                (entry.path.clone(), true)
+            } else {
+                return None;
+            };
             let first = relative.split('/').next().unwrap_or_default();
             let in_standard_directory = SKILL_RESOURCE_DIRECTORIES
                 .iter()
-                .any(|directory| first == *directory);
-            (in_standard_directory
-                || referenced.contains(&relative)
+                .any(|directory| !sibling && first == *directory);
+            let in_referenced_directory = referenced_directories.contains(first);
+            (sibling
+                || in_standard_directory
+                || in_referenced_directory
+                || referenced
+                    .iter()
+                    .any(|item| !item.sibling && item.path == relative)
                 || relative.eq_ignore_ascii_case("SKILL.md"))
-            .then_some(entry.path.clone())
+            .then_some(GithubSkillFile {
+                remote_path: entry.path.clone(),
+                relative_path: if sibling {
+                    entry
+                        .path
+                        .strip_prefix(&sibling_prefix)
+                        .unwrap_or(&entry.path)
+                        .to_string()
+                } else {
+                    relative
+                },
+                sibling,
+                size: entry.size,
+            })
         })
         .collect::<Vec<_>>();
-    files.sort();
-    files.dedup();
+    files.sort_by(|a, b| a.remote_path.cmp(&b.remote_path));
+    files.dedup_by(|a, b| a.remote_path == b.remote_path);
     files
 }
 
+fn remote_skill_file_url(
+    source: &RemoteSkillSource,
+    github: &GithubSkillSource,
+    remote_path: &str,
+) -> AppResult<Url> {
+    let url = if source
+        .skill_md_url
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("raw.githubusercontent.com"))
+    {
+        Url::parse(&format!(
+            "https://raw.githubusercontent.com/{}/{}/{}/{}",
+            github.owner, github.repository, github.branch, remote_path
+        ))
+        .map_err(|error| AppError::BadRequest(format!("invalid Skill resource path: {error}")))?
+    } else if source
+        .skill_md_url
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("cdn.jsdelivr.net"))
+    {
+        Url::parse(&format!(
+            "https://cdn.jsdelivr.net/gh/{}/{}@{}/{}",
+            github.owner, github.repository, github.branch, remote_path
+        ))
+        .map_err(|error| AppError::BadRequest(format!("invalid Skill resource path: {error}")))?
+    } else {
+        return Err(AppError::BadRequest(
+            "unsupported GitHub Skill resource source".to_string(),
+        ));
+    };
+    Ok(url)
+}
+
 async fn download_referenced_files(
-    client: &reqwest::Client,
+    manager: &SkillManager,
+    routes: &[RemoteRoute],
     temporary: &Path,
-    skill_md_url: &Url,
-    referenced: &HashSet<String>,
+    task_id: Option<Uuid>,
+    referenced: &HashSet<SkillReference>,
+    total_files: usize,
     downloaded: &mut usize,
-    downloaded_bytes: &mut usize,
+    downloaded_bytes: &mut u64,
 ) -> AppResult<()> {
-    for relative in referenced {
-        if *downloaded >= MAX_REMOTE_SKILL_FILES {
-            return Err(AppError::BadRequest(
-                "remote Skill contains too many files".to_string(),
-            ));
+    for reference in referenced {
+        if reference.sibling {
+            continue;
         }
+        let relative = &reference.path;
         if !valid_download_path(relative) || relative.eq_ignore_ascii_case("SKILL.md") {
             continue;
         }
-        let file_url = skill_md_url.join(relative).map_err(|error| {
-            AppError::BadRequest(format!("invalid referenced Skill path: {error}"))
-        })?;
-        let bytes = download_bytes(client, &file_url).await?;
-        *downloaded_bytes = downloaded_bytes.saturating_add(bytes.len());
+        manager
+            .update_import_download_progress(
+                task_id,
+                Some(relative.clone()),
+                *downloaded,
+                total_files,
+                *downloaded_bytes,
+                None,
+            )
+            .await;
+        let destination = temporary.join(relative);
+        if is_cached_download(&destination, None).await {
+            *downloaded_bytes = downloaded_bytes.saturating_add(
+                fs::metadata(&destination)
+                    .await
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0),
+            );
+            *downloaded += 1;
+            continue;
+        }
+        let Some(bytes) = download_referenced_bytes_with_fallback(routes, relative).await? else {
+            continue;
+        };
+        *downloaded_bytes = downloaded_bytes.saturating_add(bytes.len() as u64);
         if *downloaded_bytes > MAX_REMOTE_SKILL_BYTES {
             return Err(AppError::BadRequest(
                 "remote Skill is too large".to_string(),
             ));
         }
-        let destination = temporary.join(relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent).await?;
         }
-        fs::write(destination, &bytes).await?;
+        write_skill_download(&destination, &bytes).await?;
         *downloaded += 1;
+        manager
+            .update_import_download_progress(
+                task_id,
+                Some(relative.clone()),
+                *downloaded,
+                total_files,
+                *downloaded_bytes,
+                None,
+            )
+            .await;
     }
     Ok(())
 }
 
-fn referenced_skill_files(content: &str) -> HashSet<String> {
+async fn is_cached_download(path: &Path, expected_size: Option<u64>) -> bool {
+    fs::metadata(path)
+        .await
+        .map(|metadata| {
+            metadata.is_file() && expected_size.is_none_or(|size| metadata.len() == size)
+        })
+        .unwrap_or(false)
+}
+
+async fn write_skill_download(path: &Path, bytes: &[u8]) -> AppResult<()> {
+    let mut last_error = None;
+    for attempt in 0..REMOTE_REQUEST_RETRIES {
+        match fsutil::write_atomic(path, bytes).await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < REMOTE_REQUEST_RETRIES {
+                    tokio::time::sleep(REMOTE_RETRY_BACKOFF * (attempt as u32 + 1)).await;
+                }
+            }
+        }
+    }
+    Err(AppError::Process(format!(
+        "failed to store Skill resource {} after retries: {}",
+        path.display(),
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "unknown storage error".to_string())
+    )))
+}
+
+fn referenced_skill_files(content: &str) -> HashSet<SkillReference> {
     let mut result = HashSet::new();
     for line in content.lines() {
         let mut remainder = line;
@@ -1798,8 +2456,10 @@ fn referenced_skill_files(content: &str) -> HashSet<String> {
     result
 }
 
-fn add_referenced_path(result: &mut HashSet<String>, value: &str) {
+fn add_referenced_path(result: &mut HashSet<SkillReference>, value: &str) {
     let value = value.split(['#', '?']).next().unwrap_or_default().trim();
+    let sibling = value.starts_with('/');
+    let value = value.trim_start_matches('/');
     if value.is_empty()
         || value.contains("://")
         || value.starts_with('#')
@@ -1808,13 +2468,10 @@ fn add_referenced_path(result: &mut HashSet<String>, value: &str) {
         return;
     }
     let normalized = value.trim_start_matches("./").replace('\\', "/");
-    let first = normalized.split('/').next().unwrap_or_default();
-    if SKILL_RESOURCE_DIRECTORIES
-        .iter()
-        .any(|directory| first == *directory)
-    {
-        result.insert(normalized);
-    }
+    result.insert(SkillReference {
+        path: normalized,
+        sibling,
+    });
 }
 
 fn valid_download_path(value: &str) -> bool {
@@ -1937,13 +2594,127 @@ mod tests {
     }
 
     #[test]
-    fn extracts_only_supported_relative_skill_resources() {
+    fn validates_skill_frontmatter_without_rejecting_html_examples() {
+        let archify = "---\nname: archify\ndescription: Create diagrams with HTML output\n---\n\nThe generated document uses an <html lang> element and may contain HTML examples.\n";
+        assert!(validate_skill_markdown_text(archify).is_ok());
+
+        let github_page =
+            "\n<!DOCTYPE html>\n<html lang=\"en\"><head></head><body>name: fake</body></html>";
+        assert!(validate_skill_markdown_text(github_page).is_err());
+
+        let body_only = "# Not frontmatter\nname: fake\ndescription: fake\n";
+        assert!(validate_skill_markdown_text(body_only).is_err());
+    }
+
+    #[test]
+    fn extracts_referenced_relative_skill_resources() {
         let files = referenced_skill_files(
-            "See [API](references/api.md), `scripts/check.ps1`, and https://example.test/nope.",
+            "See [API](references/api.md), [Config](docs/config.md), [Shared](/hyperframes-animation/SKILL.md), `scripts/check.ps1`, and https://example.test/nope.",
         );
-        assert!(files.contains("references/api.md"));
-        assert!(files.contains("scripts/check.ps1"));
-        assert!(!files.iter().any(|file| file.contains("example.test")));
+        assert!(files.contains(&SkillReference {
+            path: "references/api.md".to_string(),
+            sibling: false,
+        }));
+        assert!(files.contains(&SkillReference {
+            path: "docs/config.md".to_string(),
+            sibling: false,
+        }));
+        assert!(files.contains(&SkillReference {
+            path: "hyperframes-animation/SKILL.md".to_string(),
+            sibling: true,
+        }));
+        assert!(files.contains(&SkillReference {
+            path: "scripts/check.ps1".to_string(),
+            sibling: false,
+        }));
+        assert!(!files.iter().any(|file| file.path.contains("example.test")));
+    }
+
+    #[test]
+    fn selects_existing_referenced_files_from_custom_directories() {
+        let tree = vec![
+            GithubTreeEntry {
+                path: "skills/example/SKILL.md".to_string(),
+                entry_type: "blob".to_string(),
+                size: Some(10),
+            },
+            GithubTreeEntry {
+                path: "skills/example/docs/config.md".to_string(),
+                entry_type: "blob".to_string(),
+                size: Some(10),
+            },
+            GithubTreeEntry {
+                path: "skills/example/docs/unreferenced.txt".to_string(),
+                entry_type: "blob".to_string(),
+                size: Some(10),
+            },
+            GithubTreeEntry {
+                path: "skills/example/docs/nested/guide.md".to_string(),
+                entry_type: "blob".to_string(),
+                size: Some(10),
+            },
+            GithubTreeEntry {
+                path: "skills/example/guides/setup.md".to_string(),
+                entry_type: "blob".to_string(),
+                size: Some(10),
+            },
+            GithubTreeEntry {
+                path: "skills/hyperframes-animation/SKILL.md".to_string(),
+                entry_type: "blob".to_string(),
+                size: Some(10),
+            },
+            GithubTreeEntry {
+                path: "skills/hyperframes-animation/references/animation.md".to_string(),
+                entry_type: "blob".to_string(),
+                size: Some(10),
+            },
+            GithubTreeEntry {
+                path: "skills/another-attached-resource/data.json".to_string(),
+                entry_type: "blob".to_string(),
+                size: Some(10),
+            },
+        ];
+        let referenced = referenced_skill_files(
+            "[Config](docs/config.md) [Setup](guides/setup.md) [Animation](/hyperframes-animation/SKILL.md)",
+        );
+
+        let files = select_github_skill_files(&tree, "skills/example", &referenced);
+
+        assert!(
+            files
+                .iter()
+                .any(|file| file.remote_path == "skills/example/docs/config.md")
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.remote_path == "skills/example/docs/unreferenced.txt")
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.remote_path == "skills/example/docs/nested/guide.md")
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.remote_path == "skills/example/guides/setup.md")
+        );
+        assert!(files.iter().any(|file| {
+            file.remote_path == "skills/hyperframes-animation/SKILL.md"
+                && file.relative_path == "hyperframes-animation/SKILL.md"
+                && file.sibling
+        }));
+        assert!(files.iter().any(|file| {
+            file.remote_path == "skills/hyperframes-animation/references/animation.md"
+                && file.relative_path == "hyperframes-animation/references/animation.md"
+                && file.sibling
+        }));
+        assert!(files.iter().any(|file| {
+            file.remote_path == "skills/another-attached-resource/data.json"
+                && file.relative_path == "another-attached-resource/data.json"
+                && file.sibling
+        }));
     }
 
     #[test]
@@ -2095,6 +2866,104 @@ mod tests {
                 .and_then(|skill| skill.source_url.as_deref()),
             Some(expected_source.as_str()),
         );
+    }
+
+    #[tokio::test]
+    async fn attached_skill_relations_are_exposed_on_manifests() {
+        let data = tempfile::tempdir().unwrap();
+        let skills_root = data.path().join("skills");
+        write_skill(&skills_root, "source", "source-skill", "development").await;
+        write_skill(&skills_root, "attached", "attached-skill", "development").await;
+        let store = Arc::new(Store::new(data.path()).await.unwrap());
+        let manager = SkillManager::new(store).await.unwrap();
+
+        manager
+            .update_skill_relations("source-skill", &["attached-skill".to_string()])
+            .await
+            .unwrap();
+
+        let settings = manager.settings(None).await.unwrap();
+        let attached = settings
+            .defaults
+            .iter()
+            .find(|skill| skill.name == "attached-skill")
+            .unwrap();
+        assert_eq!(attached.source_skill.as_deref(), Some("source-skill"));
+        assert_eq!(
+            settings
+                .defaults
+                .iter()
+                .find(|skill| skill.name == "source-skill")
+                .unwrap()
+                .source_skill,
+            None
+        );
+        let relations = serde_json::from_str::<BTreeMap<String, Vec<String>>>(
+            &fs::read_to_string(skills_root.join(SKILL_RELATIONS_FILE))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            relations.get("source-skill"),
+            Some(&vec!["attached-skill".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn attached_skill_inherits_source_icon_and_icon_proxy() {
+        let data = tempfile::tempdir().unwrap();
+        let skills_root = data.path().join("skills");
+        write_skill(&skills_root, "source", "source-skill", "development").await;
+        write_skill(&skills_root, "attached", "attached-skill", "development").await;
+        let store = Arc::new(Store::new(data.path()).await.unwrap());
+        let manager = SkillManager::new(store.clone()).await.unwrap();
+
+        manager
+            .update_skill_relations("source-skill", &["attached-skill".to_string()])
+            .await
+            .unwrap();
+        store
+            .update_skill_icon("source-skill", Some("source-icon.png".to_string()))
+            .await
+            .unwrap();
+        store
+            .update_skill_proxies(
+                "source-skill",
+                Some("https://proxy.example/icon".to_string()),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let settings = manager.settings(None).await.unwrap();
+        let source = settings
+            .defaults
+            .iter()
+            .find(|skill| skill.name == "source-skill")
+            .unwrap();
+        let attached = settings
+            .defaults
+            .iter()
+            .find(|skill| skill.name == "attached-skill")
+            .unwrap();
+        assert_eq!(source.icon_url.as_deref(), Some("source-icon.png"));
+        assert_eq!(attached.icon_url, source.icon_url);
+        assert_eq!(attached.icon_proxy_url, source.icon_proxy_url);
+
+        store.update_skill_icon("source-skill", None).await.unwrap();
+        store
+            .update_skill_proxies("source-skill", None, None)
+            .await
+            .unwrap();
+        let settings = manager.settings(None).await.unwrap();
+        let attached = settings
+            .defaults
+            .iter()
+            .find(|skill| skill.name == "attached-skill")
+            .unwrap();
+        assert_eq!(attached.icon_url, None);
+        assert_eq!(attached.icon_proxy_url, None);
     }
 
     #[tokio::test]

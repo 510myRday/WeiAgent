@@ -594,6 +594,7 @@ mod tests {
             approval_manager: Arc::new(ApprovalManager::new()),
             event_sender: None,
             web_search_provenance: Default::default(),
+            supports_multimodal: false,
         }
     }
 

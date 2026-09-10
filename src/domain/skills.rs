@@ -42,6 +42,8 @@ pub struct SkillManifest {
     pub icon_proxy_url: Option<String>,
     #[serde(default)]
     pub update_proxy_url: Option<String>,
+    #[serde(default)]
+    pub source_skill: Option<String>,
     pub root_dir: String,
     pub skill_md: String,
     #[serde(default)]
@@ -125,10 +127,24 @@ pub struct SkillImportTask {
     pub status: String,
     pub phase: String,
     pub progress: u8,
+    #[serde(default)]
+    pub current_file: Option<String>,
+    #[serde(default)]
+    pub downloaded_files: usize,
+    #[serde(default)]
+    pub total_files: usize,
+    #[serde(default)]
+    pub downloaded_bytes: u64,
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub finished_at: Option<String>,
+    #[serde(skip_serializing, default)]
+    pub proxy_url: Option<String>,
+    #[serde(skip_serializing, default)]
+    pub expected_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

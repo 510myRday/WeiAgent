@@ -165,10 +165,26 @@ fn build_openai_responses_request(
                 let call_id = message.tool_call_id.as_deref().ok_or_else(|| {
                     AppError::Llm("stored tool message is missing tool_call_id".to_string())
                 })?;
+                let output = if message.attachments.is_empty() {
+                    json!(message.content)
+                } else {
+                    let mut content = Vec::with_capacity(message.attachments.len() + 1);
+                    if !message.content.is_empty() {
+                        content.push(json!({"type": "input_text", "text": message.content}));
+                    }
+                    content.extend(message.attachments.iter().map(|attachment| {
+                        json!({
+                            "type": "input_image",
+                            "image_url": openai_image_url(attachment),
+                            "detail": "original"
+                        })
+                    }));
+                    json!(content)
+                };
                 input.push(json!({
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": message.content,
+                    "output": output,
                 }));
             }
         }

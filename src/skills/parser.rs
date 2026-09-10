@@ -125,6 +125,7 @@ pub async fn parse_skill(root: PathBuf) -> AppResult<SkillManifest> {
         source_url: None,
         icon_proxy_url: None,
         update_proxy_url: None,
+        source_skill: None,
         root_dir: fsutil::display_path(&root),
         skill_md: fsutil::display_path(&skill_md),
         scripts: discover_files(&root, "scripts").await?,

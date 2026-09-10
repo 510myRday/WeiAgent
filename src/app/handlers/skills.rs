@@ -106,7 +106,7 @@ pub async fn import_skill(
     });
     let task = state
         .skill_manager
-        .create_import_task(&source, &kind, request.group_id)
+        .create_import_task_with_context(&source, &kind, request.group_id, proxy_url.clone(), None)
         .await?;
     let manager = state.skill_manager.clone();
     let group_id = task.group_id.clone();
@@ -127,6 +127,13 @@ pub async fn list_import_tasks(
     State(state): State<AppState>,
 ) -> AppResult<Json<Vec<SkillImportTask>>> {
     Ok(Json(state.skill_manager.list_import_tasks().await))
+}
+
+pub async fn retry_import_task(
+    State(state): State<AppState>,
+    Path(task_id): Path<Uuid>,
+) -> AppResult<Json<SkillImportTask>> {
+    Ok(Json(state.skill_manager.retry_import_task(task_id).await?))
 }
 
 pub async fn read_skill(
@@ -189,6 +196,11 @@ pub async fn update_skill_icon(
     if skill.is_builtin {
         return Err(AppError::BadRequest(
             "built-in Skills cannot change icon or source settings".to_string(),
+        ));
+    }
+    if skill.source_skill.is_some() {
+        return Err(AppError::BadRequest(
+            "attached Skills inherit icon settings from their source Skill".to_string(),
         ));
     }
     let icon_url = request.icon_url.map(|value| value.trim().to_string());

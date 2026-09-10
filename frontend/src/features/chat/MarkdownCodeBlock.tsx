@@ -1,22 +1,33 @@
 import { isValidElement, type ReactNode } from 'react';
-import { Check, Clipboard } from 'lucide-react';
+import { Check, Clipboard, MonitorPlay } from 'lucide-react';
 
 import { useClipboard } from '../../hooks';
 import { useI18n } from '../../i18n';
+import { useHtmlPreview } from './HtmlPreviewProvider';
 
 export function MarkdownCodeBlock({ children }: { children?: ReactNode }) {
   const { t } = useI18n();
   const { copied, copy } = useClipboard(1200);
+  const { openHtmlPreview } = useHtmlPreview();
   const text = extractText(children);
   const language = extractLanguage(children);
+  const isHtml = isHtmlLanguage(language);
 
   return (
     <div className="code-block-wrap">
       <span className="code-language-label">{language}</span>
-      <button className="code-copy-button" type="button" onClick={() => void copy(text)} disabled={!text} aria-label={t('chat.copyCode')}>
-        {copied ? <Check size={14} /> : <Clipboard size={14} />}
-        <span>{copied ? t('chat.copied') : t('chat.copy')}</span>
-      </button>
+      <div className="code-block-actions">
+        {isHtml ? (
+          <button className="code-preview-button" type="button" onClick={() => openHtmlPreview(text)} disabled={!text} aria-label={t('chat.renderHtml')} title={t('chat.renderHtml')}>
+            <MonitorPlay size={14} />
+            <span>{t('chat.render')}</span>
+          </button>
+        ) : null}
+        <button className="code-copy-button" type="button" onClick={() => void copy(text)} disabled={!text} aria-label={t('chat.copyCode')} title={t('chat.copyCode')}>
+          {copied ? <Check size={14} /> : <Clipboard size={14} />}
+          <span>{copied ? t('chat.copied') : t('chat.copy')}</span>
+        </button>
+      </div>
       <pre>{children}</pre>
     </div>
   );
@@ -64,6 +75,10 @@ function formatLanguage(language: string): string {
     txt: 'Text',
   };
   return labels[normalized] ?? normalized.toUpperCase();
+}
+
+function isHtmlLanguage(language: string): boolean {
+  return ['html', 'htm', 'xhtml'].includes(language.toLowerCase());
 }
 
 function extractText(node: ReactNode): string {

@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Download, FolderOpen, FolderInput, MoreHorizontal, Pencil, Plus, Settings, Sparkles, Trash2, FolderPlus, CheckSquare, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Download, FolderOpen, FolderInput, MoreHorizontal, Pencil, Plus, RefreshCw, Settings, Sparkles, Trash2, FolderPlus, CheckSquare, X } from 'lucide-react';
 
 import type { SkillContent, SkillGroupState, SkillImportTask, SkillManifest, SkillOverrides, SkillSettings } from '../../toolTypes';
-import { assignSkillGroup, cleanupSkillOrphans, createSkillGroup, deleteSkill, deleteSkillGroup, importSkill, listIpProxies, listSkillImportTasks, listSkills, pickDirectory, readAgentSkillsConfig, readSkillChanges, readSkillContent, renameSkillGroup, reorderSkillGroupItems, reorderSkillGroups, updateAgentSkillsConfig, updateSkill, updateSkillEnabled, updateSkillSettings } from '../../api';
+import { assignSkillGroup, cleanupSkillOrphans, createSkillGroup, deleteSkill, deleteSkillGroup, importSkill, listIpProxies, listSkillImportTasks, listSkills, pickDirectory, readAgentSkillsConfig, readSkillChanges, readSkillContent, renameSkillGroup, reorderSkillGroupItems, reorderSkillGroups, retrySkillImportTask, updateAgentSkillsConfig, updateSkill, updateSkillEnabled, updateSkillSettings } from '../../api';
 import type { IpProxy } from '../../types';
 import { useI18n } from '../../i18n';
 import { PanelShell } from '../../components/layout';
 import { Button, Dialog, FormField, IconButton, ListItem, PaneHeader, useFeedback } from '../../components/ui';
 import { ProxyPickerDialog } from '../settings/web-search/ProxyPickerDialog';
 import { displayProxyUrl } from '../../utils/proxy';
+import { formatBytes } from '../../utils/format';
 import { SkillIcon } from './SkillIcon';
 import { displayPath, displaySkillFilePath } from './skills/displayPath';
-import { AgentSkillsOverview, SkillConflictDetail, SkillEditor, SkillOrphanDetail, SkillToggle } from './skills/SkillViews';
+import { AgentSkillsOverview, SkillConflictDetail, SkillEditor, SkillOrphanDetail, SkillSourceBadge, SkillToggle } from './skills/SkillViews';
 
 type SkillsPanelProps = {
   onOpenMain: () => void;
@@ -512,7 +513,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
   }
 
   async function openIconDialog() {
-    if (!activeSkill) return;
+    if (!activeSkill || activeSkill.source_skill) return;
     setIconDraft(activeSkill.icon_url ?? '');
     setSourceDraft(activeSkill.source_url ?? '');
     setIconProxyDraft(activeSkill.icon_proxy_url ?? null);
@@ -528,8 +529,18 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
     }
   }
 
+  async function retryImport(task: SkillImportTask) {
+    try {
+      const next = await retrySkillImportTask(task.id);
+      setImportTasks((current) => [next, ...current.filter((item) => item.id !== next.id)]);
+      pendingImportTasks.current.add(next.id);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('skills.importRetryFailed'));
+    }
+  }
+
   async function updateActiveSkill() {
-    if (!activeSkill) return;
+    if (!activeSkill || activeSkill.source_skill) return;
     setBusy(true);
     try {
       const savedSettings = await updateSkillSettings(
@@ -554,7 +565,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
   }
 
   async function saveIcon() {
-    if (!activeSkill) return;
+    if (!activeSkill || activeSkill.source_skill) return;
     setIconSaving(true);
     try {
       setSettings(await updateSkillSettings(
@@ -675,7 +686,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                   <div key={skill.name} className={`skills-item-wrap${selectedSkills.includes(skill.name) ? ' is-selected' : ''}`} draggable={!embedded && !skill.is_builtin} onDragStart={() => { if (!skill.is_builtin) setDraggedSkillName(skill.name); }} onDragEnd={() => setDraggedSkillName(null)} onDragOver={(event) => { if (!skill.is_builtin && draggedSkillName && draggedSkillName !== skill.name) event.preventDefault(); }} onDrop={() => void dropSkill(group?.id ?? null, skill.name)}>
                     {!embedded ? <button type="button" className="skills-select-button" disabled={skill.is_builtin} aria-label={selectedSkills.includes(skill.name) ? t('skills.deselectSkill', { name: skill.name }) : t('skills.selectSkill', { name: skill.name })} onClick={() => toggleSkillSelection(skill.name)}>{selectedSkills.includes(skill.name) ? <CheckSquare size={15} /> : <span />}</button> : null}
                     <div className="skills-list-item-row">
-                      <ListItem className="skills-list-item" type="button" active={active?.kind === 'skill' && active.name === skill.name} title={<span className="tool-list-title"><span>{skill.name}</span></span>} subtitle={<span className="skills-list-description" title={skill.description}>{skill.description}</span>} leading={<SkillIcon skillName={skill.name} iconUrl={skill.icon_url} iconProxyUrl={skill.icon_proxy_url} size={19} />} onClick={() => selectSkill(skill.name)} />
+                      <ListItem className="skills-list-item" type="button" active={active?.kind === 'skill' && active.name === skill.name} title={<span className="tool-list-title"><span>{skill.name}</span></span>} subtitle={<span className="skills-list-description" title={skill.description}><SkillSourceBadge sourceSkill={skill.source_skill} />{skill.description}</span>} leading={<SkillIcon skillName={skill.name} iconUrl={skill.icon_url} iconProxyUrl={skill.icon_proxy_url} size={19} />} onClick={() => selectSkill(skill.name)} />
                       {!embedded ? (
                         <span className="skills-list-item-actions">
                           <IconButton className="skills-move-action" variant="ghost" type="button" label={t('skills.moveSkill')} onClick={() => openMoveSkillDialog(skill)} disabled={busy || skill.is_builtin}>
@@ -755,7 +766,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
             <>
               <PaneHeader className="config-page-header" leading={<Button className="main-back-button" variant="ghost" type="button" onClick={onBackToList} icon={<ArrowLeft size={17} />}>{t('common.back')}</Button>} eyebrow={t('skills.title')} title={activeOrphan ? activeOrphan.name : (activeConflict?.name ?? activeSkill?.name ?? t('skills.title'))} description={activeOrphan ? t('skills.orphanHeaderDescription') : (activeConflict ? t('skills.nameConflictDescription', { name: activeConflict.name, count: activeConflict.count }) : (activeSkill?.description ?? t('skills.description')))} actions={(
                 <>
-                  {activeSkill && !activeSkill.is_builtin ? <IconButton variant="default" type="button" label={t('skills.iconSettings')} onClick={openIconDialog} disabled={busy || iconSaving}><Settings size={17} /></IconButton> : null}
+                  {activeSkill && !activeSkill.is_builtin ? <IconButton variant="default" type="button" label={activeSkill.source_skill ? t('skills.attachedIconInherited') : t('skills.iconSettings')} onClick={openIconDialog} disabled={busy || iconSaving || Boolean(activeSkill.source_skill)}><Settings size={17} /></IconButton> : null}
                   {activeSkill && !activeSkill.is_builtin ? <IconButton variant="danger" type="button" label={t('skills.delete')} onClick={() => void removeActiveSkill()} disabled={busy}><Trash2 size={17} /></IconButton> : null}
                   {activeSkill ? <SkillToggle skill={activeSkill} agentMode={false} busy={busy} onGlobalToggle={toggleGlobal} onAgentToggle={toggleAgentSkill} /> : null}
                 </>
@@ -846,8 +857,23 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                   <span>{task.status === 'failed' ? t('skills.importFailedShort') : t(`skills.importPhase.${task.phase}`)}</span>
                 </div>
                 <code title={task.source}>{task.source}</code>
+                {task.status === 'queued' || task.status === 'running' ? (
+                  <div className="skills-import-task__details">
+                    <span>{t('skills.importProgress.files', {
+                      done: task.downloaded_files ?? 0,
+                      total: task.total_files ?? 0,
+                    })}</span>
+                    <span>{formatBytes(task.downloaded_bytes ?? 0)}{task.total_bytes ? ` / ${formatBytes(task.total_bytes)}` : ''}</span>
+                  </div>
+                ) : null}
+                {task.current_file ? <div className="skills-import-task__current" title={task.current_file}>{t('skills.importProgress.current', { file: task.current_file })}</div> : null}
                 {task.status === 'queued' || task.status === 'running' ? <div className="skills-import-task__progress"><span style={{ width: `${task.progress}%` }} /></div> : null}
                 {task.error ? <small>{task.error}</small> : null}
+                {task.status === 'failed' ? (
+                  <Button variant="secondary" type="button" onClick={() => void retryImport(task)} icon={<RefreshCw size={14} />}>
+                    {t('skills.retryImport')}
+                  </Button>
+                ) : null}
               </div>
             ))}
           </div>
@@ -870,12 +896,12 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                   variant="secondary"
                   type="button"
                   onClick={() => void updateActiveSkill()}
-                  disabled={busy || iconSaving || activeSkill?.is_builtin === true}
+                  disabled={busy || iconSaving || activeSkill?.is_builtin === true || Boolean(activeSkill?.source_skill)}
                 >
                   {t('skills.update')}
                 </Button>
               ) : null}
-              <Button variant="primary" type="button" onClick={() => void saveIcon()} disabled={iconSaving || busy}>
+              <Button variant="primary" type="button" onClick={() => void saveIcon()} disabled={iconSaving || busy || Boolean(activeSkill?.source_skill)}>
                 {t('common.save')}
               </Button>
             </>
@@ -889,6 +915,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                 value={iconDraft}
                 placeholder={t('skills.iconUrlPlaceholder')}
                 onChange={(event) => setIconDraft(event.target.value)}
+                disabled={Boolean(activeSkill?.source_skill) || iconSaving || busy}
               />
             </FormField>
             <FormField label={t('skills.iconProxyLabel')}>
@@ -896,7 +923,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                 type="button"
                 className={`web-search-proxy-picker${selectedIconProxy ? '' : ' is-empty'}`}
                 onClick={() => setSkillProxyPickerOpen('icon')}
-                disabled={iconSaving || busy || skillProxiesLoading}
+                disabled={Boolean(activeSkill?.source_skill) || iconSaving || busy || skillProxiesLoading}
               >
                 <span className="web-search-proxy-picker__copy">
                   {selectedIconProxy ? (
@@ -918,6 +945,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                 value={sourceDraft}
                 placeholder={t('skills.sourcePlaceholder')}
                 onChange={(event) => setSourceDraft(event.target.value)}
+                disabled={Boolean(activeSkill?.source_skill) || iconSaving || busy}
                 spellCheck={false}
               />
             </FormField>
@@ -926,7 +954,7 @@ export function SkillsPanel({ onOpenMain, onBackToList, embedded = false, embedd
                 type="button"
                 className={`web-search-proxy-picker${selectedUpdateProxy ? '' : ' is-empty'}`}
                 onClick={() => setSkillProxyPickerOpen('update')}
-                disabled={iconSaving || busy || skillProxiesLoading}
+                disabled={Boolean(activeSkill?.source_skill) || iconSaving || busy || skillProxiesLoading}
               >
                 <span className="web-search-proxy-picker__copy">
                   {selectedUpdateProxy ? (

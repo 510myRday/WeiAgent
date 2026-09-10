@@ -609,6 +609,12 @@ export function listSkillImportTasks(): Promise<SkillImportTask[]> {
   return request<SkillImportTask[]>('/api/skills/import-tasks');
 }
 
+export function retrySkillImportTask(taskId: string): Promise<SkillImportTask> {
+  return request<SkillImportTask>('/api/skills/import-tasks/' + encodeURIComponent(taskId) + '/retry', {
+    method: 'POST',
+  });
+}
+
 export function readSkillContent(name: string, path?: string): Promise<SkillContent> {
   const query = path ? `?path=${encodeURIComponent(path)}` : '';
   return request<SkillContent>(`/api/skills/${encodeURIComponent(name)}/content${query}`);

@@ -229,6 +229,10 @@ fn api_router(security: std::sync::Arc<crate::app::ApiSecurity>) -> Router<AppSt
         )
         .route("/api/skills/import", post(skills::import_skill))
         .route("/api/skills/import-tasks", get(skills::list_import_tasks))
+        .route(
+            "/api/skills/import-tasks/{task_id}/retry",
+            post(skills::retry_import_task),
+        )
         .route("/api/skills/cleanup-orphans", post(skills::cleanup_orphans))
         .route(
             "/api/skills/{skill_name}/content",

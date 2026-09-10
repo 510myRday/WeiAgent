@@ -43,6 +43,7 @@ import { userErrorMessage } from '../../utils/userError';
 import { compareNames, sortByName } from '../../utils/sort';
 import { createChatDateFormatters, formatChatDateTime, formatChatTimelineTime } from './chatDateFormat';
 import { sortAgentsByRecentConversation } from '../../utils/agentSorting';
+import { HtmlPreviewProvider } from './HtmlPreviewProvider';
 
 interface ChatPanelProps {
   agents: Agent[];
@@ -1187,30 +1188,32 @@ export function ChatPanel({
             </div>
           ) : null}
         </header>
-        <MessageList
-          ref={messageListRef}
-          conversationId={activeConversationId}
-          messages={visibleMessages}
-          activeAgent={activeAgent}
-          settings={settings}
-          isLoading={isLoadingChat}
-          hasOlderMessages={hasOlderMessages}
-          isLoadingOlderMessages={isLoadingOlderMessages}
-          isSending={isSending}
-          isCompressing={isCompressing}
-          supportsImages={supportsImages || supportsImageGeneration}
-          supportsImageMasks={supportsImageGeneration}
-          runPhase={runPhase}
-          retryStatus={retryStatus}
-          timelineMessageIndexes={timelineMessageIndexes}
-          onLoadOlder={handleLoadOlderMessages}
-          onRestart={handleRestartMessage}
-          onEditImage={handleReferenceImage}
-          onApproveToolCall={handleApproveToolCall}
-          mcpServers={mcpServers}
-          onActiveTimelineMessageChange={setActiveTimelineMessageIndex}
-          formatTimelineTime={formatTimelineTime}
-        />
+        <HtmlPreviewProvider>
+          <MessageList
+            ref={messageListRef}
+            conversationId={activeConversationId}
+            messages={visibleMessages}
+            activeAgent={activeAgent}
+            settings={settings}
+            isLoading={isLoadingChat}
+            hasOlderMessages={hasOlderMessages}
+            isLoadingOlderMessages={isLoadingOlderMessages}
+            isSending={isSending}
+            isCompressing={isCompressing}
+            supportsImages={supportsImages || supportsImageGeneration}
+            supportsImageMasks={supportsImageGeneration}
+            runPhase={runPhase}
+            retryStatus={retryStatus}
+            timelineMessageIndexes={timelineMessageIndexes}
+            onLoadOlder={handleLoadOlderMessages}
+            onRestart={handleRestartMessage}
+            onEditImage={handleReferenceImage}
+            onApproveToolCall={handleApproveToolCall}
+            mcpServers={mcpServers}
+            onActiveTimelineMessageChange={setActiveTimelineMessageIndex}
+            formatTimelineTime={formatTimelineTime}
+          />
+        </HtmlPreviewProvider>
 
         {timelineItems.length > 1 ? (
           <MessageTimeline

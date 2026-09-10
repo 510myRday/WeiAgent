@@ -231,15 +231,17 @@ fn build_gemini_request(
                     ))
                 })?;
                 let response = normalize_gemini_tool_result(&message.content);
-                (
-                    "user",
-                    vec![json!({
-                        "functionResponse": {
-                            "name": name,
-                            "response": response,
-                        }
-                    })],
-                )
+                let mut tool_parts = vec![json!({
+                    "functionResponse": {
+                        "name": name,
+                        "response": response,
+                    }
+                })];
+                tool_parts.extend(message.attachments.iter().map(|attachment| match &attachment.source {
+                    ImageSource::Base64 { data } => json!({"inlineData": {"mimeType": attachment.media_type, "data": data}}),
+                    ImageSource::Url { url } | ImageSource::Local { path: url } => json!({"fileData": {"mimeType": attachment.media_type, "fileUri": url}}),
+                }));
+                ("user", tool_parts)
             }
         };
         if parts.is_empty() {

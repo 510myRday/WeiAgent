@@ -135,7 +135,7 @@ export function AgentSkillsOverview({ settings, busy, onToggle }: { settings: Sk
                       <strong>{skill.name}</strong>
                       <span className="mini-status-badge skill-badge"><SkillIcon skillName={skill.name} iconUrl={skill.icon_url} iconProxyUrl={skill.icon_proxy_url} size={12} />{t('skills.title')}</span>
                     </div>
-                    <SkillDescription description={skill.description || t('skills.noDescription')} />
+                    <SkillDescription description={skill.description || t('skills.noDescription')} sourceSkill={skill.source_skill} />
                     <span className="agent-tool-row__source">{inherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}</span>
                   </div>
                   <div className="agent-tool-row__actions skills-agent-row__actions">
@@ -158,14 +158,20 @@ export function AgentSkillsOverview({ settings, busy, onToggle }: { settings: Sk
 const DESCRIPTION_COLLAPSE_LENGTH = 180;
 const MAX_SKILL_FILE_BYTES = 5 * 1024 * 1024;
 
-export function SkillDescription({ description }: { description: string }) {
+export function SkillSourceBadge({ sourceSkill }: { sourceSkill?: string | null }) {
+  const { t } = useI18n();
+  if (!sourceSkill) return null;
+  return <span className="skill-source-badge" title={t('skills.attachedFrom', { name: sourceSkill })}>{sourceSkill}</span>;
+}
+
+export function SkillDescription({ description, sourceSkill }: { description: string; sourceSkill?: string | null }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const collapsible = description.length > DESCRIPTION_COLLAPSE_LENGTH;
 
   return (
     <div className={`skills-row-description${collapsible && !expanded ? ' is-collapsed' : ''}`}>
-      <small>{description}</small>
+      <small><SkillSourceBadge sourceSkill={sourceSkill} />{description}</small>
       {collapsible ? (
         <button
           type="button"

@@ -292,6 +292,7 @@ export type SkillManifest = {
   source_url?: string | null;
   icon_proxy_url?: string | null;
   update_proxy_url?: string | null;
+  source_skill?: string | null;
   root_dir: string;
   skill_md: string;
   scripts: SkillFile[];
@@ -347,6 +348,11 @@ export type SkillImportTask = {
   status: 'queued' | 'running' | 'completed' | 'failed' | string;
   phase: string;
   progress: number;
+  current_file?: string | null;
+  downloaded_files?: number;
+  total_files?: number;
+  downloaded_bytes?: number;
+  total_bytes?: number | null;
   error?: string | null;
   created_at: string;
   updated_at: string;

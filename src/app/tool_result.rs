@@ -39,7 +39,10 @@ pub(super) fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
                 map.insert("cwd".to_string(), Value::String(cwd.clone()));
             }
             if let Some(content) = structured_content {
-                map.insert("structured_content".to_string(), content.clone());
+                map.insert(
+                    "structured_content".to_string(),
+                    sanitize_structured_content(content),
+                );
             }
             if *is_error {
                 map.insert("is_error".to_string(), Value::Bool(true));
@@ -112,6 +115,27 @@ pub(super) fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
             "message": message,
         }),
     }
+}
+
+fn sanitize_structured_content(content: &Value) -> Value {
+    let Some(object) = content.as_object() else {
+        return content.clone();
+    };
+    let mut object = object.clone();
+    if let Some(images) = object.get_mut("images").and_then(Value::as_array_mut) {
+        for image in images {
+            if let Some(image_object) = image.as_object_mut() {
+                if let Some(source) = image_object
+                    .get_mut("source")
+                    .and_then(Value::as_object_mut)
+                {
+                    source.remove("data");
+                    source.insert("redacted".to_string(), Value::Bool(true));
+                }
+            }
+        }
+    }
+    Value::Object(object)
 }
 
 fn compact_tool_stdout(stdout: &str) -> String {

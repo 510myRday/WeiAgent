@@ -197,6 +197,25 @@ test('adds an image dropped onto the composer', async () => {
   expect(composerBox).not.toHaveClass('is-dragging-files');
 });
 
+test('opens a composer image preview before sending the message', async () => {
+  const { container } = renderComposer();
+  const composerBox = container.querySelector('.composer-box');
+  const image = new File(['image-data'], 'pasted.png', { type: 'image/png' });
+  const dataTransfer = {
+    types: ['Files'],
+    files: [image],
+    dropEffect: 'none',
+  };
+
+  fireEvent.drop(composerBox!, { dataTransfer });
+
+  const thumbnail = await screen.findByRole('button', { name: '打开原图: pasted.png' });
+  fireEvent.click(thumbnail);
+
+  expect(screen.getByRole('dialog', { name: 'pasted.png' })).toBeInTheDocument();
+  expect(screen.getByRole('img', { name: 'pasted.png' })).toBeInTheDocument();
+});
+
 test('stopping a send keeps the draft from being submitted during the state change', () => {
   const onSend = vi.fn();
   const onStop = vi.fn();

@@ -511,10 +511,19 @@ async fn apply_pending_steers(
 }
 
 async fn freeze_run_tools(state: &AppState, prepared: &PreparedChat) -> FrozenRunTools {
+    let supports_multimodal = prepared
+        .provider
+        .model_configs
+        .iter()
+        .find(|config| config.model_id == prepared.agent.model_id)
+        .is_some_and(|config| config.multimodal);
     let mut frozen_tools = state
         .tool_registry
         .definitions(&prepared.tools_config)
         .unwrap_or_default();
+    if !supports_multimodal {
+        frozen_tools.retain(|definition| definition.function.name != "read_images");
+    }
     if !prepared.skill_snapshot.is_empty() {
         frozen_tools.extend(state.skill_manager.tool_definitions());
     }
@@ -789,6 +798,7 @@ async fn execute_tool_calls(
                         approval_manager: state.approval_manager.clone(),
                         event_sender: None,
                         web_search_provenance: budget.web_search_provenance.clone(),
+                        supports_multimodal: model_supports_multimodal(prepared),
                     };
                     execute_tool_with_events(
                         state,
@@ -923,6 +933,7 @@ async fn execute_parallel_mcp_calls(
             approval_manager: state.approval_manager.clone(),
             event_sender: None,
             web_search_provenance: budget.web_search_provenance.clone(),
+            supports_multimodal: model_supports_multimodal(prepared),
         };
         pending.push((index, call, map, context));
     }
@@ -1514,6 +1525,7 @@ async fn persist_tool_result(
     // Persist and re-send a compact tool payload: drop volatile fields like
     // duration_ms and trim oversized stdout/stderr so prompt-cache tails stay smaller.
     let content = serde_json::to_string(&sanitize_tool_result_for_llm(result))?;
+    let attachments = tool_result_image_attachments(result);
     let tool_message = ChatMessage {
         id: Uuid::new_v4(),
         agent_id: prepared.agent.id,
@@ -1525,7 +1537,7 @@ async fn persist_tool_result(
         created_at: Utc::now(),
         tool_calls: None,
         tool_call_id: Some(call_id.to_string()),
-        attachments: Vec::new(),
+        attachments,
         openai_response_items: Vec::new(),
         usage: None,
         shortcut_actions: Vec::new(),
@@ -1555,6 +1567,36 @@ async fn persist_tool_result(
     }
     messages.push(tool_message);
     Ok(())
+}
+
+fn model_supports_multimodal(prepared: &PreparedChat) -> bool {
+    prepared
+        .provider
+        .model_configs
+        .iter()
+        .find(|config| config.model_id == prepared.agent.model_id)
+        .is_some_and(|config| config.multimodal)
+}
+
+fn tool_result_image_attachments(result: &ToolResult) -> Vec<crate::domain::ImageAttachment> {
+    let ToolResult::Completed {
+        runtime: Some(runtime),
+        structured_content: Some(value),
+        ..
+    } = result
+    else {
+        return Vec::new();
+    };
+    if runtime != "builtin_read_images" {
+        return Vec::new();
+    }
+    value
+        .get("images")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|image| serde_json::from_value(image.clone()).ok())
+        .collect()
 }
 
 fn task_plan_public_id_from_result(result: &ToolResult) -> Option<String> {

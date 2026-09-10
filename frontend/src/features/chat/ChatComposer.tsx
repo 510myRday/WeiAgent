@@ -35,7 +35,7 @@ import type {
   ChatShortcutAction,
 } from '../../types';
 import { ImageSizeControl } from '../../components/ImageSizeControl';
-import { Button, useDismissiblePopover } from '../../components/ui';
+import { Button, Dialog, useDismissiblePopover } from '../../components/ui';
 import { useI18n } from '../../i18n';
 import { readChatDraft, writeChatDraft } from './chatDrafts';
 import {
@@ -148,6 +148,7 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
   const [shortcutOpen, setShortcutOpen] = useState(false);
   const [shortcutActions, setShortcutActions] = useState<ChatShortcutAction[]>([]);
   const [shortcutIndent, setShortcutIndent] = useState(0);
+  const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const shortcutStripRef = useRef<HTMLDivElement>(null);
@@ -307,7 +308,15 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
                 className={`composer-image-preview${attachment.is_mask ? ' is-mask' : ''}`}
                 key={attachment.id}
               >
-                <AttachmentImage attachment={attachment} alt={attachment.name} />
+                <button
+                  type="button"
+                  className="composer-image-open-button"
+                  onClick={() => setPreviewAttachment(attachment)}
+                  title={t('chat.openImage')}
+                  aria-label={t('chat.openImage') + ': ' + attachment.name}
+                >
+                  <AttachmentImage attachment={attachment} alt={attachment.name} />
+                </button>
                 {generationMode === 'image' && attachment.media_type === 'image/png' ? (
                   <button
                     type="button"
@@ -604,6 +613,23 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
           </div>
         </div>
       </div>
+      <Dialog
+        open={Boolean(previewAttachment)}
+        title={previewAttachment?.name || t('chat.imagePreview')}
+        closeLabel={t('common.close')}
+        onClose={() => setPreviewAttachment(null)}
+        size="xl"
+        className="image-preview-dialog"
+        bodyClassName="image-preview-dialog__body"
+      >
+        {previewAttachment ? (
+          <AttachmentImage
+            className="image-preview-dialog__image"
+            attachment={previewAttachment}
+            alt={previewAttachment.name}
+          />
+        ) : null}
+      </Dialog>
     </form>
   );
 }));
