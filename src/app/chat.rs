@@ -395,7 +395,8 @@ fn normalize_stored_tool_result_for_llm(content: &str) -> String {
         }
         _ => {}
     }
-    serde_json::to_string(&value).unwrap_or_else(|_| content.to_string())
+    let normalized = serde_json::to_string(&value).unwrap_or_else(|_| content.to_string());
+    crate::app::tool_result::sanitize_stored_tool_content(&normalized)
 }
 
 #[cfg(test)]
@@ -419,6 +420,15 @@ mod tool_result_tests {
         assert_eq!(value["status"], "pending_approval");
         assert_eq!(value["command"], "COMMAND");
         assert!(value.get("approval_id").is_none());
+    }
+
+    #[test]
+    fn legacy_tool_image_data_is_removed_from_content() {
+        let normalized = normalize_stored_tool_result_for_llm(
+            r#"{"status":"completed","structured_content":{"images":[{"data":"BASE64_PAYLOAD","source_type":"base64","name":"a.png"}]}}"#,
+        );
+        assert!(!normalized.contains("BASE64_PAYLOAD"));
+        assert!(normalized.contains("redacted"));
     }
 }
 

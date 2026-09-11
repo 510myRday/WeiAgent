@@ -4,6 +4,7 @@ import {
   Cable,
   FileSearch,
   FilePenLine,
+  Images,
   ListChecks,
   List,
   MonitorPlay,
@@ -26,6 +27,8 @@ function builtinToolIcon(name: string) {
     case 'multi_file_operation':
     case 'multi_edit_file':
       return <FilePenLine size={TOOL_ICON_SIZE} aria-hidden="true" />;
+    case 'read_images':
+      return <Images size={TOOL_ICON_SIZE} aria-hidden="true" />;
     case 'skill_view':
       return <BookMarked size={TOOL_ICON_SIZE} aria-hidden="true" />;
     case 'web_search':

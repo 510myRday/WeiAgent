@@ -165,6 +165,7 @@ export function ChatPanel({
     loadConversationsForAgent,
     refreshRunningConversations,
     loadMessages,
+    appendContextCompactionEvent,
     loadOlderMessages,
     resumeActiveRun,
     detachActiveRun,
@@ -964,15 +965,15 @@ export function ChatPanel({
     if (!confirmed) return;
     setIsCompressing(true);
     try {
-      await compressConversationContext(activeConversationId);
+      const event = await compressConversationContext(activeConversationId);
+      appendContextCompactionEvent(activeConversationId, event);
       toast.success(t('chat.contextCompactedManual'));
-      await loadMessages(activeConversationId);
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : t('chat.compressFailed'));
     } finally {
       setIsCompressing(false);
     }
-  }, [activeConversationId, confirm, isCompressing, isSending, loadMessages, t, toast]);
+  }, [activeConversationId, appendContextCompactionEvent, confirm, isCompressing, isSending, t, toast]);
 
   const handleSteerMessage = useCallback((content: string) => {
     void steerActiveRun(content);

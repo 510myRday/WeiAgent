@@ -484,7 +484,7 @@ export function useConversations({
   const applyDelta = useCallback((delta: string) => {
     setMessages((current) => {
       const last = current[current.length - 1];
-      if (last && isAssistantMessage(last)) {
+      if (last && isAssistantMessage(last) && !last.system_event) {
         // Keep one assistant bubble for the whole run, including post-tool text.
         return [
           ...current.slice(0, -1),
@@ -514,7 +514,7 @@ export function useConversations({
   const applyReasoningDelta = useCallback((delta: string) => {
     setMessages((current) => {
       const last = current[current.length - 1];
-      if (last && isAssistantMessage(last)) {
+      if (last && isAssistantMessage(last) && !last.system_event) {
         return [
           ...current.slice(0, -1),
           appendReasoningDeltaToAssistant(last, delta),
@@ -1093,6 +1093,33 @@ export function useConversations({
     return clientId;
   }, []);
 
+  const appendContextCompactionEvent = useCallback((
+    conversationId: string,
+    event: ContextCompactionEvent,
+  ) => {
+    setMessages((current) => {
+      if (current.some((item) => (
+        item.conversation_id === conversationId
+        && item.system_event?.type === 'context_compacted'
+        && item.system_event.created_at === event.created_at
+      ))) {
+        return current;
+      }
+      const last = current[current.length - 1];
+      return [...current, {
+        id: '',
+        agent_id: last?.agent_id ?? activeStreamRef.current.agentId,
+        conversation_id: conversationId,
+        role: 'assistant' as const,
+        content: '',
+        status: 'done' as const,
+        created_at: event.created_at,
+        clientId: genClientId(),
+        system_event: { type: 'context_compacted' as const, ...event },
+      }];
+    });
+  }, []);
+
   const removeOptimisticMessage = useCallback((clientId: string) => {
     setMessages((current) => current.filter((message) => message.clientId !== clientId));
   }, []);
@@ -1275,6 +1302,7 @@ export function useConversations({
     loadConversationsForAgent,
     refreshRunningConversations,
     loadMessages,
+    appendContextCompactionEvent,
     loadOlderMessages,
     resumeActiveRun,
     detachActiveRun,

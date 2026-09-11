@@ -34,7 +34,7 @@ export function parseJsonObject(value: string): ToolArguments {
   }
 }
 
-function statusFromToolResult(result: unknown): ToolCallStatus {
+function statusFromToolResult(result: unknown, content?: string): ToolCallStatus {
   const status = isRecord(result) ? result.status : undefined;
   if (
     status === 'completed'
@@ -47,7 +47,7 @@ function statusFromToolResult(result: unknown): ToolCallStatus {
   ) {
     return status;
   }
-  return 'completed';
+  return content?.trimStart().startsWith('图片读取失败：') ? 'error' : 'completed';
 }
 
 export function isAssistantMessage(item: UiMessageItem): item is UiMessage & { role: 'assistant' } {
@@ -181,7 +181,7 @@ export function upsertToolOnMessages(
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
     if (isUserMessage(item)) break;
-    if (isAssistantMessage(item)) {
+    if (isAssistantMessage(item) && !item.system_event) {
       return items.map((entry, entryIndex) => (
         entryIndex === index ? upsertToolOnAssistant(entry, tool) : entry
       ));
@@ -261,6 +261,19 @@ export function assistantHasVisibleBody(message: UiMessage): boolean {
  */
 export function mergeAssistantEvent(items: UiMessageItem[], msg: UiMessage): UiMessageItem[] {
   const last = items[items.length - 1];
+  // A compaction marker is rendered as its own separator. The assistant
+  // response that follows it starts a new visible bubble, even though both
+  // records use the assistant role in storage.
+  if (last && isAssistantMessage(last) && last.system_event) {
+    const blocks: AssistantBlock[] = [];
+    if (msg.reasoning_content) blocks.push({ type: 'reasoning', content: msg.reasoning_content });
+    if (msg.content) blocks.push({ type: 'text', content: msg.content });
+    return [...items, {
+      ...msg,
+      blocks: blocks.length ? blocks : undefined,
+      status: 'streaming' as const,
+    }];
+  }
   if (msg.status === 'failed') {
     if (last && isAssistantMessage(last)) {
       return [
@@ -358,6 +371,14 @@ export function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
   let lastAssistantIndex = -1;
 
   for (const msg of raw) {
+    if (msg.system_event) {
+      // Keep the persisted compaction marker separate from the next assistant
+      // turn. Both records have role=assistant, but the marker is not a chat
+      // response and must remain a visible timeline boundary.
+      items.push(toUiMessage({ ...msg, role: 'assistant' }));
+      lastAssistantIndex = -1;
+      continue;
+    }
     if (msg.role === 'assistant') {
       const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
       const tools: ToolCallState[] = toolCalls.map((call) => ({
@@ -434,7 +455,7 @@ export function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
       const result = parseJsonObject(msg.content);
       const callId = msg.tool_call_id ?? msg.id;
       const ownerIndex = toolOwner.get(callId);
-      const status = statusFromToolResult(result);
+      const status = statusFromToolResult(result, msg.content);
       if (ownerIndex !== undefined) {
         const current = items[ownerIndex];
         if (isAssistantMessage(current)) {

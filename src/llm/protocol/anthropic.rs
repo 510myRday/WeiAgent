@@ -212,33 +212,27 @@ fn build_anthropic_request(
                 let call_id = message.tool_call_id.as_deref().ok_or_else(|| {
                     AppError::Llm("stored tool message is missing tool_call_id".to_string())
                 })?;
-                let content = if message.attachments.is_empty() {
-                    json!(message.content)
-                } else {
-                    let mut blocks = Vec::with_capacity(message.attachments.len() + 1);
-                    if !message.content.is_empty() {
-                        blocks.push(json!({"type": "text", "text": message.content}));
+                let content = json!(message.content);
+                ("user", {
+                    let mut blocks = vec![json!({
+                    "type": "tool_result",
+                    "tool_use_id": call_id,
+                    "content": content,
+                    })];
+                    if !message.attachments.is_empty() {
+                        blocks.extend(message.attachments.iter().map(|attachment| match &attachment.source {
+                                ImageSource::Base64 { data } => json!({
+                                    "type": "image",
+                                    "source": {"type": "base64", "media_type": attachment.media_type, "data": data}
+                                }),
+                                ImageSource::Url { url } | ImageSource::Local { path: url } => json!({
+                                    "type": "image",
+                                    "source": {"type": "url", "url": url}
+                                }),
+                            }));
                     }
-                    blocks.extend(message.attachments.iter().map(|attachment| match &attachment.source {
-                        ImageSource::Base64 { data } => json!({
-                            "type": "image",
-                            "source": {"type": "base64", "media_type": attachment.media_type, "data": data}
-                        }),
-                        ImageSource::Url { url } | ImageSource::Local { path: url } => json!({
-                            "type": "image",
-                            "source": {"type": "url", "url": url}
-                        }),
-                    }));
-                    json!(blocks)
-                };
-                (
-                    "user",
-                    vec![json!({
-                        "type": "tool_result",
-                        "tool_use_id": call_id,
-                        "content": content,
-                    })],
-                )
+                    blocks
+                })
             }
         };
         if blocks.is_empty() {

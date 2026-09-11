@@ -25,6 +25,13 @@ function serverWithTools(tools: Array<{ name: string; qualified_name: string }>)
 }
 
 describe('ToolIcon', () => {
+  test('uses the image icon for the built-in image reader', () => {
+    const { container } = render(<ToolIcon toolName="read_images" mcpServers={[]} />);
+
+    expect(container.querySelector('svg.lucide-images')).not.toBeNull();
+    expect(container.querySelector('svg.lucide-wrench')).toBeNull();
+  });
+
   test('keeps the built-in icon when an MCP tool has the same raw name', () => {
     const mcpServer = serverWithTools([
       { name: 'multi_edit_file', qualified_name: 'mcp_Editor_MCP_multi_edit_file' },

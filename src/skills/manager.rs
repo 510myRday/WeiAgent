@@ -507,6 +507,17 @@ impl SkillManager {
         Ok(task)
     }
 
+    #[cfg(test)]
+    async fn create_import_task(
+        &self,
+        source: &str,
+        kind: &str,
+        group_id: Option<String>,
+    ) -> AppResult<SkillImportTask> {
+        self.create_import_task_with_context(source, kind, group_id, None, None)
+            .await
+    }
+
     pub async fn list_import_tasks(&self) -> Vec<SkillImportTask> {
         let tasks = self.import_tasks.read().await;
         let mut result = tasks.values().cloned().collect::<Vec<_>>();

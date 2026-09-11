@@ -119,18 +119,33 @@ pub fn build_chat_request(
         tool_calls: None,
         tool_call_id: None,
     });
-    request_messages.extend(select_context_messages(messages).iter().map(|message| {
-        OpenAiMessage {
+    for message in select_context_messages(messages) {
+        request_messages.push(OpenAiMessage {
             role: message.role.as_openai_role().to_string(),
-            content: openai_message_content(message),
+            content: if message.role == ChatRole::Tool && !message.attachments.is_empty() {
+                // The tool result remains as the protocol acknowledgement.
+                // The visual payload is replayed immediately below as a user
+                // message so image-capable models treat it as user context.
+                serde_json::Value::String(String::new())
+            } else {
+                openai_message_content(message)
+            },
             tool_calls: message.tool_calls.as_ref().map(strip_tool_call_ui_fields),
             tool_call_id: if message.role.as_openai_role() == "tool" {
                 message.tool_call_id.clone()
             } else {
                 None
             },
+        });
+        if message.role == ChatRole::Tool && !message.attachments.is_empty() {
+            request_messages.push(OpenAiMessage {
+                role: "user".to_string(),
+                content: openai_message_content(message),
+                tool_calls: None,
+                tool_call_id: None,
+            });
         }
-    }));
+    }
 
     ChatCompletionRequest {
         model: agent.model_id.clone(),

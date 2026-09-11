@@ -2,6 +2,7 @@ import {
   appendReasoningDeltaToAssistant,
   appendTextDeltaToAssistant,
   mergeAssistantEvent,
+  upsertToolOnMessages,
   toUiMessageItems,
 } from './conversationMessages';
 import type { UiMessage } from '../types';
@@ -87,4 +88,83 @@ test('rebuilds loop history with one reasoning block before the latest assistant
     'reasoning',
     'text',
   ]);
+});
+
+test('keeps the assistant reply after a persisted compaction marker visible', () => {
+  const marker = assistant({
+    id: 'compaction-1',
+    content: '',
+    system_event: {
+      type: 'context_compacted',
+      source: 'automatic',
+      threshold_percent: 90,
+      before_tokens: 9700,
+      after_tokens: 1300,
+      created_at: '2026-08-15T00:01:00.000Z',
+    },
+  });
+  const items = toUiMessageItems([
+    assistant({ id: 'assistant-before', content: 'before compaction' }),
+    marker,
+    assistant({ id: 'assistant-after', content: 'after compaction' }),
+  ]);
+
+  expect(items).toHaveLength(3);
+  expect(items[1]).toMatchObject({ system_event: marker.system_event, content: '' });
+  expect(items[2]).toMatchObject({ content: 'after compaction' });
+});
+
+test('starts a new assistant bubble after a live compaction event', () => {
+  const marker = assistant({
+    id: 'compaction-1',
+    content: '',
+    system_event: {
+      type: 'context_compacted',
+      source: 'automatic',
+      threshold_percent: 90,
+      before_tokens: 9700,
+      after_tokens: 1300,
+      created_at: '2026-08-15T00:01:00.000Z',
+    },
+  });
+  const items = mergeAssistantEvent([marker], assistant({ id: 'assistant-after', content: 'after compaction' }));
+
+  expect(items).toHaveLength(2);
+  expect(items[0]).toMatchObject({ system_event: marker.system_event });
+  expect(items[1]).toMatchObject({ content: 'after compaction' });
+});
+
+test('does not attach a post-compaction tool call to the separator', () => {
+  const marker = assistant({
+    id: 'compaction-1',
+    content: '',
+    system_event: {
+      type: 'context_compacted',
+      source: 'automatic',
+      threshold_percent: 90,
+      before_tokens: 9700,
+      after_tokens: 1300,
+      created_at: '2026-08-15T00:01:00.000Z',
+    },
+  });
+  const items = upsertToolOnMessages(
+    [marker],
+    {
+      call_id: 'call-after-compaction',
+      name: 'lookup',
+      arguments: {},
+      status: 'running',
+    },
+    'agent-1',
+    'conversation-1',
+  );
+
+  expect(items).toHaveLength(2);
+  expect(items[0]).toMatchObject({ system_event: marker.system_event });
+  expect(items[1]).toMatchObject({ role: 'assistant', content: '' });
+  expect(items[1]).not.toMatchObject({ system_event: expect.anything() });
+  expect(items[1].role === 'assistant' && items[1].blocks?.[0]).toMatchObject({
+    type: 'tool',
+    tool: { call_id: 'call-after-compaction' },
+  });
 });

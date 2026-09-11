@@ -138,7 +138,7 @@ impl AgentTool for ReadImagesTool {
             .collect::<Vec<_>>();
         let count = image_values.len();
         ToolResult::Completed {
-            stdout: format!("Read {count} image(s) and attached them as visual context."),
+            stdout: format!("图片读取成功：已读取 {count} 张图片，并已作为视觉上下文附加。"),
             stderr: String::new(),
             exit_code: 0,
             duration_ms: 0,

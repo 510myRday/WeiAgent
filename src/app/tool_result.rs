@@ -117,6 +117,49 @@ pub(super) fn sanitize_tool_result_for_llm(result: &ToolResult) -> Value {
     }
 }
 
+pub(super) fn tool_result_content_for_message(tool_name: &str, result: &ToolResult) -> String {
+    if tool_name == "read_images" {
+        return match result {
+            ToolResult::Completed {
+                stdout, is_error, ..
+            } if !*is_error => {
+                if stdout.trim().is_empty() {
+                    "图片读取成功。".to_string()
+                } else {
+                    stdout.trim().to_string()
+                }
+            }
+            ToolResult::Completed { stdout, stderr, .. } => {
+                let detail = if !stderr.trim().is_empty() {
+                    stderr.trim()
+                } else {
+                    stdout.trim()
+                };
+                format!("图片读取失败：{detail}")
+            }
+            ToolResult::Error { message } => format!("图片读取失败：{message}"),
+            ToolResult::Blocked { reason, .. } => format!("图片读取失败：{reason}"),
+            ToolResult::Rejected { reason } => format!("图片读取失败：{reason}"),
+            ToolResult::Interrupted { reason } => format!("图片读取失败：{reason}"),
+            ToolResult::PendingApproval { .. } => "图片读取失败：等待工具批准。".to_string(),
+            ToolResult::Running { message, .. } => format!("图片读取中：{message}"),
+        };
+    }
+
+    serde_json::to_string(&sanitize_tool_result_for_llm(result))
+        .unwrap_or_else(|_| "工具执行完成。".to_string())
+}
+
+pub(super) fn sanitize_stored_tool_content(content: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(content) else {
+        return content.to_string();
+    };
+    if let Some(structured_content) = value.get_mut("structured_content") {
+        *structured_content = sanitize_structured_content(structured_content);
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| content.to_string())
+}
+
 fn sanitize_structured_content(content: &Value) -> Value {
     let Some(object) = content.as_object() else {
         return content.clone();
@@ -125,13 +168,16 @@ fn sanitize_structured_content(content: &Value) -> Value {
     if let Some(images) = object.get_mut("images").and_then(Value::as_array_mut) {
         for image in images {
             if let Some(image_object) = image.as_object_mut() {
+                // ImageAttachment flattens ImageSource, so Base64 data is
+                // stored beside source_type rather than under source.
+                image_object.remove("data");
                 if let Some(source) = image_object
                     .get_mut("source")
                     .and_then(Value::as_object_mut)
                 {
                     source.remove("data");
-                    source.insert("redacted".to_string(), Value::Bool(true));
                 }
+                image_object.insert("redacted".to_string(), Value::Bool(true));
             }
         }
     }

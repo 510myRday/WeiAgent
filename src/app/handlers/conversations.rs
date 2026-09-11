@@ -18,6 +18,7 @@ use crate::{
         chat::{prepare_chat, prepare_chat_context},
         image::run_image,
         run_manager::{SequencedRunEvent, SteerMessage},
+        tool_result::sanitize_tool_result_for_llm,
     },
     domain::{
         AgentRun, AgentRunStatus, ChatMessage, ChatMessageStatus, ChatRole, ChatSystemEvent,
@@ -768,7 +769,10 @@ fn agent_event_to_sse(event: AgentRunEvent) -> Event {
         ),
         AgentRunEvent::ToolResult { call_id, result } => json_event(
             "tool_result",
-            &serde_json::json!({ "call_id": call_id, "result": result }),
+            &serde_json::json!({
+                "call_id": call_id,
+                "result": sanitize_tool_result_for_llm(&result),
+            }),
         ),
         AgentRunEvent::ApprovalRequired {
             call_id,

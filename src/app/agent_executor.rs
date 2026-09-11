@@ -1,4 +1,4 @@
-use super::tool_result::sanitize_tool_result_for_llm;
+use super::tool_result::tool_result_content_for_message;
 use std::{
     collections::{BTreeMap, HashSet},
     time::{Duration, Instant},
@@ -838,7 +838,15 @@ async fn execute_tool_calls(
             },
         )
         .await?;
-        persist_tool_result(state, prepared, messages, &call.id, &result).await?;
+        persist_tool_result(
+            state,
+            prepared,
+            messages,
+            &call.id,
+            &call.function.name,
+            &result,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -981,7 +989,15 @@ async fn execute_parallel_mcp_calls(
             },
         )
         .await?;
-        persist_tool_result(state, prepared, messages, &call.id, &result).await?;
+        persist_tool_result(
+            state,
+            prepared,
+            messages,
+            &call.id,
+            &call.function.name,
+            &result,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -1520,11 +1536,12 @@ async fn persist_tool_result(
     prepared: &PreparedChat,
     messages: &mut Vec<ChatMessage>,
     call_id: &str,
+    tool_name: &str,
     result: &ToolResult,
 ) -> AppResult<()> {
     // Persist and re-send a compact tool payload: drop volatile fields like
     // duration_ms and trim oversized stdout/stderr so prompt-cache tails stay smaller.
-    let content = serde_json::to_string(&sanitize_tool_result_for_llm(result))?;
+    let content = tool_result_content_for_message(tool_name, result);
     let attachments = tool_result_image_attachments(result);
     let tool_message = ChatMessage {
         id: Uuid::new_v4(),
@@ -1711,7 +1728,7 @@ async fn emit(events: &Option<mpsc::Sender<AgentRunEvent>>, event: AgentRunEvent
 
 #[cfg(test)]
 mod tests {
-    use super::super::tool_result::trim_chars;
+    use super::super::tool_result::{sanitize_tool_result_for_llm, trim_chars};
     use super::*;
     use serde_json::json;
 
@@ -1766,6 +1783,69 @@ mod tests {
         });
         assert_eq!(first, second);
         assert!(first.get("approval_id").is_none());
+    }
+
+    #[test]
+    fn sanitize_tool_images_redacts_flattened_base64_data() {
+        let result = ToolResult::Completed {
+            stdout: "Read 1 image(s).".into(),
+            stderr: String::new(),
+            exit_code: 0,
+            duration_ms: 0,
+            runtime: Some("builtin_read_images".into()),
+            cwd: None,
+            output_cursor: 0,
+            structured_content: Some(json!({
+                "images": [{
+                    "data": "BASE64_PAYLOAD",
+                    "source_type": "base64",
+                    "name": "a.png"
+                }]
+            })),
+            is_error: false,
+        };
+        let value = sanitize_tool_result_for_llm(&result);
+        let serialized = value.to_string();
+        assert!(!serialized.contains("BASE64_PAYLOAD"));
+        assert_eq!(value["structured_content"]["images"][0]["redacted"], true);
+    }
+
+    #[test]
+    fn read_images_tool_message_uses_text_without_embedding_image_data() {
+        let result = ToolResult::Completed {
+            stdout: "图片读取成功：已读取 1 张图片，并已作为视觉上下文附加。".into(),
+            stderr: String::new(),
+            exit_code: 0,
+            duration_ms: 0,
+            runtime: Some("builtin_read_images".into()),
+            cwd: None,
+            output_cursor: 0,
+            structured_content: Some(json!({
+                "images": [{
+                    "data": "BASE64_PAYLOAD",
+                    "source_type": "base64",
+                    "name": "a.png"
+                }]
+            })),
+            is_error: false,
+        };
+        let content = tool_result_content_for_message("read_images", &result);
+        assert_eq!(
+            content,
+            "图片读取成功：已读取 1 张图片，并已作为视觉上下文附加。"
+        );
+        assert!(!content.contains("BASE64_PAYLOAD"));
+    }
+
+    #[test]
+    fn read_images_tool_message_explains_failures_as_text() {
+        let result = ToolResult::Error {
+            message: "image path must be absolute".into(),
+        };
+        assert_eq!(
+            tool_result_content_for_message("read_images", &result),
+            "图片读取失败：image path must be absolute"
+        );
     }
 
     #[test]
