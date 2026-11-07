@@ -391,7 +391,10 @@
 }
 
 .task-plan-panel {
-  width: min(calc(100% - 48px), calc(var(--content-max-width) - 48px));
+  width: min(
+    calc(100% - var(--chat-inline-gutter) - var(--chat-inline-gutter) - 48px),
+    calc(var(--content-max-width) - 48px)
+  );
   margin-inline: auto;
   padding: 0;
 }
@@ -473,7 +476,8 @@
 .task-plan-panel__summary-progress {
   display: flex;
   width: 560px;
-  flex: 0 0 560px;
+  flex: 0 1 560px;
+  min-width: 0;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
@@ -490,7 +494,9 @@
 .task-plan-panel__progress-track {
   display: flex;
   width: 200px;
-  flex: 0 0 200px;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 200px;
   height: 4px;
   gap: 3px;
   overflow: hidden;

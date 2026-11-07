@@ -18,6 +18,15 @@ export const AVATAR_PRESETS: AvatarPreset[] = [
   { id: 'navigator', label: '方向导航', icon: 'compass' },
 ];
 
+// The source image is intentionally kept as one asset. Each avatar is cropped
+// at runtime with CSS background positioning instead of being pre-split into
+// nine files.
+const AVATAR_TILE_POSITIONS = [
+  '2% 2%', '50% 2%', '98% 2%',
+  '2% 50%', '50% 50%', '98% 50%',
+  '2% 98%', '50% 98%', '98% 98%',
+] as const;
+
 export const AVATAR_COLORS = [
   '#22c55e',
   '#2563eb',
@@ -40,4 +49,9 @@ export function defaultAvatarColor(icon: AvatarIcon): string {
 
 export function getPresetByIcon(icon: string): AvatarPreset {
   return AVATAR_PRESETS.find((p) => p.icon === icon) || AVATAR_PRESETS[0];
+}
+
+export function avatarTilePosition(icon: AvatarIcon): string {
+  const index = AVATAR_PRESETS.findIndex((preset) => preset.icon === icon);
+  return AVATAR_TILE_POSITIONS[index >= 0 ? index : 0];
 }

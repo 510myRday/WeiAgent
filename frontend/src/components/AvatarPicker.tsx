@@ -1,40 +1,17 @@
-import {
-  Bot,
-  Brain,
-  Compass,
-  Crown,
-  Heart,
-  Smile,
-  Sparkles,
-  Star,
-  Zap,
-  type LucideIcon,
-} from 'lucide-react';
 import type { AvatarIcon } from '../types';
 import {
   AVATAR_COLORS,
   AVATAR_PRESETS,
   avatarBackground,
+  avatarTilePosition,
   defaultAvatarColor,
   getPresetByIcon,
 } from '../avatarPresets';
 
-const ICON_MAP: Record<AvatarIcon, LucideIcon> = {
-  bot: Bot,
-  sparkles: Sparkles,
-  zap: Zap,
-  heart: Heart,
-  star: Star,
-  smile: Smile,
-  crown: Crown,
-  brain: Brain,
-  compass: Compass,
-};
-
 export function AvatarBadge({
   icon,
   color,
-  size = 18,
+  size: _size = 18,
   className = 'row-avatar',
 }: {
   icon: AvatarIcon;
@@ -43,7 +20,6 @@ export function AvatarBadge({
   className?: string;
 }) {
   const preset = getPresetByIcon(icon);
-  const Icon = ICON_MAP[preset.icon];
   const iconOnly = className.split(' ').some((name) => name === 'avatar-icon-only' || name === 'avatar-icon-inline');
 
   return (
@@ -55,7 +31,13 @@ export function AvatarBadge({
         color,
       }}
     >
-      <Icon size={size} color={color} />
+      <span
+        className="avatar-artwork"
+        style={{
+          backgroundPosition: avatarTilePosition(preset.icon),
+        }}
+        aria-hidden="true"
+      />
     </span>
   );
 }

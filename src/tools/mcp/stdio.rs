@@ -1,11 +1,12 @@
 // Internal MCP transport/auth helpers split out of the manager module.
 use std::{
     ffi::OsStr,
-    path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
     time::Instant,
 };
+#[cfg(windows)]
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use tokio::{
@@ -452,16 +453,16 @@ pub(super) fn split_stdio_command(command: &str) -> Vec<String> {
     parts
 }
 
-pub(super) fn build_stdio_command(program: &str, args: &[String], path: Option<&OsStr>) -> Command {
+pub(super) fn build_stdio_command(program: &str, args: &[String], _path: Option<&OsStr>) -> Command {
     #[cfg(windows)]
     if (program.eq_ignore_ascii_case("npx") || program.eq_ignore_ascii_case("npm"))
-        && let Some(command) = build_node_package_manager_command_for_program(program, args, path)
+        && let Some(command) = build_node_package_manager_command_for_program(program, args, _path)
     {
         return command;
     }
 
     #[cfg(windows)]
-    if let Some(script) = resolve_windows_script(program, path) {
+    if let Some(script) = resolve_windows_script(program, _path) {
         let mut command = Command::new(windows_command_interpreter());
         command
             .args(["/D", "/S", "/C"])

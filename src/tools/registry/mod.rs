@@ -297,14 +297,14 @@ pub(super) fn normalize_optional_cwd(cwd: Option<String>) -> Result<Option<Strin
     Ok(Some(cwd.to_string()))
 }
 
-pub(super) fn unsupported_host_shell_syntax(command: &str) -> Option<String> {
+pub(super) fn unsupported_host_shell_syntax(_command: &str) -> Option<String> {
     #[cfg(windows)]
     {
-        let lower = command.to_ascii_lowercase();
+        let lower = _command.to_ascii_lowercase();
         if lower.contains("python - <<")
             || lower.contains("python3 - <<")
-            || command.contains("<<'")
-            || command.contains("<<\"")
+            || _command.contains("<<'")
+            || _command.contains("<<\"")
         {
             let shell = crate::tools::shell::selected_host_shell();
             return Some(format!(

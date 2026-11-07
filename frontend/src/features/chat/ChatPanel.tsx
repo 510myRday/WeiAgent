@@ -92,6 +92,7 @@ type PendingImageOptionsSave = {
 type ComposerImageOptions = Pick<ImageModelConfig, 'size' | 'quality' | 'n'>;
 
 const EMPTY_MESSAGES: UiMessageItem[] = [];
+const EMPTY_PROVIDER_ID = '00000000-0000-0000-0000-000000000000';
 const THINKING_LEVEL_STORAGE_KEY = 'weiagent-thinking-levels';
 const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'high';
 
@@ -266,7 +267,7 @@ export function ChatPanel({
     }
   }, [selectedModelValue]);
   const targetProviderId = pendingModelSelection?.providerId
-    ?? modelTargetAgent?.model_provider_id;
+    ?? normalizeModelProviderId(modelTargetAgent?.model_provider_id ?? '');
   const targetModelId = pendingModelSelection?.modelId ?? modelTargetAgent?.model_id;
   const activeProvider = providers.find(
     (provider) => provider.id === targetProviderId,
@@ -338,11 +339,19 @@ export function ChatPanel({
     })),
   ), [providers]);
   const soleModelOption = modelOptions.length === 1 ? modelOptions[0] : undefined;
-  const activeModelValue = modelTargetAgent
-    ? JSON.stringify([modelTargetAgent.model_provider_id, modelTargetAgent.model_id])
+  const normalizedAgentProviderId = modelTargetAgent
+    ? normalizeModelProviderId(modelTargetAgent.model_provider_id)
     : '';
-  const hasProvider = Boolean(targetProviderId);
-  const hasModel = Boolean(targetModelId);
+  const configuredModelValue = modelTargetAgent && normalizedAgentProviderId && modelTargetAgent.model_id
+    ? JSON.stringify([normalizedAgentProviderId, modelTargetAgent.model_id])
+    : '';
+  const activeModelValue = modelOptions.some((option) => option.value === configuredModelValue)
+    ? configuredModelValue
+    : '';
+  const hasProvider = Boolean(activeProvider);
+  const hasModel = Boolean(modelOptions.some((option) => (
+    option.providerId === targetProviderId && option.modelId === targetModelId
+  )));
   const isComposerDisabled = !activeAgent || !hasProvider || !hasModel;
   const composerPlaceholder = !activeAgent
     ? t('chat.placeholderDisabled')
@@ -1276,5 +1285,9 @@ export function ChatPanel({
       </section>
     </>
   );
+}
+
+function normalizeModelProviderId(providerId: string): string {
+  return providerId === EMPTY_PROVIDER_ID ? '' : providerId;
 }
 
