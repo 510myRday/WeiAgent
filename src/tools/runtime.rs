@@ -140,6 +140,23 @@ impl EnvironmentRuntimeManager {
             }
             *active = Some(component);
         }
+        // Publish the in-progress state before spawning the installer. Otherwise a
+        // very fast failure can finish before the handler reads status, making the
+        // frontend mistake the unchanged state for a successful installation.
+        let initial_status = {
+            let mut status = self.status.write().await;
+            status.installing = true;
+            status.error = None;
+            if let Some(component_status) = status
+                .components
+                .iter_mut()
+                .find(|item| item.kind == component)
+            {
+                component_status.installing = true;
+                component_status.error = None;
+            }
+            status.clone()
+        };
         let manager = self.clone();
         tokio::spawn(async move {
             let result = supporting_runtime::install_component(
@@ -148,13 +165,30 @@ impl EnvironmentRuntimeManager {
                 &manager.client,
             )
             .await;
-            *manager.active_install.write().await = None;
-            if let Err(error) = result {
+            let install_error = result.err().map(|error| {
                 tracing::warn!(?component, %error, "environment component installation failed");
+                error.to_string()
+            });
+            let refresh_error = manager.refresh_local().await.err().map(|error| {
+                tracing::warn!(?component, %error, "failed to refresh runtime status after installation");
+                error.to_string()
+            });
+            *manager.active_install.write().await = None;
+
+            let completion_error = install_error.or(refresh_error);
+            let mut status = manager.status.write().await;
+            status.installing = false;
+            if let Some(component_status) = status
+                .components
+                .iter_mut()
+                .find(|item| item.kind == component)
+            {
+                component_status.installing = false;
+                component_status.error = completion_error;
             }
-            let _ = manager.refresh_local().await;
+            status.update_aggregate_fields();
         });
-        Ok(self.status().await)
+        Ok(initial_status)
     }
 
     async fn refresh_local(&self) -> AppResult<EnvironmentRuntimeStatus> {

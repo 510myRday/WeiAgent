@@ -21,6 +21,7 @@ import {
   Pencil,
   Scan,
   Send,
+  ShieldAlert,
   Square,
   Wrench,
   X,
@@ -104,6 +105,10 @@ interface ChatComposerProps {
   onSteer: (content: string) => void;
   onStop: () => void;
   shortcutItems?: ComposerShortcutItem[];
+  terminalPermissionMode?: 'request_approval' | 'full_access';
+  terminalPermissionIsInherited?: boolean;
+  isSavingTerminalPermission?: boolean;
+  onTerminalPermissionModeChange?: (mode: 'request_approval' | 'full_access') => void;
   onCompress?: () => void;
   isCompressing?: boolean;
 }
@@ -139,6 +144,10 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
   onSteer,
   onStop,
   shortcutItems = [],
+  terminalPermissionMode,
+  terminalPermissionIsInherited = false,
+  isSavingTerminalPermission = false,
+  onTerminalPermissionModeChange,
   onCompress = () => undefined,
   isCompressing = false,
 }: ChatComposerProps, ref) {
@@ -146,6 +155,7 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
   const [draft, setDraft] = useState('');
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const [shortcutOpen, setShortcutOpen] = useState(false);
+  const [permissionOpen, setPermissionOpen] = useState(false);
   const [shortcutActions, setShortcutActions] = useState<ChatShortcutAction[]>([]);
   const [shortcutIndent, setShortcutIndent] = useState(0);
   const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
@@ -155,6 +165,7 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
   const fileInputRef = useRef<HTMLInputElement>(null);
   const thinkingRef = useDismissiblePopover<HTMLDivElement>(thinkingOpen, () => setThinkingOpen(false));
   const shortcutRef = useDismissiblePopover<HTMLDivElement>(shortcutOpen, () => setShortcutOpen(false));
+  const permissionRef = useDismissiblePopover<HTMLDivElement>(permissionOpen, () => setPermissionOpen(false));
   const {
     attachments,
     setAttachments,
@@ -554,7 +565,45 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
               </div>
             ) : null}
             </div>
-            <div className="composer-actions">
+            <div className={`composer-actions${terminalPermissionMode ? ' has-terminal-permission' : ''}`}>
+            {terminalPermissionMode && onTerminalPermissionModeChange ? (
+              <div className="thinking-control terminal-permission-control" ref={permissionRef}>
+                <button
+                  type="button"
+                  className={`thinking-button terminal-permission-button${terminalPermissionMode === 'full_access' ? ' is-danger' : ''}`}
+                  onClick={() => setPermissionOpen((open) => !open)}
+                  disabled={disabled || isSending || isSavingTerminalPermission}
+                  aria-expanded={permissionOpen}
+                  aria-label={t('chat.terminalPermission')}
+                  title={t(terminalPermissionIsInherited ? 'chat.terminalPermissionInherited' : 'chat.terminalPermissionOverride')}
+                >
+                  <ShieldAlert size={17} aria-hidden="true" />
+                  <span>{t(terminalPermissionMode === 'full_access' ? 'tools.terminal.fullAccess' : 'tools.terminal.requestApproval')}</span>
+                </button>
+                {permissionOpen ? (
+                  <div className="thinking-menu" role="menu">
+                    <div className="shortcut-menu-title">{t('chat.terminalPermission')}</div>
+                    {(['request_approval', 'full_access'] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={terminalPermissionMode === mode}
+                        className={terminalPermissionMode === mode ? 'is-selected' : ''}
+                        disabled={isSavingTerminalPermission}
+                        onClick={() => {
+                          setPermissionOpen(false);
+                          onTerminalPermissionModeChange(mode);
+                        }}
+                      >
+                        <span>{t(mode === 'full_access' ? 'tools.terminal.fullAccess' : 'tools.terminal.requestApproval')}</span>
+                        {terminalPermissionMode === mode ? <Check size={15} /> : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <div className="conversation-usage">
               <ContextUsageRing
                 used={usage.total_tokens}

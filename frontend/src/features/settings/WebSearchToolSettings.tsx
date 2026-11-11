@@ -927,77 +927,82 @@ export function WebSearchToolSettings({
                     />
                   </div>
                 </div>
-
-                <div className="web-search-evidence-divider">
-                  <div className="settings-section-title">
-                    <h3>{t('tools.webSearch.evidenceStorageTitle')}</h3>
-                    <p>{t('tools.webSearch.evidenceStorageDesc')}</p>
-                  </div>
-                </div>
-
-                <div className="setting-row">
-                  <div className="setting-info">
-                    <label>{t('tools.webSearch.evidenceStorageEnabled')}</label>
-                    <p className="setting-desc">{t('tools.webSearch.evidenceStorageEnabledDesc')}</p>
-                  </div>
-                  <label className="toggle-switch">
-                    <input
-                      type="checkbox"
-                      aria-label={t('tools.webSearch.evidenceStorageEnabled')}
-                      checked={evidenceStorage.enabled}
-                      onChange={(e) => updateEvidenceStorage({ enabled: e.target.checked })}
-                    />
-                    <span className="toggle-slider" />
-                  </label>
-                </div>
-
-                <div className="setting-row">
-                  <div className="setting-info">
-                    <label>{t('tools.webSearch.evidenceRetentionDays')}</label>
-                    <p className="setting-desc">{t('tools.webSearch.evidenceRetentionDaysDesc')}</p>
-                  </div>
-                  <div className="timeout-input">
-                    <input
-                      type="number"
-                      min={1}
-                      max={MAX_EVIDENCE_RETENTION_DAYS}
-                      value={evidenceStorage.retention_days}
-                      onChange={(e) => {
-                        const value = Number(e.target.value);
-                        if (!Number.isFinite(value)) return;
-                        updateEvidenceStorage({
-                          retention_days: Math.min(MAX_EVIDENCE_RETENTION_DAYS, Math.max(1, Math.round(value))),
-                        });
-                      }}
-                    />
-                  </div>
-                </div>
-
-                <div className="setting-row">
-                  <div className="setting-info">
-                    <label>{t('tools.webSearch.evidenceMaxTotalMb')}</label>
-                    <p className="setting-desc">{t('tools.webSearch.evidenceMaxTotalMbDesc')}</p>
-                  </div>
-                  <div className="timeout-input">
-                    <input
-                      type="number"
-                      min={1}
-                      max={MAX_EVIDENCE_TOTAL_MB}
-                      value={evidenceStorage.max_total_mb}
-                      onChange={(e) => {
-                        const value = Number(e.target.value);
-                        if (!Number.isFinite(value)) return;
-                        updateEvidenceStorage({
-                          max_total_mb: Math.min(MAX_EVIDENCE_TOTAL_MB, Math.max(1, Math.round(value))),
-                        });
-                      }}
-                    />
-                  </div>
-                </div>
               </>
             ) : null}
           </div>
         </section>
+
+        {!isAgentScope ? (
+          <section className="settings-card evidence-storage-settings-card">
+            <div className="card-header">
+              <div className="settings-section-title">
+                <h3>{t('tools.webSearch.evidenceStorageTitle')}</h3>
+                <p>{t('tools.webSearch.evidenceStorageDesc')}</p>
+              </div>
+            </div>
+            <div className="card-body">
+              <div className="setting-row">
+                <div className="setting-info">
+                  <label>{t('tools.webSearch.evidenceStorageEnabled')}</label>
+                  <p className="setting-desc">{t('tools.webSearch.evidenceStorageEnabledDesc')}</p>
+                </div>
+                <label className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    aria-label={t('tools.webSearch.evidenceStorageEnabled')}
+                    checked={evidenceStorage.enabled}
+                    onChange={(e) => updateEvidenceStorage({ enabled: e.target.checked })}
+                  />
+                  <span className="toggle-slider" />
+                </label>
+              </div>
+
+              <div className="setting-row">
+                <div className="setting-info">
+                  <label>{t('tools.webSearch.evidenceRetentionDays')}</label>
+                  <p className="setting-desc">{t('tools.webSearch.evidenceRetentionDaysDesc')}</p>
+                </div>
+                <div className="timeout-input">
+                  <input
+                    type="number"
+                    min={1}
+                    max={MAX_EVIDENCE_RETENTION_DAYS}
+                    value={evidenceStorage.retention_days}
+                    onChange={(e) => {
+                      const value = Number(e.target.value);
+                      if (!Number.isFinite(value)) return;
+                      updateEvidenceStorage({
+                        retention_days: Math.min(MAX_EVIDENCE_RETENTION_DAYS, Math.max(1, Math.round(value))),
+                      });
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="setting-row">
+                <div className="setting-info">
+                  <label>{t('tools.webSearch.evidenceMaxTotalMb')}</label>
+                  <p className="setting-desc">{t('tools.webSearch.evidenceMaxTotalMbDesc')}</p>
+                </div>
+                <div className="timeout-input">
+                  <input
+                    type="number"
+                    min={1}
+                    max={MAX_EVIDENCE_TOTAL_MB}
+                    value={evidenceStorage.max_total_mb}
+                    onChange={(e) => {
+                      const value = Number(e.target.value);
+                      if (!Number.isFinite(value)) return;
+                      updateEvidenceStorage({
+                        max_total_mb: Math.min(MAX_EVIDENCE_TOTAL_MB, Math.max(1, Math.round(value))),
+                      });
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
 
         <section className="settings-card web-search-sources-card">
           <div className="card-header">

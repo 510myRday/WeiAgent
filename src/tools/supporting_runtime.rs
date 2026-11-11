@@ -20,6 +20,7 @@ use crate::{
 };
 
 const MAX_DOWNLOAD_BYTES: u64 = 600 * 1024 * 1024;
+const MACOS_FFMPEG_BINARIES: [&str; 3] = ["ffmpeg", "ffprobe", "ffplay"];
 const COMPONENT_LATEST_VERSION_CACHE_DIR: &str = "latest-versions";
 /// Shared TTL for all runtime latest-version lookups.
 pub const LATEST_VERSION_CACHE_HOURS: i64 = 3;
@@ -35,6 +36,21 @@ struct ProbeCandidate {
     program: PathBuf,
     args: &'static [&'static str],
     source: RuntimeSource,
+}
+
+#[derive(Debug)]
+enum ProbeVersionError {
+    NotFound,
+    Failure(String),
+}
+
+impl std::fmt::Display for ProbeVersionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => formatter.write_str("executable was not found"),
+            Self::Failure(message) => formatter.write_str(message),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,7 +324,8 @@ async fn detect_component(
                     error: None,
                 };
             }
-            Err(error) => last_error = Some(error),
+            Err(ProbeVersionError::NotFound) => {}
+            Err(ProbeVersionError::Failure(error)) => last_error = Some(error),
         }
     }
     RuntimeComponentStatus {
@@ -325,7 +342,7 @@ async fn detect_component(
     }
 }
 
-async fn probe_version(program: &Path, args: &[&str]) -> Result<String, String> {
+async fn probe_version(program: &Path, args: &[&str]) -> Result<String, ProbeVersionError> {
     let output = tokio::time::timeout(
         Duration::from_secs(5),
         Command::new(program)
@@ -337,20 +354,29 @@ async fn probe_version(program: &Path, args: &[&str]) -> Result<String, String> 
             .output(),
     )
     .await
-    .map_err(|_| format!("'{}' timed out", program.display()))?
-    .map_err(|error| format!("failed to start '{}': {error}", program.display()))?;
+    .map_err(|_| ProbeVersionError::Failure(format!("'{}' timed out", program.display())))?
+    .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ProbeVersionError::NotFound
+        } else {
+            ProbeVersionError::Failure(format!("failed to start '{}': {error}", program.display()))
+        }
+    })?;
     if !output.status.success() {
-        return Err(format!(
+        return Err(ProbeVersionError::Failure(format!(
             "'{}' failed: {}",
             program.display(),
             String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        )));
     }
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let version = if stdout.is_empty() { stderr } else { stdout };
     if version.is_empty() {
-        return Err(format!("'{}' returned no version", program.display()));
+        return Err(ProbeVersionError::Failure(format!(
+            "'{}' returned no version",
+            program.display()
+        )));
     }
     Ok(version)
 }
@@ -736,11 +762,83 @@ async fn install_ffmpeg(root: &Path, client: &reqwest::Client) -> AppResult<()> 
         return install_ffmpeg_with_linux_package_manager().await;
     }
     if cfg!(target_os = "macos") {
-        let brew = macos_brew_program();
-        return install_ffmpeg_with_package_manager(&brew, &["install", "ffmpeg"], false).await;
+        return install_ffmpeg_for_macos(root, client).await;
     }
 
     install_ffmpeg_for_windows(root, client).await
+}
+
+async fn install_ffmpeg_for_macos(root: &Path, client: &reqwest::Client) -> AppResult<()> {
+    let arch = macos_ffmpeg_arch().ok_or_else(unsupported_platform)?;
+    let component_root = root.join("ffmpeg");
+    let install_id = Uuid::new_v4().simple().to_string();
+    let staging_dir = component_root.join(format!(".staging-{install_id}"));
+    fs::create_dir_all(&staging_dir).await?;
+    let result = async {
+        for binary in MACOS_FFMPEG_BINARIES {
+            let redirect_url = format!(
+                "https://ffmpeg.martin-riedl.de/redirect/latest/macos/{arch}/release/{binary}.zip"
+            );
+            let response = client
+                .get(&redirect_url)
+                .send()
+                .await
+                .map_err(download_error)?
+                .error_for_status()
+                .map_err(download_error)?;
+            // The redirect target pins the archive to a release, so the matching
+            // checksum sidecar and binary cannot drift between separate requests.
+            let archive_url = response.url().clone();
+            drop(response);
+            let checksum_text = client
+                .get(format!("{}.sha256", archive_url.as_str()))
+                .send()
+                .await
+                .map_err(download_error)?
+                .error_for_status()
+                .map_err(download_error)?
+                .text()
+                .await
+                .map_err(download_error)?;
+            let checksum = sha256_from_sidecar(&checksum_text).ok_or_else(|| {
+                AppError::Process(format!(
+                    "FFmpeg {binary} release returned an invalid SHA-256 sidecar"
+                ))
+            })?;
+            let archive_path = component_root.join(format!(".download-{install_id}-{binary}.zip"));
+            let archive_result = async {
+                download_sha256(client, archive_url.as_str(), checksum, &archive_path).await?;
+                let archive = archive_path.clone();
+                let staging = staging_dir.clone();
+                tokio::task::spawn_blocking(move || extract_archive(&archive, &staging))
+                    .await
+                    .map_err(|error| {
+                        AppError::Process(format!("archive extraction task failed: {error}"))
+                    })??;
+                if find_named_files(&staging_dir, binary).await.is_empty() {
+                    return Err(AppError::Process(format!(
+                        "downloaded macOS FFmpeg package did not contain {binary}"
+                    )));
+                }
+                Ok(())
+            }
+            .await;
+            let _ = fs::remove_file(archive_path).await;
+            archive_result?;
+        }
+
+        let final_dir = component_root.join("current");
+        if fs::metadata(&final_dir).await.is_ok() {
+            fs::remove_dir_all(&final_dir).await?;
+        }
+        fs::rename(&staging_dir, &final_dir).await?;
+        Ok(())
+    }
+    .await;
+    if fs::metadata(&staging_dir).await.is_ok() {
+        let _ = fs::remove_dir_all(&staging_dir).await;
+    }
+    result
 }
 
 async fn install_ffmpeg_for_windows(root: &Path, client: &reqwest::Client) -> AppResult<()> {
@@ -1171,8 +1269,18 @@ fn extract_zip<R: Read + Seek>(reader: R, destination: &Path) -> AppResult<()> {
             if let Some(parent) = output.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let mut file = std::fs::File::create(output)?;
+            #[cfg(unix)]
+            let unix_mode = entry.unix_mode();
+            let mut file = std::fs::File::create(&output)?;
             std::io::copy(&mut entry, &mut file)?;
+            #[cfg(unix)]
+            if let Some(mode) = unix_mode {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    &output,
+                    std::fs::Permissions::from_mode(mode & 0o777),
+                )?;
+            }
         }
     }
     Ok(())
@@ -1339,6 +1447,24 @@ fn ffmpeg_asset_target() -> Option<&'static str> {
     }
 }
 
+fn macos_ffmpeg_arch() -> Option<&'static str> {
+    macos_ffmpeg_arch_for(std::env::consts::ARCH)
+}
+
+fn macos_ffmpeg_arch_for(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x86_64" => Some("amd64"),
+        "aarch64" => Some("arm64"),
+        _ => None,
+    }
+}
+
+fn sha256_from_sidecar(text: &str) -> Option<&str> {
+    let checksum = text.split_whitespace().next()?;
+    (checksum.len() == 64 && checksum.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then_some(checksum)
+}
+
 fn stable_git_version(tag: &str) -> Option<Version> {
     let version = tag.trim_start_matches('v');
     Version::parse(version)
@@ -1444,6 +1570,24 @@ mod tests {
         if cfg!(windows) {
             assert!(git_asset_suffix().is_some());
         }
+    }
+
+    #[test]
+    fn macos_ffmpeg_targets_cover_intel_and_apple_silicon() {
+        assert_eq!(macos_ffmpeg_arch_for("x86_64"), Some("amd64"));
+        assert_eq!(macos_ffmpeg_arch_for("aarch64"), Some("arm64"));
+        assert_eq!(macos_ffmpeg_arch_for("arm"), None);
+    }
+
+    #[test]
+    fn ffmpeg_sha256_sidecar_must_contain_a_full_hex_digest() {
+        assert_eq!(
+            sha256_from_sidecar(
+                "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924  ffmpeg.zip\n"
+            ),
+            Some("c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924")
+        );
+        assert_eq!(sha256_from_sidecar("not-a-digest ffmpeg.zip"), None);
     }
 
     #[test]

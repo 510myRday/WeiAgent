@@ -10,9 +10,10 @@ import {
 } from 'lucide-react';
 
 import type { ToolProcessInfo } from '../toolTypes';
-import type { ToolArguments, ToolCallStatus, ToolResultData } from '../types';
+import type { ImageAttachment, ToolArguments, ToolCallStatus, ToolResultData } from '../types';
 import { useI18n } from '../i18n';
 import { useClipboard } from '../hooks';
+import { AttachmentImage } from '../features/chat/AttachmentImage';
 import { Dialog, IconButton } from './ui';
 
 /**
@@ -249,21 +250,25 @@ function TerminalOutputs({
   stdout,
   stderr,
   structuredContent,
+  attachments,
   failed,
   t,
 }: {
   stdout?: string | null;
   stderr?: string | null;
   structuredContent?: unknown;
+  attachments?: ImageAttachment[];
   failed: boolean;
   t: (path: string, vars?: Record<string, string | number>) => string;
 }) {
+  const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
   const hasStdout = hasText(stdout);
   const hasStderr = hasText(stderr);
+  const hasAttachments = Boolean(attachments?.length);
   const structuredText = formatStructuredContent(structuredContent);
-  const hasStructured = hasText(structuredText);
+  const hasStructured = !hasAttachments && hasText(structuredText);
 
-  if (!hasStdout && !hasStderr && !hasStructured) {
+  if (!hasAttachments && !hasStdout && !hasStderr && !hasStructured) {
     return (
       <div className={`tool-card__output-shell tool-card__output-shell--empty${failed ? ' tool-card__output-shell--empty-failed' : ''}`}>
         <TerminalHeading
@@ -279,11 +284,50 @@ function TerminalOutputs({
 
   return (
     <>
-      {hasStdout ? <TerminalContent content={stdout!.trimEnd()} tone="stdout" t={t} /> : null}
+      {hasAttachments ? (
+        <div className="tool-card__output-shell tool-card__image-output-shell">
+          <TerminalHeading title={t('toolCard.stdoutTitle')} tone="stdout" />
+          <div className="tool-card__image-output">
+            {attachments?.map((attachment) => (
+              <button
+                key={attachment.id}
+                type="button"
+                className="tool-card__image-thumbnail-button"
+                onClick={() => setPreviewAttachment(attachment)}
+                aria-label={attachment.name}
+                title={attachment.name}
+              >
+                <AttachmentImage
+                  className="tool-card__image-thumbnail"
+                  attachment={attachment}
+                  alt={attachment.name}
+                />
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : hasStdout ? <TerminalContent content={stdout!.trimEnd()} tone="stdout" t={t} /> : null}
       {hasStderr ? (
         <TerminalContent content={stderr!.trimEnd()} tone={failed ? 'stderr' : 'stdout'} t={t} />
       ) : null}
       {hasStructured ? <TerminalContent content={structuredText!} tone="stdout" t={t} /> : null}
+      <Dialog
+        open={Boolean(previewAttachment)}
+        title={previewAttachment?.name || t('chat.imagePreview')}
+        closeLabel={t('common.close')}
+        onClose={() => setPreviewAttachment(null)}
+        size="xl"
+        className="image-preview-dialog"
+        bodyClassName="image-preview-dialog__body"
+      >
+        {previewAttachment ? (
+          <AttachmentImage
+            className="image-preview-dialog__image"
+            attachment={previewAttachment}
+            alt={previewAttachment.name}
+          />
+        ) : null}
+      </Dialog>
     </>
   );
 }
@@ -466,6 +510,7 @@ export function ToolCallCard({
             stdout={result.stdout}
             stderr={result.stderr}
             structuredContent={result.structured_content}
+            attachments={result.attachments}
             failed={failed}
             t={t}
           />

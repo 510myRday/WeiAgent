@@ -45,6 +45,7 @@ import {
   patchToolOnMessages,
   toUiMessage,
   toUiMessageItems,
+  listTools,
   upsertToolOnMessages,
 } from './conversationMessages';
 import {
@@ -777,6 +778,26 @@ export function useConversations({
           status: d.result.status,
           result: d.result,
         }));
+        if (d.result.runtime === 'builtin_read_images') {
+          const conversationId = activeStreamRef.current.conversationId;
+          void readConversationMessages(conversationId)
+            .then((page) => {
+              const readImagesTool = toUiMessageItems(page.messages)
+                .filter(isAssistantMessage)
+                .flatMap(listTools)
+                .find((tool) => tool.call_id === d.call_id);
+              const attachments = readImagesTool?.result?.attachments;
+              if (attachments?.length) {
+                setMessages((current) => patchToolOnMessages(current, d.call_id, (tool) => ({
+                  ...tool,
+                  result: { ...tool.result, attachments },
+                })));
+              }
+            })
+            .catch(() => {
+              // The text result remains visible if the attachment refresh fails.
+            });
+        }
         return;
       }
       if (evt.event === 'approval_required') {

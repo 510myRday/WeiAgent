@@ -18,7 +18,7 @@ import type {
   UpdateAgentPayload,
   ChatShortcutAction,
 } from '../../types';
-import { AGENT_SKILLS_CONFIG_CHANGED_EVENT, approveToolCall, compressConversationContext, readAgentMcpConfig, readAgentSkillsConfig, readAgentToolsConfig, readTaskPlans } from '../../api';
+import { AGENT_SKILLS_CONFIG_CHANGED_EVENT, approveToolCall, compressConversationContext, readAgentMcpConfig, readAgentSkillsConfig, readAgentToolsConfig, readTaskPlans, updateAgentToolsConfig } from '../../api';
 import type { McpServer, SkillSettings, TaskPlan, AgentToolsSettings } from '../../toolTypes';
 import { useI18n } from '../../i18n';
 import { useConversations, usePageVisibility } from '../../hooks';
@@ -211,6 +211,7 @@ export function ChatPanel({
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [agentSkills, setAgentSkills] = useState<SkillSettings | null>(null);
   const [agentTools, setAgentTools] = useState<AgentToolsSettings | null>(null);
+  const [isSavingTerminalPermission, setIsSavingTerminalPermission] = useState(false);
   const [isCompressing, setIsCompressing] = useState(false);
   const isPageVisible = usePageVisibility();
 
@@ -435,14 +436,45 @@ export function ChatPanel({
       if (cancelled) return;
       setMcpServers(mcp.status === 'fulfilled' ? mcp.value.effective : []);
       setAgentSkills(skills.status === 'fulfilled' ? skills.value : null);
-      setAgentTools(tools.status === 'fulfilled' ? tools.value : null);
+      if (tools.status === 'fulfilled') {
+        const settings = tools.value;
+        if (
+          settings.overrides.terminal.permission_mode !== undefined
+          && settings.overrides.terminal.enabled === undefined
+        ) {
+          const overrides = {
+            ...settings.overrides,
+            terminal: {
+              ...settings.overrides.terminal,
+              enabled: settings.effective.terminal.enabled,
+            },
+          };
+          setAgentTools({ ...settings, overrides });
+          void updateAgentToolsConfig(activeAgentId, overrides)
+            .then((saved) => {
+              if (!cancelled) setAgentTools(saved);
+            })
+            .catch((error) => {
+              if (!cancelled) {
+                toast.error(userErrorMessage(error, {
+                  summary: t('tools.terminal.saveFailed'),
+                  recovery: t('error.retryConnection'),
+                }));
+              }
+            });
+        } else {
+          setAgentTools(settings);
+        }
+      } else {
+        setAgentTools(null);
+      }
     });
 
     return () => {
       cancelled = true;
       window.removeEventListener(AGENT_SKILLS_CONFIG_CHANGED_EVENT, handleSkillsConfigChanged);
     };
-  }, [activeAgentId]);
+  }, [activeAgentId, t, toast]);
 
   const shortcutItems = useMemo<ComposerShortcutItem[]>(() => {
     const items: ComposerShortcutItem[] = [];
@@ -555,6 +587,42 @@ export function ChatPanel({
       return next;
     });
   }, [activeAgentId]);
+
+  async function handleTerminalPermissionModeChange(mode: 'request_approval' | 'full_access') {
+    if (!activeAgentId || !agentTools || isSavingTerminalPermission) return;
+    if (agentTools.effective.terminal.permission_mode === mode) return;
+    if (mode === 'full_access') {
+      const confirmed = await confirm({
+        title: t('tools.terminal.fullAccessTitle'),
+        message: t('tools.terminal.fullAccessConfirm'),
+        confirmLabel: t('tools.terminal.fullAccess'),
+        tone: 'warning',
+      });
+      if (!confirmed) return;
+    }
+
+    const agentId = activeAgentId;
+    const overrides = {
+      ...agentTools.overrides,
+      terminal: {
+        ...agentTools.overrides.terminal,
+        enabled: agentTools.overrides.terminal.enabled ?? agentTools.effective.terminal.enabled,
+        permission_mode: mode,
+      },
+    };
+    setIsSavingTerminalPermission(true);
+    try {
+      const saved = await updateAgentToolsConfig(agentId, overrides);
+      if (activeAgentId === agentId) setAgentTools(saved);
+    } catch (error) {
+      toast.error(userErrorMessage(error, {
+        summary: t('tools.terminal.saveFailed'),
+        recovery: t('error.retryConnection'),
+      }));
+    } finally {
+      setIsSavingTerminalPermission(false);
+    }
+  }
 
   useEffect(() => {
     if (
@@ -1278,6 +1346,10 @@ export function ChatPanel({
             onSteer={handleSteerMessage}
             onStop={cancelActiveSend}
             shortcutItems={shortcutItems}
+            terminalPermissionMode={agentTools?.effective.terminal.permission_mode}
+            terminalPermissionIsInherited={agentTools?.overrides.terminal.permission_mode === undefined}
+            isSavingTerminalPermission={isSavingTerminalPermission}
+            onTerminalPermissionModeChange={handleTerminalPermissionModeChange}
             onCompress={() => void handleCompress()}
             isCompressing={isCompressing}
           />

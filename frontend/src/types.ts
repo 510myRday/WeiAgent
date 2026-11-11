@@ -440,6 +440,8 @@ export type ToolResultData = {
   cwd?: string;
   /** Structured protocol payload preserved from MCP-backed tools. */
   structured_content?: unknown;
+  /** Images returned by image-reading tools for direct rendering in chat. */
+  attachments?: ImageAttachment[];
   is_error?: boolean;
 };
 

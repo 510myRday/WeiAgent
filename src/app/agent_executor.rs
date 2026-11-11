@@ -830,14 +830,6 @@ async fn execute_tool_calls(
         } else {
             result
         };
-        emit(
-            events,
-            AgentRunEvent::ToolResult {
-                call_id: call.id.clone(),
-                result: result.clone(),
-            },
-        )
-        .await?;
         persist_tool_result(
             state,
             prepared,
@@ -845,6 +837,14 @@ async fn execute_tool_calls(
             &call.id,
             &call.function.name,
             &result,
+        )
+        .await?;
+        emit(
+            events,
+            AgentRunEvent::ToolResult {
+                call_id: call.id.clone(),
+                result: result.clone(),
+            },
         )
         .await?;
     }

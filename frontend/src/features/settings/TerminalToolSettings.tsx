@@ -635,6 +635,7 @@ export function TerminalToolSettings({
   const isAgentScope = scope === 'agent';
   const maxIterationsInherited = isAgentScope && overrides?.max_llm_iterations === undefined;
   const terminalEnabledInherited = isAgentScope && overrides?.terminal.enabled === undefined;
+  const terminalPermissionInherited = isAgentScope && overrides?.terminal.permission_mode === undefined;
   const webSearchEnabledInherited = isAgentScope && overrides?.web_search?.enabled === undefined;
   const taskPlanningEnabledInherited = isAgentScope && overrides?.task_planning.enabled === undefined;
   const fieldInherited = (field: OverrideField) => isAgentScope && overrides?.terminal[field] === undefined;
@@ -664,7 +665,12 @@ export function TerminalToolSettings({
                 </span>
               </div>
               <small>{t('tools.terminal.description')}</small>
-              <span className="agent-tool-row__source">{terminalEnabledInherited ? t('tools.inheritsDefault') : t('tools.agentOverride')}</span>
+              <span className="agent-tool-row__source">
+                {t('tools.terminal.agentOverviewInheritance', {
+                  enabled: t(terminalEnabledInherited ? 'tools.inheritsDefault' : 'tools.agentOverride'),
+                  permission: t(terminalPermissionInherited ? 'tools.inheritsDefault' : 'tools.agentOverride'),
+                })}
+              </span>
             </div>
             <div className="agent-tool-row__actions">
               <InheritToggle inherited={Boolean(terminalEnabledInherited)} onChange={setTerminalEnabledInherited} label={t('tools.terminal.inheritDefault')} />

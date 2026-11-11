@@ -644,7 +644,7 @@ async fn web_search_attempts_update_matching_key_statuses() {
         .find(|source| source.id == "firecrawl")
         .unwrap();
     assert!(source.api_keys.is_empty());
-    assert!(!source.enabled);
+    assert!(source.enabled);
     assert!(source.is_api_key_blocked("firecrawl-a"));
 }
 

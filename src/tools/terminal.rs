@@ -1935,6 +1935,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[tokio::test]
     async fn managed_path_includes_weiagent_executable_directory() {
         let executable_dir = PathBuf::from(r"D:\WeiAgent\target\debug");

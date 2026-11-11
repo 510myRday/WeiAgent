@@ -261,7 +261,11 @@ export function parseJsonStreamEvent(
     case 'tool_call':
       return { event, data: parse(toolCallEventDataSchema, parsed), sequence };
     case 'tool_result':
-      return { event, data: parse(toolResultEventDataSchema, parsed), sequence };
+      return {
+        event,
+        data: parse(toolResultEventDataSchema, parsed) as Extract<StreamEvent, { event: 'tool_result' }>['data'],
+        sequence,
+      };
     case 'approval_required': {
       const { cwd, justification, ...approvalData } = parse(
         approvalRequiredEventDataSchema,

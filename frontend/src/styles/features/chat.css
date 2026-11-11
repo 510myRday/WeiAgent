@@ -1348,6 +1348,46 @@
   color: var(--color-danger);
 }
 
+.message-tool__content .tool-card__image-output-shell {
+  max-width: min(100%, 900px);
+}
+
+.message-tool__content .tool-card__image-output {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px;
+}
+
+.message-tool__content .tool-card__image-thumbnail-button {
+  display: block;
+  width: clamp(76px, 12vw, 124px);
+  aspect-ratio: 4 / 3;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.message-tool__content .tool-card__image-thumbnail-button:hover,
+.message-tool__content .tool-card__image-thumbnail-button:focus-visible {
+  border-color: var(--color-primary-strong);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+.message-tool__content .tool-card__image-thumbnail {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--surface-subtle);
+}
+
 .message-tool__content .tool-card__output-shell .tool-card__output--empty {
   padding-top: 5px;
   color: var(--color-placeholder);
@@ -2176,6 +2216,27 @@
   outline: none;
   background: var(--surface-hover);
   color: var(--color-primary-deep);
+}
+
+.terminal-permission-button.is-danger {
+  color: var(--color-danger, #dc2626);
+}
+
+.terminal-permission-button {
+  border-color: var(--border-subtle);
+  border-radius: 999px;
+  background: var(--surface-input);
+}
+
+.terminal-permission-button:hover,
+.terminal-permission-button:focus-visible,
+.terminal-permission-button.is-active {
+  border-color: var(--color-primary-border);
+}
+
+.terminal-permission-control .thinking-menu {
+  right: 0;
+  left: auto;
 }
 
 .thinking-menu {

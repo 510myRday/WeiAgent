@@ -453,6 +453,7 @@ export function toUiMessageItems(raw: ChatMessage[]): UiMessageItem[] {
 
     if (msg.role === 'tool') {
       const result = parseJsonObject(msg.content);
+      if (msg.attachments?.length) result.attachments = msg.attachments;
       const callId = msg.tool_call_id ?? msg.id;
       const ownerIndex = toolOwner.get(callId);
       const status = statusFromToolResult(result, msg.content);
