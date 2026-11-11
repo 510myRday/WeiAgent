@@ -243,24 +243,24 @@
     "contextUsageTitle": "上下文占用",
     "contextUsageUsed": "{percent}% 已用（剩余 {remaining}%）",
     "contextUsageStats": "已用 {used}，共 {limit}",
-    "compactingContext": "正在压缩上下文…"
-    ,"shortcuts": "快捷命令与工具"
-    ,"selectedShortcuts": "已选择的快捷项"
-    ,"removeShortcut": "移除 {name}"
-    ,"noEnabledShortcuts": "当前智能体没有已启用的快捷项"
-    ,"tool": "工具"
-    ,"command": "命令"
-    ,"shortcutPreferSkill": "请优先帮我使用「{name}」技能。"
-    ,"shortcutPreferMcp": "请优先帮我使用「{name}」MCP 服务。"
-    ,"shortcutPreferTool": "请优先帮我使用「{name}」工具。"
-    ,"compressCommand": "压缩上下文"
-    ,"compressTitle": "压缩上下文"
-    ,"compressMessage": "确认压缩当前会话上下文吗？压缩完成后，较早内容会以摘要形式保留。"
-    ,"compressConfirm": "确认压缩"
-    ,"contextCompactedManual": "已手动压缩上下文"
-    ,"contextCompactedAutomatic": "已自动压缩上下文"
-    ,"contextCompactedStats": "{before} → {after} tokens"
-    ,"compressFailed": "压缩上下文失败"
+    "compactingContext": "正在压缩上下文…",
+    "shortcuts": "快捷命令与工具",
+    "selectedShortcuts": "已选择的快捷项",
+    "removeShortcut": "移除 {name}",
+    "noEnabledShortcuts": "当前智能体没有已启用的快捷项",
+    "tool": "工具",
+    "command": "命令",
+    "shortcutPreferSkill": "请优先帮我使用「{name}」技能。",
+    "shortcutPreferMcp": "请优先帮我使用「{name}」MCP 服务。",
+    "shortcutPreferTool": "请优先帮我使用「{name}」工具。",
+    "compressCommand": "压缩上下文",
+    "compressTitle": "压缩上下文",
+    "compressMessage": "确认压缩当前会话上下文吗？压缩完成后，较早内容会以摘要形式保留。",
+    "compressConfirm": "确认压缩",
+    "contextCompactedManual": "已手动压缩上下文",
+    "contextCompactedAutomatic": "已自动压缩上下文",
+    "contextCompactedStats": "{before} → {after} tokens",
+    "compressFailed": "压缩上下文失败"
   },
   "conversation": {
     "create": "新建会话",
@@ -411,8 +411,6 @@
       "remoteExtractionEnabledDesc": "本机抽取失败或质量较低时，按页面特征调用已配置的内容提取源。",
       "maxRemoteExtractAttempts": "每个网址最大远程尝试数",
       "maxRemoteExtractAttemptsDesc": "按顺序尝试来源并在获得高质量正文后停止，范围 1–5。",
-      "allowGrokExtractFallback": "允许 Grok 最终兜底",
-      "allowGrokExtractFallbackDesc": "正文型来源均未成功时，通过 Grok SSO 会话提取相关片段；结果会标记为 AI 生成。",
       "evidenceStorageTitle": "证据存储",
       "evidenceStorageDesc": "保存网页抽取的完整正文，并按保留时间和容量上限自动清理。",
       "evidenceStorageEnabled": "启用证据存储",
@@ -438,8 +436,6 @@
       "newKey": "新 Key",
       "newKeyPlaceholder": "留空则保持当前 Key",
       "keyLimitReached": "单个搜索源最多配置 {count} 个 Key",
-      "ssoPlaceholder": "SSO JWT / Cookie(sso+cf_clearance) / JSON {\"sso\":\"...\",\"cookies\":\"...\",\"x_statsig_id\":\"...\"}",
-      "noSso": "尚未配置 SSO",
       "addKey": "添加 Key",
       "removeKey": "删除 Key",
       "clearKeys": "清空 Key",
@@ -452,15 +448,14 @@
         "tavily": "Tavily",
         "exa": "Exa",
         "jina": "Jina",
-        "grok": "Grok (X)",
         "firecrawl": "Firecrawl",
         "keenable": "Keenable"
       },
       "freeQuota": {
         "tavily": "免费额度：每个 Key 1,000 credits/月",
         "exa": "免费额度：每个 Key 每月 $10 credits，注册赠送 $20",
-        "jina": "免费额度：每个 Key 1,000 万 tokens",
-        "grok": "免费额度：每个 Key 每天 20 次",
+        "jina": "免费额度：每个 Key 1,000 万 tokens；免 Key 可尝试搜索（受服务端限制）",
+        "firecrawl": "免费额度：免 Key 可搜索；每月 1,000 credits（按 IP 限流）",
         "keenable": "免费额度：免 Key 每小时 1,000 次；每个 Key 每月 100,000 次"
       },
       "sourceProfile": "搜索偏好",
@@ -484,9 +479,7 @@
         "fact_checking": "事实核验",
         "market_research": "市场商业",
         "product_research": "产品比较",
-        "multilingual_search": "多语言搜索",
-        "ai_research": "AI 综合",
-        "social_search": "社交舆情"
+        "multilingual_search": "多语言搜索"
       },
       "sourceRoleDesc": {
         "general_search": "日常问题、概览信息和广泛网页发现",
@@ -498,9 +491,7 @@
         "fact_checking": "交叉核实事实、传言、说法与证据",
         "market_research": "行业、公司、财务和市场趋势调研",
         "product_research": "产品对比、评测、价格与购买决策",
-        "multilingual_search": "跨语言、外文和多语种资料发现",
-        "ai_research": "由 AI 汇总线索、扩展查询和综合信息",
-        "social_search": "社交平台、社区讨论、观点与舆情"
+        "multilingual_search": "跨语言、外文和多语种资料发现"
       },
       "proxyUrl": "访问代理",
       "proxyUrlDesc": "访问此搜索源时使用，请从已保存的 IP 代理中选择。",
@@ -551,12 +542,10 @@
       "emptyKeysHint": "在下方粘贴一个或多个密钥开始配置",
       "addKeysDialogTitle": "添加 {provider} Key",
       "addKeysHint": "支持每行一个；添加后可在 Key 行点击标签图标设置标签",
-      "addGrokKeysHint": "支持每行一个；历史封禁 Key 会自动跳过",
       "advancedSettings": "代理设置",
       "advancedSettingsDesc": "为搜索源选择访问代理。",
       "checkFailed": "Key 检测失败",
       "keyImportSummary": "已导入 {imported} 个，跳过重复 {duplicates} 个",
-      "grokKeyImportSummary": "已导入 {imported} 个，跳过重复 {duplicates} 个、历史封禁 {blocked} 个",
       "keyStatus": {
         "normal": "正常",
         "officially_blocked": "官方封禁",
@@ -568,7 +557,6 @@
         "service_error": "服务异常",
         "quota_limited": "额度或频控",
         "unauthorized": "未授权或过期",
-        "anti_bot": "反爬拦截",
         "network_error": "网络错误",
         "error": "检测异常"
       }
@@ -859,19 +847,19 @@
     "importFailedShort": "失败",
     "retryImport": "重试下载",
     "importRetryFailed": "重试下载失败",
-      "importPhase": {
+    "importPhase": {
       "preparing": "准备中",
       "connecting": "连接中",
       "copying": "复制中",
       "downloading": "下载中",
       "installing": "安装中",
       "completed": "已完成",
-        "failed": "失败"
-      },
-      "importProgress": {
-        "files": "文件 {done}/{total}",
-        "current": "当前：{file}"
-      },
+      "failed": "失败"
+    },
+    "importProgress": {
+      "files": "文件 {done}/{total}",
+      "current": "当前：{file}"
+    },
     "importFailed": "添加 Skill 失败",
     "saveFailed": "保存 Skill 配置失败",
     "iconSettings": "设置 Skill",

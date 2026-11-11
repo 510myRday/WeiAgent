@@ -285,7 +285,7 @@ async fn repairs_key_status_slots_to_match_saved_keys() {
         .web_search
         .sources
         .iter_mut()
-        .find(|source| source.id == "grok")
+        .find(|source| source.id == "firecrawl")
         .unwrap();
     source.api_keys = vec!["key-a".to_string(), "key-b".to_string()];
     source.key_statuses = vec![
@@ -312,7 +312,7 @@ async fn repairs_key_status_slots_to_match_saved_keys() {
         .web_search
         .sources
         .iter()
-        .find(|source| source.id == "grok")
+        .find(|source| source.id == "firecrawl")
         .unwrap();
     assert_eq!(source.api_keys.len(), 2);
     assert_eq!(source.key_statuses.len(), 2);
@@ -528,9 +528,9 @@ async fn web_search_attempts_update_matching_key_statuses() {
         .web_search
         .sources
         .iter_mut()
-        .find(|source| source.id == "grok")
+        .find(|source| source.id == "firecrawl")
         .unwrap();
-    source.api_keys = vec!["grok-a".to_string(), "grok-b".to_string()];
+    source.api_keys = vec!["firecrawl-a".to_string(), "firecrawl-b".to_string()];
     let tavily = defaults
         .web_search
         .sources
@@ -543,9 +543,9 @@ async fn web_search_attempts_update_matching_key_statuses() {
     let updates = vec![
         crate::domain::tools::WebSearchKeyStatusUpdate {
             operation: crate::domain::tools::WebSearchKeyOperation::Search,
-            source_id: "grok".to_string(),
+            source_id: "firecrawl".to_string(),
             key_index: 0,
-            api_key: "grok-b".to_string(),
+            api_key: "firecrawl-b".to_string(),
             record: crate::domain::WebSearchKeyStatusRecord {
                 status: "quota_limited".to_string(),
                 detail: "quota exceeded".to_string(),
@@ -554,7 +554,7 @@ async fn web_search_attempts_update_matching_key_statuses() {
         },
         crate::domain::tools::WebSearchKeyStatusUpdate {
             operation: crate::domain::tools::WebSearchKeyOperation::Search,
-            source_id: "grok".to_string(),
+            source_id: "firecrawl".to_string(),
             key_index: 0,
             api_key: "stale-key".to_string(),
             record: crate::domain::WebSearchKeyStatusRecord {
@@ -565,9 +565,9 @@ async fn web_search_attempts_update_matching_key_statuses() {
         },
         crate::domain::tools::WebSearchKeyStatusUpdate {
             operation: crate::domain::tools::WebSearchKeyOperation::Search,
-            source_id: "grok".to_string(),
+            source_id: "firecrawl".to_string(),
             key_index: 0,
-            api_key: "grok-a".to_string(),
+            api_key: "firecrawl-a".to_string(),
             record: crate::domain::WebSearchKeyStatusRecord {
                 status: "officially_blocked".to_string(),
                 detail: "account is blocked".to_string(),
@@ -598,7 +598,7 @@ async fn web_search_attempts_update_matching_key_statuses() {
         .web_search
         .sources
         .iter()
-        .find(|source| source.id == "grok")
+        .find(|source| source.id == "firecrawl")
         .unwrap();
     assert_eq!(
         source.key_statuses[0].as_ref().unwrap().status,
@@ -608,10 +608,10 @@ async fn web_search_attempts_update_matching_key_statuses() {
         source.key_statuses[1].as_ref().unwrap().status,
         "quota_limited"
     );
-    assert!(source.is_api_key_blocked("grok-a"));
+    assert!(source.is_api_key_blocked("firecrawl-a"));
     assert_eq!(
         source.api_keys,
-        vec!["grok-a".to_string(), "grok-b".to_string()]
+        vec!["firecrawl-a".to_string(), "firecrawl-b".to_string()]
     );
     let tavily = saved
         .web_search
@@ -631,7 +631,7 @@ async fn web_search_attempts_update_matching_key_statuses() {
         .web_search
         .sources
         .iter_mut()
-        .find(|source| source.id == "grok")
+        .find(|source| source.id == "firecrawl")
         .unwrap();
     source.api_keys.clear();
     source.key_statuses.clear();
@@ -641,11 +641,11 @@ async fn web_search_attempts_update_matching_key_statuses() {
         .web_search
         .sources
         .iter()
-        .find(|source| source.id == "grok")
+        .find(|source| source.id == "firecrawl")
         .unwrap();
     assert!(source.api_keys.is_empty());
     assert!(!source.enabled);
-    assert!(source.is_api_key_blocked("grok-a"));
+    assert!(source.is_api_key_blocked("firecrawl-a"));
 }
 
 #[tokio::test]

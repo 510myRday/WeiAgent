@@ -127,7 +127,7 @@ export const SourceCard = memo(function SourceCard({
   const isConnectionExpanded = Boolean(expandedSections?.connection);
   const allSelected = keyCount > 0 && selected.length === keyCount;
   const statusSummary = summarizeKeyStatuses(keyCount, sourceStatuses);
-  const quotaProvider = source.provider === 'firecrawl' ? 'tavily' : source.provider;
+  const quotaProvider = source.provider;
   const currentCheckProgress = checkProgress;
   const checkIndices = selected.length > 0
     ? selected
@@ -135,9 +135,7 @@ export const SourceCard = memo(function SourceCard({
   const emptyLabel = t(
     supportsAnonymousAccess
       ? 'tools.webSearch.anonymousReady'
-      : source.provider === 'grok'
-        ? 'tools.webSearch.noSso'
-        : 'tools.webSearch.noKeys',
+      : 'tools.webSearch.noKeys',
   );
   const sourceBodyId = `web-search-source-body-${source.id}`;
   const preferencesBodyId = `web-search-preferences-body-${source.id}`;
@@ -603,7 +601,7 @@ export const SourceCard = memo(function SourceCard({
           </section>
           ) : null}
 
-          <section className={`web-search-subsection web-search-grok-extras ${isConnectionExpanded ? 'is-open' : ''}`}>
+          <section className={`web-search-subsection web-search-connection ${isConnectionExpanded ? 'is-open' : ''}`}>
               <div className="web-search-subsection__header">
                 <button
                   type="button"
@@ -622,7 +620,7 @@ export const SourceCard = memo(function SourceCard({
               </div>
               {isConnectionExpanded ? (
                 <div
-                  className="web-search-subsection__content web-search-grok-extras__content"
+                  className="web-search-subsection__content web-search-connection__content"
                   id={connectionBodyId}
                 >
                   {renderProxySelector('proxy_url', 'tools.webSearch.proxyUrl', 'tools.webSearch.proxyUrlDesc')}

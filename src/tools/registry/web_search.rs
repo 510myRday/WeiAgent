@@ -57,9 +57,7 @@ impl AgentTool for WebSearchTool {
                                 "fact_checking",
                                 "market_research",
                                 "product_research",
-                                "multilingual_search",
-                                "ai_research",
-                                "social_search"
+                                "multilingual_search"
                             ]
                         },
                         "description": "Optional capability roles used to constrain server-side routing."
@@ -183,7 +181,7 @@ impl AgentTool for WebExtractTool {
     fn definition(&self, _config: &AgentToolsConfig) -> ToolDefinition {
         tool_definition(
             "web_extract",
-            "Open one to five public HTTP(S) URLs for source verification. Prefer the most relevant original or primary pages, especially for important or disputed claims. Verify important or disputed claims with independent evidence, then cite the original page with a Markdown link next to the supported claim. Uses local extraction first, then configured URL-content providers when local content is blocked, dynamic, or low quality. Stores direct evidence, returns focused excerpts, and labels Grok SSO fallback output as AI-derived.",
+            "Open one to five public HTTP(S) URLs for source verification. Prefer the most relevant original or primary pages, especially for important or disputed claims. Verify important or disputed claims with independent evidence, then cite the original page with a Markdown link next to the supported claim. Uses local extraction first, then configured URL-content providers when local content is blocked, dynamic, or low quality. Stores direct evidence and returns focused excerpts.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

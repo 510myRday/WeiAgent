@@ -61,7 +61,6 @@ pub async fn search(
     })?;
     Ok(ProviderSearchOutput {
         results: parse_results(&value, request.max_results as usize),
-        ai_syntheses: Vec::new(),
     })
 }
 
@@ -135,7 +134,6 @@ pub async fn extract(
             content: content.to_string(),
             content_format: "markdown".to_string(),
             published_at: value.get("published_at").map(format_published_at),
-            ai_derived: false,
         });
     }
     Ok(output)

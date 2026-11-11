@@ -2936,8 +2936,7 @@
 .web-search-key-status.is-quota_limited,
 .web-search-key-status.is-quota_exhausted,
 .web-search-key-status.is-rate_limited,
-.web-search-key-status.is-permission_denied,
-.web-search-key-status.is-anti_bot {
+.web-search-key-status.is-permission_denied {
   border-color: var(--color-warning-border);
   background: var(--color-warning-soft);
   color: var(--color-warning);
@@ -2956,7 +2955,7 @@
   margin-bottom: 24px;
 }
 
-.web-search-grok-extras {
+.web-search-connection {
   display: grid;
   gap: 12px;
   padding-top: 12px;
@@ -3868,7 +3867,7 @@
   resize: vertical;
 }
 
-.web-search-sources-card .web-search-grok-extras {
+.web-search-sources-card .web-search-connection {
   display: block;
   padding: 0;
   border: 0;
@@ -3877,7 +3876,7 @@
   background: transparent;
 }
 
-.web-search-grok-extras__content {
+.web-search-connection__content {
   display: grid;
   gap: 12px;
 }

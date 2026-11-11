@@ -21,7 +21,7 @@ export function AddKeysDialog({ source, isAdding, onSubmit, onClose }: AddKeysDi
     <Dialog
       open
       title={t('tools.webSearch.addKeysDialogTitle', { provider: providerLabel(source.provider, t) })}
-      description={t(source.provider === 'grok' ? 'tools.webSearch.addGrokKeysHint' : 'tools.webSearch.addKeysHint')}
+      description={t('tools.webSearch.addKeysHint')}
       icon={<KeyRound size={19} />}
       closeLabel={t('common.close')}
       onClose={() => {
@@ -60,7 +60,7 @@ export function AddKeysDialog({ source, isAdding, onSubmit, onClose }: AddKeysDi
           id={`web-search-key-input-${source.id}`}
           className="pattern-input web-search-key-dialog__input"
           value={draft}
-          placeholder={t(source.provider === 'grok' ? 'tools.webSearch.ssoPlaceholder' : 'tools.webSearch.keyPlaceholder')}
+          placeholder={t('tools.webSearch.keyPlaceholder')}
           autoComplete="off"
           spellCheck={false}
           onChange={(event) => setDraft(event.target.value)}

@@ -224,17 +224,6 @@ fn compact_web_search_value(value: &mut Value) -> bool {
             }
         }
     }
-    if let Some(syntheses) = obj.get_mut("ai_syntheses").and_then(Value::as_array_mut) {
-        syntheses.truncate(6);
-        for synthesis in syntheses {
-            if let Some(answer) = synthesis.get("answer").and_then(Value::as_str) {
-                let answer = trim_chars(answer, 1_200);
-                if let Some(map) = synthesis.as_object_mut() {
-                    map.insert("answer".to_string(), Value::String(answer));
-                }
-            }
-        }
-    }
     if let Some(results) = obj.get("results").and_then(Value::as_array) {
         let count = results.len() as u64;
         obj.insert("result_count".to_string(), Value::from(count));

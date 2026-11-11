@@ -78,7 +78,6 @@ describe('IP proxy sorting', () => {
       google: { status: 'available', latency_ms: 100, error: null },
       openai: { status: 'available', latency_ms: 200, error: null },
       anthropic: { status: 'available', latency_ms: 300, error: null },
-      grok: { status: 'available', latency_ms: 400, error: null },
     },
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
@@ -91,19 +90,16 @@ describe('IP proxy sorting', () => {
         google: { status: 'available', latency_ms: 500, error: null },
         openai: { status: 'available', latency_ms: 600, error: null },
         anthropic: { status: 'available', latency_ms: 700, error: null },
-        grok: { status: 'available', latency_ms: 800, error: null },
       } }),
       proxy({ id: 'pinned', name: 'Pinned', is_pinned: true, api_quality: {
         google: { status: 'available', latency_ms: 100, error: null },
         openai: { status: 'available', latency_ms: 100, error: null },
         anthropic: { status: 'available', latency_ms: 100, error: null },
-        grok: { status: 'available', latency_ms: 100, error: null },
       } }),
       proxy({ id: 'fast', name: 'Fast', api_quality: {
         google: { status: 'available', latency_ms: 50, error: null },
         openai: { status: 'available', latency_ms: 50, error: null },
         anthropic: { status: 'available', latency_ms: 50, error: null },
-        grok: { status: 'available', latency_ms: 50, error: null },
       } }),
     ], 'quality', 'asc');
 

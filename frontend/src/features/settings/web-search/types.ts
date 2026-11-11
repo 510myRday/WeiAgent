@@ -58,11 +58,11 @@ export const SOURCE_ROLE_GROUPS: Array<{
 }> = [
   {
     key: 'discovery',
-    roles: ['general_search', 'semantic_research', 'multilingual_search', 'ai_research'],
+    roles: ['general_search', 'semantic_research', 'multilingual_search'],
   },
   {
     key: 'content',
-    roles: ['current_news', 'official_docs', 'technical_research', 'academic_research', 'social_search'],
+    roles: ['current_news', 'official_docs', 'technical_research', 'academic_research'],
   },
   {
     key: 'intent',

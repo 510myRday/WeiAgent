@@ -20,7 +20,7 @@ use crate::domain::{
     ToolResult, WebSearchProviderKind, WebSearchSourceConfig, WebSearchToolConfig,
 };
 
-use super::providers::{GrokDispatch, dispatch_extract};
+use super::providers::dispatch_extract;
 use super::types::{
     ProviderError, ProviderExtractDocument, ProviderExtractOutput, ProviderExtractRequest,
     merge_status_update,
@@ -48,7 +48,6 @@ pub struct WebExtractArgs {
 pub enum WebExtractEvidenceClass {
     LocalDirect,
     ProviderExtracted,
-    AiDerived,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,8 +93,6 @@ struct WebExtractFailure {
 #[derive(Debug, Clone, Serialize)]
 struct WebExtractOutput {
     documents: Vec<WebExtractDocument>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    ai_extractions: Vec<WebExtractDocument>,
     failures: Vec<WebExtractFailure>,
     citation_instruction: &'static str,
 }
@@ -257,15 +254,11 @@ pub async fn execute_web_extract_with_status_updates(
     });
 
     let mut documents = Vec::new();
-    let mut ai_extractions = Vec::new();
     let mut failures = Vec::new();
     let mut status_updates = BTreeMap::new();
     for outcome in join_all(tasks).await {
         if let Some(document) = outcome.document {
             documents.push(document);
-        }
-        if let Some(document) = outcome.ai_extraction {
-            ai_extractions.push(document);
         }
         if let Some(failure) = outcome.failure {
             failures.push(failure);
@@ -281,9 +274,8 @@ pub async fn execute_web_extract_with_status_updates(
     }
     let output = WebExtractOutput {
         documents,
-        ai_extractions,
         failures,
-        citation_instruction: "Cite final_url only for documents where citation_eligible is true. ai_extractions are generated research hints and must not be treated as page text or independent evidence.",
+        citation_instruction: "Cite final_url only for documents where citation_eligible is true.",
     };
     match serde_json::to_string_pretty(&output) {
         Ok(stdout) => WebExtractExecution {
@@ -313,7 +305,6 @@ fn extraction_error(message: String) -> WebExtractExecution {
 
 struct UrlExtractionOutcome {
     document: Option<WebExtractDocument>,
-    ai_extraction: Option<WebExtractDocument>,
     failure: Option<WebExtractFailure>,
     status_updates: Vec<WebSearchKeyStatusUpdate>,
 }
@@ -380,7 +371,6 @@ async fn extract_one_routed(
             });
             return UrlExtractionOutcome {
                 document: None,
-                ai_extraction: None,
                 failure: Some(WebExtractFailure {
                     requested_url,
                     error: "URL must use HTTP(S) and target a public host".to_string(),
@@ -400,7 +390,6 @@ async fn extract_one_routed(
         });
         return UrlExtractionOutcome {
             document: None,
-            ai_extraction: None,
             failure: Some(WebExtractFailure {
                 requested_url,
                 error: "URL must use HTTP(S) and target a public host".to_string(),
@@ -451,7 +440,6 @@ async fn extract_one_routed(
             .await;
             return UrlExtractionOutcome {
                 document: Some(document),
-                ai_extraction: None,
                 failure: None,
                 status_updates,
             };
@@ -489,7 +477,6 @@ async fn extract_one_routed(
                 .await;
                 return UrlExtractionOutcome {
                     document: Some(document),
-                    ai_extraction: None,
                     failure: None,
                     status_updates,
                 };
@@ -518,10 +505,7 @@ async fn extract_one_routed(
     if remote_allowed {
         let ordered = ordered_extract_sources(&web_search, &provenance.source_ids, route_hint);
         let mut remote_attempts = 0usize;
-        for source in ordered
-            .iter()
-            .filter(|source| source.provider != WebSearchProviderKind::Grok)
-        {
+        for source in &ordered {
             if remote_attempts >= web_search.max_remote_extract_attempts() {
                 break;
             }
@@ -580,7 +564,6 @@ async fn extract_one_routed(
                             .await;
                             return UrlExtractionOutcome {
                                 document: Some(document),
-                                ai_extraction: None,
                                 failure: None,
                                 status_updates,
                             };
@@ -632,85 +615,6 @@ async fn extract_one_routed(
         });
     }
 
-    let mut ai_extraction = None;
-    if remote_allowed
-        && web_search.extraction.allow_grok_fallback
-        && let Some(source) =
-            ordered_extract_sources(&web_search, &provenance.source_ids, route_hint)
-                .into_iter()
-                .find(|source| source.provider == WebSearchProviderKind::Grok)
-        && let Some((key_index, api_key)) =
-            select_source_key(&source, &web_search, WebSearchKeyOperation::Extract)
-    {
-        let _permit = semaphore.acquire().await.expect("semaphore remains open");
-        let attempt_started = Instant::now();
-        let request = ProviderExtractRequest {
-            url: requested_url.clone(),
-            query: query.clone(),
-            hard_page: true,
-            timeout_ms: web_search.timeout_ms().max(90_000),
-        };
-        match execute_provider_extract(&source, &remote_client, &api_key, &request).await {
-            Ok(output) => {
-                status_updates.push(extract_key_status_update(
-                    &source,
-                    key_index,
-                    &api_key,
-                    "normal",
-                    "extraction request succeeded",
-                ));
-                if let Some(document) = output.documents.into_iter().next() {
-                    let candidate = provider_candidate(document, &source, &query);
-                    attempts.push(WebExtractAttempt {
-                        extractor: source.id.clone(),
-                        status: "ai_derived".to_string(),
-                        duration_ms: attempt_started.elapsed().as_millis() as u64,
-                        quality_score: Some(candidate.quality.score),
-                        detail: Some(
-                            "exact target URL was present in Grok native citations".to_string(),
-                        ),
-                    });
-                    ai_extraction = Some(
-                        finalize_candidate(
-                            candidate,
-                            attempts.clone(),
-                            &query,
-                            max_chars,
-                            &data_dir,
-                            false,
-                        )
-                        .await,
-                    );
-                } else {
-                    attempts.push(WebExtractAttempt {
-                        extractor: source.id.clone(),
-                        status: "soft_miss".to_string(),
-                        duration_ms: attempt_started.elapsed().as_millis() as u64,
-                        quality_score: None,
-                        detail: output
-                            .failures
-                            .first()
-                            .map(|failure| failure.message.clone()),
-                    });
-                }
-            }
-            Err(error) => {
-                let message = error.message().to_string();
-                let status = classify_key_status(source.provider.clone(), &message);
-                status_updates.push(extract_key_status_update(
-                    &source, key_index, &api_key, &status, &message,
-                ));
-                attempts.push(WebExtractAttempt {
-                    extractor: source.id.clone(),
-                    status: "failed".to_string(),
-                    duration_ms: attempt_started.elapsed().as_millis() as u64,
-                    quality_score: None,
-                    detail: Some(message),
-                });
-            }
-        }
-    }
-
     let document = match best_direct {
         Some(candidate) => Some(
             finalize_candidate(
@@ -725,7 +629,7 @@ async fn extract_one_routed(
         ),
         None => None,
     };
-    let failure = if document.is_none() && ai_extraction.is_none() {
+    let failure = if document.is_none() {
         Some(WebExtractFailure {
             requested_url,
             error: "all enabled extraction methods failed".to_string(),
@@ -736,7 +640,6 @@ async fn extract_one_routed(
     };
     UrlExtractionOutcome {
         document,
-        ai_extraction,
         failure,
         status_updates,
     }
@@ -749,35 +652,25 @@ async fn execute_provider_extract(
     request: &ProviderExtractRequest,
 ) -> Result<ProviderExtractOutput, ProviderError> {
     let base_url = source.provider.default_extract_base_url();
-    let proxied_client = if source.provider != WebSearchProviderKind::Grok {
-        source
-            .proxy_url
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map(|proxy_url| {
-                crate::tools::web_search::client_cache::control_client(
-                    Duration::from_millis(request.timeout_ms),
-                    Some(proxy_url),
-                )
-                .map_err(ProviderError::Retryable)
-            })
-            .transpose()?
-    } else {
-        None
-    };
+    let proxied_client = source
+        .proxy_url
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|proxy_url| {
+            crate::tools::web_search::client_cache::control_client(
+                Duration::from_millis(request.timeout_ms),
+                Some(proxy_url),
+            )
+            .map_err(ProviderError::Retryable)
+        })
+        .transpose()?;
     let provider_client = proxied_client.as_ref().unwrap_or(client);
     dispatch_extract(
         source.provider.clone(),
         provider_client,
-        client,
         base_url,
         api_key,
         request,
-        GrokDispatch {
-            source_id: &source.id,
-            proxy_url: source.proxy_url.as_deref(),
-            timeout: Duration::from_millis(request.timeout_ms).max(Duration::from_secs(90)),
-        },
     )
     .await
 }
@@ -795,15 +688,10 @@ fn ordered_extract_sources(
         .cloned()
         .collect::<Vec<_>>();
     sources.sort_by(|left, right| {
-        let left_ai = left.provider == WebSearchProviderKind::Grok;
-        let right_ai = right.provider == WebSearchProviderKind::Grok;
-        left_ai
-            .cmp(&right_ai)
-            .then_with(|| {
-                let left_origin = provenance.contains(&left.id);
-                let right_origin = provenance.contains(&right.id);
-                right_origin.cmp(&left_origin)
-            })
+        let left_origin = provenance.contains(&left.id);
+        let right_origin = provenance.contains(&right.id);
+        right_origin
+            .cmp(&left_origin)
             .then_with(|| {
                 provider_route_rank(&left.provider, route_hint)
                     .cmp(&provider_route_rank(&right.provider, route_hint))
@@ -822,7 +710,6 @@ fn provider_route_rank(provider: &WebSearchProviderKind, hint: RouteHint) -> u8 
             WebSearchProviderKind::Jina => 2,
             WebSearchProviderKind::Exa => 3,
             WebSearchProviderKind::Tavily => 4,
-            WebSearchProviderKind::Grok => 9,
         },
         RouteHint::Pdf => match provider {
             WebSearchProviderKind::Exa => 0,
@@ -830,7 +717,6 @@ fn provider_route_rank(provider: &WebSearchProviderKind, hint: RouteHint) -> u8 
             WebSearchProviderKind::Firecrawl => 2,
             WebSearchProviderKind::Tavily => 3,
             WebSearchProviderKind::Keenable => 4,
-            WebSearchProviderKind::Grok => 9,
         },
         RouteHint::General => match provider {
             WebSearchProviderKind::Keenable => 0,
@@ -838,7 +724,6 @@ fn provider_route_rank(provider: &WebSearchProviderKind, hint: RouteHint) -> u8 
             WebSearchProviderKind::Firecrawl => 2,
             WebSearchProviderKind::Exa => 3,
             WebSearchProviderKind::Tavily => 4,
-            WebSearchProviderKind::Grok => 9,
         },
     }
 }
@@ -849,15 +734,7 @@ fn provider_candidate(
     query: &str,
 ) -> ExtractCandidate {
     let content = normalize_content(&document.content);
-    let quality = if document.ai_derived {
-        QualityAssessment {
-            score: 0.5,
-            reasons: vec!["generated_content".to_string()],
-            hard_page: false,
-        }
-    } else {
-        assess_quality(&document.title, &content, query)
-    };
+    let quality = assess_quality(&document.title, &content, query);
     ExtractCandidate {
         requested_url: document.requested_url,
         final_url: document.final_url,
@@ -871,11 +748,7 @@ fn provider_candidate(
         content,
         published_at: document.published_at,
         extractor: source.id.clone(),
-        evidence_class: if document.ai_derived {
-            WebExtractEvidenceClass::AiDerived
-        } else {
-            WebExtractEvidenceClass::ProviderExtracted
-        },
+        evidence_class: WebExtractEvidenceClass::ProviderExtracted,
         quality,
     }
 }
@@ -890,8 +763,7 @@ async fn finalize_candidate(
 ) -> WebExtractDocument {
     let document_id = evidence_id(&candidate.final_url, candidate.content.as_bytes());
     let relevant_excerpts = select_excerpts(&candidate.content, query, max_chars);
-    let citation_eligible = candidate.evidence_class != WebExtractEvidenceClass::AiDerived
-        && candidate.quality.score >= HIGH_QUALITY_THRESHOLD;
+    let citation_eligible = candidate.quality.score >= HIGH_QUALITY_THRESHOLD;
     let store_path = data_dir
         .join("evidence")
         .join(format!("{document_id}.json"));

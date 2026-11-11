@@ -21,14 +21,12 @@ export function defaultWebSearch(): WebSearchToolConfig {
     extraction: {
       remote_enabled: true,
       max_remote_attempts_per_url: 3,
-      allow_grok_fallback: true,
     },
     sources: [
       { id: 'keenable', provider: 'keenable', display_name: 'Keenable', enabled: true, deep_enabled: true, extract_enabled: true, priority: 10, independence_group: 'keenable', roles: ['general_search', 'current_news', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'], api_keys: [], proxy_url: null },
       { id: 'tavily', provider: 'tavily', display_name: 'Tavily', enabled: false, deep_enabled: true, extract_enabled: true, priority: 20, independence_group: 'tavily', roles: ['general_search', 'current_news', 'fact_checking', 'market_research', 'product_research'], api_keys: [], proxy_url: null },
       { id: 'exa', provider: 'exa', display_name: 'Exa', enabled: false, deep_enabled: true, extract_enabled: true, priority: 30, independence_group: 'exa', roles: ['semantic_research', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'product_research'], api_keys: [], proxy_url: null },
       { id: 'jina', provider: 'jina', display_name: 'Jina Search', enabled: true, deep_enabled: true, extract_enabled: true, priority: 40, independence_group: 'jina', roles: ['general_search', 'semantic_research', 'official_docs', 'technical_research', 'fact_checking', 'multilingual_search'], api_keys: [], proxy_url: null },
-      { id: 'grok', provider: 'grok', display_name: 'Grok Research', enabled: false, deep_enabled: true, extract_enabled: true, priority: 50, independence_group: 'grok', roles: ['ai_research', 'current_news', 'social_search', 'fact_checking', 'market_research', 'product_research'], api_keys: [], proxy_url: null },
       { id: 'firecrawl', provider: 'firecrawl', display_name: 'Firecrawl', enabled: true, deep_enabled: true, extract_enabled: true, priority: 60, independence_group: 'firecrawl', roles: ['general_search', 'current_news', 'official_docs', 'technical_research', 'academic_research', 'fact_checking', 'market_research', 'product_research', 'multilingual_search'], api_keys: [], proxy_url: null },
     ],
   };
@@ -165,7 +163,6 @@ const SOURCE_WEBSITE_URLS: Record<WebSearchProviderKind, string> = {
   tavily: 'https://tavily.com/',
   exa: 'https://exa.ai/',
   jina: 'https://jina.ai/',
-  grok: 'https://grok.com/',
   firecrawl: 'https://www.firecrawl.dev/',
   keenable: 'https://keenable.ai/',
 };
@@ -203,7 +200,6 @@ export function keyStatusRank(status?: WebSearchKeyStatus): number {
     case 'quota_limited': return 3;
     case 'quota_exhausted': return 4;
     case 'permission_denied': return 5;
-    case 'anti_bot': return 6;
     case 'network_error': return 7;
     case 'service_error': return 8;
     case 'configuration_error': return 9;
@@ -239,7 +235,7 @@ export function keyStatusLabel(status: WebSearchKeyStatus, t: (key: string) => s
 export function keyStatusIcon(status: WebSearchKeyStatus) {
   if (status === 'normal') return <CheckCircle2 size={14} />;
   if (status === 'officially_blocked' || status === 'unauthorized' || status === 'invalid_key') return <CircleX size={14} />;
-  if (status === 'quota_limited' || status === 'quota_exhausted' || status === 'rate_limited' || status === 'permission_denied' || status === 'anti_bot') return <CircleAlert size={14} />;
+  if (status === 'quota_limited' || status === 'quota_exhausted' || status === 'rate_limited' || status === 'permission_denied') return <CircleAlert size={14} />;
   if (status === 'network_error') return <Clock3 size={14} />;
   return <CircleAlert size={14} />;
 }

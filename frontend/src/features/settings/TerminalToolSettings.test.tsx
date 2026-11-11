@@ -52,7 +52,6 @@ const toolDefaults = {
     extraction: {
       remote_enabled: true,
       max_remote_attempts_per_url: 3,
-      allow_grok_fallback: true,
     },
     sources: [],
   },

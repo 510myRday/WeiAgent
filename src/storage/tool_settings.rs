@@ -394,12 +394,12 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
             terminal_enabled, terminal_permission_mode, terminal_default_timeout_ms,
             terminal_allowed_cwd_roots_json, web_search_enabled, web_search_max_results,
             web_search_timeout_ms, web_search_key_selection, web_extract_remote_enabled,
-            web_extract_max_remote_attempts, web_extract_allow_grok_fallback,
+            web_extract_max_remote_attempts,
             evidence_storage_enabled, evidence_retention_days, evidence_max_total_mb,
             task_planning_enabled, task_planning_progress_interval,
             created_at, updated_at
          ) VALUES (
-             'default', 'default', 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18
+            'default', 'default', 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17
          )
          ON CONFLICT(scope_type, scope_id) DO UPDATE SET
             config_version = 1,
@@ -414,7 +414,6 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
             web_search_key_selection = excluded.web_search_key_selection,
             web_extract_remote_enabled = excluded.web_extract_remote_enabled,
             web_extract_max_remote_attempts = excluded.web_extract_max_remote_attempts,
-            web_extract_allow_grok_fallback = excluded.web_extract_allow_grok_fallback,
              evidence_storage_enabled = excluded.evidence_storage_enabled,
              evidence_retention_days = excluded.evidence_retention_days,
              evidence_max_total_mb = excluded.evidence_max_total_mb,
@@ -436,7 +435,6 @@ fn write_default_settings_conn(conn: &Connection, config: &AgentToolsConfig) -> 
             key_selection_as_str(&config.web_search.key_selection),
             bool_to_i64(config.web_search.extraction.remote_enabled),
             i64::from(config.web_search.extraction.max_remote_attempts_per_url),
-            bool_to_i64(config.web_search.extraction.allow_grok_fallback),
             bool_to_i64(config.evidence_storage.enabled),
             i64::from(config.evidence_storage.retention_days),
             u64_to_i64(
@@ -669,7 +667,6 @@ struct DefaultSettingsRow {
     web_search_key_selection: String,
     web_extract_remote_enabled: i64,
     web_extract_max_remote_attempts: i64,
-    web_extract_allow_grok_fallback: i64,
     evidence_storage_enabled: i64,
     evidence_retention_days: i64,
     evidence_max_total_mb: i64,
@@ -684,7 +681,7 @@ fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsC
                     terminal_default_timeout_ms, terminal_allowed_cwd_roots_json,
                     web_search_enabled, web_search_max_results, web_search_timeout_ms,
                     web_search_key_selection, web_extract_remote_enabled,
-                    web_extract_max_remote_attempts, web_extract_allow_grok_fallback,
+                    web_extract_max_remote_attempts,
                     evidence_storage_enabled, evidence_retention_days, evidence_max_total_mb,
                     task_planning_enabled, task_planning_progress_interval
              FROM tool_settings
@@ -703,12 +700,11 @@ fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsC
                     web_search_key_selection: row.get(8)?,
                     web_extract_remote_enabled: row.get(9)?,
                     web_extract_max_remote_attempts: row.get(10)?,
-                    web_extract_allow_grok_fallback: row.get(11)?,
-                    evidence_storage_enabled: row.get(12)?,
-                    evidence_retention_days: row.get(13)?,
-                    evidence_max_total_mb: row.get(14)?,
-                    task_planning_enabled: row.get(15)?,
-                    task_planning_progress_interval: row.get(16)?,
+                    evidence_storage_enabled: row.get(11)?,
+                    evidence_retention_days: row.get(12)?,
+                    evidence_max_total_mb: row.get(13)?,
+                    task_planning_enabled: row.get(14)?,
+                    task_planning_progress_interval: row.get(15)?,
                 })
             },
         )
@@ -742,10 +738,6 @@ fn read_default_settings_conn(conn: &Connection) -> AppResult<Option<AgentToolsC
                 max_remote_attempts_per_url: i64_to_u32(
                     row.web_extract_max_remote_attempts,
                     "web_extract_max_remote_attempts",
-                )?,
-                allow_grok_fallback: i64_to_bool(
-                    row.web_extract_allow_grok_fallback,
-                    "web_extract_allow_grok_fallback",
                 )?,
             },
             sources: read_compact_web_search_sources(conn)?,
@@ -1145,7 +1137,6 @@ fn source_provider_from_str(value: &str) -> AppResult<WebSearchProviderKind> {
         "tavily" => Ok(WebSearchProviderKind::Tavily),
         "exa" => Ok(WebSearchProviderKind::Exa),
         "jina" => Ok(WebSearchProviderKind::Jina),
-        "grok" => Ok(WebSearchProviderKind::Grok),
         "firecrawl" => Ok(WebSearchProviderKind::Firecrawl),
         "keenable" => Ok(WebSearchProviderKind::Keenable),
         _ => Err(AppError::Database(format!(

@@ -343,7 +343,6 @@ export type IpProxyQuality = {
   google: IpProxyQualityProbe;
   openai: IpProxyQualityProbe;
   anthropic: IpProxyQualityProbe;
-  grok: IpProxyQualityProbe;
 };
 
 export type IpProxy = {

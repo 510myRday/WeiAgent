@@ -14,7 +14,7 @@ export type ListLlmLogsParams = {
   isCompaction?: boolean;
 };
 
-export type WebSearchProviderKind = 'tavily' | 'exa' | 'jina' | 'grok' | 'firecrawl' | 'keenable';
+export type WebSearchProviderKind = 'tavily' | 'exa' | 'jina' | 'firecrawl' | 'keenable';
 
 export const MAX_WEB_SEARCH_KEYS_PER_SOURCE = 1_000;
 
@@ -30,9 +30,7 @@ export type WebSearchSourceRole =
   | 'fact_checking'
   | 'market_research'
   | 'product_research'
-  | 'multilingual_search'
-  | 'ai_research'
-  | 'social_search';
+  | 'multilingual_search';
 
 export type WebSearchSourceConfig = {
   id: string;
@@ -57,7 +55,6 @@ export type WebSearchSourceConfig = {
 export type WebContentExtractionConfig = {
   remote_enabled: boolean;
   max_remote_attempts_per_url: number;
-  allow_grok_fallback: boolean;
 };
 
 export type WebSearchToolConfig = {
@@ -90,10 +87,8 @@ export type WebSearchKeyStatus =
   | 'permission_denied'
   | 'configuration_error'
   | 'service_error'
-  // Grok-classifier vocabulary, actively produced by the backend key checker.
   | 'quota_limited'
   | 'unauthorized'
-  | 'anti_bot'
   | 'network_error'
   | 'error';
 

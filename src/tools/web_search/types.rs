@@ -23,9 +23,6 @@ pub enum SearchMode {
 pub enum SearchHitKind {
     #[default]
     WebPage,
-    GrokNativeSearchResult,
-    GrokModelProvidedUrl,
-    XSearchResult,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -43,20 +40,9 @@ pub struct WebSearchHit {
     pub score: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AiSynthesis {
-    pub source_id: String,
-    pub provider: String,
-    pub query: String,
-    pub answer: String,
-    pub verification_status: String,
-    pub evidence_counted: bool,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProviderSearchOutput {
     pub results: Vec<WebSearchHit>,
-    pub ai_syntheses: Vec<AiSynthesis>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,7 +194,6 @@ pub struct ProviderExtractDocument {
     pub content: String,
     pub content_format: String,
     pub published_at: Option<String>,
-    pub ai_derived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,8 +227,6 @@ pub struct WebSearchOutput {
     pub selected_sources: Vec<SearchSourceDescriptor>,
     pub results: Vec<AggregatedSearchResult>,
     pub result_count: usize,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ai_syntheses: Vec<AiSynthesis>,
     pub source_runs: Vec<SourceRunSummary>,
     pub citation_instruction: String,
 }
@@ -292,7 +275,6 @@ fn key_status_severity(status: &str) -> u8 {
         "invalid_key" | "unauthorized" => 8,
         "quota_exhausted" | "permission_denied" | "configuration_error" => 7,
         "quota_limited" | "rate_limited" => 6,
-        "anti_bot" => 5,
         "network_error" | "service_error" => 4,
         "error" => 3,
         "normal" => 0,

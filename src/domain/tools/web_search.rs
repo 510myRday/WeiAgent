@@ -13,7 +13,6 @@ pub enum WebSearchProviderKind {
     Tavily,
     Exa,
     Jina,
-    Grok,
     Firecrawl,
     Keenable,
 }
@@ -31,8 +30,6 @@ pub enum WebSearchSourceRole {
     MarketResearch,
     ProductResearch,
     MultilingualSearch,
-    AiResearch,
-    SocialSearch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -57,13 +54,10 @@ pub struct WebSearchSourceCapabilities {
     pub domain_filter: bool,
     pub recency_filter: bool,
     pub native_citations: bool,
-    pub ai_synthesis: bool,
-    pub social_results: bool,
     pub url_extract: bool,
     pub batch_extract: bool,
     pub javascript_rendering: bool,
     pub pdf_extract: bool,
-    pub ai_derived_extract: bool,
 }
 
 impl WebSearchProviderKind {
@@ -72,7 +66,6 @@ impl WebSearchProviderKind {
             Self::Tavily => "tavily",
             Self::Exa => "exa",
             Self::Jina => "jina",
-            Self::Grok => "grok",
             Self::Firecrawl => "firecrawl",
             Self::Keenable => "keenable",
         }
@@ -83,7 +76,6 @@ impl WebSearchProviderKind {
             Self::Tavily => "https://api.tavily.com",
             Self::Exa => "https://api.exa.ai",
             Self::Jina => "https://s.jina.ai",
-            Self::Grok => "https://grok.com",
             Self::Firecrawl => "https://api.firecrawl.dev/v2",
             Self::Keenable => "https://api.keenable.ai/v1",
         }
@@ -94,7 +86,6 @@ impl WebSearchProviderKind {
             Self::Tavily => "https://api.tavily.com",
             Self::Exa => "https://api.exa.ai",
             Self::Jina => "https://r.jina.ai",
-            Self::Grok => "https://grok.com",
             Self::Firecrawl => "https://api.firecrawl.dev/v2",
             Self::Keenable => "https://api.keenable.ai/v1",
         }
@@ -105,7 +96,6 @@ impl WebSearchProviderKind {
             Self::Tavily => "Tavily",
             Self::Exa => "Exa",
             Self::Jina => "Jina Search",
-            Self::Grok => "Grok Research",
             Self::Firecrawl => "Firecrawl",
             Self::Keenable => "Keenable",
         }
@@ -123,7 +113,6 @@ impl WebSearchProviderKind {
         match self {
             Self::Tavily => "search_index",
             Self::Exa | Self::Jina => "semantic_search",
-            Self::Grok => "ai_research",
             Self::Firecrawl => "search_and_extract",
             Self::Keenable => "search_and_extract",
         }
@@ -131,7 +120,6 @@ impl WebSearchProviderKind {
 
     pub fn evidence_kind(&self) -> &'static str {
         match self {
-            Self::Grok => "ai_synthesis_and_candidates",
             Self::Firecrawl => "web_evidence_with_extracted_content",
             Self::Keenable => "web_evidence_with_extracted_content",
             _ => "web_evidence_candidates",
@@ -163,14 +151,6 @@ impl WebSearchProviderKind {
                 WebSearchSourceRole::FactChecking,
                 WebSearchSourceRole::MultilingualSearch,
             ],
-            Self::Grok => vec![
-                WebSearchSourceRole::AiResearch,
-                WebSearchSourceRole::CurrentNews,
-                WebSearchSourceRole::SocialSearch,
-                WebSearchSourceRole::FactChecking,
-                WebSearchSourceRole::MarketResearch,
-                WebSearchSourceRole::ProductResearch,
-            ],
             Self::Firecrawl => vec![
                 WebSearchSourceRole::GeneralSearch,
                 WebSearchSourceRole::CurrentNews,
@@ -199,73 +179,46 @@ impl WebSearchProviderKind {
                 domain_filter: true,
                 recency_filter: true,
                 native_citations: true,
-                ai_synthesis: false,
-                social_results: false,
                 url_extract: true,
                 batch_extract: true,
                 javascript_rendering: true,
                 pdf_extract: true,
-                ai_derived_extract: false,
             },
             Self::Exa => WebSearchSourceCapabilities {
                 domain_filter: true,
                 recency_filter: true,
                 native_citations: true,
-                ai_synthesis: false,
-                social_results: false,
                 url_extract: true,
                 batch_extract: true,
                 javascript_rendering: true,
                 pdf_extract: true,
-                ai_derived_extract: false,
             },
             Self::Jina => WebSearchSourceCapabilities {
                 domain_filter: true,
                 recency_filter: false,
                 native_citations: true,
-                ai_synthesis: false,
-                social_results: false,
                 url_extract: true,
                 batch_extract: false,
                 javascript_rendering: true,
                 pdf_extract: true,
-                ai_derived_extract: false,
-            },
-            Self::Grok => WebSearchSourceCapabilities {
-                domain_filter: false,
-                recency_filter: true,
-                native_citations: true,
-                ai_synthesis: true,
-                social_results: true,
-                url_extract: true,
-                batch_extract: false,
-                javascript_rendering: true,
-                pdf_extract: false,
-                ai_derived_extract: true,
             },
             Self::Firecrawl => WebSearchSourceCapabilities {
                 domain_filter: true,
                 recency_filter: true,
                 native_citations: true,
-                ai_synthesis: false,
-                social_results: false,
                 url_extract: true,
                 batch_extract: true,
                 javascript_rendering: true,
                 pdf_extract: true,
-                ai_derived_extract: false,
             },
             Self::Keenable => WebSearchSourceCapabilities {
                 domain_filter: true,
                 recency_filter: true,
                 native_citations: true,
-                ai_synthesis: false,
-                social_results: false,
                 url_extract: true,
                 batch_extract: false,
                 javascript_rendering: false,
                 pdf_extract: false,
-                ai_derived_extract: false,
             },
         }
     }
@@ -274,7 +227,6 @@ impl WebSearchProviderKind {
         match self {
             Self::Tavily | Self::Exa => WebSearchLatencyTier::Fast,
             Self::Jina | Self::Firecrawl | Self::Keenable => WebSearchLatencyTier::Medium,
-            Self::Grok => WebSearchLatencyTier::Slow,
         }
     }
 
@@ -284,7 +236,6 @@ impl WebSearchProviderKind {
             Self::Tavily | Self::Exa | Self::Firecrawl | Self::Keenable => {
                 WebSearchCostTier::Medium
             }
-            Self::Grok => WebSearchCostTier::High,
         }
     }
 
@@ -300,11 +251,6 @@ impl WebSearchProviderKind {
                 "multilingual search",
                 "page-oriented results",
                 "simple retrieval",
-            ],
-            Self::Grok => &[
-                "research synthesis",
-                "query expansion",
-                "X/social discovery",
             ],
             Self::Firecrawl => &[
                 "search with page extraction",
@@ -324,11 +270,6 @@ impl WebSearchProviderKind {
             Self::Tavily => &["snippets are evidence candidates, not full pages"],
             Self::Exa => &["semantic ranking may miss exact-keyword matches"],
             Self::Jina => &["limited native recency controls"],
-            Self::Grok => &[
-                "generated synthesis is unverified",
-                "model-provided URLs require extraction before citation",
-                "higher latency and cost",
-            ],
             Self::Firecrawl => &[
                 "deep-mode page scraping increases latency and credit usage",
                 "upstream search coverage may overlap other general indexes",
@@ -413,7 +354,7 @@ pub struct WebSearchSourceConfig {
     /// Extraction status slots aligned with api_keys.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extract_key_statuses: Vec<Option<WebSearchKeyStatusRecord>>,
-    /// Upstream proxy for Grok/CF traffic. Supports HTTP and SOCKS proxy URLs.
+    /// Optional proxy URL for requests to this source.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -429,8 +370,6 @@ pub struct WebContentExtractionConfig {
     pub remote_enabled: bool,
     #[serde(default = "default_web_extract_max_remote_attempts")]
     pub max_remote_attempts_per_url: u32,
-    #[serde(default = "crate::domain::serde_defaults::default_true")]
-    pub allow_grok_fallback: bool,
 }
 
 fn default_web_extract_max_remote_attempts() -> u32 {
@@ -442,7 +381,6 @@ impl Default for WebContentExtractionConfig {
         Self {
             remote_enabled: true,
             max_remote_attempts_per_url: DEFAULT_WEB_EXTRACT_MAX_REMOTE_ATTEMPTS,
-            allow_grok_fallback: true,
         }
     }
 }
@@ -474,7 +412,6 @@ fn default_web_search_sources() -> Vec<WebSearchSourceConfig> {
         default_web_search_source("tavily", WebSearchProviderKind::Tavily, 20),
         default_web_search_source("exa", WebSearchProviderKind::Exa, 30),
         default_web_search_source("jina", WebSearchProviderKind::Jina, 40),
-        default_web_search_source("grok", WebSearchProviderKind::Grok, 50),
         default_web_search_source("firecrawl", WebSearchProviderKind::Firecrawl, 60),
     ]
 }

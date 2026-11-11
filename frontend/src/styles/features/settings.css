@@ -1805,9 +1805,6 @@
   color: var(--color-warning);
 }
 
-.ip-proxy-quality-cell.is-grok {
-  color: rgb(0 0 0);
-}
 
 .ip-proxy-quality-cell.is-error {
   border-color: var(--color-danger-border);
@@ -1859,7 +1856,6 @@
 .ip-proxy-quality-legend-item.is-google { color: var(--color-info); }
 .ip-proxy-quality-legend-item.is-openai { color: var(--color-success); }
 .ip-proxy-quality-legend-item.is-anthropic { color: var(--color-warning); }
-.ip-proxy-quality-legend-item.is-grok { color: rgb(0 0 0); }
 .ip-proxy-quality-legend-item.is-error { color: var(--color-danger); }
 
 .ip-proxy-status-cell {

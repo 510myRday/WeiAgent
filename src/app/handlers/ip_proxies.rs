@@ -26,7 +26,6 @@ const QUALITY_GOOGLE_URL: &str =
     "https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta";
 const QUALITY_OPENAI_URL: &str = "https://api.openai.com/v1/models";
 const QUALITY_ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
-const QUALITY_GROK_URL: &str = "https://api.x.ai/v1/models";
 
 pub async fn list_ip_proxies(State(state): State<AppState>) -> AppResult<Json<Vec<IpProxy>>> {
     Ok(Json(state.store.list_ip_proxies().await?))
@@ -149,7 +148,6 @@ enum QualityApi {
     Google,
     OpenAi,
     Anthropic,
-    Grok,
 }
 
 impl QualityApi {
@@ -158,7 +156,6 @@ impl QualityApi {
             Self::Google => QUALITY_GOOGLE_URL,
             Self::OpenAi => QUALITY_OPENAI_URL,
             Self::Anthropic => QUALITY_ANTHROPIC_URL,
-            Self::Grok => QUALITY_GROK_URL,
         }
     }
 
@@ -168,7 +165,7 @@ impl QualityApi {
         }
         match self {
             Self::Google => status == reqwest::StatusCode::FORBIDDEN,
-            Self::OpenAi | Self::Grok => status == reqwest::StatusCode::UNAUTHORIZED,
+            Self::OpenAi => status == reqwest::StatusCode::UNAUTHORIZED,
             Self::Anthropic => matches!(
                 status,
                 reqwest::StatusCode::BAD_REQUEST
@@ -185,17 +182,15 @@ async fn test_proxy_quality(proxy: IpProxy) -> IpProxyQualityTestUpdate {
 
     let api_quality = match client {
         Ok(client) => {
-            let (google, openai, anthropic, grok) = tokio::join!(
+            let (google, openai, anthropic) = tokio::join!(
                 probe_quality_api(&client, QualityApi::Google),
                 probe_quality_api(&client, QualityApi::OpenAi),
                 probe_quality_api(&client, QualityApi::Anthropic),
-                probe_quality_api(&client, QualityApi::Grok),
             );
             IpProxyQuality {
                 google,
                 openai,
                 anthropic,
-                grok,
             }
         }
         Err(error) => {
@@ -204,7 +199,6 @@ async fn test_proxy_quality(proxy: IpProxy) -> IpProxyQualityTestUpdate {
                 google: quality_error(message.clone()),
                 openai: quality_error(message.clone()),
                 anthropic: quality_error(message.clone()),
-                grok: quality_error(message),
             }
         }
     };
@@ -365,7 +359,7 @@ fn compact_error(value: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        QUALITY_ANTHROPIC_URL, QUALITY_GOOGLE_URL, QUALITY_GROK_URL, QUALITY_OPENAI_URL, QualityApi,
+        QUALITY_ANTHROPIC_URL, QUALITY_GOOGLE_URL, QUALITY_OPENAI_URL, QualityApi,
     };
 
     #[test]
@@ -373,7 +367,6 @@ mod tests {
         assert_eq!(QualityApi::Google.url(), QUALITY_GOOGLE_URL);
         assert_eq!(QualityApi::OpenAi.url(), QUALITY_OPENAI_URL);
         assert_eq!(QualityApi::Anthropic.url(), QUALITY_ANTHROPIC_URL);
-        assert_eq!(QualityApi::Grok.url(), QUALITY_GROK_URL);
     }
 
     #[test]
@@ -381,7 +374,6 @@ mod tests {
         assert!(QualityApi::Google.reachable_status(reqwest::StatusCode::FORBIDDEN));
         assert!(QualityApi::OpenAi.reachable_status(reqwest::StatusCode::UNAUTHORIZED));
         assert!(QualityApi::Anthropic.reachable_status(reqwest::StatusCode::UNAUTHORIZED));
-        assert!(QualityApi::Grok.reachable_status(reqwest::StatusCode::UNAUTHORIZED));
         assert!(!QualityApi::OpenAi.reachable_status(reqwest::StatusCode::BAD_GATEWAY));
     }
 }

@@ -454,16 +454,11 @@ export function WebSearchToolSettings({
         sourceId,
         statuses: hydrateKeyStatuses([response.source])[sourceId] ?? {},
       });
-      const message = t(
-        source.provider === 'grok'
-          ? 'tools.webSearch.grokKeyImportSummary'
-          : 'tools.webSearch.keyImportSummary',
-        {
-          imported: response.imported,
-          duplicates: response.duplicates,
-          blocked: response.blocked,
-        },
-      );
+      const message = t('tools.webSearch.keyImportSummary', {
+        imported: response.imported,
+        duplicates: response.duplicates,
+        blocked: response.blocked,
+      });
       if (response.imported > 0) toast.success(message);
       else toast.info(message);
       if (valuesToImport.length < values.length) {
@@ -931,23 +926,6 @@ export function WebSearchToolSettings({
                       }}
                     />
                   </div>
-                </div>
-
-                <div className="setting-row">
-                  <div className="setting-info">
-                    <label>{t('tools.webSearch.allowGrokExtractFallback')}</label>
-                    <p className="setting-desc">{t('tools.webSearch.allowGrokExtractFallbackDesc')}</p>
-                  </div>
-                  <label className="toggle-switch">
-                    <input
-                      type="checkbox"
-                      aria-label={t('tools.webSearch.allowGrokExtractFallback')}
-                      checked={webSearch.extraction.allow_grok_fallback}
-                      disabled={!webSearch.extraction.remote_enabled}
-                      onChange={(event) => updateExtraction({ allow_grok_fallback: event.target.checked })}
-                    />
-                    <span className="toggle-slider" />
-                  </label>
                 </div>
 
                 <div className="web-search-evidence-divider">

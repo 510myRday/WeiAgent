@@ -4,7 +4,7 @@ use super::sql_util::{column_exists, now_rfc3339};
 use crate::domain::tools::DEFAULT_TASK_PLAN_PROGRESS_INTERVAL;
 use crate::error::AppResult;
 
-const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 13;
+const TOOL_SETTINGS_SCHEMA_VERSION: i64 = 14;
 
 const TOOL_SETTINGS_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS tool_settings (
@@ -33,8 +33,6 @@ CREATE TABLE IF NOT EXISTS tool_settings (
         CHECK (web_extract_remote_enabled IS NULL OR web_extract_remote_enabled IN (0, 1)),
     web_extract_max_remote_attempts INTEGER
         CHECK (web_extract_max_remote_attempts IS NULL OR web_extract_max_remote_attempts BETWEEN 1 AND 5),
-    web_extract_allow_grok_fallback INTEGER
-        CHECK (web_extract_allow_grok_fallback IS NULL OR web_extract_allow_grok_fallback IN (0, 1)),
     evidence_storage_enabled INTEGER
         CHECK (evidence_storage_enabled IS NULL OR evidence_storage_enabled IN (0, 1)),
     evidence_retention_days INTEGER
@@ -64,7 +62,6 @@ CREATE TABLE IF NOT EXISTS tool_settings (
             AND web_search_key_selection IS NOT NULL
             AND web_extract_remote_enabled IS NOT NULL
             AND web_extract_max_remote_attempts IS NOT NULL
-            AND web_extract_allow_grok_fallback IS NOT NULL
             AND evidence_storage_enabled IS NOT NULL
             AND evidence_retention_days IS NOT NULL
             AND evidence_max_total_mb IS NOT NULL
@@ -79,7 +76,6 @@ CREATE TABLE IF NOT EXISTS tool_settings (
             AND web_search_key_selection IS NULL
             AND web_extract_remote_enabled IS NULL
             AND web_extract_max_remote_attempts IS NULL
-            AND web_extract_allow_grok_fallback IS NULL
             AND evidence_storage_enabled IS NULL
             AND evidence_retention_days IS NULL
             AND evidence_max_total_mb IS NULL
@@ -119,7 +115,7 @@ CREATE TABLE IF NOT EXISTS tool_web_search_sources (
     source_id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(source_id)) > 0),
     scope_id TEXT NOT NULL DEFAULT 'default' CHECK (scope_id = 'default'),
     position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
-    provider TEXT NOT NULL CHECK (provider IN ('tavily', 'exa', 'jina', 'grok', 'firecrawl', 'keenable')),
+    provider TEXT NOT NULL CHECK (provider IN ('tavily', 'exa', 'jina', 'firecrawl', 'keenable')),
     display_name TEXT NOT NULL,
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
     deep_enabled INTEGER NOT NULL CHECK (deep_enabled IN (0, 1)),
@@ -197,6 +193,7 @@ pub(super) fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
         )?;
     }
     migrate_keenable_provider_constraint(conn)?;
+    migrate_legacy_extraction_setting(conn)?;
     if !column_exists(conn, "tool_settings", "task_planning_enabled")? {
         conn.execute(
             "ALTER TABLE tool_settings ADD COLUMN task_planning_enabled INTEGER",
@@ -353,7 +350,7 @@ pub(super) fn ensure_tool_settings_schema(conn: &Connection) -> AppResult<()> {
          VALUES (?1, ?2, ?3)",
         params![
             TOOL_SETTINGS_SCHEMA_VERSION,
-            "tool_settings_web_search_agent_sources_v13",
+            "tool_settings_remove_grok_v14",
             now_rfc3339(),
         ],
     )?;
@@ -476,21 +473,25 @@ fn migrate_keenable_provider_constraint(conn: &Connection) -> AppResult<()> {
             |row| row.get(0),
         )
         .optional()?;
-    if sql
-        .as_deref()
-        .is_some_and(|value| value.contains("'keenable'"))
-    {
+    if sql.as_deref().is_some_and(|value| {
+        value.contains("'keenable'") && !value.contains("'grok'")
+    }) {
         return Ok(());
     }
     conn.execute_batch(
         "PRAGMA foreign_keys = OFF;
+         DELETE FROM tool_web_search_api_keys
+             WHERE source_id IN (SELECT source_id FROM tool_web_search_sources WHERE provider = 'grok');
+         DELETE FROM tool_web_search_agent_sources
+             WHERE source_id IN (SELECT source_id FROM tool_web_search_sources WHERE provider = 'grok');
+         DELETE FROM tool_web_search_sources WHERE provider = 'grok';
          CREATE TABLE tool_web_search_sources_backup AS SELECT * FROM tool_web_search_sources;
          DROP TABLE tool_web_search_sources;
          CREATE TABLE tool_web_search_sources (
              source_id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(source_id)) > 0),
              scope_id TEXT NOT NULL DEFAULT 'default' CHECK (scope_id = 'default'),
              position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
-             provider TEXT NOT NULL CHECK (provider IN ('tavily', 'exa', 'jina', 'grok', 'firecrawl', 'keenable')),
+             provider TEXT NOT NULL CHECK (provider IN ('tavily', 'exa', 'jina', 'firecrawl', 'keenable')),
              display_name TEXT NOT NULL,
              enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
              deep_enabled INTEGER NOT NULL CHECK (deep_enabled IN (0, 1)),
@@ -504,6 +505,76 @@ fn migrate_keenable_provider_constraint(conn: &Connection) -> AppResult<()> {
          ) WITHOUT ROWID;
          INSERT INTO tool_web_search_sources SELECT * FROM tool_web_search_sources_backup;
          DROP TABLE tool_web_search_sources_backup;
+         PRAGMA foreign_keys = ON;",
+    )?;
+    Ok(())
+}
+
+fn migrate_legacy_extraction_setting(conn: &Connection) -> AppResult<()> {
+    if !column_exists(conn, "tool_settings", "web_extract_allow_grok_fallback")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         BEGIN IMMEDIATE;
+         CREATE TABLE tool_settings_new (
+             scope_type TEXT NOT NULL CHECK (scope_type IN ('default', 'agent')),
+             scope_id TEXT NOT NULL,
+             config_version INTEGER NOT NULL DEFAULT 1 CHECK (config_version = 1),
+             max_llm_iterations INTEGER CHECK (max_llm_iterations IS NULL OR max_llm_iterations BETWEEN 1 AND 999),
+             terminal_enabled INTEGER CHECK (terminal_enabled IS NULL OR terminal_enabled IN (0, 1)),
+             terminal_permission_mode TEXT CHECK (terminal_permission_mode IS NULL OR terminal_permission_mode IN ('request_approval', 'full_access')),
+             terminal_default_timeout_ms INTEGER CHECK (terminal_default_timeout_ms IS NULL OR terminal_default_timeout_ms > 0),
+             terminal_allowed_cwd_roots_json TEXT CHECK (terminal_allowed_cwd_roots_json IS NULL OR (json_valid(terminal_allowed_cwd_roots_json) AND json_type(terminal_allowed_cwd_roots_json) = 'array')),
+             web_search_enabled INTEGER CHECK (web_search_enabled IS NULL OR web_search_enabled IN (0, 1)),
+             web_search_max_results INTEGER CHECK (web_search_max_results IS NULL OR web_search_max_results > 0),
+             web_search_timeout_ms INTEGER CHECK (web_search_timeout_ms IS NULL OR web_search_timeout_ms > 0),
+             web_search_key_selection TEXT CHECK (web_search_key_selection IS NULL OR web_search_key_selection IN ('sequential', 'round_robin', 'random')),
+             web_extract_remote_enabled INTEGER CHECK (web_extract_remote_enabled IS NULL OR web_extract_remote_enabled IN (0, 1)),
+             web_extract_max_remote_attempts INTEGER CHECK (web_extract_max_remote_attempts IS NULL OR web_extract_max_remote_attempts BETWEEN 1 AND 5),
+             evidence_storage_enabled INTEGER CHECK (evidence_storage_enabled IS NULL OR evidence_storage_enabled IN (0, 1)),
+             evidence_retention_days INTEGER CHECK (evidence_retention_days IS NULL OR evidence_retention_days > 0),
+             evidence_max_total_mb INTEGER CHECK (evidence_max_total_mb IS NULL OR evidence_max_total_mb > 0),
+             task_planning_enabled INTEGER CHECK (task_planning_enabled IS NULL OR task_planning_enabled IN (0, 1)),
+             task_planning_progress_interval INTEGER CHECK (task_planning_progress_interval IS NULL OR task_planning_progress_interval BETWEEN 1 AND 999),
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             PRIMARY KEY (scope_type, scope_id),
+             UNIQUE (scope_id),
+             CHECK (
+                 (scope_type = 'default' AND scope_id = 'default' AND max_llm_iterations IS NOT NULL
+                  AND terminal_enabled IS NOT NULL AND terminal_permission_mode IS NOT NULL
+                  AND terminal_default_timeout_ms IS NOT NULL AND terminal_allowed_cwd_roots_json IS NOT NULL
+                  AND web_search_enabled IS NOT NULL AND web_search_max_results IS NOT NULL
+                  AND web_search_timeout_ms IS NOT NULL AND web_search_key_selection IS NOT NULL
+                  AND web_extract_remote_enabled IS NOT NULL AND web_extract_max_remote_attempts IS NOT NULL
+                  AND evidence_storage_enabled IS NOT NULL AND evidence_retention_days IS NOT NULL
+                  AND evidence_max_total_mb IS NOT NULL AND task_planning_enabled IS NOT NULL
+                  AND task_planning_progress_interval IS NOT NULL)
+                 OR (scope_type = 'agent' AND length(scope_id) = 36 AND web_search_timeout_ms IS NULL
+                     AND web_search_key_selection IS NULL AND web_extract_remote_enabled IS NULL
+                     AND web_extract_max_remote_attempts IS NULL AND evidence_storage_enabled IS NULL
+                     AND evidence_retention_days IS NULL AND evidence_max_total_mb IS NULL)
+             )
+         ) WITHOUT ROWID;
+         INSERT INTO tool_settings_new (
+             scope_type, scope_id, config_version, max_llm_iterations,
+             terminal_enabled, terminal_permission_mode, terminal_default_timeout_ms,
+             terminal_allowed_cwd_roots_json, web_search_enabled, web_search_max_results,
+             web_search_timeout_ms, web_search_key_selection, web_extract_remote_enabled,
+             web_extract_max_remote_attempts, evidence_storage_enabled, evidence_retention_days,
+             evidence_max_total_mb, task_planning_enabled, task_planning_progress_interval,
+             created_at, updated_at
+         ) SELECT scope_type, scope_id, config_version, max_llm_iterations,
+             terminal_enabled, terminal_permission_mode, terminal_default_timeout_ms,
+             terminal_allowed_cwd_roots_json, web_search_enabled, web_search_max_results,
+             web_search_timeout_ms, web_search_key_selection, web_extract_remote_enabled,
+             web_extract_max_remote_attempts, evidence_storage_enabled, evidence_retention_days,
+             evidence_max_total_mb, task_planning_enabled, task_planning_progress_interval,
+             created_at, updated_at FROM tool_settings;
+         DROP TABLE tool_settings;
+         ALTER TABLE tool_settings_new RENAME TO tool_settings;
+         COMMIT;
          PRAGMA foreign_keys = ON;",
     )?;
     Ok(())

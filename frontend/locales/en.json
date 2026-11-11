@@ -243,24 +243,24 @@
     "contextUsageTitle": "Context usage",
     "contextUsageUsed": "{percent}% used ({remaining}% left)",
     "contextUsageStats": "Used {used} of {limit}",
-    "compactingContext": "Compressing context…"
-    ,"shortcuts": "Commands and tools"
-    ,"selectedShortcuts": "Selected shortcuts"
-    ,"removeShortcut": "Remove {name}"
-    ,"noEnabledShortcuts": "No enabled shortcuts for this agent"
-    ,"tool": "Tool"
-    ,"command": "Command"
-    ,"shortcutPreferSkill": "Please prioritize using the “{name}” skill."
-    ,"shortcutPreferMcp": "Please prioritize using the “{name}” MCP service."
-    ,"shortcutPreferTool": "Please prioritize using the “{name}” tool."
-    ,"compressCommand": "Compress context"
-    ,"compressTitle": "Compress context"
-    ,"compressMessage": "Compress the current conversation context? Earlier content will remain available as a summary."
-    ,"compressConfirm": "Compress"
-    ,"contextCompactedManual": "Context manually compressed"
-    ,"contextCompactedAutomatic": "Context automatically compressed"
-    ,"contextCompactedStats": "{before} → {after} tokens"
-    ,"compressFailed": "Failed to compress context"
+    "compactingContext": "Compressing context…",
+    "shortcuts": "Commands and tools",
+    "selectedShortcuts": "Selected shortcuts",
+    "removeShortcut": "Remove {name}",
+    "noEnabledShortcuts": "No enabled shortcuts for this agent",
+    "tool": "Tool",
+    "command": "Command",
+    "shortcutPreferSkill": "Please prioritize using the “{name}” skill.",
+    "shortcutPreferMcp": "Please prioritize using the “{name}” MCP service.",
+    "shortcutPreferTool": "Please prioritize using the “{name}” tool.",
+    "compressCommand": "Compress context",
+    "compressTitle": "Compress context",
+    "compressMessage": "Compress the current conversation context? Earlier content will remain available as a summary.",
+    "compressConfirm": "Compress",
+    "contextCompactedManual": "Context manually compressed",
+    "contextCompactedAutomatic": "Context automatically compressed",
+    "contextCompactedStats": "{before} → {after} tokens",
+    "compressFailed": "Failed to compress context"
   },
   "conversation": {
     "create": "New conversation",
@@ -769,8 +769,6 @@
       "remoteExtractionEnabledDesc": "Use configured URL-content providers when local extraction fails or produces low-quality content.",
       "maxRemoteExtractAttempts": "Maximum remote attempts per URL",
       "maxRemoteExtractAttemptsDesc": "Try providers in order and stop after high-quality content is found. Range: 1–5.",
-      "allowGrokExtractFallback": "Allow final Grok fallback",
-      "allowGrokExtractFallbackDesc": "Use the Grok SSO session for focused excerpts after page-content providers fail. Results are labeled as AI-generated.",
       "evidenceStorageTitle": "Evidence storage",
       "evidenceStorageDesc": "Store complete extracted page text and clean it automatically by age and total size.",
       "evidenceStorageEnabled": "Enable evidence storage",
@@ -796,8 +794,6 @@
       "newKey": "New key",
       "newKeyPlaceholder": "Leave blank to keep the current key",
       "keyLimitReached": "Each search source supports up to {count} keys",
-      "ssoPlaceholder": "SSO JWT / Cookie(sso+cf_clearance) / JSON {\"sso\":\"...\",\"cookies\":\"...\",\"x_statsig_id\":\"...\"}",
-      "noSso": "No SSO tokens configured",
       "addKey": "Add key",
       "removeKey": "Remove key",
       "clearKeys": "Clear keys",
@@ -810,15 +806,14 @@
         "tavily": "Tavily",
         "exa": "Exa",
         "jina": "Jina",
-        "grok": "Grok (X)",
         "firecrawl": "Firecrawl",
         "keenable": "Keenable"
       },
       "freeQuota": {
         "tavily": "Free: 1,000 credits/month per key",
         "exa": "Free: $10 credits/month per key, plus $20 signup credits",
-        "jina": "Free: 10 million tokens per key",
-        "grok": "Free: 20 searches/day per key",
+        "jina": "Free: 10 million tokens per key; keyless search may work, subject to provider limits",
+        "firecrawl": "Free: keyless search; 1,000 credits/month (IP-limited)",
         "keenable": "Free: 1,000/hour keyless; 100,000/month per key"
       },
       "sourceProfile": "Search preferences",
@@ -842,9 +837,7 @@
         "fact_checking": "Fact checking",
         "market_research": "Market and business",
         "product_research": "Product comparison",
-        "multilingual_search": "Multilingual search",
-        "ai_research": "AI synthesis",
-        "social_search": "Social discussions"
+        "multilingual_search": "Multilingual search"
       },
       "sourceRoleDesc": {
         "general_search": "Everyday questions, overviews, and broad web discovery",
@@ -856,9 +849,7 @@
         "fact_checking": "Cross-check claims, rumors, facts, and supporting evidence",
         "market_research": "Industries, companies, financials, and market trends",
         "product_research": "Product comparisons, reviews, pricing, and buying decisions",
-        "multilingual_search": "Cross-language, foreign-language, and multilingual discovery",
-        "ai_research": "AI-assisted synthesis, query expansion, and lead generation",
-        "social_search": "Social platforms, community discussions, opinions, and sentiment"
+        "multilingual_search": "Cross-language, foreign-language, and multilingual discovery"
       },
       "proxyUrl": "Access proxy",
       "proxyUrlDesc": "Used when accessing this search provider. Select a saved IP proxy.",
@@ -909,12 +900,10 @@
       "emptyKeysHint": "Paste one or more keys below to get started",
       "addKeysDialogTitle": "Add {provider} keys",
       "addKeysHint": "Use one per line; click the tag action on a key row after adding to set its label",
-      "addGrokKeysHint": "Use one per line; previously blocked keys are skipped automatically",
       "advancedSettings": "Proxy settings",
       "advancedSettingsDesc": "Choose an access proxy for this search provider.",
       "checkFailed": "Key check failed",
       "keyImportSummary": "Imported {imported}, skipped {duplicates} duplicate(s)",
-      "grokKeyImportSummary": "Imported {imported}, skipped {duplicates} duplicate(s) and {blocked} previously blocked key(s)",
       "keyStatus": {
         "normal": "Healthy",
         "officially_blocked": "Officially blocked",
@@ -926,7 +915,6 @@
         "service_error": "Service error",
         "quota_limited": "Quota or rate limit",
         "unauthorized": "Unauthorized or expired",
-        "anti_bot": "Anti-bot blocked",
         "network_error": "Network error",
         "error": "Check error"
       }

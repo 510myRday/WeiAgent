@@ -106,7 +106,6 @@ pub async fn search(
         .collect();
     Ok(ProviderSearchOutput {
         results,
-        ai_syntheses: Vec::new(),
     })
 }
 
@@ -203,7 +202,6 @@ fn parse_extract_output(value: &serde_json::Value, requested_url: &str) -> Provi
                     .or_else(|| object.get("published_at"))
                     .and_then(serde_json::Value::as_str)
                     .map(ToOwned::to_owned),
-                ai_derived: false,
             });
         }
     }

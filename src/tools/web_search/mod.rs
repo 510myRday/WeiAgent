@@ -15,7 +15,7 @@ use crate::domain::{
 };
 
 use self::key_pool::key_attempt_order;
-use self::providers::{GrokDispatch, dispatch_search, support::truncate};
+use self::providers::{dispatch_search, support::truncate};
 use self::types::{
     AggregatedSearchResult, ProviderSearchOutput, ProviderSearchRequest, SearchHitKind, SearchMode,
     SearchSourceDescriptor, SourceRunSummary, WebSearchOutput, merge_status_update,
@@ -137,7 +137,7 @@ pub(crate) async fn execute_web_search_with_status_updates(
             .await;
             let succeeded = batch.iter().any(|execution| {
                 execution.output.as_ref().is_some_and(|output| {
-                    !output.results.is_empty() || !output.ai_syntheses.is_empty()
+                    !output.results.is_empty()
                 })
             });
             attempts.extend(batch);
@@ -168,11 +168,6 @@ pub(crate) async fn execute_web_search_with_status_updates(
         }
     }
 
-    let mut ai_syntheses = provider_outputs
-        .iter()
-        .flat_map(|(_, _, output)| output.ai_syntheses.clone())
-        .collect::<Vec<_>>();
-    ai_syntheses.truncate(8);
     let results = aggregate_results(&provider_outputs, &allowed_domains, &blocked_domains);
     let selected_descriptors = attempted_sources
         .iter()
@@ -183,7 +178,6 @@ pub(crate) async fn execute_web_search_with_status_updates(
         queries,
         result_count: results.len(),
         results,
-        ai_syntheses,
         selected_sources: selected_descriptors,
         source_runs,
         citation_instruction: "Extract and verify the most relevant original pages before citing. Place each Markdown link next to the claim it supports. AI syntheses are unverified and do not count as independent evidence.".to_string(),
@@ -271,11 +265,7 @@ async fn execute_source_query_with_timeout(
     selected_key: Option<(usize, String)>,
     config: &WebSearchToolConfig,
 ) -> SourceExecution {
-    let deadline = if source.provider == WebSearchProviderKind::Grok {
-        Duration::from_millis(config.timeout_ms()).max(Duration::from_secs(90))
-    } else {
-        Duration::from_millis(config.timeout_ms())
-    };
+    let deadline = Duration::from_millis(config.timeout_ms());
     let timeout_source = source.clone();
     let timeout_query = request.query.clone();
     let timeout_key = selected_key.clone();
@@ -506,12 +496,6 @@ const ROLE_MARKERS: &[(&[&str], &[WebSearchSourceRole])] = &[
     ),
     (
         &[
-            "twitter", "x.com", "social", "reddit", "推特", "社交", "舆情", "帖子",
-        ],
-        &[WebSearchSourceRole::SocialSearch],
-    ),
-    (
-        &[
             "verify",
             "fact check",
             "true or false",
@@ -653,18 +637,6 @@ const ROLE_MARKERS: &[(&[&str], &[WebSearchSourceRole])] = &[
         ],
         &[WebSearchSourceRole::SemanticResearch],
     ),
-    (
-        &[
-            "synthesize",
-            "research brief",
-            "executive summary",
-            "综合分析",
-            "综合调研",
-            "调研报告",
-            "汇总分析",
-        ],
-        &[WebSearchSourceRole::AiResearch],
-    ),
 ];
 
 fn infer_source_roles(args: &WebSearchArgs) -> HashSet<WebSearchSourceRole> {
@@ -720,14 +692,10 @@ async fn execute_source_query(
         }
     };
     let timeout = Duration::from_millis(config.timeout_ms());
-    let control_proxy = if source.provider != WebSearchProviderKind::Grok {
-        source
-            .proxy_url
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-    } else {
-        None
-    };
+    let control_proxy = source
+        .proxy_url
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
     let control_client = match client_cache::control_client(timeout, control_proxy) {
         Ok(client) => client,
         Err(error) => {
@@ -741,18 +709,13 @@ async fn execute_source_query(
         base_url,
         &api_key,
         &request,
-        GrokDispatch {
-            source_id: &source.id,
-            proxy_url: source.proxy_url.as_deref(),
-            timeout: std::cmp::max(timeout, Duration::from_secs(90)),
-        },
     )
     .await;
 
     match result {
         Ok(output) => {
             let result_count = output.results.len();
-            let status = if result_count == 0 && output.ai_syntheses.is_empty() {
+            let status = if result_count == 0 {
                 "soft_miss"
             } else {
                 "success"
@@ -819,7 +782,7 @@ fn key_health_rank(
     {
         Some("normal") => 0,
         None => 1,
-        Some("rate_limited" | "network_error" | "service_error" | "anti_bot") => 2,
+        Some("rate_limited" | "network_error" | "service_error") => 2,
         Some("quota_limited") => 3,
         Some(
             "quota_exhausted"
@@ -923,11 +886,9 @@ fn aggregate_results(
             entry
                 .provider_kinds
                 .insert(source.provider.provider_kind().to_string());
-            if hit.kind != SearchHitKind::GrokModelProvidedUrl {
-                entry
-                    .independence_groups
-                    .insert(source.independence_group().to_string());
-            }
+            entry
+                .independence_groups
+                .insert(source.independence_group().to_string());
             entry.matched_queries.insert(query.clone());
         }
     }
@@ -978,9 +939,7 @@ fn aggregate_results(
 
 fn evidence_priority(kind: &SearchHitKind) -> u8 {
     match kind {
-        SearchHitKind::WebPage | SearchHitKind::GrokNativeSearchResult => 3,
-        SearchHitKind::XSearchResult => 2,
-        SearchHitKind::GrokModelProvidedUrl => 1,
+        SearchHitKind::WebPage => 3,
     }
 }
 
@@ -1159,56 +1118,6 @@ mod tests {
             .collect::<HashSet<_>>();
         assert_eq!(groups.len(), selected.len());
         assert_eq!(selected.len(), 3);
-    }
-
-    #[test]
-    fn aggregation_does_not_count_model_provided_urls_as_independent_evidence() {
-        let config = WebSearchToolConfig::default();
-        let firecrawl = config.sources[5].clone();
-        let grok = config.sources[4].clone();
-        let outputs = vec![
-            (
-                firecrawl,
-                "rust".to_string(),
-                ProviderSearchOutput {
-                    results: vec![types::WebSearchHit {
-                        title: "Rust".to_string(),
-                        url: "https://www.rust-lang.org/?utm_source=test".to_string(),
-                        snippet: "Official language site".to_string(),
-                        content_excerpt: Some("Full extracted page evidence".to_string()),
-                        kind: SearchHitKind::WebPage,
-                        published_at: None,
-                        score: Some(0.9),
-                    }],
-                    ai_syntheses: Vec::new(),
-                },
-            ),
-            (
-                grok,
-                "rust language".to_string(),
-                ProviderSearchOutput {
-                    results: vec![types::WebSearchHit {
-                        title: "Rust generated source".to_string(),
-                        url: "https://www.rust-lang.org/".to_string(),
-                        snippet: "Model-provided candidate".to_string(),
-                        content_excerpt: None,
-                        kind: SearchHitKind::GrokModelProvidedUrl,
-                        published_at: None,
-                        score: None,
-                    }],
-                    ai_syntheses: Vec::new(),
-                },
-            ),
-        ];
-        let results = aggregate_results(&outputs, &[], &[]);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].corroboration_count, 1);
-        assert_eq!(results[0].source_ids, vec!["firecrawl", "grok"]);
-        assert_eq!(results[0].evidence_kind, SearchHitKind::WebPage);
-        assert_eq!(
-            results[0].content_excerpt.as_deref(),
-            Some("Full extracted page evidence")
-        );
     }
 
     #[test]

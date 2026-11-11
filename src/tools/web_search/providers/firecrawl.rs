@@ -54,7 +54,6 @@ pub async fn search(
 
     Ok(ProviderSearchOutput {
         results: parse_results(&parsed, request.max_results as usize),
-        ai_syntheses: Vec::new(),
     })
 }
 
@@ -181,7 +180,6 @@ fn parse_extract_output(value: &Value, requested_url: &str) -> ProviderExtractOu
                 )
             })
             .map(ToOwned::to_owned),
-        ai_derived: false,
     });
     output
 }

@@ -120,7 +120,6 @@ const QUALITY_API_ITEMS: Array<{ key: QualityApiKey; short: string; label: strin
   { key: 'google', short: 'G', label: 'Google' },
   { key: 'openai', short: 'O', label: 'OpenAI' },
   { key: 'anthropic', short: 'A', label: 'Anthropic' },
-  { key: 'grok', short: 'X', label: 'Grok' },
 ];
 
 export function ApiQualityGrid({

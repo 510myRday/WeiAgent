@@ -11,7 +11,6 @@ pub struct HttpClientConfig {
     pub follow_redirects: bool,
     pub max_redirects: Option<usize>,
     pub no_system_proxy: bool,
-    pub pool_max_idle_per_host: Option<usize>,
     pub identity: Option<reqwest::Identity>,
 }
 
@@ -56,11 +55,6 @@ impl HttpClientConfig {
         self
     }
 
-    pub fn pool_max_idle_per_host(mut self, value: usize) -> Self {
-        self.pool_max_idle_per_host = Some(value);
-        self
-    }
-
     pub fn max_redirects(mut self, limit: usize) -> Self {
         self.max_redirects = Some(limit);
         self
@@ -90,9 +84,6 @@ pub fn build_reqwest_client(config: HttpClientConfig) -> Result<reqwest::Client,
     }
     if let Some(identity) = config.identity {
         builder = builder.identity(identity);
-    }
-    if let Some(limit) = config.pool_max_idle_per_host {
-        builder = builder.pool_max_idle_per_host(limit);
     }
     if let Some(proxy_url) = config.proxy_url.as_deref() {
         let proxy = reqwest::Proxy::all(proxy_url)

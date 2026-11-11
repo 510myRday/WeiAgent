@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
 use crate::domain::tools::{WebSearchKeyOperation, WebSearchKeyStatusUpdate, mask_api_key};
-use crate::tools::web_search::providers::{GrokDispatch, dispatch_probe, grok_support};
+use crate::tools::web_search::providers::dispatch_probe;
 use crate::tools::web_search::types::{ProviderSearchRequest, SearchMode};
 use crate::{
     app::AppState,
-    domain::{WebSearchKeyStatusRecord, WebSearchProviderKind, WebSearchSourceConfig},
+    domain::{WebSearchKeyStatusRecord, WebSearchSourceConfig},
     error::{AppError, AppResult},
 };
 
@@ -299,19 +299,10 @@ pub async fn check_web_search_keys(
         .map(|value| crate::domain::ip_proxies::proxy_url_with_remote_dns(value).into_owned());
     let proxy_url = effective_proxy_url.as_deref();
     let control_timeout = timeout.max(std::time::Duration::from_secs(90));
-    let control_proxy = if provider != WebSearchProviderKind::Grok {
-        proxy_url
-    } else {
-        None
-    };
+    let control_proxy = proxy_url;
     let control_client =
         crate::tools::web_search::client_cache::control_client(control_timeout, control_proxy)
             .map_err(crate::error::AppError::BadRequest)?;
-    let grok_client = if provider == WebSearchProviderKind::Grok {
-        Some(grok_support::build_emulated_client(timeout, proxy_url))
-    } else {
-        None
-    };
     let check_request = ProviderSearchRequest {
         query: "WeiAgent key status check".to_string(),
         max_results: 1,
@@ -328,12 +319,9 @@ pub async fn check_web_search_keys(
         for &key_index in chunk {
             let api_key = api_keys.get(key_index).cloned();
             let control_client = control_client.clone();
-            let grok_client = grok_client.clone();
             let base_url = base_url.clone();
-            let source_id = source_id.clone();
             let provider = provider.clone();
             let check_request = check_request.clone();
-            let proxy_url = effective_proxy_url.clone();
             futs.push(async move {
                 let Some(api_key) = api_key else {
                     return WebSearchKeyCheckResult {
@@ -351,15 +339,9 @@ pub async fn check_web_search_keys(
                 let search_result = dispatch_probe(
                     provider.clone(),
                     &control_client,
-                    grok_client.as_ref(),
                     &base_url,
                     &api_key,
                     &check_request,
-                    GrokDispatch {
-                        source_id: &source_id,
-                        proxy_url: proxy_url.as_deref(),
-                        timeout,
-                    },
                 )
                 .await;
                 let (status, detail) = match search_result {
@@ -426,8 +408,8 @@ mod tests {
         let mut source = crate::domain::tools::WebSearchToolConfig::default()
             .sources
             .into_iter()
-            .find(|source| source.id == "grok")
-            .expect("default Grok source");
+            .find(|source| source.id == "firecrawl")
+            .expect("default Firecrawl source");
         source.api_keys = vec![
             "key-a".to_string(),
             "key-b".to_string(),
@@ -440,7 +422,7 @@ mod tests {
         ];
         source.key_statuses = vec![
             status("normal", "search-a"),
-            status("anti_bot", "search-b"),
+            status("rate_limited", "search-b"),
             status("quota_limited", "search-c"),
         ];
         source.extract_key_statuses = vec![
@@ -477,12 +459,12 @@ mod tests {
         let mut source = crate::domain::tools::WebSearchToolConfig::default()
             .sources
             .into_iter()
-            .find(|source| source.id == "grok")
-            .expect("default Grok source");
+            .find(|source| source.id == "firecrawl")
+            .expect("default Firecrawl source");
         source.api_keys = vec!["key-a-same".to_string(), "key-b-same".to_string()];
 
         let request = DeleteWebSearchKeyRequest {
-            source_id: "grok".to_string(),
+            source_id: "firecrawl".to_string(),
             key_index: 0,
             key_fingerprint: Some(crate::domain::tools::api_key_fingerprint("key-b-same")),
             key_hint: Some("****same".to_string()),

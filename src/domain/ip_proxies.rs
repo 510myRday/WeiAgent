@@ -82,8 +82,6 @@ pub struct IpProxyQuality {
     pub openai: IpProxyQualityProbe,
     #[serde(default)]
     pub anthropic: IpProxyQualityProbe,
-    #[serde(default)]
-    pub grok: IpProxyQualityProbe,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
