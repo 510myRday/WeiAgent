@@ -1573,11 +1573,13 @@ async fn initializes_builtin_agent_workspace_and_blocks_delete() {
         )
         .await
         .unwrap();
-    assert_eq!(updated.name, "Wei Sir");
-    assert_eq!(
-        updated.description,
-        "Coordinates tasks, delegates work, and drives complex jobs to completion."
-    );
+    assert_eq!(updated.name, "Renamed");
+    assert_eq!(updated.description, "Changed description");
+
+    let reopened = Store::new(temp_dir.path()).await.unwrap();
+    let persisted = reopened.get_agent(builtin.id).await.unwrap();
+    assert_eq!(persisted.name, "Renamed");
+    assert_eq!(persisted.description, "Changed description");
 }
 
 #[tokio::test]

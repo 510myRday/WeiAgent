@@ -242,10 +242,10 @@ fn apply_agent_update(
     validate_unique_avatar(agents, Some(id), &next_avatar_icon, &next_avatar_color)?;
     let agent = agents.get_mut(agent_index).ok_or(AppError::NotFound)?;
 
-    if let Some(name) = request.name.filter(|_| !agent.is_builtin) {
+    if let Some(name) = request.name {
         agent.name = crate::storage::validation::validate_non_empty("agent name", &name)?;
     }
-    if let Some(description) = request.description.filter(|_| !agent.is_builtin) {
+    if let Some(description) = request.description {
         agent.description =
             crate::storage::validation::validate_non_empty("agent description", &description)?;
     }

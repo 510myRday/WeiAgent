@@ -102,8 +102,12 @@ The current local system date is today's date and is authoritative.\n\
         let existing_builtin = agents.iter().position(|agent| agent.is_builtin);
 
         if let Some(index) = existing_builtin {
-            agents[index].name = BUILTIN_AGENT_NAME.to_string();
-            agents[index].description = BUILTIN_AGENT_DESCRIPTION.to_string();
+            if agents[index].name.trim().is_empty() {
+                agents[index].name = BUILTIN_AGENT_NAME.to_string();
+            }
+            if agents[index].description.trim().is_empty() {
+                agents[index].description = BUILTIN_AGENT_DESCRIPTION.to_string();
+            }
             self.ensure_agent_workspace_unlocked(&agents[index]).await?;
         } else {
             let agent = Agent {

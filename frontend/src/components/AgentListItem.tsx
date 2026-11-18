@@ -7,12 +7,22 @@ import { ListItem } from './ui';
 
 type Translate = (path: string, params?: Record<string, string | number>) => string;
 
+const BUILTIN_DEFAULT_NAME = 'Wei Sir';
+const BUILTIN_LEGACY_ZH_NAME = '喂先生';
+const BUILTIN_DEFAULT_DESCRIPTION = 'Coordinates tasks, delegates work, and drives complex jobs to completion.';
+const BUILTIN_LEGACY_ZH_DESCRIPTION = '负责统筹任务、协调各智能体并推进复杂工作。';
+
 export function agentDisplayName(agent: Agent, t: Translate): string {
-  return agent.is_builtin ? t('agentConfig.builtinAgentName') : agent.name;
+  return agent.is_builtin && (agent.name === BUILTIN_DEFAULT_NAME || agent.name === BUILTIN_LEGACY_ZH_NAME)
+    ? t('agentConfig.builtinAgentName')
+    : agent.name;
 }
 
 export function agentDisplayDescription(agent: Agent, t: Translate): string {
-  return agent.is_builtin ? t('agentConfig.builtinAgentDescription') : agent.description;
+  return agent.is_builtin
+    && (agent.description === BUILTIN_DEFAULT_DESCRIPTION || agent.description === BUILTIN_LEGACY_ZH_DESCRIPTION)
+    ? t('agentConfig.builtinAgentDescription')
+    : agent.description;
 }
 
 export function AgentListItem({

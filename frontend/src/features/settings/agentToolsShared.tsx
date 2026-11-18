@@ -3,6 +3,7 @@ import { Download, RefreshCw } from 'lucide-react';
 
 import type { AgentToolsConfig, EnvironmentRuntimeStatus, RuntimeComponentStatus } from '../../toolTypes';
 import type { Agent } from '../../types';
+import { agentDisplayName } from '../../components/AgentListItem';
 import { Button, IconButton } from '../../components/ui';
 
 export function normalizeRuntimeComponents(runtime: EnvironmentRuntimeStatus | null): RuntimeComponentStatus[] {
@@ -153,5 +154,5 @@ export function serializeDefaultConfig(config: AgentToolsConfig): string {
 export function agentName(agentId: string, agents: Agent[], t: (path: string) => string): string {
   const agent = agents.find((item) => item.id === agentId);
   if (!agent) return agentId;
-  return agent.is_builtin ? t('agentConfig.builtinAgentName') : agent.name;
+  return agentDisplayName(agent, t);
 }

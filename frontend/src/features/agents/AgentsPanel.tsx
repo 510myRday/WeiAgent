@@ -146,10 +146,10 @@ export function AgentsPanel({
   activeAgentRef.current = activeAgent;
   const selectedAgentProvider = providers.find((provider) => provider.id === agentForm.model_provider_id);
   const visibleSections = agentConfigSections.filter((section) => activeAgent || !section.requiresAgent);
-  const displayedAgentName = activeAgent?.is_builtin
+  const displayedAgentName = activeAgent?.is_builtin && agentForm.name === activeAgent.name
     ? agentDisplayName(activeAgent, t)
     : agentForm.name;
-  const displayedAgentDescription = activeAgent?.is_builtin
+  const displayedAgentDescription = activeAgent?.is_builtin && agentForm.description === activeAgent.description
     ? agentDisplayDescription(activeAgent, t)
     : agentForm.description;
 
@@ -237,8 +237,8 @@ export function AgentsPanel({
 
     const payload = agentPayloadFromForm(activeAgent, agentForm);
     if (
-      (!payload.name && !activeAgent.is_builtin)
-      || (!payload.description && !activeAgent.is_builtin)
+      !payload.name
+      || !payload.description
       || !payload.model_provider_id
       || !payload.model_id
     ) {
@@ -571,7 +571,7 @@ export function AgentsPanel({
                           value={displayedAgentName}
                           onChange={(e) => { setAgentForm({ ...agentForm, name: e.target.value }); setAgentFormDirty(true); }}
                           placeholder={t('agentConfig.placeholder_name')}
-                          disabled={isSubmittingAgent || activeAgent?.is_builtin}
+                          disabled={isSubmittingAgent}
                           required
                         />
                       </FormField>
@@ -581,7 +581,7 @@ export function AgentsPanel({
                           value={displayedAgentDescription}
                           onChange={(e) => { setAgentForm({ ...agentForm, description: e.target.value }); setAgentFormDirty(true); }}
                           placeholder={t('agentConfig.placeholder_description')}
-                          disabled={isSubmittingAgent || activeAgent?.is_builtin}
+                          disabled={isSubmittingAgent}
                           rows={7}
                           required
                         />
@@ -805,8 +805,8 @@ function normalizeModelProviderId(providerId: string): string {
 
 function agentPayloadFromForm(agent: Agent, form: CreateAgentPayload): CreateAgentPayload {
   return {
-    name: agent.is_builtin ? agent.name : form.name.trim(),
-    description: agent.is_builtin ? agent.description : form.description.trim(),
+    name: form.name.trim(),
+    description: form.description.trim(),
     model_provider_id: form.model_provider_id,
     model_id: form.model_id.trim(),
     avatar_icon: form.avatar_icon,

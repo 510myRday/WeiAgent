@@ -565,8 +565,8 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
               </div>
             ) : null}
             </div>
-            <div className={`composer-actions${terminalPermissionMode ? ' has-terminal-permission' : ''}`}>
-            {terminalPermissionMode && onTerminalPermissionModeChange ? (
+            <div className={`composer-actions${generationMode !== 'image' && terminalPermissionMode ? ' has-terminal-permission' : ''}`}>
+            {generationMode !== 'image' && terminalPermissionMode && onTerminalPermissionModeChange ? (
               <div className="thinking-control terminal-permission-control" ref={permissionRef}>
                 <button
                   type="button"
