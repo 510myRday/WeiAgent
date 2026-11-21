@@ -25,6 +25,7 @@ import {
 import type {
   Agent,
   AgentRunPhase,
+  AssistantBlock,
   AppSettings,
   ImageAttachment,
   ToolCallState,
@@ -50,8 +51,12 @@ import { useImageAttachments } from './useImageAttachments';
 import { AttachmentImage } from './AttachmentImage';
 import { ReasoningDisclosure } from './ReasoningDisclosure';
 import { ToolDisclosure } from './ToolDisclosure';
+import { ToolCallGroup } from './ToolCallGroup';
 import { classifyRetryReason } from './retryReason';
 import { userErrorMessage } from '../../utils/userError';
+import { parsePlanModeInteraction, stripPlanModeProtocol } from './planModeProtocol';
+import type { PlanModeEvent } from './planModeProtocol';
+import { PlanModeCard, PlanModeLoadingCard } from './PlanModeCard';
 
 const MAX_MESSAGE_IMAGE_EDGE = 360;
 
@@ -152,6 +157,45 @@ type RetryStatus = {
   reason: string;
 };
 
+type MessageBlockRow =
+  | { type: 'reasoning'; block: Extract<AssistantBlock, { type: 'reasoning' }>; sourceIndex: number }
+  | { type: 'text'; block: Extract<AssistantBlock, { type: 'text' }>; sourceIndex: number }
+  | { type: 'plan'; tool: ToolCallState; sourceIndex: number }
+  | { type: 'tool'; block: Extract<AssistantBlock, { type: 'tool' }>; sourceIndex: number }
+  | { type: 'tool-group'; tools: ToolCallState[]; sourceIndex: number };
+
+function groupToolBlocks(blocks: AssistantBlock[]): MessageBlockRow[] {
+  const rows: MessageBlockRow[] = [];
+  let index = 0;
+  while (index < blocks.length) {
+    const block = blocks[index];
+    if (block.type === 'tool' && block.tool.name === 'plan_mode_interaction') {
+      rows.push({ type: 'plan', tool: block.tool, sourceIndex: index });
+      index += 1;
+      continue;
+    }
+    if (block.type === 'tool') {
+      const tools: ToolCallState[] = [block.tool];
+      let nextIndex = index + 1;
+      while (nextIndex < blocks.length) {
+        const nextBlock = blocks[nextIndex];
+        if (nextBlock.type !== 'tool' || nextBlock.tool.name === 'plan_mode_interaction') break;
+        tools.push(nextBlock.tool);
+        nextIndex += 1;
+      }
+      rows.push(tools.length > 1
+        ? { type: 'tool-group', tools, sourceIndex: index }
+        : { type: 'tool', block, sourceIndex: index });
+      index = nextIndex;
+      continue;
+    }
+    if (block.type === 'reasoning') rows.push({ type: 'reasoning', block, sourceIndex: index });
+    if (block.type === 'text') rows.push({ type: 'text', block, sourceIndex: index });
+    index += 1;
+  }
+  return rows;
+}
+
 type MessageActions = {
   onRestart: (
     messageId: string,
@@ -182,6 +226,12 @@ export const MessageListItem = memo(function MessageListItem({
   onEditImage,
   onApproveToolCall,
   mcpServers,
+  planModeEvent,
+  planModePending,
+  planModeSubmittedAnswer,
+  onPlanModeAnswer,
+  onPlanModeExecute,
+  onPlanModeRevise,
   formatTimelineTime,
 }: {
   item: UiMessageItem;
@@ -198,9 +248,19 @@ export const MessageListItem = memo(function MessageListItem({
   onEditImage: MessageActions['onEditImage'];
   onApproveToolCall: MessageActions['onApproveToolCall'];
   mcpServers: McpServer[];
+  planModeEvent: PlanModeEvent | null;
+  planModePending: boolean;
+  planModeSubmittedAnswer: string;
+  onPlanModeAnswer: (answer: string) => void;
+  onPlanModeExecute: () => void;
+  onPlanModeRevise: () => void;
   formatTimelineTime: (value: string) => string;
 }) {
   const { t } = useI18n();
+  if (item.role === 'user' && (
+    item.content.trimStart().startsWith('计划问题回答：')
+    || item.content.trimStart().startsWith('计划执行确认：')
+  )) return null;
   if (item.system_event?.type === 'context_compacted') {
     const label = item.system_event.source === 'manual'
       ? t('chat.contextCompactedManual')
@@ -234,6 +294,12 @@ export const MessageListItem = memo(function MessageListItem({
       onEditImage={onEditImage}
       onApproveToolCall={onApproveToolCall}
       mcpServers={mcpServers}
+      planModeEvent={planModeEvent}
+      planModePending={planModePending}
+      planModeSubmittedAnswer={planModeSubmittedAnswer}
+      onPlanModeAnswer={onPlanModeAnswer}
+      onPlanModeExecute={onPlanModeExecute}
+      onPlanModeRevise={onPlanModeRevise}
     />
   );
 });
@@ -353,6 +419,12 @@ const MessageRow = memo(function MessageRow({
   onEditImage,
   onApproveToolCall,
   mcpServers,
+  planModeEvent,
+  planModePending,
+  planModeSubmittedAnswer,
+  onPlanModeAnswer,
+  onPlanModeExecute,
+  onPlanModeRevise,
 }: {
   message: UiMessage;
   showTimeSeparator: boolean;
@@ -370,6 +442,12 @@ const MessageRow = memo(function MessageRow({
   onEditImage: MessageActions['onEditImage'];
   onApproveToolCall: MessageActions['onApproveToolCall'];
   mcpServers: McpServer[];
+  planModeEvent: PlanModeEvent | null;
+  planModePending: boolean;
+  planModeSubmittedAnswer: string;
+  onPlanModeAnswer: (answer: string) => void;
+  onPlanModeExecute: () => void;
+  onPlanModeRevise: () => void;
 }) {
   const { t } = useI18n();
   const { copied, copy } = useClipboard();
@@ -606,6 +684,12 @@ const MessageRow = memo(function MessageRow({
                   runPhase={runPhase}
                   onEditImage={onEditImage}
                   onApproveToolCall={onApproveToolCall}
+                  planModeEvent={planModeEvent}
+                  planModePending={planModePending}
+                  planModeSubmittedAnswer={planModeSubmittedAnswer}
+                  onPlanModeAnswer={onPlanModeAnswer}
+                  onPlanModeExecute={onPlanModeExecute}
+                  onPlanModeRevise={onPlanModeRevise}
                 />
                 {message.status === 'failed' ? <span className="message-status error">{failedLabel}</span> : null}
               </div>
@@ -682,6 +766,12 @@ function MessageContent({
   runPhase,
   onEditImage,
   onApproveToolCall,
+  planModeEvent,
+  planModePending,
+  planModeSubmittedAnswer,
+  onPlanModeAnswer,
+  onPlanModeExecute,
+  onPlanModeRevise,
 }: {
   message: UiMessage;
   agentId: string;
@@ -690,13 +780,19 @@ function MessageContent({
   runPhase: AgentRunPhase;
   onEditImage: MessageActions['onEditImage'];
   onApproveToolCall: MessageActions['onApproveToolCall'];
+  planModeEvent: PlanModeEvent | null;
+  planModePending: boolean;
+  planModeSubmittedAnswer: string;
+  onPlanModeAnswer: (answer: string) => void;
+  onPlanModeExecute: () => void;
+  onPlanModeRevise: () => void;
 }) {
   const { t } = useI18n();
   const { toast } = useFeedback();
   const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
   const [imageDisplaySizes, setImageDisplaySizes] = useState<Record<string, MessageImageDisplaySize>>({});
   const blocks = message.blocks ?? [];
-  const displayContent = shortcutPresentation(message).content;
+  const displayContent = stripPlanModeProtocol(shortcutPresentation(message).content);
   const tools = blocks
     .filter((block): block is Extract<NonNullable<UiMessage['blocks']>[number], { type: 'tool' }> => block.type === 'tool')
     .map((block) => block.tool);
@@ -713,6 +809,11 @@ function MessageContent({
     && blocks[blocks.length - 1]?.type === 'tool'
     && !showRetryStatus
   );
+  const messageRows = groupToolBlocks(blocks);
+  const showPlanLoading = planModePending
+    && message.status === 'streaming'
+    && !blocks.some((block) => block.type === 'tool' && block.tool.name === 'plan_mode_interaction');
+  const showPlanStreaming = showPlanLoading && Boolean(planModeEvent);
   if (emptyStreaming) {
     return <TypingIndicator label={t('chat.sending')} />;
   }
@@ -842,41 +943,68 @@ function MessageContent({
           })}
         </div>
       ) : null}
+      {showPlanStreaming && planModeEvent ? <PlanModeCard event={planModeEvent} disabled onAnswer={onPlanModeAnswer} onExecute={onPlanModeExecute} onRevise={onPlanModeRevise} /> : null}
+      {showPlanLoading && !showPlanStreaming ? <PlanModeLoadingCard /> : null}
       {blocks.length > 0 ? (
         <>
-          {blocks.map((block, index) => {
-            if (block.type === 'reasoning') {
+          {messageRows.map((row) => {
+            if (row.type === 'reasoning') {
               return (
                 <ReasoningDisclosure
-                  key={`reasoning-${index}`}
-                  content={block.content}
-                  isStreaming={message.status === 'streaming' && index === blocks.length - 1}
+                  key={`reasoning-${row.sourceIndex}`}
+                  content={row.block.content}
+                  isStreaming={message.status === 'streaming' && row.sourceIndex === blocks.length - 1}
                 />
               );
             }
-            if (block.type === 'text') {
-              if (!block.content) return null;
-              const isStreamingTail = message.status === 'streaming' && index === blocks.length - 1;
+            if (row.type === 'text') {
+              const blockContent = stripPlanModeProtocol(row.block.content);
+              if (!blockContent) return null;
+              const isStreamingTail = message.status === 'streaming' && row.sourceIndex === blocks.length - 1;
               return (
                 <div
-                  key={`text-${index}`}
+                  key={`text-${row.sourceIndex}`}
                   className={`message-markdown${isStreamingTail ? ' streaming-content' : ''}`}
                 >
                   {isStreamingTail ? (
-                    <StreamingMarkdown content={block.content} />
+                    <StreamingMarkdown content={blockContent} />
                   ) : (
-                    <MarkdownContent content={block.content} />
+                    <MarkdownContent content={blockContent} />
                   )}
                 </div>
               );
             }
+            if (row.type === 'plan') {
+              return <PlanModeHistory
+                key={`plan-${row.tool.call_id}`}
+                tool={row.tool}
+                event={planModeEvent}
+                pending={planModePending}
+                submittedAnswer={planModeSubmittedAnswer}
+                disabled={planModePending}
+                onAnswer={onPlanModeAnswer}
+                onExecute={onPlanModeExecute}
+                onRevise={onPlanModeRevise}
+              />;
+            }
+            if (row.type === 'tool-group') {
+              return (
+                <ToolCallGroup
+                  key={`tool-group-${row.tools[0].call_id}`}
+                  agentId={agentId}
+                  tools={row.tools}
+                  mcpServers={mcpServers}
+                  onApprove={(tool, decision) => handleApprove(tool, decision)}
+                />
+              );
+            }
             return (
               <ToolDisclosure
-                key={block.tool.call_id}
+                key={row.block.tool.call_id}
                 agentId={agentId}
-                tool={block.tool}
+                tool={row.block.tool}
                 mcpServers={mcpServers}
-                onApprove={(decision) => handleApprove(block.tool, decision)}
+                onApprove={(decision) => handleApprove(row.block.tool, decision)}
               />
             );
           })}
@@ -911,6 +1039,67 @@ function MessageContent({
       </Dialog>
     </>
   );
+}
+
+function PlanModeHistory({
+  tool,
+  event: activeEvent,
+  pending,
+  submittedAnswer,
+  disabled,
+  onAnswer,
+  onExecute,
+  onRevise,
+}: {
+  tool: ToolCallState;
+  event: PlanModeEvent | null;
+  pending: boolean;
+  submittedAnswer: string;
+  disabled: boolean;
+  onAnswer: (answer: string) => void;
+  onExecute: () => void;
+  onRevise: () => void;
+}) {
+  const event = parsePlanModeInteraction(tool.result?.structured_content ?? tool.arguments);
+  if (!event) return null;
+  const selectedAnswers = parsePlanAnswerMap(submittedAnswer);
+  if (activeEvent && JSON.stringify(activeEvent) === JSON.stringify(event)) {
+    return <PlanModeCard event={activeEvent} disabled={disabled || pending} onAnswer={onAnswer} onExecute={onExecute} onRevise={onRevise} />;
+  }
+  return (
+    <section className="plan-mode-history" aria-label="Plan mode interaction">
+      {event.type === 'questions' ? event.questions.map((question, index) => (
+        <div className="plan-mode-history__question" key={question.id}>
+          <strong>{index + 1}. {question.question}</strong>
+          <ul>
+            {question.options.map((option) => <li className={isPlanOptionSelected(selectedAnswers[question.id], option) ? 'is-selected' : undefined} key={option.id}>{isPlanOptionSelected(selectedAnswers[question.id], option) ? '✓ ' : ''}{option.title}</li>)}
+            {question.allow_custom ? <li className={selectedAnswers[question.id] && !question.options.some((option) => isPlanOptionSelected(selectedAnswers[question.id], option)) ? 'is-selected' : undefined}>{selectedAnswers[question.id] && !question.options.some((option) => isPlanOptionSelected(selectedAnswers[question.id], option)) ? '✓ ' : ''}自定义回答{selectedAnswers[question.id] && !question.options.some((option) => isPlanOptionSelected(selectedAnswers[question.id], option)) ? `：${selectedAnswers[question.id]}` : ''}</li> : null}
+          </ul>
+        </div>
+      )) : event.type === 'ready' ? (
+        <div className="plan-mode-history__ready">
+          <strong>{event.title}</strong>
+          {event.summary ? <p>{event.summary}</p> : null}
+        </div>
+      ) : (
+        <div className="plan-mode-history__question"><strong>{event.question}</strong><ul>{event.options.map((option) => <li key={option.id}>{option.label}</li>)}</ul></div>
+      )}
+    </section>
+  );
+}
+
+function parsePlanAnswerMap(value: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const line of value.replace(/^计划问题回答：\n?/, '').split('\n')) {
+    const match = line.match(/^\s*-\s*([^:]+):\s*(.*)\s*$/);
+    if (match) map[match[1].trim()] = match[2].trim();
+  }
+  return map;
+}
+
+function isPlanOptionSelected(value: string | undefined, option: { id: string; title: string }): boolean {
+  if (!value) return false;
+  return value.split(/\s*,\s*/).some((item) => item === option.id || item === option.title);
 }
 
 function TypingIndicator({ label }: { label: string }) {

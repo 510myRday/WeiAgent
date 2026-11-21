@@ -295,6 +295,25 @@ test('adds shortcut instructions and metadata when sending', () => {
   );
 });
 
+test('offers plan mode below a divider and marks plan turns when sending', () => {
+  const onPlanModeChange = vi.fn();
+  const onSend = vi.fn();
+  renderComposer({ onPlanModeChange, onSend });
+
+  fireEvent.click(screen.getByRole('button', { name: '计划模式' }));
+  expect(onPlanModeChange).toHaveBeenCalledWith(true);
+});
+
+test('submits a custom answer as a plan-mode turn', () => {
+  const onSend = vi.fn();
+  renderComposer({ planMode: true, onSend });
+  const input = screen.getByRole('textbox', { name: '消息' });
+  fireEvent.change(input, { target: { value: '我希望使用云端部署' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+
+  expect(onSend).toHaveBeenCalledWith('我希望使用云端部署', [], 'chat', [], true);
+});
+
 test('hides the queue button while the active run has no draft', () => {
   renderComposer({ isSending: true });
 

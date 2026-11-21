@@ -16,6 +16,7 @@ import {
   ChevronUp,
   Image as ImageIcon,
   ImagePlus,
+  Lightbulb,
   ListPlus,
   LoaderCircle,
   Pencil,
@@ -59,6 +60,7 @@ export type QueuedChatMessage = {
   attachments?: readonly ImageAttachment[];
   generationMode?: GenerationMode;
   shortcutActions?: ChatShortcutAction[];
+  planMode?: boolean;
 };
 
 export type ComposerShortcutItem = ChatShortcutAction & { label: string };
@@ -101,10 +103,13 @@ interface ChatComposerProps {
     attachments: ImageAttachment[],
     generationMode: GenerationMode,
     shortcutActions: ChatShortcutAction[],
+    planMode?: boolean,
   ) => void;
   onSteer: (content: string) => void;
   onStop: () => void;
   shortcutItems?: ComposerShortcutItem[];
+  planMode?: boolean;
+  onPlanModeChange?: (enabled: boolean) => void;
   terminalPermissionMode?: 'request_approval' | 'full_access';
   terminalPermissionIsInherited?: boolean;
   isSavingTerminalPermission?: boolean;
@@ -144,6 +149,8 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
   onSteer,
   onStop,
   shortcutItems = [],
+  planMode = false,
+  onPlanModeChange,
   terminalPermissionMode,
   terminalPermissionIsInherited = false,
   isSavingTerminalPermission = false,
@@ -215,10 +222,11 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
         id: createAttachmentId(),
       })));
       if (message.generationMode) onGenerationModeChange(message.generationMode);
+      onPlanModeChange?.(Boolean(message.planMode));
       writeChatDraft(draftKey, content);
       inputRef.current?.focus();
     },
-  }), [canAttachImages, draftKey, onGenerationModeChange, onUnsupportedImage, setAttachments, t]);
+  }), [canAttachImages, draftKey, onGenerationModeChange, onPlanModeChange, onUnsupportedImage, setAttachments, t]);
 
   useEffect(() => {
     setDraft(readChatDraft(draftKey));
@@ -269,7 +277,11 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
     if (mode === 'steer') {
       if (content) onSteer(submittedContent);
     } else {
-      onSend(submittedContent, submittedAttachments, generationMode, shortcutActions);
+      if (planMode) {
+        onSend(submittedContent, submittedAttachments, generationMode, shortcutActions, true);
+      } else {
+        onSend(submittedContent, submittedAttachments, generationMode, shortcutActions);
+      }
     }
   }
 
@@ -566,6 +578,25 @@ export const ChatComposer = memo(forwardRef<ChatComposerHandle, ChatComposerProp
             ) : null}
             </div>
             <div className={`composer-actions${generationMode !== 'image' && terminalPermissionMode ? ' has-terminal-permission' : ''}`}>
+            {generationMode !== 'image' && onPlanModeChange ? (
+              <div className="plan-mode-control">
+                <button
+                  type="button"
+                  className={`thinking-button plan-mode-button${planMode ? ' is-active' : ''}`}
+                  onClick={() => onPlanModeChange(!planMode)}
+                  disabled={disabled || isSending}
+                  aria-pressed={planMode}
+                  aria-label={t('chat.planMode')}
+                  title={t('chat.planMode')}
+                >
+                  <Lightbulb size={17} aria-hidden="true" />
+                  <span>{t('chat.planMode')}</span>
+                  <span className="plan-mode-switch" aria-hidden="true">
+                    <span className="plan-mode-switch__thumb" />
+                  </span>
+                </button>
+              </div>
+            ) : null}
             {generationMode !== 'image' && terminalPermissionMode && onTerminalPermissionModeChange ? (
               <div className="thinking-control terminal-permission-control" ref={permissionRef}>
                 <button

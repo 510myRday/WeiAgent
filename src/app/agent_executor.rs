@@ -28,6 +28,8 @@ use crate::{
     tools::task_planning::TASK_PLANNING_TOOL_NAME,
 };
 
+pub const PLAN_MODE_INTERACTION_TOOL_NAME: &str = "plan_mode_interaction";
+
 const STREAM_SAVE_INTERVAL: Duration = Duration::from_secs(2);
 const STREAM_SAVE_BYTES: usize = 32 * 1024;
 const MAX_TOOL_CALLS_PER_ITERATION: usize = 8;
@@ -94,6 +96,7 @@ pub enum AgentRunEvent {
         justification: Option<String>,
         background: bool,
     },
+    PlanModeInteraction { call_id: String, arguments: Value },
     Done,
     Cancelled,
     Error(String),
@@ -424,7 +427,7 @@ pub async fn run_agent(
                 .clamp(1, crate::domain::tools::MAX_TASK_PLAN_PROGRESS_INTERVAL)
                 as usize,
         );
-        if let Err(error) = execute_tool_calls(
+        let paused_for_plan = match execute_tool_calls(
             runtime.state,
             runtime.prepared,
             &mut messages,
@@ -435,10 +438,13 @@ pub async fn run_agent(
             append_task_plan_progress,
             &runtime.frozen_tools.mcp_servers,
         )
-        .await
-        {
-            persist_run_failure(&runtime, &error).await;
-            return Err(error);
+        .await {
+            Ok(value) => value,
+            Err(error) => { persist_run_failure(&runtime, &error).await; return Err(error); }
+        };
+        if paused_for_plan {
+            emit(&events, AgentRunEvent::Done).await?;
+            return Ok(());
         }
         if append_task_plan_progress {
             tool_budget.reset_task_plan_progress();
@@ -523,6 +529,29 @@ async fn freeze_run_tools(state: &AppState, prepared: &PreparedChat) -> FrozenRu
         .unwrap_or_default();
     if !supports_multimodal {
         frozen_tools.retain(|definition| definition.function.name != "read_images");
+    }
+    if prepared.plan_mode {
+        // Plan Mode owns its interactive plan flow. Never expose the persisted
+        // task_planning tool, even if an older config snapshot still enables it.
+        frozen_tools.retain(|definition| definition.function.name != TASK_PLANNING_TOOL_NAME);
+        frozen_tools.push(crate::llm::types::ToolDefinition {
+            kind: "function".to_string(),
+            function: crate::llm::types::FunctionDefinition {
+                name: PLAN_MODE_INTERACTION_TOOL_NAME.to_string(),
+                description: "Ask clarification questions or present a ready plan in the Plan Mode UI.".to_string(),
+                parameters: serde_json::json!({
+                    "type":"object", "additionalProperties":false, "required":["status"],
+                    "properties": {
+                        "status":{"type":"string","enum":["questions","ready"]},
+                        "questions":{"type":"array","items":{"type":"object","required":["id","question","options","allow_custom","selection_mode"],"properties":{
+                            "id":{"type":"string"},"question":{"type":"string"},"allow_custom":{"type":"boolean"},"selection_mode":{"type":"string","enum":["single","multiple"]},
+                            "options":{"type":"array","minItems":2,"maxItems":5,"items":{"type":"object","required":["id","title","description"],"properties":{"id":{"type":"string"},"title":{"type":"string"},"description":{"type":"string"}},"additionalProperties":false}}
+                        },"additionalProperties":false}},
+                        "plan":{"type":"object","properties":{"title":{"type":"string"},"summary":{"type":"string"},"steps":{"type":"array","items":{"type":"string"}},"assumptions":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}
+                    }
+                }),
+            },
+        });
     }
     if !prepared.skill_snapshot.is_empty() {
         frozen_tools.extend(state.skill_manager.tool_definitions());
@@ -705,7 +734,7 @@ async fn execute_tool_calls(
     iteration: usize,
     append_task_plan_progress: bool,
     mcp_servers: &[McpServer],
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let call_count = tool_calls.len();
     let mut parallel_mcp_batch = call_count > 1;
     if parallel_mcp_batch {
@@ -722,7 +751,7 @@ async fn execute_tool_calls(
         }
     }
     if parallel_mcp_batch {
-        return execute_parallel_mcp_calls(
+        execute_parallel_mcp_calls(
             state,
             prepared,
             messages,
@@ -733,7 +762,8 @@ async fn execute_tool_calls(
             append_task_plan_progress,
             mcp_servers,
         )
-        .await;
+        .await?;
+        return Ok(false);
     }
     for (index, call) in tool_calls.into_iter().enumerate() {
         let parsed_arguments = serde_json::from_str::<Value>(&call.function.arguments);
@@ -752,6 +782,27 @@ async fn execute_tool_calls(
             },
         )
         .await?;
+        if prepared.plan_mode && call.function.name == PLAN_MODE_INTERACTION_TOOL_NAME {
+            let arguments = parsed_arguments.as_ref().ok().cloned().unwrap_or(Value::Object(Default::default()));
+            emit(events, AgentRunEvent::PlanModeInteraction { call_id: call.id.clone(), arguments: arguments.clone() }).await?;
+            let result = ToolResult::Completed {
+                stdout: String::new(), stderr: String::new(), exit_code: 0, duration_ms: 0,
+                runtime: Some("builtin_plan_mode".to_string()), cwd: None, output_cursor: 0,
+                structured_content: Some(arguments), is_error: false,
+            };
+            persist_tool_result(state, prepared, messages, &call.id, PLAN_MODE_INTERACTION_TOOL_NAME, &result).await?;
+            return Ok(true);
+        }
+        if prepared.plan_mode && call.function.name == TASK_PLANNING_TOOL_NAME {
+            let result = ToolResult::Blocked {
+                reason: "task_planning is unavailable in Plan Mode; use plan_mode_interaction instead.".to_string(),
+                code: Some("PlanModeToolDisabled".to_string()),
+                details: None,
+            };
+            persist_tool_result(state, prepared, messages, &call.id, TASK_PLANNING_TOOL_NAME, &result).await?;
+            emit(events, AgentRunEvent::ToolResult { call_id: call.id.clone(), result }).await?;
+            continue;
+        }
         emit(
             events,
             AgentRunEvent::ToolCall {
@@ -848,7 +899,7 @@ async fn execute_tool_calls(
         )
         .await?;
     }
-    Ok(())
+    Ok(false)
 }
 
 #[allow(clippy::too_many_arguments)]

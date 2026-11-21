@@ -223,6 +223,9 @@ pub struct SendMessageRequest {
     pub restart_from_message_id: Option<Uuid>,
     #[serde(default)]
     pub shortcut_actions: Vec<ChatShortcutAction>,
+    /// Keep the model in a clarification-and-plan workflow without executing changes.
+    #[serde(default)]
+    pub plan_mode: bool,
 }
 
 fn default_stream_response() -> bool {

@@ -221,7 +221,7 @@ export function parseChatMessage(value: unknown): ChatMessage {
 }
 
 export function parseJsonStreamEvent(
-  event: 'user' | 'assistant' | 'usage' | 'context_compacted' | 'phase' | 'retry' | 'tool_call_started' | 'tool_call_args_delta' | 'tool_call' | 'tool_result' | 'approval_required',
+  event: 'user' | 'assistant' | 'usage' | 'context_compacted' | 'phase' | 'retry' | 'tool_call_started' | 'tool_call_args_delta' | 'tool_call' | 'tool_result' | 'approval_required' | 'plan_mode_interaction',
   data: string,
   sequence?: number,
 ): StreamEvent {
@@ -266,6 +266,13 @@ export function parseJsonStreamEvent(
         data: parse(toolResultEventDataSchema, parsed) as Extract<StreamEvent, { event: 'tool_result' }>['data'],
         sequence,
       };
+    case 'plan_mode_interaction': {
+      const data = parse(looseObject({
+        call_id: string(),
+        arguments: toolArgumentsSchema,
+      }), parsed);
+      return { event, data, sequence };
+    }
     case 'approval_required': {
       const { cwd, justification, ...approvalData } = parse(
         approvalRequiredEventDataSchema,

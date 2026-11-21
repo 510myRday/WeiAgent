@@ -403,6 +403,7 @@ fn run_event_size(event: &AgentRunEvent) -> usize {
         }
         AgentRunEvent::Phase { call_id, .. } => call_id.as_deref().map_or(0, str::len),
         AgentRunEvent::Retry { reason, .. } => reason.len(),
+        AgentRunEvent::PlanModeInteraction { call_id, arguments } => call_id.len() + estimate_json_bytes(arguments),
         AgentRunEvent::Done | AgentRunEvent::Cancelled => 0,
     }
 }

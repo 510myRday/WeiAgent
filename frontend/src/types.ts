@@ -476,6 +476,7 @@ export type StreamEvent =
   | { event: 'context_compacted'; data: ContextCompactionEvent; sequence?: number }
   | { event: 'delta'; data: string; sequence?: number }
   | { event: 'reasoning_delta'; data: string; sequence?: number }
+  | { event: 'plan_mode_interaction'; data: { call_id: string; arguments: Record<string, unknown> }; sequence?: number }
   | { event: 'done'; data: string; sequence?: number }
   | { event: 'cancelled'; data: string; sequence?: number }
   | { event: 'error'; data: string; sequence?: number }

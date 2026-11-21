@@ -403,16 +403,27 @@ pub async fn start_message_run(
     let mut registration = state.run_manager.create(conversation_id)?;
     let steer_receiver = state.run_manager.take_steer_receiver(&mut registration);
     let run_id = registration.info.id;
-    let mut prepared = match prepare_chat(
-        &state,
-        conversation_id,
-        &request.content,
-        &request.attachments,
-        request.thinking_level,
-        request.restart_from_message_id,
-    )
-    .await
-    {
+    let mut prepared = match if request.plan_mode {
+        crate::app::chat::prepare_chat_plan_mode(
+            &state,
+            conversation_id,
+            &request.content,
+            &request.attachments,
+            request.thinking_level,
+            request.restart_from_message_id,
+        )
+        .await
+    } else {
+        prepare_chat(
+            &state,
+            conversation_id,
+            &request.content,
+            &request.attachments,
+            request.thinking_level,
+            request.restart_from_message_id,
+        )
+        .await
+    } {
         Ok(prepared) => prepared,
         Err(error) => {
             state
@@ -773,6 +784,10 @@ fn agent_event_to_sse(event: AgentRunEvent) -> Event {
                 "call_id": call_id,
                 "result": sanitize_tool_result_for_llm(&result),
             }),
+        ),
+        AgentRunEvent::PlanModeInteraction { call_id, arguments } => json_event(
+            "plan_mode_interaction",
+            &serde_json::json!({ "call_id": call_id, "arguments": arguments }),
         ),
         AgentRunEvent::ApprovalRequired {
             call_id,

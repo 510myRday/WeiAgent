@@ -35,6 +35,7 @@ import {
 import { ChatAgentSelect } from './ChatAgentSelect';
 import { ConversationRow } from './ConversationRow';
 import { TaskPlanPanel } from './TaskPlanPanel';
+import { parsePlanModeInteraction } from './planModeProtocol';
 import { getTaskPlanSyncKey } from './taskPlanSync';
 import { MessageAvatar, MessageList, type MessageListHandle } from './MessageList';
 import { MessageTimeline, type MessageTimelineItem } from './MessageTimeline';
@@ -44,6 +45,7 @@ import { compareNames, sortByName } from '../../utils/sort';
 import { createChatDateFormatters, formatChatDateTime, formatChatTimelineTime } from './chatDateFormat';
 import { sortAgentsByRecentConversation } from '../../utils/agentSorting';
 import { HtmlPreviewProvider } from './HtmlPreviewProvider';
+import { listTools } from '../../hooks/conversationMessages';
 
 interface ChatPanelProps {
   agents: Agent[];
@@ -161,6 +163,9 @@ export function ChatPanel({
     retryStatus,
     runningConversationIds,
     unreadConversationIdsByAgent,
+    planModeInteraction,
+    planModePending,
+    planModeStreamingInteraction,
     refreshUnreadState,
     markConversationRead,
     loadConversationsForAgent,
@@ -196,6 +201,9 @@ export function ChatPanel({
     readThinkingLevels,
   );
   const [generationMode, setGenerationMode] = useState<GenerationMode>('chat');
+  const [planMode, setPlanMode] = useState(false);
+  const [planModeInteractionDismissed, setPlanModeInteractionDismissed] = useState(false);
+  const [planModeSubmittedAnswer, setPlanModeSubmittedAnswer] = useState('');
   const [modelTargetAgentId, setModelTargetAgentId] = useState('');
   const [selectedModelValue, setSelectedModelValue] = useState('');
   const [isModelSavePending, setIsModelSavePending] = useState(false);
@@ -229,6 +237,10 @@ export function ChatPanel({
   const autoModelSelectionKeyRef = useRef<string | null>(null);
   const onAgentEditRef = useRef(onAgentEdit);
   const taskPlanRequestRef = useRef(0);
+  const planModeRestoredConversationRef = useRef<string | null>(null);
+  const planModeStorageKey = useCallback((conversationId: string) => (
+    `weiagent:plan-mode:${activeAgentId}:${conversationId || 'new'}`
+  ), [activeAgentId]);
 
   onAgentEditRef.current = onAgentEdit;
   imageOptionsDraftRef.current = imageOptionsDraft;
@@ -331,6 +343,26 @@ export function ChatPanel({
       setGenerationMode('chat');
     }
   }, [supportsImageGeneration]);
+  useEffect(() => {
+    const conversationKey = planModeStorageKey(activeConversationId);
+    const newConversationKey = planModeStorageKey('');
+    const stored = window.sessionStorage.getItem(conversationKey) === '1'
+      || (Boolean(activeConversationId) && window.sessionStorage.getItem(newConversationKey) === '1');
+    if (activeConversationId && stored && window.sessionStorage.getItem(conversationKey) !== '1') {
+      window.sessionStorage.setItem(conversationKey, '1');
+      window.sessionStorage.removeItem(newConversationKey);
+    }
+    setPlanMode(stored);
+    setPlanModeInteractionDismissed(
+      window.sessionStorage.getItem(`${conversationKey}:interaction-dismissed`) === '1',
+    );
+    setPlanModeSubmittedAnswer(
+      window.sessionStorage.getItem(`${conversationKey}:submitted-answer`) ?? '',
+    );
+  }, [activeConversationId, planModeStorageKey]);
+  useEffect(() => {
+    if (effectiveGenerationMode === 'image') setPlanMode(false);
+  }, [effectiveGenerationMode]);
   const modelOptions = useMemo<ModelOption[]>(() => sortByName(providers).flatMap((provider) =>
     [...provider.models].sort(compareNames).map((model) => ({
       value: JSON.stringify([provider.id, model]),
@@ -367,6 +399,39 @@ export function ChatPanel({
     ? t('chat.imagePromptLabel')
     : t('chat.messageLabel');
   const visibleMessages = activeAgent ? messages : EMPTY_MESSAGES;
+  const persistedPlanInteraction = useMemo(() => {
+    if (planModeInteractionDismissed) return null;
+    for (let index = visibleMessages.length - 1; index >= 0; index -= 1) {
+      const message = visibleMessages[index];
+      if (message.role !== 'assistant') continue;
+      const tool = listTools(message).find((item) => item.name === 'plan_mode_interaction');
+      const structured = tool?.result?.structured_content;
+      if (structured) return structured;
+    }
+    return null;
+  }, [planModeInteractionDismissed, visibleMessages]);
+  useEffect(() => {
+    if (planModeInteraction) {
+      setPlanModeInteractionDismissed(false);
+      window.sessionStorage.removeItem(`${planModeStorageKey(activeConversationId)}:interaction-dismissed`);
+    }
+  }, [activeConversationId, planModeInteraction, planModeStorageKey]);
+  useEffect(() => {
+    const storedMode = activeConversationId
+      && window.sessionStorage.getItem(planModeStorageKey(activeConversationId)) === '1';
+    if (persistedPlanInteraction && storedMode && planModeRestoredConversationRef.current !== activeConversationId) {
+      planModeRestoredConversationRef.current = activeConversationId;
+      setPlanMode(true);
+    }
+  }, [activeConversationId, persistedPlanInteraction, planModeStorageKey]);
+  const planModeEvent = useMemo(() => {
+    if (!planMode) return null;
+    const interaction = parsePlanModeInteraction(planModeInteraction)
+      ?? planModeStreamingInteraction
+      ?? (isSending ? null : parsePlanModeInteraction(persistedPlanInteraction));
+    if (interaction) return interaction;
+    return null;
+  }, [isSending, persistedPlanInteraction, planMode, planModeInteraction, planModeStreamingInteraction]);
   const taskPlanSyncKey = useMemo(() => getTaskPlanSyncKey(messages), [messages]);
   const activeConversation = activeAgent
     ? conversations.find((conversation) => conversation.id === activeConversationId)
@@ -485,9 +550,7 @@ export function ChatPanel({
       .filter((skill) => skill.enabled)
       .forEach((skill) => items.push({ kind: 'skill', id: skill.name, name: skill.name, label: skill.name }));
     const enabledTools = [
-      ['execute_terminal', t('tools.terminal.name'), agentTools?.effective.terminal.enabled],
       ['web_search', t('tools.webSearch.name'), agentTools?.effective.web_search.enabled],
-      ['task_planning', t('tools.taskPlanning.name'), agentTools?.effective.task_planning.enabled],
     ] as const;
     enabledTools.forEach(([id, label, enabled]) => {
       if (enabled) items.push({ kind: 'builtin_tool', id, name: label, label });
@@ -783,11 +846,13 @@ export function ChatPanel({
       effectiveGenerationMode,
       messageId,
       shortcutActions,
+      planMode,
     );
   }, [
     activeAgent,
     effectiveGenerationMode,
     isSending,
+    planMode,
     send,
     supportsImageGeneration,
     supportsThinking,
@@ -1001,6 +1066,7 @@ export function ChatPanel({
     attachments: ImageAttachment[],
     imageMode: GenerationMode,
     shortcutActions: ChatShortcutAction[],
+    requestedPlanMode = false,
   ) => {
     if (
       !activeAgent
@@ -1012,9 +1078,9 @@ export function ChatPanel({
     const thinking = supportsThinking ? thinkingLevel : 'off';
     const mode = supportsImageGeneration ? 'image' : imageMode;
     if (isSending) {
-      enqueueMessage(content, activeAgent.id, isStreamMode, attachments, thinking, mode, shortcutActions);
+      enqueueMessage(content, activeAgent.id, isStreamMode, attachments, thinking, mode, shortcutActions, requestedPlanMode);
     } else {
-      void send(content, activeAgent.id, isStreamMode, attachments, thinking, mode, undefined, shortcutActions);
+      void send(content, activeAgent.id, isStreamMode, attachments, thinking, mode, undefined, shortcutActions, requestedPlanMode);
     }
     onAgentActivity(activeAgent.id);
   }, [
@@ -1055,6 +1121,80 @@ export function ChatPanel({
   const handleSteerMessage = useCallback((content: string) => {
     void steerActiveRun(content);
   }, [steerActiveRun]);
+
+  const answerPlanModeQuestion = useCallback((answer: string) => {
+    if (!answer.trim()) return;
+    setPlanModeInteractionDismissed(true);
+    window.sessionStorage.setItem(`${planModeStorageKey(activeConversationId)}:interaction-dismissed`, '1');
+    let content = answer;
+    try {
+      const parsed = JSON.parse(answer) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        content = `计划问题回答：\n${Object.entries(parsed as Record<string, unknown>)
+          .map(([id, value]) => `- ${id}: ${Array.isArray(value) ? value.join(', ') : String(value)}`)
+          .join('\n')}`;
+      }
+    } catch {
+      // A legacy single-option answer is already readable text.
+    }
+    setPlanModeSubmittedAnswer((current) => {
+      const next = current ? `${current}\n\n${content}` : content;
+      window.sessionStorage.setItem(`${planModeStorageKey(activeConversationId)}:submitted-answer`, next);
+      return next;
+    });
+    composerRef.current?.restoreQueuedMessage({
+      id: 'plan-answer',
+      content,
+      generationMode: 'chat',
+      planMode: true,
+    });
+    window.setTimeout(() => {
+      const input = document.querySelector<HTMLTextAreaElement>('.composer-box textarea');
+      input?.form?.requestSubmit();
+    }, 0);
+  }, [activeConversationId, planModeStorageKey]);
+
+  const handlePlanModeChange = useCallback((enabled: boolean) => {
+    setPlanMode(enabled);
+    const key = planModeStorageKey(activeConversationId);
+    if (enabled) window.sessionStorage.setItem(key, '1');
+    else window.sessionStorage.removeItem(key);
+  }, [activeConversationId, planModeStorageKey]);
+
+  const executePlanMode = useCallback(() => {
+    planModeRestoredConversationRef.current = activeConversationId;
+    handlePlanModeChange(false);
+    const content = `计划执行确认：${t('chat.planModeExecuteMessage')}`;
+    setPlanModeSubmittedAnswer((current) => {
+      const next = current ? `${current}\n\n已确认执行` : '已确认执行';
+      window.sessionStorage.setItem(`${planModeStorageKey(activeConversationId)}:submitted-answer`, next);
+      return next;
+    });
+    composerRef.current?.restoreQueuedMessage({
+      id: 'plan-execute',
+      content,
+      generationMode: 'chat',
+      planMode: false,
+    });
+    window.setTimeout(() => {
+      const input = document.querySelector<HTMLTextAreaElement>('.composer-box textarea');
+      input?.form?.requestSubmit();
+    }, 0);
+  }, [activeConversationId, handlePlanModeChange, planModeStorageKey, t]);
+
+  const revisePlanMode = useCallback(() => {
+    composerRef.current?.restoreQueuedMessage({
+      id: 'plan-revise',
+      content: t('chat.planModeReviseMessage'),
+      generationMode: 'chat',
+      planMode: true,
+    });
+    window.setTimeout(() => {
+      const input = document.querySelector<HTMLTextAreaElement>('.composer-box textarea');
+      input?.focus();
+      input?.select();
+    }, 0);
+  }, [t]);
 
   const handleEditQueuedMessage = useCallback((message: QueuedChatMessage) => {
     composerRef.current?.restoreQueuedMessage(message);
@@ -1282,6 +1422,12 @@ export function ChatPanel({
             supportsImageMasks={supportsImageGeneration}
             runPhase={runPhase}
             retryStatus={retryStatus}
+            planModeEvent={planModeEvent}
+            planModePending={planModePending}
+            planModeSubmittedAnswer={planModeSubmittedAnswer}
+            onPlanModeAnswer={answerPlanModeQuestion}
+            onPlanModeExecute={executePlanMode}
+            onPlanModeRevise={revisePlanMode}
             timelineMessageIndexes={timelineMessageIndexes}
             onLoadOlder={handleLoadOlderMessages}
             onRestart={handleRestartMessage}
@@ -1303,14 +1449,7 @@ export function ChatPanel({
         ) : null}
 
         <div className={`chat-composer-stack${activeConversationId && !supportsImageGeneration ? ' has-task-plan' : ''}`}>
-          <QueuedMessages
-            queuedMessages={pendingMessages}
-            onEditQueuedMessage={handleEditQueuedMessage}
-            onMoveQueuedMessage={movePendingMessage}
-            onRemoveQueuedMessage={removePendingMessage}
-            onSteerQueuedMessage={(id) => void steerPendingMessage(id)}
-          />
-          {activeConversationId && !supportsImageGeneration ? (
+          {activeConversationId && !supportsImageGeneration && !planMode ? (
             <TaskPlanPanel
               plans={taskPlans}
               isLoading={isTaskPlanLoading}
@@ -1319,6 +1458,13 @@ export function ChatPanel({
               t={t}
             />
           ) : null}
+          <QueuedMessages
+            queuedMessages={pendingMessages}
+            onEditQueuedMessage={handleEditQueuedMessage}
+            onMoveQueuedMessage={movePendingMessage}
+            onRemoveQueuedMessage={removePendingMessage}
+            onSteerQueuedMessage={(id) => void steerPendingMessage(id)}
+          />
           <ChatComposer
             ref={composerRef}
             disabled={isComposerDisabled}
@@ -1346,6 +1492,8 @@ export function ChatPanel({
             onSteer={handleSteerMessage}
             onStop={cancelActiveSend}
             shortcutItems={shortcutItems}
+            planMode={planMode}
+            onPlanModeChange={handlePlanModeChange}
             terminalPermissionMode={agentTools?.effective.terminal.permission_mode}
             terminalPermissionIsInherited={agentTools?.overrides.terminal.permission_mode === undefined}
             isSavingTerminalPermission={isSavingTerminalPermission}

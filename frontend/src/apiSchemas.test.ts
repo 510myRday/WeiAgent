@@ -79,6 +79,16 @@ test('stream schema accepts incremental tool call events', () => {
   });
 });
 
+test('stream schema accepts plan mode interaction events immediately', () => {
+  expect(parseJsonStreamEvent('plan_mode_interaction', JSON.stringify({
+    call_id: 'call-plan',
+    arguments: { status: 'questions', questions: [] },
+  }))).toMatchObject({
+    event: 'plan_mode_interaction',
+    data: { call_id: 'call-plan', arguments: { status: 'questions', questions: [] } },
+  });
+});
+
 test('stream schema accepts per-response usage events', () => {
   expect(parseJsonStreamEvent('usage', JSON.stringify({
     input_tokens: 120,

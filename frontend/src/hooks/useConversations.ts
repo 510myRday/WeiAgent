@@ -48,6 +48,7 @@ import {
   listTools,
   upsertToolOnMessages,
 } from './conversationMessages';
+import { parsePlanModeInteractionText, type PlanModeEvent } from '../features/chat/planModeProtocol';
 import {
   CONVERSATION_SNAPSHOTS_STORAGE_KEY,
   CONVERSATION_RUN_SNAPSHOTS_STORAGE_KEY,
@@ -85,6 +86,7 @@ export type PendingChatMessage = {
   thinkingLevel: ThinkingLevel;
   generationMode: GenerationMode;
   shortcutActions: ChatShortcutAction[];
+  planMode: boolean;
 };
 
 export type PendingMessageMoveDirection = 'up' | 'down';
@@ -139,6 +141,9 @@ export function useConversations({
   const [isSending, setIsSending] = useState(false);
   const [runPhase, setRunPhase] = useState<AgentRunPhase>('idle');
   const [retryStatus, setRetryStatus] = useState<{ attempt: number; maxAttempts: number; reason: string } | null>(null);
+  const [planModeInteraction, setPlanModeInteraction] = useState<Record<string, unknown> | null>(null);
+  const [planModePending, setPlanModePending] = useState(false);
+  const [planModeStreamingInteraction, setPlanModeStreamingInteraction] = useState<PlanModeEvent | null>(null);
   const [pendingMessages, setPendingMessages] = useState<PendingChatMessage[]>([]);
   const [conversationUsage, setConversationUsage] = useState<ConversationUsage>(EMPTY_USAGE);
   const [runningConversationIds, setRunningConversationIds] = useState<Set<string>>(() => new Set());
@@ -163,6 +168,8 @@ export function useConversations({
   const onErrorRef = useRef(onError);
   const activeAgentIdRef = useRef(activeAgentId);
   const activeConversationIdRef = useRef(activeConversationId);
+  const planModeCallIdsRef = useRef<Set<string>>(new Set());
+  const planModeArgumentsRef = useRef('');
   const unreadConversationIdsRef = useRef(unreadConversationIdsByAgent);
   const conversationSnapshotsRef = useRef<ConversationSnapshotMap>(
     readJsonStorage(CONVERSATION_SNAPSHOTS_STORAGE_KEY, {}),
@@ -173,6 +180,9 @@ export function useConversations({
   onErrorRef.current = onError;
   activeAgentIdRef.current = activeAgentId;
   activeConversationIdRef.current = activeConversationId;
+  useEffect(() => {
+    setPlanModeInteraction(null);
+  }, [activeConversationId]);
   unreadConversationIdsRef.current = unreadConversationIdsByAgent;
   // Read via ref inside callbacks (e.g. `send`) so they keep a stable identity
   // while messages update every stream flush.
@@ -191,6 +201,7 @@ export function useConversations({
     generationMode?: GenerationMode,
     restartFromMessageId?: string,
     shortcutActions?: ChatShortcutAction[],
+    planMode?: boolean,
   ) => Promise<void>)>();
 
   const updateUnreadConversationIds = useCallback(
@@ -614,6 +625,7 @@ export function useConversations({
         flushPendingDelta();
       }
       if (evt.event === 'error') {
+        setPlanModePending(false);
         setRetryStatus(null);
         setMessages((current) => {
           return interruptActiveRun(current, runInterruptedMessage, 'error');
@@ -622,6 +634,7 @@ export function useConversations({
         return;
       }
       if (evt.event === 'done') {
+        setPlanModePending(false);
         setRetryStatus(null);
         setMessages((current) => {
           const last = current[current.length - 1];
@@ -636,6 +649,7 @@ export function useConversations({
         return;
       }
       if (evt.event === 'cancelled') {
+        setPlanModePending(false);
         setRetryStatus(null);
         setMessages((current) => {
           return interruptActiveRun(current, runCancelledMessage, 'rejected');
@@ -682,6 +696,30 @@ export function useConversations({
         applyReasoningDelta(evt.data as string);
         return;
       }
+      if (evt.event === 'plan_mode_interaction') {
+        setPlanModePending(false);
+        setPlanModeStreamingInteraction(null);
+        planModeCallIdsRef.current.delete(evt.data.call_id);
+        setPlanModeInteraction(evt.data.arguments);
+        setMessages((current) => upsertToolOnMessages(
+          current,
+          {
+            call_id: evt.data.call_id,
+            name: 'plan_mode_interaction',
+            arguments: evt.data.arguments,
+            arguments_text: JSON.stringify(evt.data.arguments),
+            phase: 'executing',
+            status: 'completed',
+            result: {
+              runtime: 'builtin_plan_mode',
+              structured_content: evt.data.arguments,
+            },
+          },
+          activeStreamRef.current.agentId,
+          activeStreamRef.current.conversationId,
+        ));
+        return;
+      }
       if (evt.event === 'usage') {
         setConversationUsage(modelUsageToConversationUsage(evt.data));
         return;
@@ -712,6 +750,15 @@ export function useConversations({
         return;
       }
       if (evt.event === 'tool_call_started') {
+        if (evt.data.name === 'plan_mode_interaction') {
+          planModeCallIdsRef.current.add(evt.data.call_id);
+          planModeArgumentsRef.current = '';
+          setPlanModeStreamingInteraction(null);
+          setPlanModePending(true);
+          setRetryStatus(null);
+          setRunPhase('executing_tool');
+          return;
+        }
         setRetryStatus(null);
         setRunPhase('executing_tool');
         const d = evt.data;
@@ -737,6 +784,11 @@ export function useConversations({
       }
       if (evt.event === 'tool_call_args_delta') {
         const d = evt.data;
+        if (planModeCallIdsRef.current.has(d.call_id)) {
+          planModeArgumentsRef.current += d.arguments;
+          setPlanModeStreamingInteraction(parsePlanModeInteractionText(planModeArgumentsRef.current));
+          return;
+        }
         setMessages((current) => patchToolOnMessages(current, d.call_id, (tool) => {
           const argumentsText = (tool.arguments_text ?? '') + d.arguments;
           return {
@@ -749,6 +801,12 @@ export function useConversations({
         return;
       }
       if (evt.event === 'tool_call') {
+        if (evt.data.name === 'plan_mode_interaction') {
+          setPlanModeStreamingInteraction(parsePlanModeInteractionText(JSON.stringify(evt.data.arguments)));
+          setPlanModePending(true);
+          setRunPhase('executing_tool');
+          return;
+        }
         setRunPhase('executing_tool');
         const d = evt.data;
         const startedAtMs = readToolStartTime(d.call_id) ?? Date.now();
@@ -928,6 +986,7 @@ export function useConversations({
       generationMode: GenerationMode = 'chat',
       restartFromMessageId?: string,
       shortcutActions: ChatShortcutAction[] = [],
+      planMode = false,
     ) => {
       const requestId = ++sendRequestIdRef.current;
       const controller = new AbortController();
@@ -938,6 +997,11 @@ export function useConversations({
       const optimisticAssistantClientId = genClientId();
       sendAbortControllerRef.current?.abort();
       sendAbortControllerRef.current = controller;
+      setPlanModeInteraction(null);
+      setPlanModePending(false);
+      setPlanModeStreamingInteraction(null);
+      planModeCallIdsRef.current.clear();
+      planModeArgumentsRef.current = '';
       setIsSending(true);
       setRunPhase('waiting_for_model');
       setRetryStatus(null);
@@ -1021,6 +1085,7 @@ export function useConversations({
           generationMode,
           restartFromMessageId,
           shortcutActions,
+          planMode,
           controller.signal,
         );
         if (isFirstUserMessage && content.trim()) {
@@ -1077,6 +1142,7 @@ export function useConversations({
                 next.generationMode,
                 undefined,
                 next.shortcutActions,
+                next.planMode,
               );
             });
           }
@@ -1153,6 +1219,7 @@ export function useConversations({
     thinkingLevel: ThinkingLevel,
     generationMode: GenerationMode,
     shortcutActions: ChatShortcutAction[] = [],
+    planMode = false,
   ) => {
     const message: PendingChatMessage = {
       id: genClientId(),
@@ -1163,6 +1230,7 @@ export function useConversations({
       thinkingLevel,
       generationMode,
       shortcutActions,
+      planMode,
     };
     setPendingMessages((current) => {
       const next = [...current, message];
@@ -1316,6 +1384,9 @@ export function useConversations({
     isSending,
     runPhase,
     retryStatus,
+    planModeInteraction,
+    planModePending,
+    planModeStreamingInteraction,
     runningConversationIds,
     unreadConversationIdsByAgent,
     refreshUnreadState,

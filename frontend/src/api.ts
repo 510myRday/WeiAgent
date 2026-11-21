@@ -855,6 +855,7 @@ export function createMessageRun(
   generationMode: GenerationMode = 'chat',
   restartFromMessageId?: string,
   shortcutActions: ChatShortcutAction[] = [],
+  planMode = false,
   signal?: AbortSignal,
 ): Promise<AgentRun> {
   return request(`/api/conversations/${encodeURIComponent(conversationId)}/runs`, {
@@ -866,6 +867,7 @@ export function createMessageRun(
       stream: streamOutput,
       generation_mode: generationMode,
       shortcut_actions: shortcutActions,
+      plan_mode: planMode,
       ...(restartFromMessageId ? { restart_from_message_id: restartFromMessageId } : {}),
     }),
     signal,
@@ -1027,6 +1029,7 @@ function dispatchStreamEvent(
     || event === 'tool_call'
     || event === 'tool_result'
     || event === 'approval_required'
+    || event === 'plan_mode_interaction'
   ) {
     try {
       onEvent(parseJsonStreamEvent(event, data, sequence));

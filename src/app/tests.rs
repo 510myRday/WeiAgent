@@ -738,6 +738,29 @@ async fn skill_bodies_stay_out_of_default_system_prompt() {
 }
 
 #[tokio::test]
+async fn plan_mode_adds_a_non_execution_workflow_to_the_system_prompt() {
+    let (_, state, conversation_id, _, _) = scripted_test_app(Vec::new()).await;
+    let prepared = crate::app::chat::prepare_chat_plan_mode(
+        &state,
+        conversation_id,
+        "design a migration",
+        &[],
+        crate::domain::ThinkingLevel::Off,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(prepared.system_prompt.contains("## Plan Mode"));
+    assert!(prepared.system_prompt.contains("MUST ask at least two focused clarification questions"));
+    assert!(prepared.system_prompt.contains("Wait for the user's explicit approval"));
+    assert!(prepared.system_prompt.contains("Execution begins only after"));
+    assert!(!prepared.tools_config.task_planning.enabled);
+    assert!(prepared.tools_config.terminal.enabled);
+    assert!(prepared.tools_config.web_search.enabled);
+}
+
+#[tokio::test]
 async fn explicit_skill_command_loads_body_for_current_task_only() {
     let (_, state, conversation_id, _, _) = scripted_test_app(Vec::new()).await;
     let prepared = crate::app::chat::prepare_chat(

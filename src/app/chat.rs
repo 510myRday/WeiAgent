@@ -37,6 +37,7 @@ pub struct PreparedChat {
     pub tools_config: AgentToolsConfig,
     pub skill_snapshot: Vec<SkillManifest>,
     pub thinking_level: Option<ThinkingLevel>,
+    pub plan_mode: bool,
 }
 
 /// Agent tools config loaded from the persisted defaults and agent overrides.
@@ -63,8 +64,35 @@ pub async fn prepare_chat(
         thinking_level,
         restart_from_message_id,
         false,
+        false,
     )
     .await
+}
+
+/// Prepare a chat turn with the Codex-style planning workflow enabled.
+pub async fn prepare_chat_plan_mode(
+    state: &AppState,
+    conversation_id: Uuid,
+    content: &str,
+    attachments: &[ImageAttachment],
+    thinking_level: ThinkingLevel,
+    restart_from_message_id: Option<Uuid>,
+) -> AppResult<PreparedChat> {
+    let mut prepared = prepare_chat_inner(
+        state,
+        conversation_id,
+        content,
+        attachments,
+        thinking_level,
+        restart_from_message_id,
+        false,
+        true,
+    )
+    .await?;
+    // This interactive planning flow is intentionally independent from the
+    // persisted task_planning tool and must not expose that tool to the model.
+    prepared.tools_config.task_planning.enabled = false;
+    Ok(prepared)
 }
 
 /// Prepare the agent context for internal operations that do not create a user turn.
@@ -73,7 +101,7 @@ pub async fn prepare_chat_context(
     conversation_id: Uuid,
     thinking_level: ThinkingLevel,
 ) -> AppResult<PreparedChat> {
-    prepare_chat_inner(state, conversation_id, "", &[], thinking_level, None, true).await
+    prepare_chat_inner(state, conversation_id, "", &[], thinking_level, None, true, false).await
 }
 
 async fn prepare_chat_inner(
@@ -84,6 +112,7 @@ async fn prepare_chat_inner(
     thinking_level: ThinkingLevel,
     restart_from_message_id: Option<Uuid>,
     allow_empty_message: bool,
+    plan_mode: bool,
 ) -> AppResult<PreparedChat> {
     let content = content.trim();
     if !allow_empty_message && content.is_empty() && attachments.is_empty() {
@@ -171,6 +200,11 @@ async fn prepare_chat_inner(
         );
         system_prompt.push_str(&service_context);
     }
+    if plan_mode {
+        system_prompt.push_str(
+            "\n\n## Plan Mode\n\nUse the plan_mode_interaction function for this independent interactive planning workflow. This is separate from task_planning; never create, update, or rely on a task_planning plan. You MUST ask at least two focused clarification questions before producing a plan. Ask them in one function call containing a questions array; each question must include an id, question text, selection_mode (single or multiple), and 2 to 5 ordered options with id, title, and short description, plus allow_custom=true. Use single for mutually exclusive choices and multiple when the user may choose several options. You may call tools to inspect context, but do not make changes. When requirements are clear, call the same function with status=ready and a complete plan (title, summary, steps, assumptions). Never emit XML or JSON protocol text in your assistant message. Wait for the user's explicit approval through the UI before execution. Execution begins only after the UI sends a new normal-mode message.",
+        );
+    }
     if system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
         return Err(AppError::BadRequest(format!(
             "agent system prompt exceeds {MAX_SYSTEM_PROMPT_BYTES} bytes"
@@ -198,7 +232,7 @@ async fn prepare_chat_inner(
     )
     .await?;
     let checkpoint = state.store.read_context_checkpoint(conversation_id).await?;
-    let active_task_plan = state.store.read_task_plan(conversation_id).await?;
+    let active_task_plan = if plan_mode { None } else { state.store.read_task_plan(conversation_id).await? };
     let active_task_plan_context = active_task_plan
         .as_ref()
         .map(crate::app::context_compress::ActiveTaskPlanContext::from_task_plan);
@@ -278,6 +312,7 @@ async fn prepare_chat_inner(
         tools_config,
         skill_snapshot: skill_settings.effective,
         thinking_level,
+        plan_mode,
     })
 }
 

@@ -25,6 +25,7 @@ import type {
   ImageAttachment,
   UiMessageItem,
 } from '../../types';
+import type { PlanModeEvent } from './planModeProtocol';
 import type { McpServer } from '../../toolTypes';
 import { Button, EmptyState } from '../../components/ui';
 import { useI18n } from '../../i18n';
@@ -51,6 +52,12 @@ interface MessageListProps {
   supportsImageMasks: boolean;
   runPhase: AgentRunPhase;
   retryStatus: { attempt: number; maxAttempts: number; reason: string } | null;
+  planModeEvent: PlanModeEvent | null;
+  planModePending: boolean;
+  planModeSubmittedAnswer: string;
+  onPlanModeAnswer: (answer: string) => void;
+  onPlanModeExecute: () => void;
+  onPlanModeRevise: () => void;
   timelineMessageIndexes: readonly number[];
   onLoadOlder: () => Promise<boolean>;
   onRestart: (
@@ -113,6 +120,12 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   supportsImageMasks,
   runPhase,
   retryStatus,
+  planModeEvent,
+  planModePending,
+  planModeSubmittedAnswer,
+  onPlanModeAnswer,
+  onPlanModeExecute,
+  onPlanModeRevise,
   timelineMessageIndexes,
   onLoadOlder,
   onRestart,
@@ -520,6 +533,12 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                     isSending={isSending}
                     isLastMessage={row.messageIndex === messages.length - 1}
                     retryStatus={retryStatus}
+                    planModeEvent={planModeEvent}
+                    planModePending={planModePending}
+                    planModeSubmittedAnswer={planModeSubmittedAnswer}
+                    onPlanModeAnswer={onPlanModeAnswer}
+                    onPlanModeExecute={onPlanModeExecute}
+                    onPlanModeRevise={onPlanModeRevise}
                     runPhase={runPhase}
                     supportsImages={supportsImages}
                     supportsImageMasks={supportsImageMasks}
